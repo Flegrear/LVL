@@ -164,8 +164,12 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, toVersion = 
   if (!fromVersion) throw new Error("A prior release tag is mandatory: --from v0.1.0");
   const from = versionParts(fromVersion).value;
   const root = fs.realpathSync(path.resolve(repoRoot));
-  const gitRoot = fs.realpathSync(path.resolve(gitText(root, ["rev-parse", "--show-toplevel"])));
-  if (root.toLowerCase() !== gitRoot.toLowerCase())
+  // Do not compare Git's --show-toplevel spelling to Node's realpath. On
+  // hosted Windows runners, Git may return an MSYS-style or differently
+  // canonicalized path for the same directory. --show-prefix is empty only
+  // when -C points at the actual worktree root (not a nested folder).
+  if (gitText(root, ["rev-parse", "--is-inside-work-tree"]) !== "true"
+      || gitText(root, ["rev-parse", "--show-prefix"]) !== "")
     throw new Error("Build root must be the exact Git repository root");
   const tag = `refs/tags/v${from}`;
   const oldCommit = gitText(root, ["rev-parse", "--verify", `${tag}^{commit}`]);

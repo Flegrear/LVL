@@ -149,6 +149,14 @@ test("version tag must exist, match committed old package, be ancestor and be ol
   });
 });
 
+test("patch root check rejects nested directories without comparing Windows Git path spellings", () => makeRepo((ctx) => {
+  ctx.bump(); ctx.commit();
+  assert.throws(() => buildUpdate({ repoRoot: path.join(ctx.repo, "frontend"),
+    fromVersion: "0.1.0", outputDir: ctx.dist }), /exact Git repository root/);
+  const result = buildUpdate({ repoRoot: ctx.repo, fromVersion: "0.1.0", outputDir: ctx.dist });
+  assert.equal(result.manifest.toVersion, "0.1.1");
+}));
+
 test("an existing tag on another Git branch cannot serve as a patch ancestor", () => makeRepo((ctx) => {
   ctx.bump();
   ctx.commit("New candidate HEAD");
