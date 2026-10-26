@@ -133,6 +133,7 @@ test("Learning OFF player menu keeps embedded/external captions and modal option
     revealPlayerControls() {}, clearPlayerControlsHideTimer() {}, schedulePlayerControlsHide() {},
     renderTracks() {}, renderEmbeddedSubtitleControls() {},
     renderSubtitleWorkspace: () => { rendered++; }, syncSelectedTrackForSource() {},
+    noteSubtitleVisibilityIntent() {}, refreshSubtitleClockForInteraction() {},
     importEmbeddedSubtitleTrack: () => { imported++; },
     openMenuState: null, closePopupMenu() {},
     document: { addEventListener(type, listener) { documentNode.addEventListener(type, listener); } },

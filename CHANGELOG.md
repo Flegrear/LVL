@@ -1,5 +1,10 @@
 # LVL Changelog
 
+## 0.1.13 — 2026-10-26
+
+- Stabilize subtitles and remember audio choices across episodes.
+- Simplify Settings and improve daily update checks.
+
 ## 0.1.12 — 2026-10-26
 
 - Fix subtitles disappearing when switching audio tracks by restoring saved, dub-specific subtitle timing.

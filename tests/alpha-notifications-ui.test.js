@@ -251,7 +251,7 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   const parse = vm.runInNewContext(server.slice(start, end) + "\nparseLocalChangelog");
   const history = parse(read("CHANGELOG.md"));
   const names = Array.from(history.entries, (entry) => entry.version || "Unreleased");
-  assert.deepEqual(names, ["0.1.12", "0.1.11", "0.1.1", "0.1.0"], "bundled release history lists the newest supported version first");
+  assert.deepEqual(names, ["0.1.13", "0.1.12", "0.1.11", "0.1.1", "0.1.0"], "bundled release history lists the newest supported version first");
 
   const f = clientFixture({ changelog: history });
   f.paint({ installed: true, available: true, availableVersion: "0.2.5", automatic: true });
@@ -274,10 +274,11 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   assert.equal(f.node("app-notifications-popover").hidden, true);
   const sections = f.node("app-changelog-history").children;
   assert.equal(sections.length, history.entries.length, "full release history is available in the dialog");
-  assert.match(sections[0].children[0].textContent, /0\.1\.12/);
-  assert.match(sections[1].children[0].textContent, /0\.1\.11/);
-  assert.match(sections[2].children[0].textContent, /0\.1\.1/);
-  assert.match(sections[3].children[0].textContent, /0\.1\.0/);
+  assert.match(sections[0].children[0].textContent, /0\.1\.13/);
+  assert.match(sections[1].children[0].textContent, /0\.1\.12/);
+  assert.match(sections[2].children[0].textContent, /0\.1\.11/);
+  assert.match(sections[3].children[0].textContent, /0\.1\.1/);
+  assert.match(sections[4].children[0].textContent, /0\.1\.0/);
   assert.deepEqual(f.requests.filter((item) => item.method === "GET").map(({ url }) => url),
     ["/api/app-updates/changelog"], "read only bundled local release history");
   f.node("app-changelog-close").click();

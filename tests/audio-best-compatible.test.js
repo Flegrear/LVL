@@ -95,15 +95,16 @@ test("FFmpeg seek-sync flags, chosen track mapping and output metadata remain ex
   assert.match(server, /"-map", `0:a:\$\{audioTrackOrder\}\?`/);
   assert.match(server, /"-c:a", plan\.audio\.codec/);
   assert.match(server, /"X-Media-Audio-Output-Codec": plan\.audio\.outputCodec/);
-  assert.match(app, /function preferredAudioTrackIndex\(media\)/);
+  assert.match(app, /function preferredAudioTrackIndex\(media, source = state\.currentSource\)/);
   assert.match(app, /preferredAudioLanguage = String\(tracks\[index\]\.language/);
   assert.match(app, /if \(!pending\.wasPlaying\) \{\s*complete\(\);/);
   assert.match(app, /await video\.play\(\);/, "a resumed copied stream must confirm Play before declaring ready");
   assert.match(app, /if \(retryTransient\(error\)\) return true;/,
     "a transient new-stream error must take the bounded retry path, not silently swallow Play rejection");
-  const start = app.indexOf("function preferredAudioTrackIndex(");
+  const start = app.indexOf("function audioTrackIdentity(");
   const end = app.indexOf("\nfunction transcodeQuery(", start);
-  const context = vm.createContext({ preferredAudioLanguage: "jpn" });
+  const context = vm.createContext({ preferredAudioLanguage: "jpn", state: { currentSource: null },
+    sourceAudioPreferenceKey: () => "", seriesAudioPreferences: new Map() });
   vm.runInContext(app.slice(start, end), context);
   assert.equal(vm.runInContext('preferredAudioTrackIndex({audioTracks:[{language:"eng"},{language:"jpn"}]})', context), 1);
   assert.equal(vm.runInContext('preferredAudioTrackIndex({audioTracks:[{language:"eng"}]})', context), 0,

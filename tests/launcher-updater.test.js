@@ -76,7 +76,7 @@ class UpdaterProbe {
         Require(status.Contains("\"installed\":true") && status.Contains("\"installedVersion\":\"0.1.0\""), "authenticated local status");
         Require(Send(address, "{\"secret\":\"wrong\",\"action\":\"status\"}") == null, "wrong secret cannot read status");
         string settings = Send(address, "{\"secret\":\"SECRET\",\"action\":\"settings\",\"automatic\":false,\"intervalDays\":7}");
-        Require(settings.Contains("\"intervalDays\":7") && File.Exists(Path.Combine(fakeRoot, "lvl-update-settings.json")), "settings persist within isolated LVL data root");
+        Require(settings.Contains("\"intervalDays\":1") && File.Exists(Path.Combine(fakeRoot, "lvl-update-settings.json")), "fixed daily settings persist within isolated LVL data root");
         Require(Send(address, "{\"secret\":\"SECRET\",\"action\":\"install\"}").Contains("No verified LVL update"), "cannot install without a verified release");
       } finally {
         type.GetMethod("EndBridge").Invoke(updater, null);

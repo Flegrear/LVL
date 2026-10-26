@@ -25,6 +25,6 @@ test("Player initializes embedded caption extraction on both early and delayed m
   assert.match(app, /enableDefaultEmbeddedSubtitles\(probedMedia, startAtSeconds, \{ urgent: startAtSeconds >= 12 \}\)/);
   assert.match(app, /enableDefaultEmbeddedSubtitles\(media, startAtSeconds, \{ urgent: startAtSeconds >= 12 \}\)/);
   assert.match(app, /importEmbeddedSubtitleTrack\(candidate, null, \{ automatic: true, activate: true/);
-  assert.match(app, /activate && state\.subtitlesVisible && !currentSourceTracks\(\)\.some/);
+  assert.match(app, /activate && state\.subtitlesVisible && controller\.visibilityRevision === subtitleVisibilityRevision && !currentSourceTracks\(\)\.some/);
   assert.match(app, /initialEmbeddedSubtitleSource === key/);
 });

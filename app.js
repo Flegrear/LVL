@@ -2763,6 +2763,9 @@ function renderSettingsTabs() {
 // policy. Source checkouts cannot change or start a packaged-app update.
 let appUpdateSettingsBusy = false;
 let appUpdateSettingsSnapshot = null;
+// Native automatic checks use a fixed once-per-day cadence; it is not a UI
+// preference. Keep the bridge payload compatible with existing launchers.
+const AUTO_UPDATE_INTERVAL_DAYS = 1;
 // A failed background availability check should never look like a side
 // effect of turning the automatic-check setting on or off. Only show the
 // network failure in this panel after the user requests Check for updates.
@@ -2773,16 +2776,11 @@ function paintAppUpdateSettings(report) {
   const checking = Boolean(report?.checking || report?.downloading);
   const automatic = Boolean(report?.automatic);
   const auto = $("#settings-app-updates-auto");
-  const interval = $("#settings-app-updates-interval");
   const check = $("#settings-app-updates-check");
   const install = $("#settings-app-updates-install");
   if (auto) {
     auto.checked = automatic;
     auto.disabled = !installed || appUpdateSettingsBusy;
-  }
-  if (interval) {
-    interval.value = ["1", "7", "30"].includes(String(report?.intervalDays)) ? String(report.intervalDays) : "1";
-    interval.disabled = !installed || !automatic || appUpdateSettingsBusy;
   }
   if (check) {
     check.disabled = !installed || checking || appUpdateSettingsBusy;
@@ -2796,7 +2794,7 @@ function paintAppUpdateSettings(report) {
   }
   const version = $("#settings-app-updates-version");
   if (version) version.textContent = installed ? String(report.installedVersion || "—") : "Source build";
-  let message = "This source checkout uses port 4173; the installer/updater runs separately on 4273.";
+  let message = "";
   if (installed) {
     if (report.downloading) message = "Downloading and validating the update in the Windows launcher…";
     else if (report.checking) message = "Checking the update feed…";
@@ -2825,13 +2823,11 @@ async function changeAppUpdateSettings() {
   appUpdateSettingsBusy = true;
   manualAppUpdateCheck = false;
   const auto = $("#settings-app-updates-auto");
-  const interval = $("#settings-app-updates-interval");
   const automatic = Boolean(auto?.checked);
-  const intervalDays = Number(interval?.value || 1);
   try {
-    paintAppUpdateSettings(await postJson("/api/app-updates/settings", { automatic, intervalDays }));
+    paintAppUpdateSettings(await postJson("/api/app-updates/settings", { automatic, intervalDays: AUTO_UPDATE_INTERVAL_DAYS }));
     setToolStatus("#settings-app-updates-status", automatic
-      ? `Automatic updates enabled (checking every ${intervalDays} day${intervalDays === 1 ? "" : "s"}). Verified updates install and restart LVL automatically.`
+      ? "Automatic updates enabled. LVL checks daily and installs verified updates automatically."
       : "Automatic update checks disabled. You can still check manually.");
   } catch (error) {
     setToolStatus("#settings-app-updates-status", error.message || "Couldn't change update settings", true);
@@ -2843,7 +2839,6 @@ async function changeAppUpdateSettings() {
 }
 function wireAppUpdateSettings() {
   $("#settings-app-updates-auto")?.addEventListener("change", () => { void changeAppUpdateSettings(); });
-  $("#settings-app-updates-interval")?.addEventListener("change", () => { void changeAppUpdateSettings(); });
   $("#settings-app-updates-check")?.addEventListener("click", async () => {
     if (appUpdateSettingsBusy || !appUpdateSettingsSnapshot?.installed) return;
     appUpdateSettingsBusy = true;
@@ -3401,6 +3396,10 @@ function embeddedSubtitleLabel(track, index) {
 
 const embeddedSubtitleImports = new Map();
 const embeddedSubtitleAttempts = new Map();
+// Async imports can finish after a later Hide/Show or track switch. Only the
+// most recent explicit caption choice is allowed to activate a loading track.
+let subtitleVisibilityRevision = 0;
+function noteSubtitleVisibilityIntent() { subtitleVisibilityRevision += 1; }
 function embeddedSubtitleImportKey(source, streamIndex) {
   return `${source?.sessionId || ""}:${source?.fileIndex ?? ""}:${source?.sourceTag || ""}:${streamIndex}`;
 }
@@ -3408,6 +3407,7 @@ function embeddedSubtitleImportKey(source, streamIndex) {
 async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds = null, automatic = false, activate = false, urgent = false, focused = false } = {}) {
   const source = state.currentSource || {};
   if (!source.sessionId || source.fileIndex === null || source.fileIndex === undefined || !Number.isInteger(Number(track?.streamIndex))) return false;
+  if (!automatic) noteSubtitleVisibilityIntent();
   const key = embeddedSubtitleImportKey(source, Number(track.streamIndex));
   const existing = currentSourceTracks().find((item) => Number(item.embeddedStreamIndex) === Number(track.streamIndex) && embeddedTrackMatchesSource(item, source));
   if (!automatic && existing?.cues?.length && !existing.embeddedImportPartial && !existing.visible) {
@@ -3446,6 +3446,7 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
       // select that stream, not cancel the only request capable of providing
       // its cues. This also handles a manual selection racing default loading.
       inFlight.manualSelection = true;
+      inFlight.visibilityRevision = subtitleVisibilityRevision;
       state.subtitlesVisible = true;
       if (existing?.cues?.length) existing.visible = true;
       subtitleRenderMemo.key = "";
@@ -3475,6 +3476,7 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
   controller.windowStart = windowStart;
   controller.seekPosition = seekPosition;
   controller.manualSelection = !automatic;
+  controller.visibilityRevision = subtitleVisibilityRevision;
   embeddedSubtitleImports.set(key, controller);
   const timer = window.setTimeout(() => controller.abort("timeout"), 50_000);
   let imported = existing || null;
@@ -3538,14 +3540,14 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
     imported.syncAnchors = [];
     imported.syncSource = "embedded";
     imported.timelineMismatch = false; // A fetched window isn't a different cut of the video.
-    if (controller.manualSelection) {
+    if (controller.manualSelection && controller.visibilityRevision === subtitleVisibilityRevision) {
       state.subtitlesVisible = true;
       imported.visible = true;
       syncSelectedTrackForSource();
-    } else if (activate && state.subtitlesVisible && !currentSourceTracks().some((item) => item.id !== imported.id && item.visible && item.cues?.length)) {
+    } else if (activate && state.subtitlesVisible && controller.visibilityRevision === subtitleVisibilityRevision && !currentSourceTracks().some((item) => item.id !== imported.id && item.visible && item.cues?.length)) {
       imported.visible = true;
       syncSelectedTrackForSource();
-    } else if (!automatic) {
+    } else if (!automatic && controller.visibilityRevision === subtitleVisibilityRevision) {
       state.subtitlesVisible = true;
       imported.visible = true;
       syncSelectedTrackForSource();
@@ -4572,6 +4574,18 @@ function presentedSubtitleSeconds() {
     || presented.base !== (video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0)) return null;
   return presented.seconds;
 }
+function visibleSubtitleClockSeconds() {
+  const playing = absolutePlaybackSeconds();
+  const presented = presentedSubtitleSeconds();
+  // Chromium may suppress frame callbacks across pause/resume, tab backgrounding
+  // or audio-track replacement even as playback/timeupdate advances. Never keep
+  // an old cue clock indefinitely when it has diverged from audible playback.
+  return presented !== null && Math.abs(presented - playing) <= 1.25 ? presented : playing;
+}
+function refreshSubtitleClockForInteraction() {
+  state.currentMs = visibleSubtitleClockSeconds() * 1000;
+  subtitleRenderMemo.key = "";
+}
 function schedulePresentedSubtitleFrame() {
   if (subtitleFrameRequestId !== null || state.pendingSeek?.priming || typeof video.requestVideoFrameCallback !== "function") return;
   const generation = subtitleFrameGeneration;
@@ -4966,11 +4980,80 @@ let audioOutputMode = ["auto", "stereo", "surround"].includes(storedAudioMode) ?
   : legacySurroundMode === "0" ? "stereo" : legacySurroundMode === "1" ? "surround" : "auto";
 // Session-only language intent; never rewrite a user's saved Language/Learning preferences.
 let preferredAudioLanguage = "";
+// Remember the *series* audio choice, not a fragile episode-specific FFprobe
+// index. The same dub often moves between stream 0 and stream 1 in new files.
+const SERIES_AUDIO_PREFERENCES_KEY = "lvl-series-audio-preferences-v1";
+const seriesAudioPreferences = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(SERIES_AUDIO_PREFERENCES_KEY) || "{}");
+    if (!saved || typeof saved !== "object" || Array.isArray(saved)) return new Map();
+    return new Map(Object.entries(saved).filter(([key, choice]) => key.length <= 200 && choice
+      && typeof choice === "object" && !Array.isArray(choice)).slice(-80));
+  } catch { return new Map(); }
+})();
 
-function preferredAudioTrackIndex(media) {
+function sourceAudioPreferenceKey(source = state.currentSource) {
+  const key = String(source?.seriesKey || (source?.catalogId
+    ? `catalog:${source.catalogType || "series"}:${source.catalogId}` : source?.title || source?.libraryId || ""))
+    .trim().toLowerCase();
+  return key.slice(0, 200);
+}
+
+function audioTrackIdentity(track) {
+  const title = String(track?.title || "").trim().toLowerCase().replace(/\s+/g, " ").slice(0, 120);
+  const raw = String(track?.language || "").trim().toLowerCase();
+  const languages = { ja: "jpn", jp: "jpn", japanese: "jpn", en: "eng", english: "eng",
+    es: "spa", spanish: "spa", fr: "fra", fre: "fra", french: "fra",
+    de: "deu", ger: "deu", german: "deu", pt: "por", portuguese: "por",
+    ko: "kor", korean: "kor", zh: "zho", chi: "zho", chinese: "zho",
+    it: "ita", italian: "ita", ru: "rus", russian: "rus" };
+  const language = languages[raw] || (raw === "und" || raw === "unknown" ? "" : raw)
+    || Object.entries(languages).find(([name]) => name.length > 2 && new RegExp(`\\b${name}\\b`).test(title))?.[1] || "";
+  return { language, title };
+}
+
+function rememberSeriesAudioTrack(track, index, source = state.currentSource) {
+  const key = sourceAudioPreferenceKey(source);
+  if (!key || !Number.isInteger(index) || index < 0) return;
+  const identity = audioTrackIdentity(track);
+  const count = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks.length : 0;
+  seriesAudioPreferences.delete(key);
+  seriesAudioPreferences.set(key, { ...identity, index, count });
+  while (seriesAudioPreferences.size > 80) seriesAudioPreferences.delete(seriesAudioPreferences.keys().next().value);
+  try { localStorage.setItem(SERIES_AUDIO_PREFERENCES_KEY, JSON.stringify(Object.fromEntries(seriesAudioPreferences))); }
+  catch (error) { console.warn("Could not save series audio preference:", error); }
+}
+
+function preferredAudioTrackIndex(media, source = state.currentSource) {
   const tracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
+  if (!tracks.length) return 0;
+  const key = sourceAudioPreferenceKey(source);
+  const saved = key ? seriesAudioPreferences.get(key) : null;
+  if (saved) {
+    const identities = tracks.map(audioTrackIdentity);
+    const exact = identities.findIndex((track) => track.title && track.title === saved.title
+      && (!saved.language || track.language === saved.language));
+    if (exact >= 0) return exact;
+    if (saved.language) {
+      const matching = identities.map((track, index) => track.language === saved.language ? index : -1).filter((index) => index >= 0);
+      if (matching.includes(saved.index)) return saved.index;
+      if (matching.length) return matching[0];
+      // Never fall back to the same index in a different language.
+      return 0;
+    }
+    if (saved.title) {
+      const byTitle = identities.findIndex((track) => track.title === saved.title);
+      if (byTitle >= 0) return byTitle;
+    }
+    if (Number.isInteger(saved.index) && saved.index >= 0 && saved.index < tracks.length
+      && saved.count === tracks.length) return saved.index;
+    return 0;
+  }
+  // Legacy session fallback only for ungrouped media. Do not leak a dub choice
+  // from one series into a different series with no preference of its own.
+  if (key) return 0;
   if (!preferredAudioLanguage) return 0;
-  const index = tracks.findIndex((track) => String(track.language || "").trim().toLowerCase() === preferredAudioLanguage);
+  const index = tracks.findIndex((track) => audioTrackIdentity(track).language === preferredAudioLanguage);
   return index >= 0 ? index : 0;
 }
 
@@ -5379,9 +5462,10 @@ function resetAudioSync() {
     && previousKey.slice(0, previousKey.lastIndexOf(":")) === nextKey.slice(0, nextKey.lastIndexOf(":"))) {
     currentSourceTracks().filter((track) => !track.exactMedia).forEach((track) => {
       if (track.syncSource === "audio" || track.syncFollowsId) {
-        track.syncMode = "constant";
-        track.syncAnchors = [];
-        track.syncSource = "";
+        // Keep last displayed positions provisionally while the new dub is
+        // analysed. Clearing anchors makes all captions miss the playhead.
+        // This is not a verified model for the new audio selection.
+        track.syncSource = "provisional";
       }
       track.audioSync = { status: "waiting", windows: 0 };
       // Subtitle alignment is specific to the audio dub. Switching back to a
@@ -6240,6 +6324,8 @@ function renderTracks() {
   list.querySelectorAll(".track-card").forEach((card) => {
     const track = state.tracks.find((item) => item.id === card.dataset.trackId);
     card.querySelector(".track-visible").addEventListener("change", (event) => {
+      noteSubtitleVisibilityIntent();
+      refreshSubtitleClockForInteraction();
       track.visible = event.target.checked;
       if (track.visible && !state.subtitlesVisible) {
         state.subtitlesVisible = true;
@@ -9103,8 +9189,7 @@ function addSubtitleText(text, label, language = "", options = {}) {
   applySavedSubtitleSync(addedTrack);
   scheduleAudioSync(600);
   if (languageGuess === state.targetLanguage || !state.selectedTrackId) state.selectedTrackId = id;
-  const visibleTracks = currentSourceTracks().filter((track) => track.visible);
-  if (visibleTracks.length > 2) addedTrack.visible = false;
+  // More than two independently enabled caption overlays are supported.
   if (isRomanizableLanguage(languageGuess) && state.subtitleStyle.romanization !== false) void ensureTrackRomanization(addedTrack);
   if (timelineFit.severeMismatch) {
     $("#media-status").textContent = `These subtitles may be for a different cut: they cover ${Math.round((timelineFit.ratio || 0) * 100)}% of the video`;
@@ -9676,7 +9761,7 @@ function renderPlayerSubtitleMenu() {
         const loading = embeddedSubtitleImports.has(embeddedSubtitleImportKey(state.currentSource, Number(track.streamIndex)));
         return renderRow(embeddedSubtitleLabel(track, index), trackLanguageName(normalizeTrackLanguage(track.language)),
           active, `data-caption-embedded="${Number(track.streamIndex)}"`,
-          loading ? "Loading…" : active ? "Hide" : "Show");
+          active ? "Hide" : loading ? "Loading…" : "Show");
       }).join("") : "")
     + (attached.some((track) => track.origin !== "embedded") ? `<div class="player-popover-head"><span>Added tracks</span></div>`
       + attached.filter((track) => track.origin !== "embedded").map((track) => renderRow(track.label,
@@ -9783,9 +9868,15 @@ function renderPlayerAudioMenu() {
   }).join("")}<details class="player-audio-info"${detailsOpen ? " open" : ""}><summary>Playback information</summary>${renderAudioPlaybackDetails()}</details>`;
   menu.querySelectorAll("[data-audio-index]").forEach((button) => button.addEventListener("click", () => {
     const index = Number(button.dataset.audioIndex);
-    if (!Number.isInteger(index) || index === state.selectedAudioTrack) return;
+    if (!Number.isInteger(index) || !tracks[index]) return;
     menu.hidden = true;
-    void switchAudioTrack(index);
+    // A click on the currently playing Original/Dub track is still an explicit
+    // preference. Store it even when no transcode/switch is necessary.
+    if (index === state.selectedAudioTrack) {
+      rememberSeriesAudioTrack(tracks[index], index);
+      return;
+    }
+    void switchAudioTrack(index, { remember: true });
   }));
   menu.querySelector("#player-audio-output-mode")?.addEventListener("change", (event) => {
     const next = normalizeAudioMode(event.target.value);
@@ -9804,7 +9895,7 @@ function renderPlayerAudioMenu() {
 }
 
 let audioTrackSwitchGeneration = 0;
-async function switchAudioTrack(index, { force = false } = {}) {
+async function switchAudioTrack(index, { force = false, remember = false } = {}) {
   const source = state.currentSource;
   if (!source?.sessionId || source.fileIndex === null || source.fileIndex === undefined) return;
   const tracks = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks : [];
@@ -9869,6 +9960,9 @@ async function switchAudioTrack(index, { force = false } = {}) {
     renderSubtitles();
     updatePlayerSyncStatus();
   }
+  if (opened && remember && generation === audioTrackSwitchGeneration
+    && state.currentSource === source && state.selectedAudioTrack === index)
+    rememberSeriesAudioTrack(tracks[index], index, source);
   renderPlayerAudioMenu();
   scheduleAudioSync(3000);
 }
@@ -15319,6 +15413,7 @@ function setCurrentTorrentSource(session, file) {
     kind: "torrent",
     title: collectionTitle,
     sourceTag,
+    seriesKey: entry?.seriesKey || librarySeriesKey(collectionTitle),
     libraryId: entry?.id || libraryId,
     fileIndex: file.index,
     fileName: file.name,
@@ -17330,6 +17425,8 @@ frame.addEventListener("click", (event) => {
 });
 
 video.addEventListener("timeupdate", () => {
+  // Preserve frame-accurate subtitles during decoder stalls; recover from a
+  // stale frame only on explicit pause/resume and caption interactions.
   state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
   if (state.pendingSeek?.priming) {
     updateCompatControls();
@@ -17414,6 +17511,10 @@ video.addEventListener("canplay", () => {
 });
 video.addEventListener("playing", () => {
   schedulePresentedSubtitleFrame();
+  if (!state.pendingSeek?.priming) {
+    refreshSubtitleClockForInteraction();
+    renderSubtitles();
+  }
   if (linePreview.active || linePreview.pending || linePreview.preventBackgroundPlayback) { video.pause(); if (state.pendingSeek) state.pendingSeek.wasPlaying = false; return; }
   if (autoNextInterval !== null) clearAutoNext();
   if (currentRecoveryKey() && recoveryWatchTimer === null) beginRecoveryWatch();
@@ -17442,6 +17543,10 @@ video.addEventListener("play", () => {
   resyncTranscodeAfterLongPause();
 });
 video.addEventListener("pause", () => {
+  if (!state.pendingSeek?.priming) {
+    refreshSubtitleClockForInteraction();
+    renderSubtitles();
+  }
   if (state.pendingSeek?.priming && transcodeStartAttempt?.mutedForPreroll
     && !video.error && !linePreview.active && !linePreview.pending) {
     // Browser/media-key Pause during silent preroll changes desired playback
@@ -17628,10 +17733,12 @@ $("#player-subtitle-menu")?.addEventListener("click", (event) => {
   if (!button) return;
   if (button.hasAttribute("data-caption-customize")) { openPlayerSubtitleManager(); return; }
   if (button.hasAttribute("data-caption-off")) {
+    noteSubtitleVisibilityIntent();
     state.subtitlesVisible = false;
   } else if (button.hasAttribute("data-caption-track")) {
     const track = preferredSourceTracks().find((item) => item.id === button.dataset.captionTrack);
     if (!track) return;
+    noteSubtitleVisibilityIntent();
     const enabled = state.subtitlesVisible && track.visible;
     if (!state.subtitlesVisible) currentSourceTracks().forEach((item) => { item.visible = false; });
     track.visible = !enabled;
@@ -17642,14 +17749,18 @@ $("#player-subtitle-menu")?.addEventListener("click", (event) => {
       Number(item.streamIndex) === stream && item.textBased);
     if (!embedded) return;
     const imported = currentSourceTracks().find((item) => Number(item.embeddedStreamIndex) === stream);
-    if (imported?.cues?.length && !imported.embeddedImportPartial) {
+    // Partial or still-streaming subtitles can already be visible. Hide/Show
+    // must work immediately instead of starting another import and making the
+    // current lines unexpectedly disappear or reappear.
+    if (imported?.cues?.length) {
+      noteSubtitleVisibilityIntent();
       const enabled = state.subtitlesVisible && imported.visible;
       if (!state.subtitlesVisible) currentSourceTracks().forEach((item) => { item.visible = false; });
       imported.visible = !enabled;
       state.subtitlesVisible = true;
     } else void importEmbeddedSubtitleTrack(embedded);
   } else return;
-  subtitleRenderMemo.key = "";
+  refreshSubtitleClockForInteraction();
   renderSubtitleWorkspace({ includeLearning: false });
   renderPlayerSubtitleMenu();
   clearPlayerControlsHideTimer();

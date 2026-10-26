@@ -21,6 +21,7 @@ namespace LanguageVideoLearner
         private const string ReleasesUrl = "https://api.github.com/repos/Flegrear/LVL/releases?per_page=20";
         private const string ReleaseAssetsPrefix = "https://github.com/Flegrear/LVL/releases/download/";
         private const int MaxJsonBytes = 524288;
+        private const int AutomaticCheckIntervalDays = 1;
         private readonly object gate = new object();
         private readonly string root;
         private readonly string preferencesFile;
@@ -34,7 +35,7 @@ namespace LanguageVideoLearner
         private TcpListener bridge;
         private string secret;
         private bool automatic;
-        private int intervalDays = 1;
+        private int intervalDays = AutomaticCheckIntervalDays;
         private DateTime lastCheckedUtc = DateTime.MinValue;
         private bool checking;
         private bool downloading;
@@ -203,7 +204,9 @@ namespace LanguageVideoLearner
                     {
                         changedToAutomatic = !automatic && (bool)flag;
                         automatic = (bool)flag;
-                        intervalDays = interval;
+                        // Frequency is no longer configurable. Still accept
+                        // legacy bridge payloads but always schedule daily.
+                        intervalDays = AutomaticCheckIntervalDays;
                         SaveSettings();
                     }
                     if (changedToAutomatic) StartCheck(false);
@@ -421,7 +424,13 @@ namespace LanguageVideoLearner
 
         private Release FindRelease()
         {
-            object[] releases = json.DeserializeObject(Encoding.UTF8.GetString(ReadBounded(ReleasesUrl, MaxJsonBytes))) as object[];
+            // A freshly launched Windows process can hit a transient DNS/TLS
+            // connection or GitHub gateway failure on its first request. Retry
+            // the read-only feed lookup here so the user does not need to press
+            // Check for updates a second time. Never retry malformed metadata,
+            // invalid TLS certificates, authorization or other hard failures.
+            object[] releases = json.DeserializeObject(Encoding.UTF8.GetString(ReadReleaseFeed(
+                delegate { return ReadBounded(ReleasesUrl, MaxJsonBytes); }, Thread.Sleep))) as object[];
             if (releases == null) throw new InvalidDataException("Invalid LVL release feed");
             Release next = null;
             foreach (object item in releases)
@@ -527,6 +536,43 @@ namespace LanguageVideoLearner
             return null;
         }
 
+        private static bool TransientReleaseError(Exception issue)
+        {
+            WebException network = issue as WebException;
+            if (network != null)
+            {
+                if (network.Status == WebExceptionStatus.Timeout || network.Status == WebExceptionStatus.ConnectFailure ||
+                    network.Status == WebExceptionStatus.NameResolutionFailure || network.Status == WebExceptionStatus.ProxyNameResolutionFailure ||
+                    network.Status == WebExceptionStatus.SendFailure || network.Status == WebExceptionStatus.ReceiveFailure ||
+                    network.Status == WebExceptionStatus.ConnectionClosed || network.Status == WebExceptionStatus.KeepAliveFailure ||
+                    network.Status == WebExceptionStatus.PipelineFailure) return true;
+                if (network.Status == WebExceptionStatus.ProtocolError)
+                {
+                    HttpWebResponse response = network.Response as HttpWebResponse;
+                    int code = response == null ? 0 : (int)response.StatusCode;
+                    return code == 408 || code == 500 || code == 502 || code == 503 || code == 504;
+                }
+                return false;
+            }
+            return issue is IOException && !(issue is InvalidDataException);
+        }
+
+        // A bounded, side-effect-free retry; supplied callbacks keep native
+        // regression tests deterministic without reaching GitHub or an install.
+        private static byte[] ReadReleaseFeed(Func<byte[]> read, Action<int> pause)
+        {
+            for (int attempt = 0; attempt < 3; attempt++)
+            {
+                try { return read(); }
+                catch (Exception issue)
+                {
+                    if (attempt == 2 || !TransientReleaseError(issue)) throw;
+                }
+                pause(250 * (attempt + 1));
+            }
+            throw new InvalidOperationException("Could not read the LVL release feed");
+        }
+
         private static byte[] ReadBounded(string url, int limit)
         {
             if (!url.Equals(ReleasesUrl, StringComparison.Ordinal) && !ValidAssetUrl(url))
@@ -601,11 +647,10 @@ namespace LanguageVideoLearner
                 Dictionary<string, object> settings = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(preferencesFile));
                 object value;
                 if (settings.TryGetValue("automatic", out value) && value is bool) automatic = (bool)value;
-                if (settings.TryGetValue("intervalDays", out value))
-                {
-                    int days;
-                    if (int.TryParse(Convert.ToString(value), out days) && (days == 1 || days == 7 || days == 30)) intervalDays = days;
-                }
+                // Old installs may contain 7/30-day preferences. Normalize
+                // them in memory so enabling automatic updates always uses
+                // the same once-daily preset, regardless of past selections.
+                intervalDays = AutomaticCheckIntervalDays;
                 if (settings.TryGetValue("lastCheckedAt", out value) && value is string)
                 {
                     DateTime parsed;

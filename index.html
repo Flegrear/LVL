@@ -593,9 +593,6 @@
 
         <section id="view-settings" class="view">
           <div class="learn-page settings-page">
-            <header class="learn-head">
-              <div class="learn-head__copy"><h1 data-i18n="Settings">Settings</h1></div>
-            </header>
             <div id="settings-tabs" class="ui-tabs learn-tabs" role="tablist" aria-label="Settings" data-i18n-aria-label="Settings">
               <button id="settings-tab-general" class="ui-tab" type="button" role="tab" data-value="general" aria-selected="true" aria-controls="settings-panel-general" tabindex="0" data-i18n="General">General</button>
               <button id="settings-tab-coach" class="ui-tab" type="button" role="tab" data-value="coach" aria-selected="false" aria-controls="settings-panel-coach" tabindex="-1" data-i18n="Coach">Coach</button>
@@ -799,22 +796,13 @@
                   <input id="settings-app-updates-auto" type="checkbox" disabled>
                   <span class="ui-switch__track" aria-hidden="true"></span>
                   <span class="settings-learning-copy"><strong>Update LVL automatically</strong>
-                    <small>Checks at the selected frequency. Verified updates install and restart LVL automatically, including larger runtime releases when needed.</small></span>
-                </label>
-                <label class="settings-field" for="settings-app-updates-interval">
-                  <span>Check frequency</span>
-                  <select id="settings-app-updates-interval" disabled>
-                    <option value="1">Every day</option>
-                    <option value="7">Every 7 days</option>
-                    <option value="30">Every 30 days</option>
-                  </select>
+                    <small>Checks daily and installs verified updates automatically.</small></span>
                 </label>
                 <div class="settings-actions">
                   <button id="settings-app-updates-check" class="ui-btn ui-btn--primary ui-btn--sm" type="button" disabled>Check for updates</button>
                   <button id="settings-app-updates-install" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" hidden>Install available update…</button>
                 </div>
                 <p id="settings-app-updates-status" class="tool-status settings-status" role="status" aria-live="polite">Reading updater settings…</p>
-                <p class="settings-hint">Check for updates finds the next available version; Install starts it. Incremental updates apply without a setup wizard, while larger runtime changes may need a full installer. Automatic updates may install during scheduled checks. Your Library and browser profile are preserved.</p>
                 <details id="settings-app-updates-changelog-details" class="settings-guide">
                   <summary>Changelog</summary>
                   <div id="settings-app-updates-changelog-inline" class="app-changelog-history" aria-live="polite"></div>

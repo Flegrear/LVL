@@ -36,6 +36,7 @@ function eventsFixture() {
     resetRecoveryDisplay() {}, setPlayerLoading() {},
     resyncTranscodeAfterLongPause() { return false; },
     noteTranscodePause() {}, clearBufferingTimer() {},
+    refreshSubtitleClockForInteraction() {}, renderSubtitles() {},
     recordWatchProgress() {}, updateCompatControls() {},
     scheduleBufferingIndicator() {},
     currentRecoveryKey: () => "library:0",
