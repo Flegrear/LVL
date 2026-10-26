@@ -2800,7 +2800,7 @@ function paintAppUpdateSettings(report) {
   if (installed) {
     if (report.downloading) message = "Downloading and validating the update in the Windows launcher…";
     else if (report.checking) message = "Checking the update feed…";
-    else if (report.available) message = `LVL ${report.availableVersion} is available. Installation requires confirmation.`;
+    else if (report.available) message = `LVL ${report.availableVersion} is available. Select Install to apply the verified update; full installers may need confirmation.`;
     else if (report?.error && manualAppUpdateCheck) message = `Update check failed: ${report.error}`;
     else if (report.lastCheckedAt) message = "No newer version found at the last check.";
     else message = "No checks completed yet. Check now, or enable automatic checks.";
@@ -2849,7 +2849,9 @@ function wireAppUpdateSettings() {
     appUpdateSettingsBusy = true;
     manualAppUpdateCheck = true;
     try {
-      paintAppUpdateSettings(await postJson("/api/app-updates/check", { apply: true }));
+      // Checking is discovery, not consent to install. A separate Install
+      // action authorizes the update; automatic-update mode remains native.
+      paintAppUpdateSettings(await postJson("/api/app-updates/check", { apply: false }));
     } catch (error) {
       setToolStatus("#settings-app-updates-status", error.message || "Couldn't start the update check", true);
     } finally {
@@ -2862,9 +2864,9 @@ function wireAppUpdateSettings() {
     appUpdateSettingsBusy = true;
     try {
       paintAppUpdateSettings(await postJson("/api/app-updates/install", {}));
-      setToolStatus("#settings-app-updates-status", "Use the Windows confirmation dialog to approve the installation.");
+      setToolStatus("#settings-app-updates-status", "Preparing the verified update. Incremental updates apply without a setup wizard; full installers may ask for confirmation.");
     } catch (error) {
-      setToolStatus("#settings-app-updates-status", error.message || "Couldn't open the installation prompt", true);
+      setToolStatus("#settings-app-updates-status", error.message || "Couldn't start the verified update", true);
     } finally {
       appUpdateSettingsBusy = false;
       if (appUpdateSettingsSnapshot) paintAppUpdateSettings(appUpdateSettingsSnapshot);

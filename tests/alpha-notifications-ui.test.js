@@ -88,6 +88,43 @@ test("LVL has clean release identity while changelog may evolve in Git", () => {
     "the installed app must expose its bundled history to the local UI");
 });
 
+test("manual Check only discovers updates; Install is a distinct explicit action", async () => {
+  const start = app.indexOf("function wireAppUpdateSettings() {");
+  const end = app.indexOf("\nwireAppUpdateSettings();", start);
+  assert.ok(start > 0 && end > start, "real Updates handler must remain testable");
+  const requests = [];
+  const statuses = [];
+  const elements = new Map();
+  for (const name of ["settings-app-updates-check", "settings-app-updates-install"]) {
+    const listeners = {};
+    elements.set(name, {
+      addEventListener(event, callback) { listeners[event] = callback; },
+      click() { return listeners.click(); },
+    });
+  }
+  const vmContext = {
+    $: (selector) => elements.get(selector.slice(1)) || null,
+    appUpdateSettingsBusy: false, manualAppUpdateCheck: false,
+    appUpdateSettingsSnapshot: { installed: true, available: true, availableVersion: "0.1.11", automatic: false },
+    postJson: async (url, body) => { requests.push({ url, body }); return vmContext.appUpdateSettingsSnapshot; },
+    paintAppUpdateSettings: () => {},
+    setToolStatus: (...args) => statuses.push(args),
+    settingsView: { tab: "updates" },
+    setInterval: () => {},
+  };
+  vm.runInNewContext(app.slice(start, end) + "\nwireAppUpdateSettings();", vmContext);
+  await elements.get("settings-app-updates-check").click();
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/app-updates/check");
+  assert.equal(requests[0].body.apply, false, "checking may not implicitly approve installation");
+  assert.equal(vmContext.manualAppUpdateCheck, true);
+  await elements.get("settings-app-updates-install").click();
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, "/api/app-updates/install");
+  assert.equal(Object.keys(requests[1].body).length, 0);
+  assert.match(statuses.at(-1)[1], /Incremental updates apply without a setup wizard/i);
+});
+
 function clientFixture({ stored = {}, changelog = { entries: [] } } = {}) {
   const storage = new Map(Object.entries(stored));
   const nodes = new Map();
@@ -214,7 +251,7 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   const parse = vm.runInNewContext(server.slice(start, end) + "\nparseLocalChangelog");
   const history = parse(read("CHANGELOG.md"));
   const names = Array.from(history.entries, (entry) => entry.version || "Unreleased");
-  assert.deepEqual(names, ["0.1.1", "0.1.0"], "bundled release history lists the newest supported version first");
+  assert.deepEqual(names, ["0.1.11", "0.1.1", "0.1.0"], "bundled release history lists the newest supported version first");
 
   const f = clientFixture({ changelog: history });
   f.paint({ installed: true, available: true, availableVersion: "0.2.5", automatic: true });
@@ -236,9 +273,10 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   assert.equal(dialog.open, true);
   assert.equal(f.node("app-notifications-popover").hidden, true);
   const sections = f.node("app-changelog-history").children;
-  assert.equal(sections.length, 2, "full release history is available in the dialog");
-  assert.match(sections[0].children[0].textContent, /0\.1\.1/);
-  assert.match(sections[1].children[0].textContent, /0\.1\.0/);
+  assert.equal(sections.length, 3, "full release history is available in the dialog");
+  assert.match(sections[0].children[0].textContent, /0\.1\.11/);
+  assert.match(sections[1].children[0].textContent, /0\.1\.1/);
+  assert.match(sections[2].children[0].textContent, /0\.1\.0/);
   assert.deepEqual(f.requests.filter((item) => item.method === "GET").map(({ url }) => url),
     ["/api/app-updates/changelog"], "read only bundled local release history");
   f.node("app-changelog-close").click();
@@ -284,7 +322,7 @@ test("Updates Changelog renders same local history as notification modal", async
   details.toggle();
   await new Promise((resolve) => setImmediate(resolve));
   const inline = f.node("settings-app-updates-changelog-inline");
-  assert.equal(inline.children.length, 2, "Updates settings displays all versioned release entries");
+  assert.equal(inline.children.length, 3, "Updates settings displays all versioned release entries");
   f.run("void openUpdateChangelog()");
   await new Promise((resolve) => setImmediate(resolve));
   const modal = f.node("app-changelog-history");
