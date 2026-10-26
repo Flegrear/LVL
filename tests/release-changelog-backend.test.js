@@ -42,9 +42,9 @@ test("changelog endpoint serves local bundled bytes, not live GitHub edits", () 
 
 test("bundled changelog contains the published Alpha versions, with no TEST placeholder", () => {
   const parsed = changelogRuntime(root).parseLocalChangelog(changelog);
-  assert.deepEqual(Array.from(parsed.entries, (entry) => entry.version), ["0.1.11", "0.1.1", "0.1.0"]);
-  assert.equal(parsed.latest.version, "0.1.11");
-  assert.match(parsed.entries[0].changes.join(" "), /Updater fixes/i);
+  assert.deepEqual(Array.from(parsed.entries, (entry) => entry.version), ["0.1.12", "0.1.11", "0.1.1", "0.1.0"]);
+  assert.equal(parsed.latest.version, "0.1.12");
+  assert.match(parsed.entries[0].changes.join(" "), /subtitles/i);
   assert.doesNotMatch(changelog, /^##\s+TEST\b/m);
 });
 

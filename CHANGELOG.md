@@ -1,5 +1,11 @@
 # LVL Changelog
 
+## 0.1.12 — 2026-10-26
+
+- Fix subtitles disappearing when switching audio tracks by restoring saved, dub-specific subtitle timing.
+- Preserve the previous subtitle alignment when an audio-track change fails to start.
+- Keep embedded subtitle extraction active when its track is selected while still loading.
+
 ## 0.1.11 — 2026-10-26
 
 - Updater fixes: separate manual update checking from the Install action.

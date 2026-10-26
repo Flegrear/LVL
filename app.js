@@ -3442,8 +3442,17 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
   const inFlight = embeddedSubtitleImports.get(key);
   if (inFlight) {
     if (!automatic) {
-      inFlight.abort("manual subtitle import");
-      return false;
+      // Clicking a subtitle stream while it is already being extracted must
+      // select that stream, not cancel the only request capable of providing
+      // its cues. This also handles a manual selection racing default loading.
+      inFlight.manualSelection = true;
+      state.subtitlesVisible = true;
+      if (existing?.cues?.length) existing.visible = true;
+      subtitleRenderMemo.key = "";
+      renderSubtitles();
+      renderSubtitleWorkspace();
+      renderEmbeddedSubtitleControls();
+      return true;
     }
     // Timeupdates must not replace an extraction already covering the
     // playhead, even when its start is not on a 180s boundary. A genuinely
@@ -3465,6 +3474,7 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
   const controller = new AbortController();
   controller.windowStart = windowStart;
   controller.seekPosition = seekPosition;
+  controller.manualSelection = !automatic;
   embeddedSubtitleImports.set(key, controller);
   const timer = window.setTimeout(() => controller.abort("timeout"), 50_000);
   let imported = existing || null;
@@ -3528,7 +3538,11 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
     imported.syncAnchors = [];
     imported.syncSource = "embedded";
     imported.timelineMismatch = false; // A fetched window isn't a different cut of the video.
-    if (activate && state.subtitlesVisible && !currentSourceTracks().some((item) => item.id !== imported.id && item.visible && item.cues?.length)) {
+    if (controller.manualSelection) {
+      state.subtitlesVisible = true;
+      imported.visible = true;
+      syncSelectedTrackForSource();
+    } else if (activate && state.subtitlesVisible && !currentSourceTracks().some((item) => item.id !== imported.id && item.visible && item.cues?.length)) {
       imported.visible = true;
       syncSelectedTrackForSource();
     } else if (!automatic) {
@@ -5370,6 +5384,10 @@ function resetAudioSync() {
         track.syncSource = "";
       }
       track.audioSync = { status: "waiting", windows: 0 };
+      // Subtitle alignment is specific to the audio dub. Switching back to a
+      // previously analysed dub must restore its own saved model immediately,
+      // rather than showing no cues while speech analysis warms up again.
+      applySavedSubtitleSync(track);
     });
     pairedCueMemo.clear();
     subtitleRenderMemo.key = "";
@@ -9801,6 +9819,19 @@ async function switchAudioTrack(index, { force = false } = {}) {
     mode: video.dataset.mode,
     src: video.src,
   };
+  // The new transcode can fail its keyframe preflight without replacing the
+  // existing video. resetAudioSync() invalidates the old dub's timing while
+  // switching, so retain it until the new stream is actually accepted.
+  const previousSubtitleSync = currentSourceTracks().filter((track) => !track.exactMedia).map((track) => ({
+    track,
+    syncMode: track.syncMode,
+    syncSource: track.syncSource,
+    syncAnchors: (track.syncAnchors || []).map((anchor) => ({ ...anchor })),
+    audioSync: track.audioSync ? { ...track.audioSync } : undefined,
+    syncFollowsId: track.syncFollowsId,
+    syncFollowing: track.syncFollowing,
+    syncRejected: track.syncRejected,
+  }));
   const generation = ++audioTrackSwitchGeneration;
   state.selectedAudioTrack = index;
   preferredAudioLanguage = String(tracks[index].language || "").trim().toLowerCase();
@@ -9825,6 +9856,18 @@ async function switchAudioTrack(index, { force = false } = {}) {
     state.transcodeContext = previous.context;
     video.dataset.mode = previous.mode;
     resetAudioSync();
+    for (const saved of previousSubtitleSync) {
+      Object.assign(saved.track, {
+        syncMode: saved.syncMode, syncSource: saved.syncSource,
+        syncAnchors: saved.syncAnchors, audioSync: saved.audioSync,
+        syncFollowing: saved.syncFollowing, syncRejected: saved.syncRejected,
+      });
+      if (saved.syncFollowsId === undefined) delete saved.track.syncFollowsId;
+      else saved.track.syncFollowsId = saved.syncFollowsId;
+    }
+    subtitleRenderMemo.key = "";
+    renderSubtitles();
+    updatePlayerSyncStatus();
   }
   renderPlayerAudioMenu();
   scheduleAudioSync(3000);

@@ -34,6 +34,7 @@ test("switching to a separately timed audio dub invalidates prior audio-derived 
     currentSourceTracks: () => state.tracks,
     pairedCueMemo: new Map(),
     subtitleRenderMemo: { key: "cached" },
+    applySavedSubtitleSync: () => false,
     updatePlayerSyncStatus() {},
     playerSyncChipState: "Synced",
   });

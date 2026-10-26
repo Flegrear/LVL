@@ -30,6 +30,8 @@ test("failed audio-track preflight must not advertise a dub that never became au
     playerIsPlaying: () => true, absolutePlaybackSeconds: () => 30,
     setPlayerLoading() {}, audioTrackLabel: () => ({ title: "English" }),
     resetAudioSync() {}, renderPlayerAudioMenu() {}, scheduleAudioSync() {},
+    currentSourceTracks: () => [], subtitleRenderMemo: { key: "" },
+    renderSubtitles() {}, updatePlayerSyncStatus() {},
     // An unsupported keyframe timeline can fail closed, correctly leaving the old video URL.
     openTranscodeAt: async () => false,
   });
@@ -125,6 +127,8 @@ test("a failed switch from direct torrent playback restores its direct clock and
     playerIsPlaying: () => true, absolutePlaybackSeconds: () => 42,
     setPlayerLoading() {}, audioTrackLabel: () => ({ title: "English" }),
     resetAudioSync() {}, renderPlayerAudioMenu() {}, scheduleAudioSync() {},
+    currentSourceTracks: () => [], subtitleRenderMemo: { key: "" },
+    renderSubtitles() {}, updatePlayerSyncStatus() {},
     openTranscodeAt: async () => false,
   });
   vm.runInContext(sourceBetween("let audioTrackSwitchGeneration = 0;", "\nfunction updateChapterButtons("), ctx);
@@ -152,6 +156,8 @@ test("a stale audio-switch failure must not rollback a newer successful dub", as
     playerIsPlaying: () => true, absolutePlaybackSeconds: () => 42,
     setPlayerLoading() {}, audioTrackLabel: (_, i) => ({ title: String(i) }),
     resetAudioSync() {}, renderPlayerAudioMenu() {}, scheduleAudioSync() {},
+    currentSourceTracks: () => [], subtitleRenderMemo: { key: "" },
+    renderSubtitles() {}, updatePlayerSyncStatus() {},
     openTranscodeAt: () => new Promise((resolve) => waits.push(resolve)),
   });
   vm.runInContext(sourceBetween("let audioTrackSwitchGeneration = 0;", "\nfunction updateChapterButtons("), ctx);
