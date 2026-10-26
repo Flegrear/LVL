@@ -52,6 +52,10 @@ jobs:
           }
           "mode=$mode" >> $env:GITHUB_OUTPUT
           Write-Host "Release $tag mode: $mode"
+          # A rejected source-only patch is an expected full-installer fallback.
+          # PowerShell otherwise propagates Node's nonzero LASTEXITCODE even
+          # after this script successfully selects the full installer.
+          exit 0
       - name: Install Inno Setup for full/bootstrapping releases
         if: steps.update.outputs.mode == 'full'
         shell: pwsh

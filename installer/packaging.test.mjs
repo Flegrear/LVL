@@ -54,6 +54,15 @@ test('builder selects only positive source files, includes checked runtime and n
   assert.match(script, /Launcher-stamped\.cs/);
 });
 
+test('tagged full-installer fallback clears expected patch-builder exit code', () => {
+  assert.match(workflow, /if \(\$LASTEXITCODE -eq 0\) \{ \$mode = 'patch' \}/,
+    'use incremental assets only when the source patch builder succeeds');
+  assert.match(workflow, /else \{ Write-Host 'This change is incompatible with source-only patches; building the full installer fallback\.' \}/,
+    'a rejected source patch intentionally selects a full installer');
+  assert.match(workflow, /Write-Host "Release \$tag mode: \$mode"\s*(?:#.*\n\s*)*exit 0/,
+    'do not propagate expected patch-builder failure as a GitHub Actions step failure');
+});
+
 test('one canonical LVL-Setup.exe release asset and distinct installed LVL.exe launcher', () => {
   assert.match(setup, /#define LauncherName "LVL\.exe"/);
   assert.match(setup, /^OutputBaseFilename=LVL-Setup\s*$/m);
