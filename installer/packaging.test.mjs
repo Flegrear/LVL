@@ -59,8 +59,11 @@ test('tagged full-installer fallback clears expected patch-builder exit code', (
     'use incremental assets only when the source patch builder succeeds');
   assert.match(workflow, /else \{ Write-Host 'This change is incompatible with source-only patches; building the full installer fallback\.' \}/,
     'a rejected source patch intentionally selects a full installer');
-  assert.match(workflow, /Write-Host "Release \$tag mode: \$mode"\s*(?:#.*\n\s*)*exit 0/,
-    'do not propagate expected patch-builder failure as a GitHub Actions step failure');
+  const clearsExitCode = /Write-Host "Release \$tag mode: \$mode"\s*(?:#[^\r\n]*\r?\n\s*)*exit 0/;
+  for (const lineEnding of ['\n', '\r\n']) {
+    assert.match(workflow.replace(/\r?\n/g, lineEnding), clearsExitCode,
+      'do not propagate expected patch-builder failure as a GitHub Actions step failure');
+  }
 });
 
 test('one canonical LVL-Setup.exe release asset and distinct installed LVL.exe launcher', () => {
