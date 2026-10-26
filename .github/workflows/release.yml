@@ -74,8 +74,9 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $tag = '${{ github.ref_name }}'
+          $releaseTitle = if ($tag -eq 'v0.1.1') { 'LVL Alpha 0.1.1 — Updater test' } else { "LVL Alpha $tag" }
           $assets = @(Get-ChildItem dist -File | Where-Object { $_.Name -match '^(?:LVL-Setup\.exe(?:\.sha256)?|LVL-update-v\d+\.\d+\.\d+\.zip(?:\.sha256)?)$' } | ForEach-Object { $_.FullName })
           if ($assets.Count -ne 2) { throw "Expected an update or full setup and matching checksum, got $($assets.Count)" }
           if ($assets | Where-Object { $_ -match '[\\/]LVL\.exe(?:\.sha256)?$' }) { throw 'LVL.exe is the installed app, not a GitHub release installer' }
-          gh release create $tag @assets --repo '${{ github.repository }}' --verify-tag --title "LVL Alpha $tag" --generate-notes --latest
+          gh release create $tag @assets --repo '${{ github.repository }}' --verify-tag --title $releaseTitle --generate-notes --latest
           if ($LASTEXITCODE -ne 0) { throw "GitHub Release upload failed for $tag" }

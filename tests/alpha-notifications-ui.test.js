@@ -214,7 +214,7 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   const parse = vm.runInNewContext(server.slice(start, end) + "\nparseLocalChangelog");
   const history = parse(read("CHANGELOG.md"));
   const names = Array.from(history.entries, (entry) => entry.version || "Unreleased");
-  assert.deepEqual(names, [], "initial public changelog remains empty");
+  assert.deepEqual(names, ["0.1.1", "0.1.0"], "bundled release history lists the newest supported version first");
 
   const f = clientFixture({ changelog: history });
   f.paint({ installed: true, available: true, availableVersion: "0.2.5", automatic: true });
@@ -236,8 +236,9 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   assert.equal(dialog.open, true);
   assert.equal(f.node("app-notifications-popover").hidden, true);
   const sections = f.node("app-changelog-history").children;
-  assert.equal(sections.length, 1, "empty release history renders one explanatory message");
-  assert.match(sections[0].textContent, /No release notes were found/i);
+  assert.equal(sections.length, 2, "full release history is available in the dialog");
+  assert.match(sections[0].children[0].textContent, /0\.1\.1/);
+  assert.match(sections[1].children[0].textContent, /0\.1\.0/);
   assert.deepEqual(f.requests.filter((item) => item.method === "GET").map(({ url }) => url),
     ["/api/app-updates/changelog"], "read only bundled local release history");
   f.node("app-changelog-close").click();
@@ -283,7 +284,7 @@ test("Updates Changelog renders same local history as notification modal", async
   details.toggle();
   await new Promise((resolve) => setImmediate(resolve));
   const inline = f.node("settings-app-updates-changelog-inline");
-  assert.equal(inline.children.length, 1, "empty release history displays an explanatory message");
+  assert.equal(inline.children.length, 2, "Updates settings displays all versioned release entries");
   f.run("void openUpdateChangelog()");
   await new Promise((resolve) => setImmediate(resolve));
   const modal = f.node("app-changelog-history");
