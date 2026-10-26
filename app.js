@@ -1,0 +1,17826 @@
+import { alignDictation, analyzePhrases, analyzeWords, buildReviewQueue, formatReviewInterval, formatTime, isLearningStopWord, normalizeText, parseSubtitle, previewReviewIntervals, reviewQueuePriority, scheduleReview, segmentText, sortReviewQueue } from "./learning/browser/core.js";
+import {
+  artworkFallback,
+  badgeMarkup,
+  bindHero,
+  bindShelves,
+  bindTabs,
+  buttonMarkup,
+  cardLibraryActionMarkup,
+  cardMarkup,
+  emptyMarkup,
+  heroDetailsButtonMarkup,
+  heroLibraryButtonMarkup,
+  heroMarkup,
+  helpTipMarkup,
+  icon,
+  iconButtonMarkup,
+  installImageFallbacks,
+  installTips,
+  metaMarkup,
+  refreshImages,
+  setActiveTab,
+  shelfMarkup,
+  skeletonHeroMarkup,
+  skeletonShelfMarkup,
+  toast,
+} from "./frontend/ui/ui.js";
+import { boundedPosterUrl, buildHomeFeed, catalogCardItem, categoryNoun, formatRuntime, heroSlideItem, largeAniListCover, libraryCategory, libraryRecommendations, logoUrl, metahubVariant, normalizeHomeCategory, posterSrcset, preferredPosterArt, sharperPoster, findSavedRandomTitle, randomPickIdentity, randomPickMatchesCategory, randomSeriesAlreadySeen, rankCatalogSearchResults, verifiedRandomCatalogMatch } from "./frontend/catalog/home-feed.js";
+import { buildMixedTest, cardMeaning, choiceQuestion, deckSummaries, gradeQuestion, listeningMeaningQuestion, quizPool, shuffle, studyDeckKey, typeAnswerDiff } from "./learning/browser/learn.js";
+import { absoluteEpisodeNumber, chapterCode, chapterFileIndex, chapterPlayOrder, chapterWatchStatus, groupChapterSources, heightFromQualityLabel, libraryFileScope, meetsSourceFloor, packChapterMap, qualityLabel, releaseVideoHeight } from "./shared/media/series-sources.js";
+import { isNonSpeechCue, offsetAt as syncOffsetAt, pairedCues, syncTrackToSpeech } from "./shared/subtitles/subtitle-sync.js";
+import { EMBEDDED_WINDOW_SECONDS, completedWebVttText, embeddedExtractionError, embeddedSubtitleCovers, embeddedSubtitleCoverageEnd, embeddedSubtitleSeekStart, embeddedTrackMatchesSource, mergeSubtitleWindows, subtitleWindowStart } from "./shared/subtitles/subtitle-stream.js";
+import { defaultEmbeddedSubtitleTrack } from "./frontend/player/embedded-subtitle-default.js";
+import { createRecsUi, reasonGroups } from "./frontend/recommendations/recs-ui.js";
+import { ANILIST_STATUS_FILTERS, ANILIST_STATUS_LABELS, anilistProgressText, anilistRatingText, anilistStatusKey, anilistWatchedSummary, canLinkAniListTv, fillMissingAniListAverages, importedEntryId, planAniListLibrary, seriesAniList } from "./frontend/anilist/anilist-library.js";
+import { ANILIST_MANUAL_ID_VERIFY, parseManualAniListId, planVerifiedManualAniListSeason } from "./frontend/anilist/anilist-manual-season-link.js";
+import { resolveVerifiedAniListLibraryLinks } from "./frontend/anilist/anilist-auto-association.js";
+import {
+  ANILIST_CALLBACK_PATH, ANILIST_OAUTH_PENDING, ANILIST_OAUTH_STORAGE, ANILIST_SYNC_QUEUE,
+  readAniListPreference, writeAniListPreference, readAniListAccount,
+  startAniListAuthorization, consumeAniListCallback, anilistGraphql,
+  consumeAniListLocalCallback,
+  parseAniListPinToken,
+  ANILIST_VIEWER_QUERY, ANILIST_LIST_QUERY, ANILIST_AUTH_LIBRARY_QUERY, ANILIST_SINGLE_PROGRESS_QUERY, ANILIST_SAVE_PROGRESS,
+  remoteAniListEntries,
+} from "./frontend/anilist/anilist-auto-client.js";
+import { planAniListWatchSync, reconcileAniListProgressQueue, resolveAniListEpisode } from "./frontend/anilist/anilist-watch-sync.js";
+import { planAniListUnwatch } from "./frontend/anilist/anilist-unwatch.js";
+import { runAniListReversibleSmoke } from "./frontend/anilist/anilist-test-sync.js";
+import { acknowledgeUnconfirmedAniListScore, planMissingAniListScores, readUnconfirmedAniListScore, resolveAniListScorePart, saveAniListScore, stageUnconfirmedAniListScore } from "./frontend/anilist/anilist-score-sync.js";
+import { eligibleForPublicAnimeRating, fetchPublicAniListTitle, fetchPublicAniListSequels, fetchMatchedPublicAniListSeasons, fetchPublicAnimeRelatedMovies, verifiedPublicAnimeFranchiseRoot, publicCatalogSeasonCounts,
+  matchPublicAniListSeasons, verifiedPublicAniListLinks } from "./frontend/catalog/title-public-ratings.js";
+import { learningLocaleOptions, normalizeLearningLocale } from "./shared/settings/language-settings.js";
+import { selectBrowserPlaybackWithCapabilities } from "./frontend/player/browser-media.js";
+import { normalizeAudioMode, planCompatibleAudio } from "./shared/media/audio-policy.js";
+import { watchSidebarPicks } from "./frontend/catalog/watch-discovery.js";
+import { createCalendarView } from "./frontend/calendar/calendar-view.js";
+import { animeCatalogRootSearchNames, animeCatalogSearchNames, verifiedAnimeCatalogMatch } from "./frontend/catalog/anime-catalog-match.js";
+import {
+  changePlaybackRecoverySource, createPlaybackRecoveryState, failPlaybackRecoverySwitch,
+  isPlaybackStallExpired, playbackRecoverySourceKey,
+  recordPlaybackProgress, requestPlaybackRecovery, playbackRetryStrategy,
+} from "./frontend/player/playback-recovery.js";
+import { addRecoveryEvent, recoveryEpisodeCode } from "./frontend/player/playback-diagnostics.js";
+import { installUiI18n, t } from "./frontend/ui/ui-i18n.js";
+
+// Core releases park Learning without changing existing data or preferences.
+// Only turn this on in a Learning development checkout; there is no user-facing
+// enable switch in the core app. The original preference remains untouched.
+const LEARNING_DEV_ENABLED = false;
+const LEARNING_ENABLED_KEY = "blackline-learning-enabled";
+let learningEnabled = LEARNING_DEV_ENABLED && localStorage.getItem(LEARNING_ENABLED_KEY) !== "0";
+document.documentElement.dataset.learningMode = learningEnabled ? "on" : "off";
+
+// OAuth's implicit token arrives in the URL fragment, which must be removed
+// from browser history before the SPA router or any navigation can expose it.
+const anilistOAuthResponse = window.__lvlAniListOAuthResponse
+  || (window.location.pathname === ANILIST_CALLBACK_PATH
+    ? { hash: window.location.hash } : null);
+delete window.__lvlAniListOAuthResponse;
+if (anilistOAuthResponse) {
+  window.history.replaceState({ view: "settings" }, "", "/settings");
+  localStorage.setItem("blackline-settings-tab", "recs");
+}
+
+function readStorageArray(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "[]");
+    return Array.isArray(value) ? value : [];
+  } catch {
+    return [];
+  }
+}
+
+// The big sections (cards, library…) live in the app database; the browser keeps a copy as a
+// cache. A copy that doesn't fit in browser storage (large Anki decks) is dropped and marked, so
+// a failed copy never stops the database save, and an empty placeholder never replaces it.
+const LOCAL_COPY_SECTIONS = Object.freeze({
+  "blackline-cards": "cards",
+  "blackline-known": "known",
+  "blackline-library": "library",
+  "blackline-learning-exposure": "learningExposure",
+  "blackline-test-results": "testResults",
+  "blackline-coach-transcripts": "coachTranscripts",
+});
+const LOCAL_COPY_MISSING_KEY = "blackline-local-copy-missing-v1";
+
+function localCopyMissing() {
+  try {
+    const value = JSON.parse(localStorage.getItem(LOCAL_COPY_MISSING_KEY) || "[]");
+    return new Set(Array.isArray(value) ? value.map(String) : []);
+  } catch {
+    return new Set();
+  }
+}
+
+function writeLocalCopyMissing(keys) {
+  try {
+    if (keys.size) localStorage.setItem(LOCAL_COPY_MISSING_KEY, JSON.stringify([...keys]));
+    else localStorage.removeItem(LOCAL_COPY_MISSING_KEY);
+  } catch {}
+}
+
+// Keys whose copy was missing when the page opened: nothing is written for them until the
+// database's version has loaded (a partial copy written before that could later replace it).
+const localCopyUnloaded = localCopyMissing();
+
+function storeLocalCopy(key, value) {
+  if (localCopyUnloaded.has(key)) return false;
+  const missing = localCopyMissing();
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    if (missing.delete(key)) writeLocalCopyMissing(missing);
+    return true;
+  } catch (error) {
+    try { localStorage.removeItem(key); } catch {}
+    missing.add(key);
+    writeLocalCopyMissing(missing);
+    console.warn(`The browser copy of ${LOCAL_COPY_SECTIONS[key] || key} is too large for local storage; the app database keeps it.`, error?.name || error);
+    return false;
+  }
+}
+
+function readStorageObject(key) {
+  try {
+    const value = JSON.parse(localStorage.getItem(key) || "{}");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  } catch {
+    return {};
+  }
+}
+
+const legacyLanguagePair = (localStorage.getItem("blackline-subdl-languages") || "").split(",").map((value) => value.trim().toUpperCase()).filter(Boolean);
+const initialBaseLanguage = localStorage.getItem("blackline-base-language") || legacyLanguagePair[0] || "EN";
+const initialTargetLanguage = localStorage.getItem("blackline-target-language") || legacyLanguagePair.find((value) => value !== initialBaseLanguage) || (initialBaseLanguage === "EN" ? "ES" : "EN");
+const subtitleStyleDefaults = {
+  font: "sans",
+  weight: 700,
+  size: 100,
+  shadow: 40,
+  background: 0,
+  color: "#ffffff",
+  position: 16,
+  secondary: 82,
+  romanization: true,
+};
+const initialSubtitleStyle = (() => {
+  try {
+    const saved = JSON.parse(localStorage.getItem("blackline-subtitle-style") || "{}");
+    return { ...subtitleStyleDefaults, ...(saved && typeof saved === "object" ? saved : {}) };
+  } catch {
+    return { ...subtitleStyleDefaults };
+  }
+})();
+
+const state = {
+  tracks: [],
+  currentMs: 0,
+  known: new Set(readStorageArray("blackline-known")),
+  cards: readStorageArray("blackline-cards"),
+  selectedTrackId: null,
+  pauseAfterCue: false,
+  lastCueId: null,
+  webSubtitleResults: [],
+  catalogResults: [],
+  homeCatalog: { movies: [], series: [], anime: [], seed: 0 },
+  homeLoaded: false,
+  homeCatalogUpdatedAt: 0,
+  library: readStorageArray("blackline-library"),
+  autoArtwork: localStorage.getItem("blackline-auto-artwork") === "1",
+  subdlKey: localStorage.getItem("blackline-subdl-key") || "",
+  wyzieKey: localStorage.getItem("blackline-wyzie-key") || "",
+  subsourceKey: localStorage.getItem("blackline-subsource-key") || "",
+  baseLanguage: initialBaseLanguage,
+  targetLanguage: initialTargetLanguage,
+  baseLocale: normalizeLearningLocale(initialBaseLanguage, localStorage.getItem("blackline-base-locale")),
+  targetLocale: normalizeLearningLocale(initialTargetLanguage, localStorage.getItem("blackline-target-locale")),
+  interfaceLanguage: localStorage.getItem("blackline-interface-language") || "auto",
+  mediaDurationMs: 0,
+  loopLine: false,
+  subtitlesVisible: true,
+  transcodeBaseOffsetSeconds: 0,
+  transcodeRequestedStartSeconds: 0,
+  transcodeContext: null,
+  currentMediaProbe: null,
+  selectedAudioTrack: 0,
+  bufferingTimer: null,
+  transferStatsTimer: null,
+  loadingProgress: 0,
+  subtitleStyle: initialSubtitleStyle,
+  pendingMagnetSeriesKey: null,
+  studySource: "chapter",
+  studyChapterId: localStorage.getItem("blackline-study-chapter-id") || "",
+  studyType: localStorage.getItem("blackline-study-type") === "phrase" ? "phrase" : "word",
+  studyWordTier: [100, 1000, 5000].includes(Number(localStorage.getItem("blackline-study-word-tier"))) ? Number(localStorage.getItem("blackline-study-word-tier")) : 100,
+  studyPhraseTier: [100, 1000].includes(Number(localStorage.getItem("blackline-study-phrase-tier"))) ? Number(localStorage.getItem("blackline-study-phrase-tier")) : 100,
+  studyFilter: ["all", "unknown", "known", "review"].includes(localStorage.getItem("blackline-study-filter")) ? localStorage.getItem("blackline-study-filter") : "all",
+  studyPage: 0,
+  wordColoring: localStorage.getItem("blackline-word-coloring") !== "0",
+  learningPreset: { language: "", words: [], phrases: [], status: "idle", error: "" },
+  learningExposure: readStorageObject("blackline-learning-exposure"),
+  testResults: readStorageArray("blackline-test-results"),
+  coachTranscripts: readStorageArray("blackline-coach-transcripts"),
+  alignedSubtitleTimeline: [],
+  alignedSubtitleSourceKey: "",
+  currentSource: {
+    kind: "idle",
+    title: "No video loaded",
+    sourceTag: "No source loaded",
+    libraryId: null,
+    fileIndex: null,
+  },
+};
+
+// Document PiP temporarily moves the live player into a same-origin window.
+// Continue resolving its controls there without recreating the video element.
+const $ = (selector) => document.querySelector(selector)
+  || window.documentPictureInPicture?.window?.document?.querySelector(selector) || null;
+const $$ = (selector) => [
+  ...document.querySelectorAll(selector),
+  ...(window.documentPictureInPicture?.window?.document?.querySelectorAll(selector) || []),
+];
+// Top picks, Settings › Recommendations and "Your rating" (recs-ui.js). The hooks only run later.
+const recsUi = createRecsUi({
+  $,
+  fetchJson: (url) => fetchJson(url),
+  postJson: (url, payload) => postJson(url, payload),
+  setToolStatus: (selector, message, error) => setToolStatus(selector, message, error),
+  openTitlePage: (target) => openTitlePage(target),
+  openSettings: () => {
+    settingsView.tab = "recs";
+    localStorage.setItem("blackline-settings-tab", "recs");
+    switchView("settings");
+    renderSettingsTabs();
+  },
+  isViewActive: (name) => viewActive(name),
+  homeCategory: () => homeBrowseCategory,
+  onHomeChange: () => renderHome(),
+  onTitleChange: () => refreshTitlePage(),
+  onAniListChange: (linked, status, { skipAuthPull = false } = {}) => {
+    if (!linked) return removeAniListLibrary();
+    localStorage.removeItem(ANILIST_LIBRARY_KEY);
+    return syncAniListLibrary({ status, skipAuthPull });
+  },
+  refreshAniList: () => readAniListAccount(localStorage)
+    ? syncAniListAuthenticatedRatings(readAniListAccount(localStorage))
+    : postJson("/api/recs/anilist/sync", {}),
+  getConnectedAniListUsername: () => readAniListAccount(localStorage)?.username || "",
+  importConnectedAniList: async () => {
+    const account = readAniListAccount(localStorage);
+    if (!account) throw new Error("Connect your AniList account to import a private list.");
+    return syncAniListAuthenticatedRatings(account);
+  },
+  onOverview: (overview) => maybeSyncAniListLibrary(overview),
+  getAniListScoreSyncState: () => ({
+    enabled: Boolean(readAniListAccount(localStorage)) && anilistScoreSyncEnabled(),
+  }),
+  getAniListScorePending: (subject, season) => {
+    const account = readAniListAccount(localStorage);
+    const part = resolveAniListScorePart(authenticatedTitleAniList(subject, account), season);
+    const rendered = resolveAniListScorePart(subject?.anilist, season);
+    return account && part && rendered?.anilistId === part.anilistId
+      ? readUnconfirmedAniListScore(localStorage, account.userId, part.anilistId) : null;
+  },
+  onRatingSaved: async (subject, season, score) => saveUserAniListScore(subject, season, score),
+  showHomePicks: async () => {
+    if (homeBrowseCategory !== "all") {
+      homeBrowseCategory = "all";
+      localStorage.setItem("blackline-home-filter", "all");
+    }
+    switchView("home");
+    // Opened from another page, Home's rows may still be loading: the picks row comes with them.
+    try { await loadHomeCatalog(); } catch {}
+    renderHome();
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    requestAnimationFrame(() => $("#home-picks")?.scrollIntoView({ block: "center", behavior: reduce ? "auto" : "smooth" }));
+  },
+});
+const video = $("#video");
+const frame = $("#video-frame");
+// Match the episode list to the actual video rectangle, not the full player
+// column (which extends farther down for subtitles and title details).
+function syncWatchEpisodeHeight() {
+  const layout = $("#watch-player-layout");
+  const height = frame?.getBoundingClientRect().height || 0;
+  if (layout && height > 0) layout.style.setProperty("--watch-episode-player-height", `${Math.round(height)}px`);
+}
+if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncWatchEpisodeHeight).observe(frame);
+window.addEventListener("resize", syncWatchEpisodeHeight);
+const uiLanguage = installUiI18n({ interfaceLanguage: state.interfaceLanguage, baseLanguage: state.baseLanguage });
+const linePreview = { active: false, pending: 0, token: 0, controller: null, startSeconds: 0, preventBackgroundPlayback: false };
+const previewSourceLeases = new Map();
+const APP_DB_MIGRATION_KEY = "blackline-db-migrated-v1";
+const APP_DB_PREFERENCES_MIGRATION_KEY = "blackline-db-preferences-v2";
+const APP_DB_DIRTY_SECTIONS_KEY = "blackline-db-dirty-sections-v1";
+let persistentAppStateReady = false;
+const persistentAppWriteTimers = new Map();
+const persistentAppWriteChains = new Map();
+const persistentAppWriteGenerations = new Map();
+const persistentAppSectionRevisions = new Map();
+const PERSISTENT_CAS_SECTIONS = new Set(["cards", "known", "library", "preferences"]);
+const HOME_CATALOG_REFRESH_MS = 10 * 60 * 1000;
+let homeCatalogLoadPromise = null;
+let anilistAutoTimer = 0;
+let anilistAutoRun = null;
+let anilistAutoDevTestRun = false;
+let anilistAutoAuthGeneration = 0;
+let anilistAutoAuthPending = false;
+let anilistAutoStatusMessage = "";
+let anilistAutoRetryAfter = 0;
+let anilistAutoLastQueueSnapshot = null;
+let anilistAutoImportWarning = "";
+
+function persistentDirtySections() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(APP_DB_DIRTY_SECTIONS_KEY) || "[]");
+    if (Array.isArray(parsed)) {
+      return new Map(parsed.map((section) => {
+        const name = String(section);
+        return [name, { mode: name === "coachTranscripts" ? "merge" : "replace", expectedUpdatedAt: null }];
+      }));
+    }
+    if (parsed && typeof parsed === "object") {
+      return new Map(Object.entries(parsed).map(([section, raw]) => {
+        const entry = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : { mode: raw };
+        const expectedUpdatedAt = entry.expectedUpdatedAt == null ? null : Number(entry.expectedUpdatedAt);
+        return [String(section), {
+          mode: entry.mode === "merge" ? "merge" : "replace",
+          expectedUpdatedAt: expectedUpdatedAt !== null && Number.isFinite(expectedUpdatedAt) && expectedUpdatedAt >= 0 ? expectedUpdatedAt : null,
+        }];
+      }));
+    }
+    return new Map();
+  } catch {
+    return new Map();
+  }
+}
+
+function setPersistentSectionDirty(section, dirty, mode = "replace", expectedUpdatedAt = undefined) {
+  const sections = persistentDirtySections();
+  const existing = sections.get(section);
+  const baseRevision = expectedUpdatedAt !== undefined
+    ? expectedUpdatedAt
+    : existing?.expectedUpdatedAt ?? persistentAppSectionRevisions.get(section) ?? null;
+  if (dirty) sections.set(section, {
+    mode: mode === "merge" ? "merge" : "replace",
+    expectedUpdatedAt: PERSISTENT_CAS_SECTIONS.has(section) && baseRevision != null && Number.isFinite(Number(baseRevision))
+      ? Math.max(0, Number(baseRevision))
+      : null,
+  });
+  else sections.delete(section);
+  if (sections.size) localStorage.setItem(APP_DB_DIRTY_SECTIONS_KEY, JSON.stringify(Object.fromEntries(sections)));
+  else localStorage.removeItem(APP_DB_DIRTY_SECTIONS_KEY);
+}
+
+function applyPersistentSectionRevisions(revisions) {
+  if (!revisions || typeof revisions !== "object" || Array.isArray(revisions)) return;
+  for (const [section, value] of Object.entries(revisions)) {
+    const revision = Number(value);
+    if (Number.isFinite(revision) && revision >= 0) persistentAppSectionRevisions.set(section, revision);
+  }
+}
+
+function reconcileEarlyLibraryEntries(saved, beforeHydration, afterUserEdits) {
+  // The user can add a Library title while SQLite is still hydrating. Overlay
+  // only actual in-session edits onto the authoritative disk snapshot. Never
+  // use the entire (possibly stale) browser cache as a replacement database.
+  const baseline = new Map((Array.isArray(beforeHydration) ? beforeHydration : [])
+    .filter(item => item?.id).map(item => [String(item.id), item]));
+  const result = new Map((Array.isArray(saved) ? saved : [])
+    .filter(item => item?.id).map(item => [String(item.id), item]));
+  for (const item of Array.isArray(afterUserEdits) ? afterUserEdits : []) {
+    if (!item?.id) continue;
+    const id = String(item.id);
+    const previous = baseline.get(id);
+    if (previous && JSON.stringify(previous) === JSON.stringify(item)) continue;
+    const stored = result.get(id);
+    if (!stored || Number(item.updatedAt || item.addedAt || 0) > Number(stored.updatedAt || stored.addedAt || 0))
+      result.set(id, item);
+  }
+  return [...result.values()].slice(0, 5_000);
+}
+const artworkFetches = new Map();
+let analysisMemo = { key: "", words: [], phrases: [] };
+const learningPresetCache = new Map();
+const learningPresetRequests = new Map();
+const studyRomanizationCache = new Map();
+const studyRomanizationRequests = new Map();
+const cueTokenCache = new WeakMap();
+let learningRevision = 0;
+let cardIndexMemo = { revision: -1, keys: new Set(), mastered: new Set() };
+let subtitleRenderMemo = { key: "" };
+const exposureCueSeen = new Set();
+let exposureMediaKey = "";
+let learningExposureSaveTimer = null;
+let learningExposureDirty = false;
+let libraryContextSeriesKey = null;
+let homeBrowseCategory = normalizeHomeCategory(localStorage.getItem("blackline-home-filter"));
+let homeTitleIndex = new Map();
+let homeHeroController = null;
+let homeCatalogError = "";
+let homeRenderedCategory = "";
+let homeSavedPlace = null;
+let playerControlsHideTimer = null;
+let reviewMode = localStorage.getItem("blackline-review-mode") === "voice" ? "voice" : "cards";
+let testSession = null;
+let voiceChat = {
+  chatId: crypto.randomUUID(),
+  mode: localStorage.getItem("blackline-voice-mode") === "practice" ? "practice" : "live",
+  messages: [],
+  livePresetId: "",
+  livePresetLabel: "",
+  livePresetContext: "",
+  providerLive: false,
+  liveStarting: false,
+  providerConversationId: "",
+  liveSeen: new Set(),
+  listening: false,
+  speaking: false,
+  pending: false,
+  interim: "",
+  error: "",
+  bridgeAvailable: null,
+  draft: "",
+  refocusTextAfterTurn: false,
+};
+let voiceRecognition = null;
+let voiceSpeechGeneration = 0;
+let voiceLiveIdleTimer = null;
+let voiceTranscriptSyncTimer = null;
+let voiceUsageUiTimer = null;
+let voiceUsageActiveSince = 0;
+let voiceUsageSegments = readStorageArray("blackline-voice-usage");
+let durableVoiceUsage = { ready: false, usedMs: 0, remainingMs: 0, active: null, asOf: Date.now() };
+let browserCoachStatus = null;
+let browserCoachChecking = false;
+let browserCoachAction = "";
+let browserCoachInstanceId = "";
+let browserCoachHelperConnected = false;
+let browserCoachConnecting = false;
+let browserCoachVersionMismatch = false;
+let coachProviders = [];
+let coachProviderId = localStorage.getItem("blackline-coach-provider") || "chatgpt-browser";
+let voiceLivePresetId = localStorage.getItem("blackline-live-preset") || "top-100";
+let voiceLiveAssistance = localStorage.getItem("blackline-live-assistance") === "unassisted" ? "unassisted" : "assisted";
+let pronunciationQueueIndex = 0;
+let discardedAutoCardKeys = new Set(readStorageArray("blackline-discarded-auto-cards").map(String).filter(Boolean).slice(-20_000));
+const voiceAudio = {
+  speakReplies: localStorage.getItem("blackline-voice-speak-replies") !== "0",
+  autoContinue: localStorage.getItem("blackline-voice-auto-continue") !== "0",
+  voiceURI: localStorage.getItem("blackline-voice-tts-uri") || "",
+  rate: Math.max(0.7, Math.min(1.3, Number(localStorage.getItem("blackline-voice-tts-rate")) || 0.96)),
+  inputLanguage: localStorage.getItem("blackline-voice-input-language") || "auto",
+};
+const VOICE_USAGE_WINDOW_MS = 24 * 60 * 60 * 1000;
+const VOICE_USAGE_REFERENCE_LIMIT_MS = 3 * 60 * 60 * 1000;
+
+function saveState() {
+  storeLocalCopy("blackline-cards", state.cards);
+  storeLocalCopy("blackline-known", [...state.known]);
+  persistAppSection("cards", state.cards);
+  persistAppSection("known", [...state.known]);
+}
+
+function saveTestResults() {
+  state.testResults = state.testResults.slice(-500);
+  storeLocalCopy("blackline-test-results", state.testResults);
+  persistAppSection("testResults", state.testResults);
+}
+
+function persistentPreferencesSnapshot() {
+  return {
+    autoArtwork: Boolean(state.autoArtwork),
+    subdlKey: String(state.subdlKey || ""),
+    wyzieKey: String(state.wyzieKey || ""),
+    subsourceKey: String(state.subsourceKey || ""),
+    baseLanguage: String(state.baseLanguage || "EN"),
+    targetLanguage: String(state.targetLanguage || "ES"),
+    baseLocale: state.baseLocale,
+    targetLocale: state.targetLocale,
+    interfaceLanguage: state.interfaceLanguage,
+    subtitleStyle: { ...state.subtitleStyle },
+    studySource: state.studySource === "preset" ? "preset" : "chapter",
+    studyChapterId: String(state.studyChapterId || ""),
+    studyType: state.studyType === "phrase" ? "phrase" : "word",
+    studyWordTier: Number(state.studyWordTier) || 100,
+    studyPhraseTier: Number(state.studyPhraseTier) || 100,
+    studyFilter: String(state.studyFilter || "all"),
+    wordColoring: Boolean(state.wordColoring),
+    reviewMode: reviewMode === "voice" ? "voice" : "cards",
+    coachProviderId: String(coachProviderId || "chatgpt-browser"),
+    voiceMode: voiceChat.mode === "practice" ? "practice" : "live",
+    voiceLivePresetId: String(voiceLivePresetId || "top-100"),
+    voiceLiveAssistance,
+    discardedAutoCardKeys: [...discardedAutoCardKeys].slice(-20_000),
+    voiceAudio: { ...voiceAudio },
+    voiceUsageSegments: voiceUsageSegments.slice(-256),
+  };
+}
+
+function persistentAppSnapshot() {
+  return {
+    cards: state.cards,
+    known: [...state.known],
+    library: state.library,
+    learningExposure: state.learningExposure,
+    testResults: state.testResults,
+    coachTranscripts: state.coachTranscripts,
+    preferences: persistentPreferencesSnapshot(),
+  };
+}
+
+function persistAppSection(section, value, { immediate = false, merge = false } = {}) {
+  const mode = merge ? "merge" : "replace";
+  const generation = (persistentAppWriteGenerations.get(section) || 0) + 1;
+  persistentAppWriteGenerations.set(section, generation);
+  setPersistentSectionDirty(section, true, mode);
+  if (!persistentAppStateReady) return;
+  const previous = persistentAppWriteTimers.get(section);
+  if (previous) clearTimeout(previous);
+  const commit = () => {
+    persistentAppWriteTimers.delete(section);
+    const previousWrite = persistentAppWriteChains.get(section) || Promise.resolve();
+    const currentWrite = previousWrite
+      .catch(() => {})
+      .then(() => {
+        const pending = persistentDirtySections().get(section);
+        const expectedUpdatedAt = PERSISTENT_CAS_SECTIONS.has(section) && !merge
+          ? pending?.expectedUpdatedAt ?? persistentAppSectionRevisions.get(section) ?? null
+          : undefined;
+        if (PERSISTENT_CAS_SECTIONS.has(section) && !merge && expectedUpdatedAt == null)
+          throw new Error(`Persistent ${section} is waiting for its SQLite base revision; replacement not sent.`);
+        return postJson(`/api/app-state/${encodeURIComponent(section)}`, { value, merge, expectedUpdatedAt });
+      })
+      .then((result) => {
+        if (Number.isFinite(Number(result?.updatedAt))) persistentAppSectionRevisions.set(section, Number(result.updatedAt));
+        if (persistentAppWriteGenerations.get(section) === generation) setPersistentSectionDirty(section, false);
+        else {
+          const pending = persistentDirtySections().get(section);
+          if (pending) setPersistentSectionDirty(section, true, pending.mode, result?.updatedAt);
+        }
+      })
+      .catch((error) => {
+        console.warn(`Persistent ${section} save failed:`, error);
+      })
+      .finally(() => {
+        if (persistentAppWriteChains.get(section) === currentWrite) persistentAppWriteChains.delete(section);
+      });
+    persistentAppWriteChains.set(section, currentWrite);
+  };
+  const delay = section === "learningExposure" ? 500 : 0;
+  if (immediate || delay === 0) commit();
+  else persistentAppWriteTimers.set(section, setTimeout(commit, delay));
+}
+
+function persistPreferences({ immediate = false } = {}) {
+  persistAppSection("preferences", persistentPreferencesSnapshot(), { immediate });
+}
+
+function mirrorPersistentPreferencesToLocalStorage(preferences) {
+  const prefs = preferences && typeof preferences === "object" ? preferences : {};
+  localStorage.setItem("blackline-auto-artwork", prefs.autoArtwork ? "1" : "0");
+  localStorage.setItem("blackline-subdl-key", String(prefs.subdlKey || ""));
+  localStorage.setItem("blackline-wyzie-key", String(prefs.wyzieKey || ""));
+  localStorage.setItem("blackline-subsource-key", String(prefs.subsourceKey || ""));
+  localStorage.setItem("blackline-base-language", String(prefs.baseLanguage || "EN"));
+  localStorage.setItem("blackline-target-language", String(prefs.targetLanguage || "ES"));
+  localStorage.setItem("blackline-base-locale", normalizeLearningLocale(prefs.baseLanguage, prefs.baseLocale));
+  localStorage.setItem("blackline-target-locale", normalizeLearningLocale(prefs.targetLanguage, prefs.targetLocale));
+  localStorage.setItem("blackline-interface-language", ["en", "es"].includes(prefs.interfaceLanguage) ? prefs.interfaceLanguage : "auto");
+  localStorage.setItem("blackline-subdl-languages", [prefs.targetLanguage || "ES", prefs.baseLanguage || "EN"].join(","));
+  localStorage.setItem("blackline-subtitle-style", JSON.stringify(prefs.subtitleStyle || subtitleStyleDefaults));
+  localStorage.setItem("blackline-study-source", prefs.studySource === "preset" ? "preset" : "chapter");
+  localStorage.setItem("blackline-study-chapter-id", String(prefs.studyChapterId || ""));
+  localStorage.setItem("blackline-study-type", prefs.studyType === "phrase" ? "phrase" : "word");
+  localStorage.setItem("blackline-study-word-tier", String(Number(prefs.studyWordTier) || 100));
+  localStorage.setItem("blackline-study-phrase-tier", String(Number(prefs.studyPhraseTier) || 100));
+  localStorage.setItem("blackline-study-filter", String(prefs.studyFilter || "all"));
+  localStorage.setItem("blackline-word-coloring", prefs.wordColoring === false ? "0" : "1");
+  localStorage.setItem("blackline-review-mode", prefs.reviewMode === "voice" ? "voice" : "cards");
+  localStorage.setItem("blackline-coach-provider", String(prefs.coachProviderId || "chatgpt-browser"));
+  localStorage.setItem("blackline-voice-mode", prefs.voiceMode === "practice" ? "practice" : "live");
+  localStorage.setItem("blackline-live-preset", String(prefs.voiceLivePresetId || "top-100"));
+  localStorage.setItem("blackline-live-assistance", prefs.voiceLiveAssistance === "unassisted" ? "unassisted" : "assisted");
+  localStorage.setItem("blackline-discarded-auto-cards", JSON.stringify(Array.isArray(prefs.discardedAutoCardKeys) ? prefs.discardedAutoCardKeys.slice(-20_000) : [...discardedAutoCardKeys].slice(-20_000)));
+  localStorage.setItem("blackline-voice-speak-replies", prefs.voiceAudio?.speakReplies === false ? "0" : "1");
+  localStorage.setItem("blackline-voice-auto-continue", prefs.voiceAudio?.autoContinue === false ? "0" : "1");
+  localStorage.setItem("blackline-voice-tts-uri", String(prefs.voiceAudio?.voiceURI || ""));
+  localStorage.setItem("blackline-voice-tts-rate", String(Number(prefs.voiceAudio?.rate) || 0.96));
+  localStorage.setItem("blackline-voice-input-language", String(prefs.voiceAudio?.inputLanguage || "auto"));
+  localStorage.setItem("blackline-voice-usage", JSON.stringify(Array.isArray(prefs.voiceUsageSegments) ? prefs.voiceUsageSegments.slice(-256) : voiceUsageSegments.slice(-256)));
+}
+
+function applyPersistentAppState(snapshot = {}) {
+  if (Array.isArray(snapshot.cards)) state.cards = snapshot.cards.slice(0, 20_000);
+  if (Array.isArray(snapshot.known)) state.known = new Set(snapshot.known.map(String).slice(0, 100_000));
+  if (Array.isArray(snapshot.library)) state.library = snapshot.library.slice(0, 5_000);
+  if (snapshot.learningExposure && typeof snapshot.learningExposure === "object" && !Array.isArray(snapshot.learningExposure)) {
+    state.learningExposure = snapshot.learningExposure;
+  }
+  if (Array.isArray(snapshot.testResults)) state.testResults = snapshot.testResults.slice(-500);
+  if (Array.isArray(snapshot.coachTranscripts)) state.coachTranscripts = snapshot.coachTranscripts.slice(-100);
+  const prefs = snapshot.preferences && typeof snapshot.preferences === "object" && !Array.isArray(snapshot.preferences) ? snapshot.preferences : null;
+  if (prefs) {
+    state.autoArtwork = Boolean(prefs.autoArtwork);
+    state.subdlKey = String(prefs.subdlKey || "");
+    state.wyzieKey = String(prefs.wyzieKey || "");
+    state.subsourceKey = String(prefs.subsourceKey || "");
+    state.baseLanguage = String(prefs.baseLanguage || "EN").toUpperCase();
+    state.targetLanguage = String(prefs.targetLanguage || "ES").toUpperCase();
+    state.baseLocale = normalizeLearningLocale(state.baseLanguage, prefs.baseLocale);
+    state.targetLocale = normalizeLearningLocale(state.targetLanguage, prefs.targetLocale);
+    state.interfaceLanguage = ["en", "es"].includes(prefs.interfaceLanguage) ? prefs.interfaceLanguage : "auto";
+    uiLanguage.setLanguage(state.interfaceLanguage, state.baseLanguage);
+    state.subtitleStyle = { ...subtitleStyleDefaults, ...(prefs.subtitleStyle || {}) };
+    state.studySource = "chapter";
+    state.studyChapterId = String(prefs.studyChapterId || "");
+    state.studyType = prefs.studyType === "phrase" ? "phrase" : "word";
+    state.studyWordTier = [100, 1000, 5000].includes(Number(prefs.studyWordTier)) ? Number(prefs.studyWordTier) : 100;
+    state.studyPhraseTier = [100, 1000].includes(Number(prefs.studyPhraseTier)) ? Number(prefs.studyPhraseTier) : 100;
+    state.studyFilter = ["all", "unknown", "known", "review"].includes(prefs.studyFilter) ? prefs.studyFilter : "all";
+    state.wordColoring = prefs.wordColoring !== false;
+    reviewMode = prefs.reviewMode === "voice" ? "voice" : "cards";
+    coachProviderId = String(prefs.coachProviderId || "chatgpt-browser");
+    voiceChat.mode = prefs.voiceMode === "practice" ? "practice" : "live";
+    voiceLivePresetId = String(prefs.voiceLivePresetId || "top-100");
+    voiceLiveAssistance = prefs.voiceLiveAssistance === "unassisted" ? "unassisted" : "assisted";
+    discardedAutoCardKeys = new Set((Array.isArray(prefs.discardedAutoCardKeys) ? prefs.discardedAutoCardKeys : []).map(String).filter(Boolean).slice(-20_000));
+    voiceAudio.speakReplies = prefs.voiceAudio?.speakReplies !== false;
+    voiceAudio.autoContinue = prefs.voiceAudio?.autoContinue !== false;
+    voiceAudio.voiceURI = String(prefs.voiceAudio?.voiceURI || "");
+    voiceAudio.rate = Math.max(0.7, Math.min(1.3, Number(prefs.voiceAudio?.rate) || 0.96));
+    voiceAudio.inputLanguage = String(prefs.voiceAudio?.inputLanguage || "auto");
+    if (Array.isArray(prefs.voiceUsageSegments)) voiceUsageSegments = prefs.voiceUsageSegments.slice(-256);
+    mirrorPersistentPreferencesToLocalStorage(prefs);
+  }
+  const transcriptCandidates = state.coachTranscripts
+    .filter((session) => session && String(session.providerId || coachProviderId) === coachProviderId
+      && String(session.targetLanguage || state.targetLanguage) === state.targetLanguage
+      && String(session.baseLanguage || state.baseLanguage) === state.baseLanguage)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  const persistedSessions = Array.isArray(snapshot.coachSessions) ? snapshot.coachSessions : [];
+  const activeNative = persistedSessions
+    .filter((session) => session?.nativeVoice === true
+      && session?.conversationId
+      && String(session.providerId || "") === coachProviderId
+      && String(session.targetLanguage || "") === state.targetLanguage
+      && String(session.baseLanguage || "") === state.baseLanguage
+      && normalizeLearningLocale(state.targetLanguage, session.targetLocale) === state.targetLocale
+      && normalizeLearningLocale(state.baseLanguage, session.baseLocale) === state.baseLocale
+      && Date.now() - Number(session.updatedAt || 0) < COACH_LIVE_IDLE_TIMEOUT_MS)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0] || null;
+  const transcript = activeNative
+    ? transcriptCandidates.find((session) => session.id === activeNative.chatId) || null
+    : transcriptCandidates[0];
+  if (transcript) {
+    voiceChat.chatId = activeNative?.chatId || transcript.id || voiceChat.chatId;
+    voiceChat.messages = (Array.isArray(transcript.messages) ? transcript.messages : []).slice(-200).map((message) => ({
+      ...message,
+      mode: message.mode === "live" || message.mode === "practice" ? message.mode : (transcript.mode === "live" ? "live" : "practice"),
+    }));
+    voiceChat.liveSeen = new Set(voiceChat.messages.map((message) => message.providerEntryId).filter(Boolean));
+  }
+  if (activeNative) {
+    voiceChat.chatId = activeNative.chatId;
+    voiceChat.providerConversationId = String(activeNative.conversationId || "");
+    voiceChat.livePresetId = String(activeNative.presetId || "");
+    voiceChat.livePresetLabel = String(activeNative.presetLabel || "");
+    voiceChat.livePresetContext = String(activeNative.presetContext || "");
+    voiceLiveAssistance = activeNative.assistanceMode === "unassisted" ? "unassisted" : "assisted";
+    if (voiceChat.livePresetId) voiceLivePresetId = voiceChat.livePresetId;
+  }
+  storeLocalCopy("blackline-cards", state.cards);
+  storeLocalCopy("blackline-known", [...state.known]);
+  storeLocalCopy("blackline-library", state.library);
+  storeLocalCopy("blackline-learning-exposure", state.learningExposure);
+  storeLocalCopy("blackline-test-results", state.testResults);
+  storeLocalCopy("blackline-coach-transcripts", state.coachTranscripts);
+  touchLearningState();
+}
+
+async function hydratePersistentAppState() {
+  // Unsaved changes of a section whose browser copy didn't fit can't be recovered from that copy
+  // (it holds nothing): keep the database's version instead of replacing it with an empty one.
+  for (const key of localCopyUnloaded) {
+    const section = LOCAL_COPY_SECTIONS[key];
+    if (section && persistentDirtySections().has(section)) {
+      console.warn(`Unsaved ${section} changes from the last visit weren't kept in the browser; using the saved copy.`);
+      setPersistentSectionDirty(section, false);
+    }
+  }
+  const localSnapshot = persistentAppSnapshot();
+  // persistentAppSnapshot exposes live array references. Capture the actual
+  // pre-hydration Library contents now, before a user can unshift a new title
+  // into that same array while bootstrap is waiting on SQLite.
+  const originalLibraryBaseline = JSON.parse(JSON.stringify(localSnapshot.library || []));
+  const alreadyMigrated = localStorage.getItem(APP_DB_MIGRATION_KEY) === "1";
+  try {
+    let payload = await postJson("/api/app-state/bootstrap", { legacyState: alreadyMigrated ? null : localSnapshot });
+    if (!payload.initialized && alreadyMigrated) {
+      payload = await postJson("/api/app-state/bootstrap", { legacyState: localSnapshot });
+    }
+    applyPersistentSectionRevisions(payload?.revisions);
+    const attemptedRecovery = new Set();
+    while (true) {
+      const dirtySections = persistentDirtySections();
+      const next = [...dirtySections.entries()].find(([section, entry]) => {
+        const generation = persistentAppWriteGenerations.get(section) || 0;
+        return !attemptedRecovery.has(`${section}:${entry.mode}:${entry.expectedUpdatedAt ?? "none"}:${generation}`);
+      });
+      if (!next) break;
+      const [section, entry] = next;
+      const mode = entry.mode;
+      const generation = persistentAppWriteGenerations.get(section) || 0;
+      attemptedRecovery.add(`${section}:${mode}:${entry.expectedUpdatedAt ?? "none"}:${generation}`);
+      const recoverySnapshot = persistentAppSnapshot();
+      if (!Object.prototype.hasOwnProperty.call(recoverySnapshot, section)) continue;
+      if (PERSISTENT_CAS_SECTIONS.has(section) && mode !== "merge" && entry.expectedUpdatedAt == null) {
+        // A Library item added during this very hydration is reconciled with
+        // the freshly loaded disk list below, once its CAS revision is known.
+        if (section !== "library" || generation === 0)
+          console.warn(`Persistent ${section} recovery is waiting for conflict resolution because its legacy dirty snapshot has no base revision.`);
+        continue;
+      }
+      try {
+        const recoveryResult = await postJson(`/api/app-state/${encodeURIComponent(section)}`, {
+          value: recoverySnapshot[section],
+          merge: mode === "merge",
+          expectedUpdatedAt: PERSISTENT_CAS_SECTIONS.has(section) && mode !== "merge"
+            ? entry.expectedUpdatedAt
+            : undefined,
+        });
+        if (Number.isFinite(Number(recoveryResult?.updatedAt))) persistentAppSectionRevisions.set(section, Number(recoveryResult.updatedAt));
+        if ((persistentAppWriteGenerations.get(section) || 0) === generation
+          && persistentDirtySections().get(section)?.mode === mode) {
+          setPersistentSectionDirty(section, false);
+        } else {
+          const pending = persistentDirtySections().get(section);
+          if (pending) setPersistentSectionDirty(section, true, pending.mode, recoveryResult?.updatedAt);
+        }
+      } catch (error) {
+        console.warn(`Persistent ${section} recovery save failed:`, error);
+      }
+    }
+    if (localStorage.getItem(APP_DB_PREFERENCES_MIGRATION_KEY) !== "1"
+      && !persistentDirtySections().has("preferences")) {
+      try {
+        const preferenceMigration = await postJson("/api/app-state/preferences", {
+          value: persistentPreferencesSnapshot(),
+          merge: true,
+        });
+        if (Number.isFinite(Number(preferenceMigration?.updatedAt))) persistentAppSectionRevisions.set("preferences", Number(preferenceMigration.updatedAt));
+        localStorage.setItem(APP_DB_PREFERENCES_MIGRATION_KEY, "1");
+      } catch (error) {
+        console.warn("Persistent preference backfill failed:", error);
+      }
+    }
+    payload = await fetchJson("/api/app-state");
+    applyPersistentSectionRevisions(payload?.revisions);
+    const remainingDirty = persistentDirtySections();
+    const earlySaveSections = [];
+    if (remainingDirty.size && payload?.state && typeof payload.state === "object") {
+      const localOverlay = persistentAppSnapshot();
+      for (const [section, dirty] of remainingDirty) {
+        if (!Object.prototype.hasOwnProperty.call(localOverlay, section)) continue;
+        if (section === "library" && dirty.expectedUpdatedAt == null
+          && (persistentAppWriteGenerations.get(section) || 0) > 0
+          && persistentAppSectionRevisions.has(section)) {
+          payload.state.library = reconcileEarlyLibraryEntries(payload.state.library, originalLibraryBaseline, localOverlay.library);
+          setPersistentSectionDirty(section, true, "replace", persistentAppSectionRevisions.get(section));
+          earlySaveSections.push(section);
+        } else payload.state[section] = localOverlay[section];
+      }
+    }
+    if (payload?.state && typeof payload.state === "object") applyPersistentAppState(payload.state);
+    persistentAppStateReady = true;
+    for (const section of earlySaveSections) persistAppSection(section, persistentAppSnapshot()[section], { immediate: true });
+    if (localCopyUnloaded.size) {
+      localCopyUnloaded.clear();
+      storeLocalCopy("blackline-cards", state.cards);
+      storeLocalCopy("blackline-library", state.library);
+    }
+    localStorage.setItem(APP_DB_MIGRATION_KEY, "1");
+    migrateLearningState();
+    backfillPersistedChapterAutoCards();
+    renderAll();
+    applySubtitleStyle();
+    if (learningEnabled && (state.wordColoring || state.studySource === "preset")) void ensureLearningPreset(state.targetLanguage);
+    if (learningEnabled) void refreshVoiceUsageStatus({ render: reviewMode === "voice" && voiceChat.mode === "live" });
+  } catch (error) {
+    console.warn("On-disk app database is unavailable; using the browser cache for this session:", error);
+    migrateLearningState();
+    backfillPersistedChapterAutoCards();
+    renderAll();
+  }
+}
+
+const SPEECH_LOCALES = {
+  EN: "en-US", ES: "es-ES", FR: "fr-FR", DE: "de-DE", IT: "it-IT", PT: "pt-BR",
+  JA: "ja-JP", KO: "ko-KR", ZH: "zh-CN", RU: "ru-RU", NL: "nl-NL", PL: "pl-PL", TR: "tr-TR",
+};
+const COACH_LIVE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+
+function speechLocale(language = state.targetLanguage) {
+  const code = String(language || "").toUpperCase();
+  return normalizeLearningLocale(code, code === state.targetLanguage ? state.targetLocale : code === state.baseLanguage ? state.baseLocale : "");
+}
+
+function resetVoiceChat({ preserveMode = true, nextMode = null, persistCurrent = true } = {}) {
+  if (voiceLiveIdleTimer) clearTimeout(voiceLiveIdleTimer);
+  voiceLiveIdleTimer = null;
+  if (voiceChat.providerLive || voiceChat.liveStarting) stopProviderLiveVoice();
+  try { voiceRecognition?.abort?.(); } catch {}
+  voiceRecognition = null;
+  speechSynthesis?.cancel?.();
+  voiceSpeechGeneration += 1;
+  const previousMode = nextMode || (preserveMode ? voiceChat.mode : (localStorage.getItem("blackline-voice-mode") === "practice" ? "practice" : "live"));
+  if (persistCurrent) persistVoiceChatSession();
+  voiceChat = {
+    chatId: crypto.randomUUID(),
+    mode: previousMode === "practice" ? "practice" : "live",
+    messages: [],
+    livePresetId: "",
+    livePresetLabel: "",
+    livePresetContext: "",
+    providerLive: false,
+    liveStarting: false,
+    providerConversationId: "",
+    liveSeen: new Set(),
+    listening: false,
+    speaking: false,
+    pending: false,
+    interim: "",
+    error: "",
+    bridgeAvailable: voiceChat.bridgeAvailable,
+    draft: "",
+    refocusTextAfterTurn: false,
+  };
+  renderReview();
+}
+
+function selectedCoachProvider() {
+  return coachProviders.find((provider) => provider.id === coachProviderId) || coachProviders[0] || {
+    id: "chatgpt-browser",
+    label: "ChatGPT in your browser",
+    model: "account-selected",
+    kind: "browser-subscription",
+    enabled: true,
+  };
+}
+
+function setCoachProvider(providerId, { reset = true } = {}) {
+  const provider = coachProviders.find((item) => item.id === providerId && item.enabled);
+  if (!provider || provider.id === coachProviderId) return;
+  if (reset && voiceChat.mode === "live") void closeLiveCoachSession({ reset: false });
+  coachProviderId = provider.id;
+  localStorage.setItem("blackline-coach-provider", coachProviderId);
+  persistPreferences();
+  if (reset) resetVoiceChat();
+  else {
+    renderSettings();
+    renderVoiceChatStage();
+  }
+}
+
+async function refreshCoachProviders() {
+  try {
+    const payload = await fetchJson("/api/coach/providers");
+    coachProviders = Array.isArray(payload.providers) ? payload.providers.filter((provider) => provider?.id && provider.enabled) : [];
+    if (!coachProviders.some((provider) => provider.id === coachProviderId)) {
+      coachProviderId = payload.defaultProviderId || coachProviders[0]?.id || "chatgpt-browser";
+      localStorage.setItem("blackline-coach-provider", coachProviderId);
+    }
+  } catch {
+    if (!coachProviders.length) coachProviders = [{ id: "chatgpt-browser", label: "ChatGPT in your browser", model: "account-selected", kind: "browser-subscription", enabled: true }];
+  }
+  renderSettings();
+  renderVoiceChatStage();
+}
+
+async function refreshBrowserCoachStatus() {
+  const previousAvailability = voiceChat.bridgeAvailable;
+  const previousError = voiceChat.error;
+  browserCoachChecking = true;
+  renderBrowserCoachStatus();
+  try {
+    const query = browserCoachInstanceId ? `?instanceId=${encodeURIComponent(browserCoachInstanceId)}` : "";
+    const status = await fetchJson(`/api/browser-coach/status${query}`);
+    browserCoachStatus = status;
+    const versionMismatch = Boolean(status.available && status.expectedExtensionVersion && status.extensionVersion && status.expectedExtensionVersion !== status.extensionVersion);
+    browserCoachVersionMismatch = versionMismatch;
+    voiceChat.bridgeAvailable = Boolean(status.available);
+    if (versionMismatch) {
+      voiceChat.error = `Language Coach extension update required: ${status.extensionVersion} → ${status.expectedExtensionVersion}. Reload the unpacked extension in Edge before using the coach.`;
+    } else if (status.available) {
+      // A healthy heartbeat only proves that the extension is connected. It must not erase
+      // a request-level failure (ChatGPT load/send/response timeout), otherwise Voice Chat
+      // appears to silently drop the learner's turn a few seconds after the real error.
+      if (/^Language Coach (?:browser extension is (?:not connected|unavailable)|extension update required)/i.test(String(voiceChat.error || ""))) {
+        voiceChat.error = "";
+      }
+    }
+    else voiceChat.error = "Language Coach browser extension is not connected.";
+  } catch (error) {
+    browserCoachStatus = { available: false, error: error.message || "Language Coach browser extension is unavailable." };
+    browserCoachVersionMismatch = false;
+    voiceChat.bridgeAvailable = false;
+    voiceChat.error = error.message || "Language Coach browser extension is unavailable.";
+  } finally {
+    browserCoachChecking = false;
+    renderBrowserCoachStatus();
+  }
+  if (reviewMode === "voice" && (previousAvailability !== voiceChat.bridgeAvailable || previousError !== voiceChat.error)) {
+    renderVoiceChatStage();
+  }
+}
+
+async function openBrowserCoachExtensionFolder() {
+  const visiblePath = $("#settings-browser-coach-path")?.textContent?.trim() || "";
+  if (visiblePath && visiblePath !== "browser-extension") {
+    try { await navigator.clipboard?.writeText?.(visiblePath); } catch {}
+  }
+  try {
+    let isBrave = false;
+    try { isBrave = Boolean(await navigator.brave?.isBrave?.()); } catch {}
+    const browser = isBrave ? "brave" : /Edg\//.test(navigator.userAgent) ? "edge" : /Chrome\//.test(navigator.userAgent) ? "chrome" : null;
+    const result = await postJson("/api/browser-coach/open-extension-folder", { browser });
+    let copied = false;
+    if (result.path) {
+      try {
+        await navigator.clipboard?.writeText?.(result.path);
+        copied = true;
+      } catch {}
+    }
+    browserCoachAction = result.path
+      ? [
+        "Opened the helper folder.",
+        result.extensionsPageOpened ? "Opened the Extensions page." : "",
+        copied ? "Copied its path." : "",
+        `Folder: ${result.path}`,
+      ].filter(Boolean).join(" ")
+      : "Opened the helper folder.";
+  } catch (error) {
+    browserCoachAction = error.message || "Could not open the extension folder.";
+  }
+  renderBrowserCoachStatus();
+}
+
+function saveVoiceAudioPreferences() {
+  localStorage.setItem("blackline-voice-speak-replies", voiceAudio.speakReplies ? "1" : "0");
+  localStorage.setItem("blackline-voice-auto-continue", voiceAudio.autoContinue ? "1" : "0");
+  localStorage.setItem("blackline-voice-tts-uri", voiceAudio.voiceURI || "");
+  localStorage.setItem("blackline-voice-tts-rate", String(voiceAudio.rate));
+  localStorage.setItem("blackline-voice-input-language", String(voiceAudio.inputLanguage || "auto"));
+  persistPreferences();
+}
+
+function normalizedVoiceUsageSegments(now = Date.now()) {
+  const windowStart = now - VOICE_USAGE_WINDOW_MS;
+  const normalized = voiceUsageSegments.map((segment) => ({
+    startAt: Math.max(0, Number(segment?.startAt) || 0),
+    endAt: Math.max(0, Number(segment?.endAt) || 0),
+  })).filter((segment) => segment.startAt > 0 && segment.endAt > segment.startAt && segment.endAt > windowStart)
+    .map((segment) => ({ startAt: Math.max(segment.startAt, windowStart), endAt: Math.min(segment.endAt, now) }))
+    .filter((segment) => segment.endAt > segment.startAt)
+    .slice(-256);
+  voiceUsageSegments = normalized;
+  return normalized;
+}
+
+function voiceUsageMs(now = Date.now()) {
+  if (durableVoiceUsage.ready) {
+    const baseline = Math.max(0, Number(durableVoiceUsage.usedMs) || 0);
+    const activeDelta = durableVoiceUsage.active && now > Number(durableVoiceUsage.asOf || 0)
+      ? now - Number(durableVoiceUsage.asOf || now)
+      : 0;
+    return baseline + Math.max(0, activeDelta);
+  }
+  const segments = normalizedVoiceUsageSegments(now);
+  let total = segments.reduce((sum, segment) => sum + (segment.endAt - segment.startAt), 0);
+  if (voiceUsageActiveSince > 0) {
+    total += Math.max(0, now - Math.max(voiceUsageActiveSince, now - VOICE_USAGE_WINDOW_MS));
+  }
+  return total;
+}
+
+async function refreshVoiceUsageStatus({ render = false } = {}) {
+  try {
+    const payload = await fetchJson("/api/coach/usage");
+    durableVoiceUsage = {
+      ready: true,
+      usedMs: Math.max(0, Number(payload.usedMs) || 0),
+      remainingMs: Math.max(0, Number(payload.remainingMs) || 0),
+      active: payload.active && typeof payload.active === "object" ? payload.active : null,
+      asOf: Math.max(0, Number(payload.asOf) || Date.now()),
+    };
+    const activeMatchesCurrent = Boolean(
+      durableVoiceUsage.active
+      && durableVoiceUsage.active.chatId === voiceChat.chatId
+      && (!voiceChat.providerConversationId || durableVoiceUsage.active.conversationId === voiceChat.providerConversationId),
+    );
+    if (activeMatchesCurrent) {
+      voiceChat.providerLive = true;
+      voiceChat.liveStarting = false;
+      if (!voiceChat.providerConversationId) voiceChat.providerConversationId = String(durableVoiceUsage.active.conversationId || "");
+      if (!voiceUsageUiTimer) voiceUsageUiTimer = setInterval(updateVoiceUsageDisplay, 1000);
+    } else if (voiceChat.providerLive && !voiceChat.liveStarting) {
+      voiceChat.providerLive = false;
+      if (voiceUsageUiTimer) clearInterval(voiceUsageUiTimer);
+      voiceUsageUiTimer = null;
+    }
+    updateVoiceUsageDisplay();
+    if (render) renderVoiceChatStage();
+  } catch {
+    // Keep the existing browser-cache timer as an offline fallback.
+  }
+}
+
+function formatVoiceUsage(ms) {
+  const totalSeconds = Math.max(0, Math.floor(Number(ms || 0) / 1000));
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+  return hours > 0
+    ? `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`
+    : `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function persistVoiceUsage({ immediate = false } = {}) {
+  normalizedVoiceUsageSegments();
+  localStorage.setItem("blackline-voice-usage", JSON.stringify(voiceUsageSegments));
+  persistPreferences({ immediate });
+}
+
+function updateVoiceUsageDisplay() {
+  const now = Date.now();
+  const used = voiceUsageMs(now);
+  const remaining = Math.max(0, VOICE_USAGE_REFERENCE_LIMIT_MS - used);
+  const usedNode = $("#voice-usage-used");
+  const remainingNode = $("#voice-usage-remaining");
+  if (usedNode) usedNode.textContent = formatVoiceUsage(used);
+  if (remainingNode) remainingNode.textContent = formatVoiceUsage(remaining);
+}
+
+function startVoiceUsageClock() {
+  if (!durableVoiceUsage.ready && !voiceUsageActiveSince) voiceUsageActiveSince = Date.now();
+  if (voiceUsageUiTimer) clearInterval(voiceUsageUiTimer);
+  voiceUsageUiTimer = setInterval(updateVoiceUsageDisplay, 1000);
+  updateVoiceUsageDisplay();
+  void refreshVoiceUsageStatus();
+}
+
+function stopVoiceUsageClock({ persist = true } = {}) {
+  const now = Date.now();
+  if (!durableVoiceUsage.ready && voiceUsageActiveSince > 0 && now > voiceUsageActiveSince) {
+    voiceUsageSegments.push({ startAt: voiceUsageActiveSince, endAt: now });
+  }
+  voiceUsageActiveSince = 0;
+  if (voiceUsageUiTimer) clearInterval(voiceUsageUiTimer);
+  voiceUsageUiTimer = null;
+  if (persist && !durableVoiceUsage.ready) persistVoiceUsage({ immediate: true });
+  updateVoiceUsageDisplay();
+  void refreshVoiceUsageStatus();
+}
+
+function persistVoiceChatSession({ replace = false } = {}) {
+  if (!voiceChat.messages.length && !state.coachTranscripts.some((session) => session?.id === voiceChat.chatId)) return;
+  const snapshot = {
+    id: voiceChat.chatId,
+    mode: voiceChat.mode === "practice" ? "practice" : "live",
+    providerId: coachProviderId,
+    providerInstanceId: browserCoachInstanceId,
+    conversationId: voiceChat.providerConversationId || "",
+    targetLanguage: state.targetLanguage,
+    baseLanguage: state.baseLanguage,
+    presetId: voiceChat.livePresetId || "",
+    presetLabel: voiceChat.livePresetLabel || "",
+    messages: voiceChat.messages.slice(-200).map((message) => ({
+      role: message.role === "assistant" ? "assistant" : "user",
+      text: String(message.text || "").slice(0, 4000),
+      targetText: String(message.targetText || "").slice(0, 4000),
+      romanized: String(message.romanized || "").slice(0, 4000),
+      baseText: String(message.baseText || "").slice(0, 4000),
+      providerEntryId: String(message.providerEntryId || "").slice(0, 200),
+      corrections: Array.isArray(message.corrections) ? message.corrections.slice(0, 6).map((item) => ({
+        heard: String(item?.heard || "").slice(0, 240),
+        better: String(item?.better || "").slice(0, 240),
+        note: String(item?.note || "").slice(0, 500),
+      })) : [],
+      pronunciation: Array.isArray(message.pronunciation) ? message.pronunciation.slice(0, 6).map((item) => ({
+        word: String(item?.word || "").slice(0, 120),
+        tip: String(item?.tip || "").slice(0, 500),
+      })) : [],
+      provider: message.provider && typeof message.provider === "object" ? {
+        id: String(message.provider.id || "").slice(0, 80),
+        label: String(message.provider.label || "").slice(0, 160),
+        model: String(message.provider.model || "").slice(0, 120),
+        transport: String(message.provider.transport || "").slice(0, 120),
+      } : null,
+      acousticScoring: Boolean(message.acousticScoring),
+      mode: message.mode === "live" ? "live" : "practice",
+      createdAt: Number(message.createdAt) || Date.now(),
+    })),
+    updatedAt: Date.now(),
+  };
+  const existing = state.coachTranscripts.findIndex((session) => session?.id === snapshot.id);
+  if (existing >= 0) state.coachTranscripts.splice(existing, 1, snapshot);
+  else state.coachTranscripts.push(snapshot);
+  state.coachTranscripts = state.coachTranscripts
+    .sort((a, b) => Number(b?.updatedAt || 0) - Number(a?.updatedAt || 0))
+    .slice(0, 100);
+  storeLocalCopy("blackline-coach-transcripts", state.coachTranscripts);
+  persistAppSection("coachTranscripts", state.coachTranscripts, { merge: !replace });
+}
+
+function setVoiceMode(mode) {
+  const next = mode === "practice" ? "practice" : "live";
+  if (voiceChat.mode === next) return;
+  persistVoiceChatSession();
+  localStorage.setItem("blackline-voice-mode", next);
+  voiceChat.mode = next;
+  persistPreferences();
+  renderReview();
+}
+
+function setReviewMode(mode) {
+  reviewMode = mode === "voice" ? "voice" : "cards";
+  localStorage.setItem("blackline-review-mode", reviewMode);
+  persistPreferences();
+  renderReview();
+}
+
+function setReviewTab(tab) {
+  if (tab === "live" || tab === "practice") {
+    const nextVoiceMode = tab === "practice" ? "practice" : "live";
+    if (nextVoiceMode === "practice" && voiceChat.mode === "live" &&
+        (voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting)) {
+      void closeLiveCoachSession({ reset: false }).then(() => {
+        if (voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting) return;
+        setReviewTab("practice");
+      });
+      return;
+    }
+    reviewMode = "voice";
+    localStorage.setItem("blackline-review-mode", "voice");
+    if (voiceChat.mode !== nextVoiceMode) {
+      persistVoiceChatSession();
+      voiceChat.mode = nextVoiceMode;
+      localStorage.setItem("blackline-voice-mode", nextVoiceMode);
+    }
+  } else {
+    reviewMode = "cards";
+    localStorage.setItem("blackline-review-mode", "cards");
+  }
+  persistPreferences();
+  renderReview();
+}
+
+function reviewTabId() {
+  if (reviewMode === "cards") return "cards";
+  return voiceChat.mode === "practice" ? "practice" : "live";
+}
+
+function changeReviewTargetLanguage(language) {
+  const next = String(language || "").trim().toUpperCase();
+  if (!SPEECH_LOCALES[next] || next === state.targetLanguage || next === state.baseLanguage) return;
+  const apply = () => {
+    persistVoiceChatSession();
+    resetVoiceChat({ preserveMode: true, persistCurrent: false });
+    saveSubtitlePreferences(state.subdlKey, state.baseLanguage, next, {
+      wyzieKey: state.wyzieKey,
+      subsourceKey: state.subsourceKey,
+    });
+    voiceLivePresetId = "top-100";
+    localStorage.setItem("blackline-live-preset", "top-100");
+    renderReview();
+  };
+  if (voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting) {
+    void closeLiveCoachSession({ reset: false }).then(apply);
+  } else {
+    apply();
+  }
+}
+
+function clearCurrentVoiceModeHistory() {
+  const mode = voiceChat.mode;
+  voiceChat.messages = voiceChat.messages.filter((message) => (message.mode || mode) !== mode);
+  voiceChat.error = "";
+  voiceChat.interim = "";
+  voiceChat.draft = "";
+  persistVoiceChatSession({ replace: true });
+  renderVoiceChatStage();
+}
+
+function speechVoicesForTarget() {
+  if (!("speechSynthesis" in window)) return [];
+  const locale = speechLocale().toLowerCase();
+  const prefix = locale.split("-")[0];
+  const voices = window.speechSynthesis.getVoices();
+  const matching = voices.filter((voice) => String(voice.lang || "").toLowerCase().startsWith(prefix));
+  return matching.length ? matching : voices;
+}
+
+function voicePreviewSample(language = state.targetLanguage) {
+  const samples = {
+    EN: "Hello. Let's practice speaking naturally together.",
+    ES: "Hola. Practiquemos una conversación natural juntos.",
+    FR: "Bonjour. Entraînons-nous à parler naturellement ensemble.",
+    DE: "Hallo. Lass uns gemeinsam natürlich sprechen üben.",
+    IT: "Ciao. Facciamo pratica con una conversazione naturale.",
+    PT: "Olá. Vamos praticar uma conversa natural juntos.",
+    JA: "こんにちは。いっしょに自然な会話を練習しましょう。",
+    KO: "안녕하세요. 자연스럽게 대화하는 연습을 해 봅시다.",
+    ZH: "你好。我们一起练习自然对话吧。",
+    RU: "Привет. Давайте вместе потренируем естественную речь.",
+    NL: "Hallo. Laten we samen een natuurlijk gesprek oefenen.",
+    PL: "Cześć. Poćwiczmy razem naturalną rozmowę.",
+    TR: "Merhaba. Birlikte doğal konuşma pratiği yapalım.",
+  };
+  return samples[String(language || "").toUpperCase()] || samples.EN;
+}
+
+function previewSpeechVoice(voiceURI) {
+  if (!("speechSynthesis" in window)) return;
+  const voice = window.speechSynthesis.getVoices().find((item) => item.voiceURI === voiceURI);
+  if (!voice) return;
+  try { voiceRecognition?.abort?.(); } catch {}
+  stopVoiceSpeech({ render: false });
+  const utterance = new SpeechSynthesisUtterance(voicePreviewSample());
+  utterance.voice = voice;
+  utterance.lang = voice.lang || speechLocale();
+  utterance.rate = Math.max(0.8, Math.min(1.1, voiceAudio.rate));
+  window.speechSynthesis.speak(utterance);
+}
+
+function stopVoiceSpeech({ render = true } = {}) {
+  voiceSpeechGeneration += 1;
+  if ("speechSynthesis" in window) window.speechSynthesis.cancel();
+  const changed = voiceChat.speaking;
+  voiceChat.speaking = false;
+  if (render && changed) renderVoiceChatStage();
+}
+
+function scheduleVoiceAutoListen(delayMs = 250) {
+  if (!voiceAudio.autoContinue || voiceChat.pending || voiceChat.listening || voiceChat.speaking || voiceChat.providerLive || voiceChat.liveStarting) return;
+  if (reviewMode !== "voice" || !$("#view-review")?.classList.contains("is-active")) return;
+  window.setTimeout(() => {
+    const textInput = $("#voice-text-input");
+    if (textInput && (document.activeElement === textInput || textInput.value.trim())) return;
+    if (voiceAudio.autoContinue && !voiceChat.pending && !voiceChat.listening && !voiceChat.speaking && !voiceChat.providerLive && !voiceChat.liveStarting && reviewMode === "voice") {
+      startVoiceRecognition({ automatic: true });
+    }
+  }, delayMs);
+}
+
+function speakVoiceCoach(text) {
+  const spokenText = String(text || "").trim();
+  if (voiceChat.providerLive || voiceChat.liveStarting) return;
+  if (!spokenText || !voiceAudio.speakReplies || !("speechSynthesis" in window)) {
+    scheduleVoiceAutoListen(voiceAudio.speakReplies ? 250 : 80);
+    return;
+  }
+  try { voiceRecognition?.abort?.(); } catch {}
+  voiceRecognition = null;
+  voiceChat.listening = false;
+  stopVoiceSpeech({ render: false });
+  const generation = ++voiceSpeechGeneration;
+  const utterance = new SpeechSynthesisUtterance(spokenText);
+  utterance.lang = speechLocale();
+  const voices = speechVoicesForTarget();
+  utterance.voice = voices.find((voice) => voice.voiceURI === voiceAudio.voiceURI)
+    || voices.find((voice) => String(voice.lang || "").toLowerCase() === utterance.lang.toLowerCase())
+    || voices[0]
+    || null;
+  utterance.rate = voiceAudio.rate;
+  const finish = () => {
+    if (generation !== voiceSpeechGeneration) return;
+    voiceChat.speaking = false;
+    renderVoiceChatStage();
+    scheduleVoiceAutoListen();
+  };
+  utterance.onstart = () => {
+    if (generation !== voiceSpeechGeneration) return;
+    voiceChat.speaking = true;
+    renderVoiceChatStage();
+  };
+  utterance.onend = finish;
+  utterance.onerror = finish;
+  voiceChat.speaking = true;
+  renderVoiceChatStage();
+  window.speechSynthesis.speak(utterance);
+}
+
+async function sendVoiceTurn(transcript, alternatives = [], { inputMode = "speech" } = {}) {
+  if (!learningEnabled || !transcript || voiceChat.pending || voiceChat.providerLive || voiceChat.liveStarting) return;
+  const turnMode = voiceChat.mode;
+  const requestChat = voiceChat;
+  const requestChatId = requestChat.chatId;
+  const requestProviderInstanceId = browserCoachInstanceId;
+  const practiceItem = turnMode === "practice" ? pronunciationPracticePayload(currentPronunciationPracticeItem()) : null;
+  if (turnMode === "practice" && !practiceItem) {
+    voiceChat.error = "Nothing to practice yet.";
+    renderVoiceChatStage();
+    return;
+  }
+  stopVoiceSpeech({ render: false });
+  voiceChat.pending = true;
+  voiceChat.error = "";
+  voiceChat.interim = "";
+  voiceChat.refocusTextAfterTurn = inputMode === "text";
+  const userTurn = { role: "user", mode: turnMode, text: transcript, alternatives, createdAt: Date.now() };
+  voiceChat.messages.push(userTurn);
+  persistVoiceChatSession();
+  renderVoiceChatStage();
+  let replyToSpeak = "";
+  try {
+    const result = await postJson("/api/coach/voice-turn", {
+      chatId: requestChatId,
+      providerId: coachProviderId,
+      providerInstanceId: requestProviderInstanceId,
+      targetLanguage: state.targetLanguage,
+      baseLanguage: state.baseLanguage,
+      targetLocale: state.targetLocale,
+      baseLocale: state.baseLocale,
+      mode: turnMode,
+      inputMode,
+      transcript,
+      alternatives,
+      practiceItem,
+    });
+    // Provider calls may finish after the learner changes modes, clears this
+    // conversation, or starts a new one. Never put an old response in the
+    // wrong thread (or read it out aloud during a different practice session).
+    if (!learningEnabled || voiceChat !== requestChat || voiceChat.chatId !== requestChatId
+        || voiceChat.mode !== turnMode || !voiceChat.messages.includes(userTurn)) return;
+    const output = result.output || result;
+    const targetText = output.targetText || output.reply || "";
+    voiceChat.messages.push({
+      role: "assistant",
+      text: targetText,
+      targetText,
+      romanized: output.romanized || "",
+      baseText: output.baseText || "",
+      mode: turnMode,
+      corrections: output.corrections || [],
+      pronunciation: output.pronunciation || [],
+      provider: result.provider || null,
+      acousticScoring: Boolean(result.capabilities?.acousticScoring ?? result.acousticScoring),
+      createdAt: Date.now(),
+    });
+    persistVoiceChatSession();
+    voiceChat.bridgeAvailable = true;
+    replyToSpeak = targetText;
+  } catch (error) {
+    if (learningEnabled && voiceChat === requestChat && voiceChat.chatId === requestChatId
+        && voiceChat.mode === turnMode && voiceChat.messages.includes(userTurn)) {
+      voiceChat.error = error.message || "Voice correction failed.";
+    }
+  } finally {
+    requestChat.pending = false;
+    if (voiceChat === requestChat) renderVoiceChatStage();
+  }
+  if (replyToSpeak) speakVoiceCoach(replyToSpeak);
+}
+
+function liveConversationPresets() {
+  const presets = [];
+  const current = state.currentSource || {};
+  const hasMedia = current.kind && current.kind !== "idle" && current.title && current.title !== "No video loaded";
+  if (hasMedia) {
+    let relevantWords = [];
+    try {
+      const chapter = studyChapterCatalog().find((item) => String(item.libraryId) === String(current.libraryId)
+        && String(item.fileIndex) === String(current.fileIndex));
+      relevantWords = (chapter?.analysis?.words || []).slice(0, 24).map((item) => String(item?.value || item || "").trim()).filter(Boolean);
+    } catch {}
+    const sourceLabel = String(current.sourceTag || current.title || "").trim();
+    presets.push({
+      id: "current-media",
+      kicker: "Just watched",
+      label: `Discuss ${String(current.title).slice(0, 80)}`,
+      context: [
+        `Discuss the movie or episode the learner just watched: ${current.title}.`,
+        sourceLabel && sourceLabel !== current.title ? `Source: ${sourceLabel}.` : "",
+        "Ask about plot, characters, memorable scenes, opinions, and predictions. Keep it conversational rather than quizzing mechanically.",
+        relevantWords.length ? `Relevant vocabulary from this source: ${relevantWords.join(", ")}.` : "",
+      ].filter(Boolean).join(" "),
+    });
+  }
+
+  const recentCards = state.cards.slice().sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0)).slice(0, 24);
+  if (recentCards.length) {
+    const items = recentCards.map((card) => {
+      const front = String(card.front || "").trim();
+      const back = String(card.back || "").trim();
+      return back && back !== front ? `${front} — ${back}` : front;
+    }).filter(Boolean);
+    presets.push({
+      id: "recent-words",
+      kicker: "Recent words",
+      label: `Use ${items.length} learned items in sentences`,
+      context: `Practice the learner's recently learned vocabulary in natural sentence contexts. Prompt the learner to understand and actively use these items without simply reading a list: ${items.join("; ")}.`,
+    });
+  }
+
+  const presetWords = state.learningPreset.language === state.targetLanguage && state.learningPreset.status === "ready"
+    ? state.learningPreset.words.filter((item) => Number(item.rank || 0) <= 100).slice(0, 100).map((item) => String(item.value || "").trim()).filter(Boolean)
+    : [];
+  presets.push({
+    id: "top-100",
+    kicker: "Core words",
+    label: "Review top 100 words",
+    context: `Review high-frequency ${state.targetLanguage} vocabulary through natural conversation and short production prompts.${presetWords.length ? ` Prioritize these loaded top-100 items: ${presetWords.join(", ")}.` : ""}`,
+  });
+  presets.push({
+    id: "open-conversation",
+    kicker: "Open topic",
+    label: "Free conversation",
+    context: "Run an open natural conversation appropriate to the learner's level. Follow their interests, keep turns concise, and correct meaningful language errors without interrupting the flow.",
+  });
+  return presets;
+}
+
+function selectedLiveConversationPreset() {
+  const presets = liveConversationPresets();
+  let selected = presets.find((preset) => preset.id === voiceChat.livePresetId)
+    || presets.find((preset) => preset.id === voiceLivePresetId)
+    || presets.find((preset) => preset.id === "top-100")
+    || presets[0];
+  if (!selected) return null;
+  if (["top-100", "recent-words"].includes(selected.id)) {
+    const languageInstruction = voiceLiveAssistance === "assisted"
+      ? `For this session, conduct the conversation mainly in the learner's base language ${state.baseLanguage}, while deliberately eliciting and reviewing the target-language ${state.targetLanguage} items. Use the base language to explain, scaffold, and clarify; ask the learner to produce the reviewed words and short target-language sentences.`
+      : `For this session, use ${state.targetLanguage} throughout the conversation. Do not switch to ${state.baseLanguage} unless the learner explicitly asks for help. Review the selected vocabulary through natural target-language prompts and sentences.`;
+    selected = { ...selected, context: `${selected.context} ${languageInstruction}` };
+  }
+  if (!voiceChat.providerConversationId) {
+    voiceLivePresetId = selected.id;
+    localStorage.setItem("blackline-live-preset", selected.id);
+  }
+  if (selected.id === "top-100" && state.learningPreset.status !== "loading" &&
+      (state.learningPreset.language !== state.targetLanguage || state.learningPreset.status === "idle")) {
+    void ensureLearningPreset(state.targetLanguage).then(() => {
+      if (reviewMode === "voice" && voiceChat.mode === "live") renderVoiceChatStage();
+    }).catch(() => {});
+  }
+  return selected;
+}
+
+function setLiveAssistance(mode) {
+  if (voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting) return;
+  voiceLiveAssistance = mode === "unassisted" ? "unassisted" : "assisted";
+  localStorage.setItem("blackline-live-assistance", voiceLiveAssistance);
+  persistPreferences();
+  renderVoiceChatStage();
+}
+
+function selectLiveConversationPreset(id) {
+  if (voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting) return;
+  const selected = liveConversationPresets().find((preset) => preset.id === id);
+  if (!selected) return;
+  voiceLivePresetId = selected.id;
+  localStorage.setItem("blackline-live-preset", selected.id);
+  persistPreferences();
+  if (selected.id === "top-100" && (state.learningPreset.language !== state.targetLanguage || state.learningPreset.status !== "ready")) {
+    void ensureLearningPreset(state.targetLanguage).then(() => renderVoiceChatStage()).catch(() => {});
+  }
+  renderVoiceChatStage();
+}
+
+async function startProviderLiveVoice() {
+  const provider = selectedCoachProvider();
+  if (!learningEnabled || voiceChat.providerLive || voiceChat.liveStarting || voiceChat.mode !== "live") return;
+  if (!(provider.supports?.liveVoice || provider.id === "chatgpt-browser")) {
+    voiceChat.error = `${coachProviderShortLabel(provider.label) || provider.id} can't hold a live voice conversation.`;
+    renderVoiceChatStage();
+    return;
+  }
+  try { voiceRecognition?.abort?.(); } catch {}
+  voiceRecognition = null;
+  voiceChat.listening = false;
+  stopVoiceSpeech({ render: false });
+  const requestChat = voiceChat;
+  const requestChatId = requestChat.chatId;
+  const requestProviderInstanceId = browserCoachInstanceId;
+  const startToken = {};
+  requestChat.liveStartRequest = startToken;
+  const stillStarting = () => learningEnabled && voiceChat === requestChat
+    && requestChat.chatId === requestChatId && requestChat.mode === "live"
+    && requestChat.liveStartRequest === startToken && requestChat.liveStarting;
+  voiceChat.liveStarting = true;
+  voiceChat.error = "";
+  renderVoiceChatStage();
+  try {
+    let preset = selectedLiveConversationPreset();
+    if (!preset) throw new Error("Choose a conversation preset before starting Live Voice.");
+    if (preset.id === "top-100" && (state.learningPreset.language !== state.targetLanguage || state.learningPreset.status !== "ready")) {
+      await ensureLearningPreset(state.targetLanguage);
+      if (!stillStarting()) return;
+      preset = selectedLiveConversationPreset();
+      if (!preset) throw new Error("Top 100 vocabulary is not available for this target language.");
+    }
+    if (!stillStarting()) return;
+    const result = await postJson("/api/coach/live-session/start", {
+      chatId: requestChatId,
+      providerId: provider.id,
+      providerInstanceId: requestProviderInstanceId,
+      targetLanguage: state.targetLanguage,
+      baseLanguage: state.baseLanguage,
+      targetLocale: state.targetLocale,
+      baseLocale: state.baseLocale,
+      assistanceMode: voiceLiveAssistance,
+      presetId: preset.id,
+      presetLabel: preset.label,
+      presetContext: preset.context,
+    });
+    if (!stillStarting()) {
+      // The backend may have created a session after the user cancelled the
+      // pending request. Close that specific orphan; never start Edge Voice.
+      if (result.session?.conversationId) {
+        void postJson("/api/coach/live-session/close", {
+          chatId: requestChatId,
+          providerId: provider.id,
+          providerInstanceId: requestProviderInstanceId,
+        }).catch(() => {});
+      }
+      return;
+    }
+    const conversationId = String(result.session?.conversationId || "").trim();
+    if (!conversationId) throw new Error("The coach provider did not return a live conversation.");
+    requestChat.liveStartRequest = null;
+    voiceChat.livePresetId = preset.id;
+    voiceChat.livePresetLabel = preset.label;
+    voiceChat.livePresetContext = preset.context;
+    voiceChat.providerConversationId = conversationId;
+    window.postMessage({
+      source: "language-video-learner-app",
+      type: "browser-coach:live-start",
+      chatId: requestChatId,
+      conversationId,
+    }, window.location.origin);
+  } catch (error) {
+    if (stillStarting()) {
+      requestChat.liveStartRequest = null;
+      requestChat.liveStarting = false;
+      requestChat.error = error.message || "Could not start provider live voice.";
+      renderVoiceChatStage();
+    }
+  }
+}
+
+function armProviderLiveIdleTimeout() {
+  if (voiceLiveIdleTimer) clearTimeout(voiceLiveIdleTimer);
+  if (voiceChat.providerLive) {
+    voiceLiveIdleTimer = null;
+    return;
+  }
+  voiceLiveIdleTimer = setTimeout(() => {
+    voiceLiveIdleTimer = null;
+    if (!voiceChat.providerLive && !voiceChat.providerConversationId) return;
+    const expiredChatId = voiceChat.chatId;
+    void closeLiveCoachSession().then(() => {
+      if (voiceChat.chatId === expiredChatId) return;
+      voiceChat.error = "The conversation ended after 5 minutes without talking. Press Start talking to begin a new one.";
+      renderVoiceChatStage();
+    });
+  }, COACH_LIVE_IDLE_TIMEOUT_MS);
+}
+
+async function touchProviderLiveSession() {
+  if (!voiceChat.chatId || !voiceChat.providerConversationId) return;
+  try {
+    await postJson("/api/coach/live-session/touch", {
+      chatId: voiceChat.chatId,
+      providerId: coachProviderId,
+      providerInstanceId: browserCoachInstanceId,
+      nativeVoice: true,
+    });
+  } catch {}
+}
+
+function stopProviderLiveVoice() {
+  if (!voiceChat.providerLive && !voiceChat.liveStarting) return;
+  voiceChat.liveStartRequest = null;
+  if (!voiceChat.providerLive && !voiceChat.providerConversationId) {
+    // The HTTP session creation has not returned yet. Invalidate the pending
+    // start; its late response will clean up the backend session if necessary.
+    voiceChat.liveStarting = false;
+    renderVoiceChatStage();
+    return;
+  }
+  voiceChat.liveStarting = true;
+  renderVoiceChatStage();
+  window.postMessage({
+    source: "language-video-learner-app",
+    type: "browser-coach:live-stop",
+    chatId: voiceChat.chatId,
+    conversationId: voiceChat.providerConversationId || "",
+  }, window.location.origin);
+}
+
+async function closeLiveCoachSession({ reset = true } = {}) {
+  voiceChat.liveStartRequest = null;
+  if (voiceLiveIdleTimer) clearTimeout(voiceLiveIdleTimer);
+  voiceLiveIdleTimer = null;
+  if (voiceUsageActiveSince) stopVoiceUsageClock();
+  const closing = {
+    chatId: voiceChat.chatId,
+    providerId: coachProviderId,
+    providerInstanceId: browserCoachInstanceId,
+    conversationId: voiceChat.providerConversationId || "",
+    wasProviderLive: Boolean(voiceChat.providerLive || voiceChat.liveStarting),
+  };
+  persistVoiceChatSession();
+  if (closing.wasProviderLive) {
+    window.postMessage({
+      source: "language-video-learner-app",
+      type: "browser-coach:live-stop",
+      chatId: closing.chatId,
+      conversationId: closing.conversationId,
+    }, window.location.origin);
+    voiceChat.providerLive = false;
+    voiceChat.liveStarting = false;
+  }
+  try {
+    await postJson("/api/coach/live-session/close", {
+      chatId: closing.chatId,
+      providerId: closing.providerId,
+      providerInstanceId: closing.providerInstanceId,
+    });
+  } catch (error) {
+    if (!reset || voiceChat.chatId !== closing.chatId) return;
+    voiceChat.error = error.message || "Could not close the live coach session.";
+    renderVoiceChatStage();
+    return;
+  }
+  if (voiceChat.chatId === closing.chatId) {
+    voiceChat.providerLive = false;
+    voiceChat.liveStarting = false;
+    voiceChat.providerConversationId = "";
+    voiceChat.liveSeen = new Set();
+    voiceChat.livePresetId = "";
+    voiceChat.livePresetLabel = "";
+    voiceChat.livePresetContext = "";
+    voiceChat.error = "";
+    if (reset) voiceChat.chatId = crypto.randomUUID();
+    renderVoiceChatStage();
+  }
+}
+
+async function enrichLiveRomanization(message) {
+  if (!message || message.role !== "assistant" || message.romanized || !message.targetText) return;
+  if (!["JA", "KO", "ZH", "RU"].includes(state.targetLanguage)) return;
+  try {
+    const result = await postJson("/api/subtitles/romanize", {
+      language: state.targetLanguage,
+      texts: [message.targetText],
+    });
+    const romanized = String(result.romanized?.[0] || "").trim();
+    if (!romanized || message.romanized) return;
+    message.romanized = romanized;
+    persistVoiceChatSession();
+    renderVoiceChatStage();
+  } catch {}
+}
+
+function mergeProviderLiveTranscript(entries) {
+  if (!Array.isArray(entries) || !entries.length) return;
+  let changed = false;
+  for (const entry of entries.slice(0, 20)) {
+    const id = String(entry?.id || "").slice(0, 200);
+    const role = entry?.role === "assistant" ? "assistant" : entry?.role === "user" ? "user" : null;
+    const text = String(entry?.text || "").trim().slice(0, 4000);
+    if (!id || !role || !text || voiceChat.liveSeen.has(id)) continue;
+    voiceChat.liveSeen.add(id);
+    const message = role === "assistant"
+      ? {
+          role,
+          mode: "live",
+          text,
+          targetText: text,
+          romanized: "",
+          baseText: "",
+          providerEntryId: id,
+          provider: selectedCoachProvider(),
+          providerLive: true,
+          createdAt: Date.now(),
+        }
+      : {
+          role,
+          mode: "live",
+          text,
+          providerEntryId: id,
+          providerLive: true,
+          createdAt: Date.now(),
+        };
+    voiceChat.messages.push(message);
+    changed = true;
+    if (role === "assistant") void enrichLiveRomanization(message);
+  }
+  if (!changed) return;
+  armProviderLiveIdleTimeout();
+  void touchProviderLiveSession();
+  persistVoiceChatSession();
+  renderVoiceChatStage();
+}
+
+function mergePersistedLiveTranscriptSession(session) {
+  if (!session || String(session.id || "") !== String(voiceChat.chatId || "")) return false;
+  const sessionConversationId = String(session.conversationId || "");
+  if (voiceChat.providerConversationId && sessionConversationId && sessionConversationId !== voiceChat.providerConversationId) return false;
+  if (!voiceChat.providerConversationId && sessionConversationId) voiceChat.providerConversationId = sessionConversationId;
+  const persistedMessages = Array.isArray(session.messages) ? session.messages : [];
+  const byProviderId = new Map(
+    voiceChat.messages
+      .filter((message) => message?.providerEntryId)
+      .map((message) => [String(message.providerEntryId), message]),
+  );
+  let changed = false;
+  for (const persisted of persistedMessages.slice(-200)) {
+    if ((persisted?.mode || "live") !== "live") continue;
+    const providerEntryId = String(persisted?.providerEntryId || "").slice(0, 200);
+    const role = persisted?.role === "assistant" ? "assistant" : persisted?.role === "user" ? "user" : null;
+    const text = String(persisted?.text || "").trim().slice(0, 4000);
+    if (!providerEntryId || !role || !text) continue;
+    voiceChat.liveSeen.add(providerEntryId);
+    const existing = byProviderId.get(providerEntryId);
+    if (existing) {
+      const updates = {
+        text,
+        targetText: String(persisted.targetText || (role === "assistant" ? text : existing.targetText || "")).slice(0, 4000),
+        romanized: String(persisted.romanized || existing.romanized || "").slice(0, 4000),
+        baseText: String(persisted.baseText || existing.baseText || "").slice(0, 4000),
+      };
+      for (const [key, value] of Object.entries(updates)) {
+        if (value && existing[key] !== value) {
+          existing[key] = value;
+          changed = true;
+        }
+      }
+      continue;
+    }
+    const message = {
+      role,
+      mode: "live",
+      text,
+      targetText: role === "assistant" ? String(persisted.targetText || text).slice(0, 4000) : "",
+      romanized: role === "assistant" ? String(persisted.romanized || "").slice(0, 4000) : "",
+      baseText: role === "assistant" ? String(persisted.baseText || "").slice(0, 4000) : "",
+      providerEntryId,
+      provider: role === "assistant" ? selectedCoachProvider() : null,
+      providerLive: true,
+      createdAt: Number(persisted.createdAt) || Date.now(),
+    };
+    voiceChat.messages.push(message);
+    byProviderId.set(providerEntryId, message);
+    changed = true;
+  }
+  if (!changed) return false;
+  voiceChat.messages = voiceChat.messages
+    .sort((a, b) => Number(a?.createdAt || 0) - Number(b?.createdAt || 0))
+    .slice(-200);
+  const existingSession = state.coachTranscripts.findIndex((item) => String(item?.id || "") === String(session.id || ""));
+  if (existingSession >= 0) state.coachTranscripts.splice(existingSession, 1, session);
+  else state.coachTranscripts.unshift(session);
+  state.coachTranscripts = state.coachTranscripts.slice(0, 100);
+  storeLocalCopy("blackline-coach-transcripts", state.coachTranscripts);
+  renderVoiceChatStage();
+  return true;
+}
+
+function liveTranscriptSyncNeeded() {
+  return reviewMode === "voice"
+    && voiceChat.mode === "live"
+    && Boolean(voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting)
+    && Boolean($("#view-review")?.classList.contains("is-active"));
+}
+
+async function refreshLiveTranscriptFromServer() {
+  if (!liveTranscriptSyncNeeded()) return;
+  try {
+    const payload = await fetchJson("/api/app-state/coachTranscripts");
+    const sessions = Array.isArray(payload?.value) ? payload.value : [];
+    const matching = sessions.find((session) => String(session?.id || "") === String(voiceChat.chatId || ""))
+      || (voiceChat.providerConversationId
+        ? sessions.find((session) => String(session?.conversationId || "") === String(voiceChat.providerConversationId))
+        : null);
+    if (matching) mergePersistedLiveTranscriptSession(matching);
+  } catch {}
+}
+
+function ensureLiveTranscriptSync() {
+  if (!liveTranscriptSyncNeeded()) {
+    if (voiceTranscriptSyncTimer) clearInterval(voiceTranscriptSyncTimer);
+    voiceTranscriptSyncTimer = null;
+    return;
+  }
+  if (voiceTranscriptSyncTimer) return;
+  void refreshLiveTranscriptFromServer();
+  voiceTranscriptSyncTimer = setInterval(() => {
+    if (!liveTranscriptSyncNeeded()) {
+      clearInterval(voiceTranscriptSyncTimer);
+      voiceTranscriptSyncTimer = null;
+      return;
+    }
+    void refreshLiveTranscriptFromServer();
+  }, 1800);
+}
+
+async function enrichProviderLiveTranscript() {
+  if (!learningEnabled) return;
+  const originChat = voiceChat;
+  const originChatId = voiceChat.chatId;
+  const pending = voiceChat.messages.filter((message) =>
+    message.role === "assistant" && message.providerLive && message.providerEntryId && !message.baseText && message.targetText,
+  ).slice(-40);
+  if (!pending.length || voiceChat.providerLive || voiceChat.liveStarting) return;
+  try {
+    const result = await postJson("/api/coach/live-transcript/enrich", {
+      providerId: coachProviderId,
+      providerInstanceId: browserCoachInstanceId,
+      targetLanguage: state.targetLanguage,
+      baseLanguage: state.baseLanguage,
+      items: pending.map((message) => ({ id: message.providerEntryId, text: message.targetText })),
+    });
+    if (!learningEnabled || voiceChat !== originChat || voiceChat.chatId !== originChatId) return;
+    const byId = new Map((Array.isArray(result.items) ? result.items : []).map((item) => [String(item.id || ""), item]));
+    let changed = false;
+    for (const message of pending) {
+      const item = byId.get(message.providerEntryId);
+      if (!item) continue;
+      const targetText = String(item.targetText || message.targetText || "").trim();
+      const romanized = String(item.romanized || message.romanized || "").trim();
+      const baseText = String(item.baseText || "").trim();
+      if (targetText) message.targetText = targetText;
+      if (romanized) message.romanized = romanized;
+      if (baseText) message.baseText = baseText;
+      changed = true;
+    }
+    if (changed) {
+      persistVoiceChatSession();
+      renderVoiceChatStage();
+    }
+  } catch (error) {
+    if (learningEnabled && voiceChat === originChat && voiceChat.chatId === originChatId) {
+      voiceChat.error = `The transcript was saved, but its translations couldn't be added: ${error.message || "unknown error"}`;
+      renderVoiceChatStage();
+    }
+  }
+}
+
+window.addEventListener("message", (event) => {
+  if (event.source !== window || event.origin !== window.location.origin) return;
+  if (event.data?.source !== "language-video-learner-browser-coach") return;
+  if (event.data?.type === "browser-coach:instance") {
+    const instanceId = String(event.data.instanceId || "").trim();
+    if (/^[A-Za-z0-9._:-]{8,120}$/.test(instanceId)) browserCoachInstanceId = instanceId;
+    browserCoachHelperConnected = Boolean(event.data.helperConnected);
+    void refreshBrowserCoachStatus();
+    return;
+  }
+  if (event.data?.type === "browser-coach:connect-result") {
+    const instanceId = String(event.data.instanceId || "").trim();
+    if (/^[A-Za-z0-9._:-]{8,120}$/.test(instanceId)) browserCoachInstanceId = instanceId;
+    browserCoachConnecting = false;
+    browserCoachHelperConnected = Boolean(event.data.ok);
+    browserCoachAction = event.data.ok
+      ? "The helper is connected."
+      : `The helper didn't connect: ${String(event.data.error || "it did not respond.")}`;
+    if (event.data.ok) {
+      if (/^Helper connection failed:/i.test(String(voiceChat.error || ""))) voiceChat.error = "";
+    } else {
+      voiceChat.error = `Helper connection failed: ${String(event.data.error || "Browser helper did not respond.")}`;
+    }
+    renderVoiceChatStage();
+    void refreshBrowserCoachStatus();
+    return;
+  }
+  if (event.data?.type === "browser-coach:live-control-result") {
+    if (!learningEnabled || String(event.data.chatId || "") !== voiceChat.chatId) return;
+    const controlConversationId = String(event.data.conversationId || "");
+    if (event.data.action === "start" && voiceChat.mode !== "live") return;
+    if (event.data.action === "start" && !voiceChat.liveStarting) return;
+    if (event.data.action === "start" && controlConversationId && voiceChat.providerConversationId && controlConversationId !== voiceChat.providerConversationId) return;
+    if (event.data.action === "stop" && controlConversationId && !voiceChat.providerConversationId) return;
+    if (event.data.action === "stop" && controlConversationId && voiceChat.providerConversationId && controlConversationId !== voiceChat.providerConversationId) return;
+    voiceChat.liveStarting = false;
+    if (event.data.action === "start" && event.data.ok) {
+      voiceChat.providerLive = true;
+      voiceChat.providerConversationId = controlConversationId || voiceChat.providerConversationId || "";
+      voiceChat.error = "";
+      startVoiceUsageClock();
+      armProviderLiveIdleTimeout();
+    } else if (event.data.action === "stop" && event.data.ok) {
+      voiceChat.providerLive = false;
+      voiceChat.error = "";
+      stopVoiceUsageClock();
+      armProviderLiveIdleTimeout();
+      queueMicrotask(() => { void enrichProviderLiveTranscript(); });
+    } else {
+      if (event.data.action === "start") voiceChat.providerLive = false;
+      voiceChat.error = String(event.data.error || "Provider live voice could not be controlled.");
+    }
+    renderVoiceChatStage();
+    return;
+  }
+  if (event.data?.type === "browser-coach:live-transcript") {
+    if (!learningEnabled) return;
+    if (String(event.data.chatId || "") !== voiceChat.chatId) return;
+    const conversationId = String(event.data.conversationId || "");
+    if (voiceChat.providerConversationId && conversationId && conversationId !== voiceChat.providerConversationId) return;
+    mergeProviderLiveTranscript(event.data.entries);
+  }
+});
+
+function connectBrowserCoach() {
+  if (browserCoachConnecting) return;
+  browserCoachConnecting = true;
+  browserCoachAction = "Connecting the helper…";
+  renderBrowserCoachStatus();
+  renderVoiceChatStage();
+  window.postMessage({
+    source: "language-video-learner-app",
+    type: "browser-coach:connect",
+  }, window.location.origin);
+}
+
+function startVoiceRecognition({ automatic = false } = {}) {
+  const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+  if (!Recognition) {
+    if (!automatic) {
+      voiceChat.error = "This browser can't turn speech into text. Use Chrome or Edge, or type what you said.";
+      renderVoiceChatStage();
+    }
+    return;
+  }
+  if (voiceChat.pending || voiceChat.providerLive || voiceChat.liveStarting) return;
+  if (voiceChat.speaking || ("speechSynthesis" in window && window.speechSynthesis.speaking)) {
+    stopVoiceSpeech({ render: false });
+  }
+  if (voiceRecognition && voiceChat.listening) {
+    try { voiceRecognition.stop(); } catch {}
+    return;
+  }
+  const recognition = new Recognition();
+  voiceRecognition = recognition;
+  if (voiceAudio.inputLanguage && voiceAudio.inputLanguage !== "auto") {
+    const recognitionLanguage = voiceAudio.inputLanguage === "target"
+      ? state.targetLanguage
+      : voiceAudio.inputLanguage === "base"
+        ? state.baseLanguage
+        : voiceAudio.inputLanguage;
+    recognition.lang = speechLocale(recognitionLanguage);
+  }
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.maxAlternatives = 5;
+  recognition.onstart = () => {
+    voiceChat.listening = true;
+    voiceChat.error = "";
+    renderVoiceChatStage();
+  };
+  recognition.onresult = (event) => {
+    let interim = "";
+    let finalResult = null;
+    for (let index = event.resultIndex; index < event.results.length; index += 1) {
+      const result = event.results[index];
+      if (result.isFinal) finalResult = result;
+      else interim += result[0]?.transcript || "";
+    }
+    voiceChat.interim = interim.trim();
+    renderVoiceChatStage();
+    if (finalResult) {
+      const alternatives = [...finalResult].slice(0, 5).map((item) => ({ transcript: item.transcript, confidence: item.confidence }));
+      const transcript = alternatives[0]?.transcript?.trim() || "";
+      if (transcript) {
+        try { recognition.stop(); } catch {}
+        void sendVoiceTurn(transcript, alternatives);
+      }
+    }
+  };
+  recognition.onerror = (event) => {
+    if (event.error === "aborted") {
+      voiceChat.listening = false;
+      renderVoiceChatStage();
+      return;
+    }
+    if (event.error === "network" && voiceAudio.autoContinue) {
+      voiceAudio.autoContinue = false;
+      saveVoiceAudioPreferences();
+    }
+    voiceChat.error = event.error === "not-allowed"
+      ? "Microphone permission was denied."
+      : event.error === "network"
+        ? "Speech recognition network error. Hands-free was paused; keep typing or press TALK to retry."
+        : `Speech recognition error: ${event.error || "unknown"}`;
+    voiceChat.listening = false;
+    renderVoiceChatStage();
+  };
+  recognition.onend = () => {
+    voiceChat.listening = false;
+    voiceRecognition = null;
+    renderVoiceChatStage();
+  };
+  try { recognition.start(); }
+  catch (error) {
+    voiceChat.error = error.message || "Could not start speech recognition.";
+    voiceChat.listening = false;
+    renderVoiceChatStage();
+  }
+}
+
+// Microphone for the talk button (not in the shared icon set).
+const VOICE_MIC_ICON = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></svg>';
+
+// "ChatGPT · signed-in browser" (older saved replies) → "ChatGPT".
+function coachProviderShortLabel(label) {
+  return String(label || "").split(/\s+·\s+|\s+\(/)[0].replace(/\s+in your browser$/i, "").trim();
+}
+
+function voiceMessageMarkup(message, index, { replay = false } = {}) {
+  if (message.role === "user") {
+    return `<div class="vc-msg is-user"><span class="vc-msg__who">You</span><p class="vc-msg__text">${escapeHtml(message.text)}</p></div>`;
+  }
+  const targetText = message.targetText || message.text || "";
+  const reading = message.romanized && message.romanized !== targetText ? message.romanized : "";
+  const via = coachProviderShortLabel(message.provider?.label);
+  const notes = [
+    ...(message.corrections || []).map((item) => `<li class="vc-note"><span class="vc-note__kind">Correction</span><strong>${escapeHtml(item.better || item.heard)}</strong>${item.note ? `<small>${escapeHtml(item.note)}</small>` : ""}</li>`),
+    ...(message.pronunciation || []).map((item) => `<li class="vc-note"><span class="vc-note__kind">Pronunciation</span><strong>${escapeHtml(item.word)}</strong>${item.tip ? `<small>${escapeHtml(item.tip)}</small>` : ""}</li>`),
+  ].join("");
+  return `<div class="vc-msg is-coach${state.targetLanguage === "JA" ? " is-japanese" : ""}">
+    <span class="vc-msg__who">Coach${via ? `<span class="vc-msg__via">${escapeHtml(via)}</span>` : ""}</span>
+    <p class="vc-msg__target" lang="${escapeHtml(speechLocale(state.targetLanguage))}">${escapeHtml(targetText)}</p>
+    ${reading ? `<p class="vc-msg__line"><span>${state.targetLanguage === "JA" ? "Romaji" : "Reading"}</span>${escapeHtml(reading)}</p>` : ""}
+    ${message.baseText ? `<p class="vc-msg__line"><span>${escapeHtml(languageName(state.baseLanguage))}</span>${escapeHtml(message.baseText)}</p>` : ""}
+    ${notes ? `<ul class="vc-notes">${notes}</ul>` : ""}
+    ${replay && targetText ? buttonMarkup({ label: "Play again", variant: "ghost", size: "sm", icon: "play", className: "vc-msg__replay", attrs: { "data-voice-replay": index } }) : ""}
+  </div>`;
+}
+
+// The strip above both voice tabs: connection state, which coach, the helper button and a tip.
+function voiceCoachBarMarkup({ provider, status, tone, actions = "" }) {
+  const providerNeedsBridge = provider.id === "chatgpt-browser";
+  const options = (coachProviders.length ? coachProviders : [provider])
+    .map((item) => `<option value="${escapeHtml(item.id)}"${item.id === provider.id ? " selected" : ""}>${escapeHtml(coachProviderShortLabel(item.label) || item.id)}</option>`).join("");
+  const connected = browserCoachHelperConnected && !browserCoachVersionMismatch;
+  const connect = providerNeedsBridge ? buttonMarkup({
+    label: browserCoachVersionMismatch ? "Reload the extension" : browserCoachConnecting ? "Connecting…" : connected ? "Connected" : "Connect the helper",
+    variant: connected ? "ghost" : "secondary",
+    size: "sm",
+    icon: connected ? "check" : browserCoachVersionMismatch ? "refresh" : "",
+    className: "vc-connect",
+    attrs: { id: "voice-connect", disabled: browserCoachConnecting || undefined },
+  }) : "";
+  const tip = providerNeedsBridge ? helpTipMarkup({
+    id: "tip-voice-coach",
+    label: "How the coach connects",
+    content: "<strong>ChatGPT runs in your own browser.</strong> The helper extension (LVL ChatGPT Coach) opens ChatGPT in a tab where you're signed in and passes each turn back and forth, so it uses your own ChatGPT plan. Set it up once in Settings, Coach; after an app update, reload it in Extensions.",
+  }) : "";
+  return `<div class="vc-bar">
+    <span class="vc-status is-${escapeHtml(tone)}" role="status"><i aria-hidden="true"></i>${escapeHtml(status)}</span>
+    <label class="learn-select vc-provider"><span>Coach</span><select id="voice-provider">${options}</select></label>
+    ${connect}${tip}
+    ${actions ? `<span class="vc-bar__end">${actions}</span>` : ""}
+  </div>`;
+}
+
+function renderVoiceChatStage() {
+  const stage = $("#review-stage");
+  stage?.closest(".review-layout")?.classList.toggle("is-voice-mode", reviewMode === "voice");
+  if (!stage || reviewMode !== "voice") {
+    if (voiceTranscriptSyncTimer) clearInterval(voiceTranscriptSyncTimer);
+    voiceTranscriptSyncTimer = null;
+    return;
+  }
+  const previousInput = $("#voice-text-input");
+  const inputSnapshot = previousInput ? {
+    value: previousInput.value,
+    focused: document.activeElement === previousInput,
+    selectionStart: previousInput.selectionStart,
+    selectionEnd: previousInput.selectionEnd,
+  } : null;
+  if (inputSnapshot) voiceChat.draft = inputSnapshot.value;
+  const visibleMessages = voiceChat.messages.filter((message) => {
+    const messageMode = message.mode || (message.providerLive ? "live" : "practice");
+    return messageMode === voiceChat.mode;
+  });
+  const messages = visibleMessages.map((message, visibleIndex) => voiceMessageMarkup(message, visibleIndex, { replay: voiceChat.mode === "practice" })).join("");
+  const support = Boolean(window.SpeechRecognition || window.webkitSpeechRecognition);
+  const provider = selectedCoachProvider();
+  const providerNeedsBridge = provider.id === "chatgpt-browser";
+  const providerSupportsNativeLive = voiceChat.mode === "live" && Boolean(provider.supports?.liveVoice || provider.id === "chatgpt-browser");
+  const providerBridgeReady = !providerNeedsBridge || (voiceChat.bridgeAvailable && !browserCoachVersionMismatch);
+  const bridgeState = !providerNeedsBridge ? "ready"
+    : browserCoachVersionMismatch ? "update"
+      : voiceChat.bridgeAvailable === true ? "ready"
+        : voiceChat.bridgeAvailable === false ? "offline" : "checking";
+  const bridgeText = { ready: "Ready", update: "Helper needs a reload", offline: "Helper offline", checking: "Checking…" }[bridgeState];
+  // The status chip already says when the helper is offline or needs a reload.
+  const shownError = voiceChat.error && !(bridgeState !== "ready" && /^Language Coach (?:browser extension is (?:not connected|unavailable)|extension update required)/i.test(String(voiceChat.error))) ? voiceChat.error : "";
+
+  if (voiceChat.mode === "live") {
+    ensureLiveTranscriptSync();
+    const liveState = voiceChat.providerLive ? "live" : voiceChat.liveStarting ? "starting" : "idle";
+    const liveHelperReady = !providerNeedsBridge || browserCoachHelperConnected;
+    const canStartNative = providerSupportsNativeLive && providerBridgeReady && liveHelperReady && !voiceChat.liveStarting;
+    const mainAction = voiceChat.providerLive
+      ? `<button id="voice-provider-live" class="ui-btn ui-btn--secondary ui-btn--lg vc-start is-stop" type="button"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" stroke="none"/></svg><span>Stop</span></button>`
+      : `<button id="voice-provider-live" class="ui-btn ui-btn--primary ui-btn--lg vc-start" type="button"${canStartNative ? "" : " disabled"}>${VOICE_MIC_ICON}<span>${voiceChat.liveStarting ? "Starting…" : "Start talking"}</span></button>`;
+    const startHint = voiceChat.providerLive || voiceChat.liveStarting || canStartNative ? ""
+      : bridgeState === "update" ? "Reload the extension first."
+        : bridgeState === "offline" || !liveHelperReady ? "Connect the helper first."
+          : bridgeState === "checking" ? "Checking the helper…" : "";
+    const hasSession = Boolean(voiceChat.providerConversationId || visibleMessages.length || voiceChat.providerLive || voiceChat.liveStarting);
+    const presets = liveConversationPresets();
+    const selectedPreset = selectedLiveConversationPreset();
+    const presetLocked = Boolean(voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting);
+    const topics = presets.map((preset) => `<button type="button" class="vc-topic" data-live-preset="${escapeHtml(preset.id)}" aria-pressed="${selectedPreset?.id === preset.id}"${presetLocked ? " disabled" : ""}><span class="vc-topic__kicker">${escapeHtml(preset.kicker)}</span><strong>${escapeHtml(preset.label)}</strong></button>`).join("");
+    const assistance = `<div class="ui-segmented vc-assist" role="group" aria-labelledby="vc-language-label">
+      <button type="button" class="ui-segmented__item" data-live-assistance="assisted" aria-pressed="${voiceLiveAssistance === "assisted"}"${presetLocked ? " disabled" : ""}>Help in ${escapeHtml(languageName(state.baseLanguage))}</button>
+      <button type="button" class="ui-segmented__item" data-live-assistance="unassisted" aria-pressed="${voiceLiveAssistance === "unassisted"}"${presetLocked ? " disabled" : ""}>${escapeHtml(languageName(state.targetLanguage))} only</button>
+    </div>`;
+    const selectedFocus = voiceChat.livePresetLabel || selectedPreset?.label || "Choose a topic";
+    const kicker = liveState === "live" ? "Talking now"
+      : liveState === "starting" ? "Opening ChatGPT…"
+        : voiceChat.providerConversationId
+          ? `<button type="button" class="ui-tip-text vc-launch__open" data-ui-tip="tip-voice-idle" aria-describedby="tip-voice-idle">Conversation open</button><span class="ui-tip-content" id="tip-voice-idle" hidden>It closes by itself after 5 minutes without talking. End it sooner with End conversation.</span>`
+          : "Topic";
+    const usedMs = voiceUsageMs();
+    const remainingMs = Math.max(0, VOICE_USAGE_REFERENCE_LIMIT_MS - usedMs);
+    const unpaired = bridgeState === "ready" && !liveHelperReady;
+    const status = liveState === "live" ? "Live" : liveState === "starting" ? "Starting…" : unpaired ? "Not connected" : bridgeText;
+    const tone = liveState === "live" ? "live" : liveState === "starting" ? "checking" : unpaired ? "checking" : bridgeState;
+    stage.innerHTML = `<section class="vc vc--live is-${liveState}" aria-label="Conversation">
+      ${voiceCoachBarMarkup({ provider, status, tone })}
+      <div class="vc-setup">
+        <div class="vc-group">
+          <h3 class="vc-label" id="vc-topic-label">Topic</h3>
+          <div class="vc-topics" role="group" aria-labelledby="vc-topic-label">${topics}</div>
+        </div>
+        <div class="vc-group vc-group--row">
+          <h3 class="vc-label" id="vc-language-label">Language</h3>
+          ${assistance}
+        </div>
+      </div>
+      <div class="vc-launch">
+        <div class="vc-orb" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span></div>
+        <div class="vc-launch__copy">
+          <span class="vc-launch__kicker">${kicker}</span>
+          <h3 class="vc-launch__title">${escapeHtml(selectedFocus)}</h3>
+          ${startHint ? `<p class="vc-launch__hint">${escapeHtml(startHint)}</p>` : ""}
+        </div>
+        <div class="vc-launch__actions">
+          ${mainAction}
+          ${hasSession ? buttonMarkup({ label: "End conversation", variant: "ghost", size: "sm", className: "vc-end", attrs: { id: "voice-end-session" } }) : ""}
+        </div>
+      </div>
+      <div class="vc-usage">
+        <span class="vc-usage__item">Voice in the last 24 h <strong id="voice-usage-used">${formatVoiceUsage(usedMs)}</strong></span>
+        <span class="vc-usage__item">Left of 3 h <strong id="voice-usage-remaining">${formatVoiceUsage(remainingMs)}</strong></span>
+        ${visibleMessages.length ? `<span class="vc-usage__item">${visibleMessages.length} message${visibleMessages.length === 1 ? "" : "s"}</span>` : ""}
+        ${helpTipMarkup({ id: "tip-voice-usage", label: "About voice time", content: "ChatGPT limits how long voice can run each day. This counts the voice time used from this app in the last 24 hours. 3 hours is a rough guide, not ChatGPT's exact limit." })}
+      </div>
+      <div id="voice-chat-log" class="vc-log" aria-live="polite">${messages || '<p class="vc-log__empty">What you and the coach say shows up here.</p>'}</div>
+      ${shownError ? `<p class="vc-error" role="alert">${escapeHtml(shownError)}</p>` : ""}
+    </section>`;
+    $("#voice-connect")?.addEventListener("click", () => {
+      if (browserCoachVersionMismatch) void openBrowserCoachExtensionFolder();
+      else connectBrowserCoach();
+    });
+    $("#voice-provider-live")?.addEventListener("click", () => {
+      if (voiceChat.providerLive) stopProviderLiveVoice();
+      else void startProviderLiveVoice();
+    });
+    $("#voice-end-session")?.addEventListener("click", () => { void closeLiveCoachSession(); });
+    $("#voice-provider")?.addEventListener("change", (event) => setCoachProvider(event.target.value));
+    $$('[data-live-preset]').forEach((button) => button.addEventListener("click", () => selectLiveConversationPreset(button.dataset.livePreset)));
+    $$('[data-live-assistance]').forEach((button) => button.addEventListener("click", () => setLiveAssistance(button.dataset.liveAssistance)));
+    const log = $("#voice-chat-log");
+    if (log) log.scrollTop = log.scrollHeight;
+    updateVoiceUsageDisplay();
+    return;
+  }
+
+  if (voiceTranscriptSyncTimer) clearInterval(voiceTranscriptSyncTimer);
+  voiceTranscriptSyncTimer = null;
+
+  const voices = speechVoicesForTarget();
+  const selectedVoice = voices.find((voice) => voice.voiceURI === voiceAudio.voiceURI) || null;
+  const voiceRows = voices.map((voice) => `<div class="vc-picker__row${voice.voiceURI === voiceAudio.voiceURI ? " is-selected" : ""}"><button class="vc-picker__pick" type="button" data-voice-select="${escapeHtml(voice.voiceURI)}" aria-pressed="${voice.voiceURI === voiceAudio.voiceURI}"><strong>${escapeHtml(voice.name)}</strong><small>${escapeHtml(voice.lang)}</small></button>${iconButtonMarkup({ icon: "play", label: `Hear ${voice.name}`, variant: "ghost", size: "sm", className: "vc-picker__preview", attrs: { "data-voice-preview": voice.voiceURI } })}</div>`).join("");
+  const inputLanguageOptions = [
+    ["auto", "Automatic"],
+    ["target", languageName(state.targetLanguage)],
+    ["base", languageName(state.baseLanguage)],
+    ...Object.keys(SPEECH_LOCALES).filter((code) => code !== state.targetLanguage && code !== state.baseLanguage).map((code) => [code, languageName(code)]),
+  ].map(([value, label]) => `<option value="${escapeHtml(value)}" ${voiceAudio.inputLanguage === value ? "selected" : ""}>${escapeHtml(label)}</option>`).join("");
+  const micLabel = voiceChat.providerLive ? "Live" : voiceChat.speaking ? "Interrupt" : voiceChat.listening ? "Stop" : "Talk";
+  const practiceQueue = pronunciationPracticeQueue();
+  if (isRomanizableLanguage(state.targetLanguage) && practiceQueue.some((item) => !item.romanized)) {
+    void ensureStudyRomanizations(practiceQueue.map((item) => ({
+      value: item.front,
+      romanized: item.romanized,
+      language: item.targetLanguage || state.targetLanguage,
+    })), state.targetLanguage);
+  }
+  const practiceItem = currentPronunciationPracticeItem(practiceQueue);
+  const practiceCanNavigate = practiceQueue.length > 1 && !voiceChat.pending && !voiceChat.listening;
+  const practiceInputDisabled = voiceChat.pending || voiceChat.providerLive || voiceChat.liveStarting || !providerBridgeReady || !practiceItem;
+  const targetLang = escapeHtml(speechLocale(state.targetLanguage));
+  const cueFacts = practiceItem ? [
+    ...String(practiceItem.sourceTag || practiceItem.trackLabel || "").split(/\s+·\s+/).map((part) => libraryChapterName({ code: part }) || part),
+    practiceItem.context ? formatTime(practiceItem.timestampMs) : "",
+  ] : [];
+  const practiceTargetMarkup = practiceItem ? `<section class="vc-target" aria-label="Say this">
+    <div class="vc-target__head">
+      <span class="vc-target__kind">${practiceItem.type === "phrase" ? "Phrase" : "Word"}</span>
+      ${badgeMarkup(practiceItem.pronunciationStatus === "mastered" ? "Mastered" : "Practiced")}
+      <span class="vc-target__count">${pronunciationQueueIndex + 1} of ${practiceQueue.length}</span>
+      <span class="vc-target__nav">
+        ${iconButtonMarkup({ icon: "chevron-left", label: "Previous", variant: "ghost", size: "sm", attrs: { id: "voice-practice-prev", disabled: !practiceCanNavigate || undefined } })}
+        ${iconButtonMarkup({ icon: "chevron-right", label: "Next", variant: "ghost", size: "sm", attrs: { id: "voice-practice-next", disabled: !practiceCanNavigate || undefined } })}
+      </span>
+    </div>
+    <div class="vc-target__body">
+      <div class="vc-target__main">
+        <h3 class="vc-target__word" lang="${targetLang}">${escapeHtml(practiceItem.front)}</h3>
+        ${practiceItem.romanized && practiceItem.romanized !== practiceItem.front ? `<p class="vc-target__reading">${escapeHtml(practiceItem.romanized)}</p>` : ""}
+        ${practiceItem.baseContext || practiceItem.back ? `<p class="vc-target__meaning"><span>${escapeHtml(languageName(state.baseLanguage))}</span>${escapeHtml(practiceItem.baseContext || practiceItem.back)}</p>` : ""}
+      </div>
+      <figure class="vc-cue">
+        <figcaption>From the video</figcaption>
+        ${practiceItem.context ? `<blockquote lang="${targetLang}">${escapeHtml(practiceItem.context)}</blockquote>` : '<p class="vc-cue__none">No line saved for this one.</p>'}
+        ${metaMarkup(cueFacts)}
+        ${buttonMarkup({ label: "Watch the line", variant: "secondary", size: "sm", icon: "play", attrs: { id: "voice-practice-cue-play", disabled: !practiceItem.context || undefined } })}
+      </figure>
+    </div>
+  </section>` : `<section class="vc-target is-empty">${emptyMarkup({ icon: "sparkle", title: "Nothing to practice yet", text: "Words and phrases you've studied show up here, with the line they came from." })}</section>`;
+  const status = voiceChat.providerLive ? "Conversation running"
+    : voiceChat.speaking ? "Speaking"
+      : voiceChat.listening ? "Listening"
+        : voiceChat.pending ? "Replying…" : bridgeText;
+  const tone = voiceChat.providerLive || voiceChat.speaking || voiceChat.listening ? "live" : voiceChat.pending ? "checking" : bridgeState;
+  const placeholder = browserCoachVersionMismatch ? "Reload the extension first"
+    : !providerBridgeReady ? "Connect the helper first"
+      : !practiceItem ? "Nothing to practice yet"
+        : voiceChat.providerLive ? "A conversation is running"
+          : support ? "Or type what you said" : "Type what you said";
+  const clearButton = visibleMessages.length ? buttonMarkup({ label: "Clear", variant: "ghost", size: "sm", attrs: { id: "voice-new-chat" } }) : "";
+  stage.innerHTML = `<section class="vc vc--practice" aria-label="Pronunciation">
+    ${voiceCoachBarMarkup({ provider, status, tone, actions: clearButton })}
+    ${practiceTargetMarkup}
+    <div id="voice-chat-log" class="vc-log" aria-live="polite">${messages || (practiceItem ? '<p class="vc-log__empty">Say it out loud. The coach\'s feedback shows up here.</p>' : "")}${voiceChat.pending ? '<p class="vc-thinking">Coach is replying…</p>' : ""}</div>
+    ${voiceChat.interim ? `<p class="vc-interim" lang="${targetLang}">${escapeHtml(voiceChat.interim)}</p>` : ""}
+    <div class="vc-composer">
+      <button id="voice-mic" class="vc-mic${voiceChat.listening ? " is-listening" : ""}${voiceChat.speaking ? " is-speaking" : ""}" type="button" aria-pressed="${voiceChat.listening}" ${practiceInputDisabled || !support ? "disabled" : ""}>${VOICE_MIC_ICON}<span>${micLabel}</span></button>
+      <form id="voice-text-form" class="vc-type">
+        <label class="ui-visually-hidden" for="voice-text-input">Type what you said</label>
+        <input id="voice-text-input" class="ui-input" type="text" maxlength="4000" autocomplete="off" placeholder="${escapeHtml(placeholder)}" value="${escapeHtml(voiceChat.draft || "")}" ${practiceInputDisabled ? "disabled" : ""}/>
+        <button class="ui-btn ui-btn--secondary" type="submit" ${practiceInputDisabled ? "disabled" : ""}><span>Send</span></button>
+      </form>
+      ${helpTipMarkup({ id: "tip-voice-recognition", label: "How your speech is checked", content: "Your browser turns what you say into text, and the coach checks that text against the target. It can't score accent or tone." })}
+    </div>
+    ${shownError ? `<p class="vc-error" role="alert">${escapeHtml(shownError)}</p>` : ""}
+    <div class="vc-settings" role="group" aria-label="Voice settings">
+      <label class="ui-switch"><input id="voice-speak-toggle" type="checkbox"${voiceAudio.speakReplies ? " checked" : ""}/><span class="ui-switch__track" aria-hidden="true"></span>Read replies aloud</label>
+      <span class="vc-settings__item"><label class="ui-switch"><input id="voice-auto-toggle" type="checkbox"${voiceAudio.autoContinue ? " checked" : ""}/><span class="ui-switch__track" aria-hidden="true"></span>Hands-free</label>${helpTipMarkup({ id: "tip-voice-handsfree", label: "About hands-free", content: "After the coach answers, the mic turns on again by itself, so you can keep going without clicking." })}</span>
+      <label class="learn-select"><span>Mic language</span><select id="voice-input-language">${inputLanguageOptions}</select></label>
+      <div class="vc-voice"><span class="vc-voice__label">Voice</span><details id="voice-picker" class="vc-picker"><summary><span>${selectedVoice ? escapeHtml(selectedVoice.name) : "Automatic"}</span>${icon("chevron-down")}</summary><div class="vc-picker__list"><div class="vc-picker__row${voiceAudio.voiceURI ? "" : " is-selected"}"><button class="vc-picker__pick" type="button" data-voice-select="" aria-pressed="${!voiceAudio.voiceURI}"><strong>Automatic</strong><small>The best ${escapeHtml(languageName(state.targetLanguage))} voice</small></button></div>${voiceRows || '<p class="vc-picker__empty">This browser has no voices for this language.</p>'}</div></details></div>
+      <label class="learn-select"><span>Speed</span><select id="voice-tts-rate"><option value="0.8" ${voiceAudio.rate === 0.8 ? "selected" : ""}>0.8×</option><option value="0.96" ${voiceAudio.rate === 0.96 ? "selected" : ""}>0.96×</option><option value="1.05" ${voiceAudio.rate === 1.05 ? "selected" : ""}>1.05×</option><option value="1.15" ${voiceAudio.rate === 1.15 ? "selected" : ""}>1.15×</option><option value="1.3" ${voiceAudio.rate === 1.3 ? "selected" : ""}>1.3×</option></select></label>
+    </div>
+  </section>`;
+  $("#voice-mic")?.addEventListener("click", startVoiceRecognition);
+  $("#voice-practice-prev")?.addEventListener("click", () => stepPronunciationQueue(-1));
+  $("#voice-practice-next")?.addEventListener("click", () => stepPronunciationQueue(1));
+  $("#voice-practice-cue-play")?.addEventListener("click", () => playPronunciationCue(practiceItem));
+  $$('[data-voice-replay]').forEach((button) => button.addEventListener("click", () => {
+    const message = visibleMessages[Number(button.dataset.voiceReplay)];
+    const replayText = String(message?.targetText || message?.text || "").trim();
+    if (replayText) speakVoiceCoach(replayText);
+  }));
+  $("#voice-new-chat")?.addEventListener("click", clearCurrentVoiceModeHistory);
+  $("#voice-connect")?.addEventListener("click", () => {
+    if (browserCoachVersionMismatch) void openBrowserCoachExtensionFolder();
+    else connectBrowserCoach();
+  });
+  $("#voice-provider")?.addEventListener("change", (event) => setCoachProvider(event.target.value));
+  $("#voice-speak-toggle")?.addEventListener("change", (event) => {
+    voiceAudio.speakReplies = event.target.checked;
+    if (!voiceAudio.speakReplies) stopVoiceSpeech({ render: false });
+    saveVoiceAudioPreferences();
+    renderVoiceChatStage();
+    $("#voice-speak-toggle")?.focus({ preventScroll: true });
+  });
+  $("#voice-auto-toggle")?.addEventListener("change", (event) => {
+    voiceAudio.autoContinue = event.target.checked;
+    saveVoiceAudioPreferences();
+    renderVoiceChatStage();
+    $("#voice-auto-toggle")?.focus({ preventScroll: true });
+  });
+  $("#voice-input-language")?.addEventListener("change", (event) => {
+    voiceAudio.inputLanguage = event.target.value || "auto";
+    saveVoiceAudioPreferences();
+  });
+  $$('[data-voice-select]').forEach((button) => button.addEventListener("click", () => {
+    voiceAudio.voiceURI = button.dataset.voiceSelect || "";
+    saveVoiceAudioPreferences();
+    renderVoiceChatStage();
+  }));
+  $$('[data-voice-preview]').forEach((button) => button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    previewSpeechVoice(button.dataset.voicePreview || "");
+  }));
+  $("#voice-tts-rate")?.addEventListener("change", (event) => {
+    voiceAudio.rate = Math.max(0.7, Math.min(1.3, Number(event.target.value) || 0.96));
+    saveVoiceAudioPreferences();
+  });
+  $("#voice-text-input")?.addEventListener("input", (event) => {
+    voiceChat.draft = event.target.value;
+  });
+  $("#voice-text-input")?.addEventListener("focus", () => {
+    if (voiceRecognition && voiceChat.listening) {
+      try { voiceRecognition.abort(); } catch {}
+    }
+  });
+  $("#voice-text-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = $("#voice-text-input");
+    const text = input?.value.trim();
+    if (text) {
+      voiceChat.draft = "";
+      if (input) input.value = "";
+      void sendVoiceTurn(text, [{ transcript: text, confidence: 1 }], { inputMode: "text" });
+    }
+  });
+  const nextInput = $("#voice-text-input");
+  const shouldRestoreFocus = !voiceChat.pending && Boolean(inputSnapshot?.focused || voiceChat.refocusTextAfterTurn);
+  if (nextInput && shouldRestoreFocus) {
+    const selectionStart = inputSnapshot?.focused ? inputSnapshot.selectionStart : nextInput.value.length;
+    const selectionEnd = inputSnapshot?.focused ? inputSnapshot.selectionEnd : nextInput.value.length;
+    queueMicrotask(() => {
+      const current = $("#voice-text-input");
+      if (!current || current.disabled) return;
+      current.focus({ preventScroll: true });
+      try { current.setSelectionRange(selectionStart ?? current.value.length, selectionEnd ?? current.value.length); } catch {}
+      voiceChat.refocusTextAfterTurn = false;
+    });
+  }
+  const log = $("#voice-chat-log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+function flushLearningExposure() {
+  if (!learningExposureDirty) return;
+  learningExposureDirty = false;
+  if (learningExposureSaveTimer) clearTimeout(learningExposureSaveTimer);
+  learningExposureSaveTimer = null;
+  try {
+    const entries = Object.entries(state.learningExposure || {});
+    if (entries.length > 12000) {
+      entries.sort((a, b) => Number(b[1]?.lastSeenAt || 0) - Number(a[1]?.lastSeenAt || 0));
+      state.learningExposure = Object.fromEntries(entries.slice(0, 10000));
+    }
+    storeLocalCopy("blackline-learning-exposure", state.learningExposure);
+    persistAppSection("learningExposure", state.learningExposure, { immediate: true });
+  } catch (error) {
+    console.warn("Learning exposure could not be saved:", error);
+  }
+}
+
+function saveLearningExposure({ immediate = false } = {}) {
+  learningExposureDirty = true;
+  if (immediate) {
+    flushLearningExposure();
+    return;
+  }
+  if (learningExposureSaveTimer) return;
+  learningExposureSaveTimer = setTimeout(flushLearningExposure, 1500);
+}
+
+function saveLibrary() {
+  try {
+    storeLocalCopy("blackline-library", state.library);
+    persistAppSection("library", state.library);
+  } catch (error) {
+    console.warn("Library could not be saved:", error);
+  }
+  refreshTitlePage();
+  scheduleAniListAutoSync();
+}
+
+function preferredLanguagePair() {
+  return [state.targetLanguage, state.baseLanguage].filter((value, index, array) => value && array.indexOf(value) === index);
+}
+
+function normalizeTrackLanguage(value) {
+  const raw = String(value || "").trim().toLowerCase();
+  const map = {
+    eng: "EN", en: "EN", spa: "ES", es: "ES", fre: "FR", fra: "FR", fr: "FR",
+    ger: "DE", deu: "DE", de: "DE", ita: "IT", it: "IT", por: "PT", pt: "PT",
+    jpn: "JA", ja: "JA", jp: "JA", kor: "KO", ko: "KO", chi: "ZH", zho: "ZH", zh: "ZH",
+    rus: "RU", ru: "RU", dut: "NL", nld: "NL", nl: "NL", pol: "PL", pl: "PL", tur: "TR", tr: "TR",
+  };
+  return map[raw] || raw.slice(0, 2).toUpperCase();
+}
+
+function learningItemKey(language, type, value) {
+  const normalized = normalizeText(value);
+  const normalizedType = type === "phrase" ? "phrase" : "word";
+  return `${normalizeTrackLanguage(language || state.targetLanguage)}|${normalizedType}|${normalized}`;
+}
+
+function learningItemKeyFor(item, type = item?.type || "word") {
+  return item?.itemKey || learningItemKey(item?.language || state.targetLanguage, type, item?.value || item?.front || "");
+}
+
+function cardKeySet() {
+  if (cardIndexMemo.revision === learningRevision) return cardIndexMemo.keys;
+  const keys = new Set();
+  const mastered = new Set();
+  state.cards.forEach((card) => {
+    const key = card.itemKey || learningItemKey(card.targetLanguage || state.targetLanguage, card.type, card.front);
+    if (!key) return;
+    keys.add(key);
+    if (Number(card.reviewCount || 0) >= 3 && Number(card.intervalDays || 0) >= 7) mastered.add(key);
+  });
+  cardIndexMemo = {
+    revision: learningRevision,
+    keys,
+    mastered,
+  };
+  return cardIndexMemo.keys;
+}
+
+function masteredCardKeySet() {
+  cardKeySet();
+  return cardIndexMemo.mastered;
+}
+
+function pronunciationQueueStatus(itemKey, card = null) {
+  if (state.known.has(itemKey) || masteredCardKeySet().has(itemKey)) return "mastered";
+  if (Number(card?.reviewCount || 0) > 0) return "practiced";
+  return "";
+}
+
+function knownChapterPronunciationItems(existingKeys) {
+  const items = [];
+  for (const chapter of studyChapterCatalog()) {
+    if (chapter.language !== state.targetLanguage) continue;
+    for (const type of ["word", "phrase"]) {
+      const values = type === "phrase" ? chapter.analysis?.phrases : chapter.analysis?.words;
+      for (const raw of Array.isArray(values) ? values : []) {
+        const value = String(raw?.value || "").trim();
+        if (!value) continue;
+        const itemKey = learningItemKey(chapter.language, type, value);
+        if (!state.known.has(itemKey) || existingKeys.has(itemKey)) continue;
+        const occurrence = raw?.occurrence && typeof raw.occurrence === "object" ? raw.occurrence : null;
+        if (!occurrence?.text || !chapter.libraryId || chapter.fileIndex === null || chapter.fileIndex === undefined) continue;
+        items.push({
+          id: `known:${chapter.id}:${itemKey}`,
+          itemKey,
+          type,
+          front: value,
+          romanized: studyRomanizationFor({ value, romanized: raw?.romanized, language: chapter.language }),
+          back: String(raw?.baseContext || ""),
+          baseContext: String(raw?.baseContext || ""),
+          context: String(occurrence?.text || ""),
+          timestampMs: Math.max(0, Number(occurrence?.startMs) || 0),
+          endMs: Number(occurrence?.endMs) || null,
+          sourceTag: String(raw?.sourceTag || chapter.sourceTag || `${chapter.seriesTitle} · ${chapter.code}`),
+          sourceLibraryId: chapter.libraryId,
+          sourceFileIndex: chapter.fileIndex,
+          targetLanguage: chapter.language,
+          baseLanguage: state.baseLanguage,
+          reviewCount: 0,
+          intervalDays: 0,
+          knownOnly: true,
+        });
+        existingKeys.add(itemKey);
+      }
+    }
+  }
+  return items;
+}
+
+function pronunciationPracticeQueue() {
+  const existingKeys = new Set();
+  const queue = [];
+  for (const card of state.cards) {
+    if (!card?.front || !["word", "phrase"].includes(card.type)) continue;
+    if (normalizeTrackLanguage(card.targetLanguage || state.targetLanguage) !== state.targetLanguage) continue;
+    if (!card.context || !card.sourceLibraryId || card.sourceFileIndex === null || card.sourceFileIndex === undefined) continue;
+    const itemKey = cardLearningKey(card);
+    if (!itemKey || existingKeys.has(itemKey)) continue;
+    const status = pronunciationQueueStatus(itemKey, card);
+    if (!status) continue;
+    existingKeys.add(itemKey);
+    queue.push({
+      ...card,
+      romanized: String(card.romanized || studyRomanizationFor({
+        value: card.front,
+        romanized: card.romanized,
+        language: card.targetLanguage || state.targetLanguage,
+      })),
+      itemKey,
+      pronunciationStatus: status,
+    });
+  }
+  for (const item of knownChapterPronunciationItems(existingKeys)) {
+    queue.push({ ...item, pronunciationStatus: "mastered" });
+  }
+  return queue.sort((a, b) => {
+    const statusDelta = (a.pronunciationStatus === "mastered" ? 0 : 1) - (b.pronunciationStatus === "mastered" ? 0 : 1);
+    if (statusDelta) return statusDelta;
+    const sourceDelta = String(a.sourceTag || "").localeCompare(String(b.sourceTag || ""), undefined, { sensitivity: "base" });
+    if (sourceDelta) return sourceDelta;
+    return String(a.front || "").localeCompare(String(b.front || ""), undefined, { sensitivity: "base" });
+  });
+}
+
+function currentPronunciationPracticeItem(queue = pronunciationPracticeQueue()) {
+  if (!queue.length) {
+    pronunciationQueueIndex = 0;
+    return null;
+  }
+  pronunciationQueueIndex = Math.max(0, Math.min(pronunciationQueueIndex, queue.length - 1));
+  return queue[pronunciationQueueIndex] || null;
+}
+
+function pronunciationPracticePayload(item) {
+  if (!item?.front) return null;
+  return {
+    type: item.type === "phrase" ? "phrase" : "word",
+    targetText: String(item.front || ""),
+    romanized: String(item.romanized || ""),
+    baseText: String(item.baseContext || item.back || ""),
+    cue: String(item.context || ""),
+    sourceTag: String(item.sourceTag || item.trackLabel || ""),
+    timestampMs: Number.isFinite(Number(item.timestampMs)) ? Math.max(0, Math.round(Number(item.timestampMs))) : null,
+  };
+}
+
+function stepPronunciationQueue(direction) {
+  const queue = pronunciationPracticeQueue();
+  if (!queue.length || voiceChat.pending || voiceChat.listening) return;
+  pronunciationQueueIndex = (pronunciationQueueIndex + (direction < 0 ? -1 : 1) + queue.length) % queue.length;
+  voiceChat.error = "";
+  renderVoiceChatStage();
+}
+
+function playPronunciationCue(item) {
+  if (item?.context) void openLinePreview(item);
+}
+
+function touchLearningState() {
+  learningRevision += 1;
+  cardIndexMemo.revision = -1;
+  subtitleRenderMemo.key = "";
+}
+
+function isKnownItem(item, type = item?.type || "word") {
+  return state.known.has(learningItemKeyFor(item, type));
+}
+
+function isMasteredItem(item, type = item?.type || "word") {
+  const key = learningItemKeyFor(item, type);
+  return state.known.has(key) || masteredCardKeySet().has(key);
+}
+
+function setKnownItem(item, type, known) {
+  const key = learningItemKeyFor(item, type);
+  if (!key) return;
+  if (known) state.known.add(key); else state.known.delete(key);
+  touchLearningState();
+  saveState();
+  renderSubtitles();
+}
+
+function migrateLearningState() {
+  let changed = false;
+  const migratedKnown = new Set();
+  state.known.forEach((value) => {
+    const raw = String(value || "").trim();
+    if (!raw) return;
+    if (/^[A-Z]{2,3}\|(word|phrase)\|/i.test(raw)) {
+      migratedKnown.add(raw);
+      return;
+    }
+    migratedKnown.add(learningItemKey(state.targetLanguage, "word", raw));
+    migratedKnown.add(learningItemKey(state.targetLanguage, "phrase", raw));
+    changed = true;
+  });
+  state.known = migratedKnown;
+  state.cards = state.cards.map((card) => {
+    if (card?.itemKey) return card;
+    changed = true;
+    return { ...card, itemKey: learningItemKey(card?.targetLanguage || state.targetLanguage, card?.type, card?.front) };
+  });
+  // Auto cards made before grammar words and sound-effect captions were filtered out. Only cards
+  // that were never reviewed; their keys are remembered so they don't come back.
+  const junk = state.cards.filter((card) => card?.autoGenerated && !Number(card.reviewCount)
+    && (isLearningStopWord(card.front, card.targetLanguage || state.targetLanguage) || (card.context && isNonSpeechCue(card.context))));
+  if (junk.length) {
+    const keys = new Set(junk.map((card) => cardLearningKey(card)));
+    state.cards = state.cards.filter((card) => !keys.has(cardLearningKey(card)) || Number(card.reviewCount));
+    keys.forEach((key) => discardedAutoCardKeys.add(key));
+    persistDiscardedAutoCardKeys();
+    changed = true;
+  }
+  if (changed) saveState();
+  touchLearningState();
+}
+
+function subtitleSearchLanguages() {
+  return preferredLanguagePair().join(",");
+}
+
+// Subtitle discovery uses its own saved language choice, including when opened
+// with an automatic search. Learning preferences cannot override this field.
+function subtitleFinderLanguages() {
+  return localStorage.getItem("lvl-subtitle-finder-languages") || "ES,EN";
+}
+function parseSubtitleFinderLanguages(input) {
+  const codes = [...new Set(String(input || "").toUpperCase().split(",").map((value) => value.trim()).filter(Boolean))];
+  return codes.length > 0 && codes.length <= 4 && codes.every((code) => /^[A-Z]{2}$/.test(code)) ? codes : null;
+}
+function syncSubtitleFinderLanguageChips() {
+  const selected = new Set(parseSubtitleFinderLanguages($("#subtitle-language")?.value) || []);
+  $$("#subtitle-web-dialog [data-subtitle-lang-toggle]").forEach((button) => {
+    const active = selected.has(button.dataset.subtitleLangToggle);
+    button.setAttribute("aria-pressed", String(active));
+    button.classList.toggle("is-selected", active);
+  });
+}
+
+function saveSubtitlePreferences(apiKey, baseLanguage = state.baseLanguage, targetLanguage = state.targetLanguage, {
+  wyzieKey = state.wyzieKey,
+  subsourceKey = state.subsourceKey,
+  baseLocale = state.baseLocale,
+  targetLocale = state.targetLocale,
+  interfaceLanguage = state.interfaceLanguage,
+} = {}) {
+  const previousTargetLanguage = state.targetLanguage;
+  const previousBaseLanguage = state.baseLanguage;
+  const previousLocales = `${state.targetLocale}|${state.baseLocale}`;
+  state.subdlKey = String(apiKey || "").trim();
+  state.wyzieKey = String(wyzieKey || "").trim();
+  state.subsourceKey = String(subsourceKey || "").trim();
+  state.baseLanguage = String(baseLanguage || "EN").trim().toUpperCase() || "EN";
+  state.targetLanguage = String(targetLanguage || "ES").trim().toUpperCase() || "ES";
+  if (state.targetLanguage === state.baseLanguage) state.targetLanguage = state.baseLanguage === "EN" ? "ES" : "EN";
+  state.baseLocale = normalizeLearningLocale(state.baseLanguage, baseLocale);
+  state.targetLocale = normalizeLearningLocale(state.targetLanguage, targetLocale);
+  state.interfaceLanguage = ["en", "es"].includes(interfaceLanguage) ? interfaceLanguage : "auto";
+  uiLanguage.setLanguage(state.interfaceLanguage, state.baseLanguage);
+  localStorage.setItem("blackline-base-locale", state.baseLocale);
+  localStorage.setItem("blackline-target-locale", state.targetLocale);
+  localStorage.setItem("blackline-interface-language", state.interfaceLanguage);
+  localStorage.setItem("blackline-subdl-key", state.subdlKey);
+  localStorage.setItem("blackline-wyzie-key", state.wyzieKey);
+  localStorage.setItem("blackline-subsource-key", state.subsourceKey);
+  localStorage.setItem("blackline-base-language", state.baseLanguage);
+  localStorage.setItem("blackline-target-language", state.targetLanguage);
+  localStorage.setItem("blackline-subdl-languages", subtitleSearchLanguages());
+  persistPreferences();
+  if (previousTargetLanguage !== state.targetLanguage || previousBaseLanguage !== state.baseLanguage) {
+    quiz.question = null;
+    quiz.picked = null;
+    quiz.recent = [];
+    stopStudySounds();
+  }
+  if (previousTargetLanguage !== state.targetLanguage || previousBaseLanguage !== state.baseLanguage || previousLocales !== `${state.targetLocale}|${state.baseLocale}`) {
+    if (voiceChat.providerConversationId || voiceChat.providerLive) void closeLiveCoachSession();
+    try { voiceRecognition?.abort?.(); } catch {}
+    stopVoiceSpeech({ render: false });
+  }
+  if (previousTargetLanguage !== state.targetLanguage) {
+    state.studyPage = 0;
+    state.learningPreset = learningPresetCache.get(state.targetLanguage) || { language: state.targetLanguage, words: [], phrases: [], status: "idle", error: "" };
+    touchLearningState();
+    if (state.wordColoring || state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
+  }
+  applyLanguagePreferencesToTracks();
+  renderSettings();
+}
+
+function renderBrowserCoachStatus() {
+  const stateNode = $("#settings-browser-coach-state");
+  const messageNode = $("#settings-browser-coach-message");
+  const actionNode = $("#settings-browser-coach-action");
+  if (!stateNode || !messageNode) return;
+  if (actionNode) actionNode.textContent = browserCoachAction || "";
+  if (browserCoachChecking) {
+    stateNode.textContent = "Checking";
+    messageNode.textContent = "Checking the browser helper…";
+    messageNode.classList.remove("is-error");
+    return;
+  }
+  if (!browserCoachStatus) {
+    stateNode.textContent = "Not connected";
+    messageNode.textContent = "Helper not connected. See Setup below.";
+    messageNode.classList.remove("is-error");
+    return;
+  }
+  if (browserCoachStatus.available) {
+    if (browserCoachStatus.expectedExtensionVersion && browserCoachStatus.extensionVersion && browserCoachStatus.expectedExtensionVersion !== browserCoachStatus.extensionVersion) {
+      stateNode.textContent = "Update";
+      messageNode.textContent = `Helper update ready (${browserCoachStatus.extensionVersion} → ${browserCoachStatus.expectedExtensionVersion}). Open this browser's Extensions page and press Reload.`;
+      messageNode.classList.add("is-error");
+      return;
+    }
+    stateNode.textContent = "Ready";
+    const version = browserCoachStatus.extensionVersion ? ` (helper ${browserCoachStatus.extensionVersion})` : "";
+    messageNode.textContent = `Coach ready${version}`;
+    messageNode.classList.remove("is-error");
+    return;
+  }
+  stateNode.textContent = "Offline";
+  messageNode.textContent = browserCoachStatus.error || "Language Coach browser extension is not connected yet.";
+  messageNode.classList.add("is-error");
+}
+
+let settingsStorageLoading = false;
+const SETTINGS_TABS = ["general", "coach", "library", "storage", "updates", "notifications", "recs"];
+const settingsView = { tab: SETTINGS_TABS.includes(localStorage.getItem("blackline-settings-tab")) ? localStorage.getItem("blackline-settings-tab") : "general" };
+
+function renderSettingsTabs() {
+  if (!learningEnabled && settingsView.tab === "coach") settingsView.tab = "general";
+  const coachTab = $("#settings-tab-coach");
+  if (coachTab) coachTab.hidden = !learningEnabled;
+  for (const tab of SETTINGS_TABS) {
+    const panel = $(`#settings-panel-${tab}`);
+    if (panel) panel.hidden = settingsView.tab !== tab;
+  }
+  setActiveTab($("#settings-tabs"), settingsView.tab);
+  if (settingsView.tab === "storage" && $("#view-settings")?.classList.contains("is-active")) void renderSettingsStorage();
+  if (settingsView.tab === "recs" && $("#view-settings")?.classList.contains("is-active")) recsUi.showSettings();
+  if (settingsView.tab === "updates" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
+  if (settingsView.tab === "notifications" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
+}
+
+// The Windows launcher is the source of truth for installation and update
+// policy. Source checkouts cannot change or start a packaged-app update.
+let appUpdateSettingsBusy = false;
+let appUpdateSettingsSnapshot = null;
+// A failed background availability check should never look like a side
+// effect of turning the automatic-check setting on or off. Only show the
+// network failure in this panel after the user requests Check for updates.
+let manualAppUpdateCheck = false;
+function paintAppUpdateSettings(report) {
+  appUpdateSettingsSnapshot = report;
+  const installed = Boolean(report?.installed);
+  const checking = Boolean(report?.checking || report?.downloading);
+  const automatic = Boolean(report?.automatic);
+  const auto = $("#settings-app-updates-auto");
+  const interval = $("#settings-app-updates-interval");
+  const check = $("#settings-app-updates-check");
+  const install = $("#settings-app-updates-install");
+  if (auto) {
+    auto.checked = automatic;
+    auto.disabled = !installed || appUpdateSettingsBusy;
+  }
+  if (interval) {
+    interval.value = ["1", "7", "30"].includes(String(report?.intervalDays)) ? String(report.intervalDays) : "1";
+    interval.disabled = !installed || !automatic || appUpdateSettingsBusy;
+  }
+  if (check) {
+    check.disabled = !installed || checking || appUpdateSettingsBusy;
+    check.textContent = checking ? (report.downloading ? "Installing…" : "Checking…") : "Check for updates";
+  }
+  if (install) {
+    install.hidden = !installed || !report?.available;
+    install.disabled = checking || appUpdateSettingsBusy;
+    install.textContent = report?.availableVersion
+      ? `Install LVL ${report.availableVersion}…` : "Install available update…";
+  }
+  const version = $("#settings-app-updates-version");
+  if (version) version.textContent = installed ? String(report.installedVersion || "—") : "Source build";
+  let message = "This source checkout uses port 4173; the installer/updater runs separately on 4273.";
+  if (installed) {
+    if (report.downloading) message = "Downloading and validating the update in the Windows launcher…";
+    else if (report.checking) message = "Checking the update feed…";
+    else if (report.available) message = `LVL ${report.availableVersion} is available. Installation requires confirmation.`;
+    else if (report?.error && manualAppUpdateCheck) message = `Update check failed: ${report.error}`;
+    else if (report.lastCheckedAt) message = "No newer version found at the last check.";
+    else message = "No checks completed yet. Check now, or enable automatic checks.";
+    if (!automatic && !checking) message += " Automatic checks are off.";
+  }
+  setToolStatus("#settings-app-updates-status", message,
+    Boolean(report?.error && manualAppUpdateCheck && !report?.checking));
+  paintUpdateNotifications(report);
+}
+async function refreshAppUpdateSettings({ checkNotifications = false } = {}) {
+  if (appUpdateSettingsBusy) return;
+  try {
+    const report = await fetchJson("/api/app-updates/status");
+    paintAppUpdateSettings(report);
+    if (checkNotifications) maybeCheckForUpdateNotifications(report);
+  } catch (error) {
+    setToolStatus("#settings-app-updates-status", error.message || "Couldn't read updater settings", true);
+  }
+}
+async function changeAppUpdateSettings() {
+  if (appUpdateSettingsBusy || !appUpdateSettingsSnapshot?.installed) return;
+  appUpdateSettingsBusy = true;
+  manualAppUpdateCheck = false;
+  const auto = $("#settings-app-updates-auto");
+  const interval = $("#settings-app-updates-interval");
+  const automatic = Boolean(auto?.checked);
+  const intervalDays = Number(interval?.value || 1);
+  try {
+    paintAppUpdateSettings(await postJson("/api/app-updates/settings", { automatic, intervalDays }));
+    setToolStatus("#settings-app-updates-status", automatic
+      ? `Automatic updates enabled (checking every ${intervalDays} day${intervalDays === 1 ? "" : "s"}). Verified updates install and restart LVL automatically.`
+      : "Automatic update checks disabled. You can still check manually.");
+  } catch (error) {
+    setToolStatus("#settings-app-updates-status", error.message || "Couldn't change update settings", true);
+    paintAppUpdateSettings(appUpdateSettingsSnapshot);
+  } finally {
+    appUpdateSettingsBusy = false;
+    if (appUpdateSettingsSnapshot) paintAppUpdateSettings(appUpdateSettingsSnapshot);
+  }
+}
+function wireAppUpdateSettings() {
+  $("#settings-app-updates-auto")?.addEventListener("change", () => { void changeAppUpdateSettings(); });
+  $("#settings-app-updates-interval")?.addEventListener("change", () => { void changeAppUpdateSettings(); });
+  $("#settings-app-updates-check")?.addEventListener("click", async () => {
+    if (appUpdateSettingsBusy || !appUpdateSettingsSnapshot?.installed) return;
+    appUpdateSettingsBusy = true;
+    manualAppUpdateCheck = true;
+    try {
+      paintAppUpdateSettings(await postJson("/api/app-updates/check", { apply: true }));
+    } catch (error) {
+      setToolStatus("#settings-app-updates-status", error.message || "Couldn't start the update check", true);
+    } finally {
+      appUpdateSettingsBusy = false;
+      if (appUpdateSettingsSnapshot) paintAppUpdateSettings(appUpdateSettingsSnapshot);
+    }
+  });
+  $("#settings-app-updates-install")?.addEventListener("click", async () => {
+    if (appUpdateSettingsBusy || !appUpdateSettingsSnapshot?.available) return;
+    appUpdateSettingsBusy = true;
+    try {
+      paintAppUpdateSettings(await postJson("/api/app-updates/install", {}));
+      setToolStatus("#settings-app-updates-status", "Use the Windows confirmation dialog to approve the installation.");
+    } catch (error) {
+      setToolStatus("#settings-app-updates-status", error.message || "Couldn't open the installation prompt", true);
+    } finally {
+      appUpdateSettingsBusy = false;
+      if (appUpdateSettingsSnapshot) paintAppUpdateSettings(appUpdateSettingsSnapshot);
+    }
+  });
+  setInterval(() => {
+    if (["updates", "notifications"].includes(settingsView.tab) && $("#view-settings")?.classList.contains("is-active")
+        && !appUpdateSettingsBusy) void refreshAppUpdateSettings();
+  }, 2500);
+}
+wireAppUpdateSettings();
+
+// Update notifications are deliberately scoped to *verified available app
+// versions*. No generic alerts, speculative remote releases or demo messages.
+// This preference affects a browser profile's presentation; every window
+// checks the same installed LVL launcher for the actual available version.
+const UPDATE_ALERTS_PREF = "lvl-available-update-notifications-v1";
+const UPDATE_ALERTS_CHECKED_AT = "lvl-available-update-check-at-v1";
+let notificationCheckRunning = false;
+let updateChangelogCache = null;
+const updateNotificationsEnabled = () => localStorage.getItem(UPDATE_ALERTS_PREF) !== "0";
+const activeUpdateNotice = (report) => updateNotificationsEnabled() && report?.installed
+  && report?.available && Boolean(report?.availableVersion) ? {
+    version: String(report.availableVersion),
+    message: report?.notice?.message || `LVL ${report.availableVersion} is available`,
+  } : null;
+
+function paintUpdateNotifications(report = appUpdateSettingsSnapshot) {
+  const notice = activeUpdateNotice(report);
+  const toggle = $("#settings-notification-update-alerts");
+  if (toggle) toggle.checked = updateNotificationsEnabled();
+  const badge = $("#sidebar-notification-count");
+  if (badge) { badge.hidden = !notice; badge.textContent = notice ? "1" : ""; }
+  const bell = $("#sidebar-notifications");
+  if (bell) bell.setAttribute("aria-label", notice ? "Notifications: 1 app update available" : "Notifications");
+  const list = $("#app-notifications-list");
+  if (!list) return;
+  list.replaceChildren();
+  if (notice) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "app-notification-entry";
+    const heading = document.createElement("strong");
+    heading.textContent = `LVL ${notice.version} available`;
+    const detail = document.createElement("span");
+    detail.textContent = "View the changelog and available update details";
+    button.append(heading, detail);
+    button.addEventListener("click", () => { closeUpdateNotificationPopover(); void openUpdateChangelog(); });
+    list.append(button);
+  } else {
+    const empty = document.createElement("p");
+    empty.textContent = updateNotificationsEnabled() ? "No notifications" : "Notifications disabled";
+    list.append(empty);
+  }
+}
+
+// Notifications can discover updates independently of automated update checks,
+// but only once daily. Users can disable all notification-only checks in the
+// Notifications tab; this does not override native installation confirmation.
+function maybeCheckForUpdateNotifications(report) {
+  if (!updateNotificationsEnabled() || !report?.installed || report?.automatic
+      || report?.checking || report?.downloading || notificationCheckRunning) return;
+  const last = Number(localStorage.getItem(UPDATE_ALERTS_CHECKED_AT)) || 0;
+  const interval = report?.error ? 60 * 60_000 : 24 * 60 * 60_000;
+  if (Date.now() - last < interval) return;
+  notificationCheckRunning = true;
+  localStorage.setItem(UPDATE_ALERTS_CHECKED_AT, String(Date.now()));
+  void postJson("/api/app-updates/check", { apply: false }).then(paintAppUpdateSettings)
+    .catch((error) => console.warn("Update notification check deferred:", error?.message))
+    .finally(() => { notificationCheckRunning = false; });
+}
+
+function closeUpdateNotificationPopover({ restoreFocus = false } = {}) {
+  const popover = $("#app-notifications-popover");
+  if (popover) popover.hidden = true;
+  $("#sidebar-notifications")?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) $("#sidebar-notifications")?.focus();
+}
+function openUpdateNotificationPopover() {
+  const popover = $("#app-notifications-popover");
+  const bell = $("#sidebar-notifications");
+  if (!popover || !bell) return;
+  if (!popover.hidden) return closeUpdateNotificationPopover({ restoreFocus: true });
+  paintUpdateNotifications();
+  const rect = bell.getBoundingClientRect();
+  const width = Math.min(320, window.innerWidth - 24);
+  popover.style.left = `${Math.max(12, Math.min(window.innerWidth - width - 12, rect.right + 8))}px`;
+  popover.style.top = `${Math.max(12, Math.min(window.innerHeight - 270, rect.top - 20))}px`;
+  popover.hidden = false;
+  bell.setAttribute("aria-expanded", "true");
+  popover.focus();
+}
+
+async function openUpdateChangelog() {
+  const dialog = $("#app-changelog-dialog");
+  const history = $("#app-changelog-history");
+  const intro = $("#app-changelog-intro");
+  if (!dialog || !history) return;
+  closeUpdateNotificationPopover();
+  intro.textContent = "Release history bundled with this LVL installation.";
+  if (appUpdateSettingsSnapshot?.availableVersion) {
+    intro.textContent += ` LVL ${appUpdateSettingsSnapshot.availableVersion} has been announced; its new release notes will be bundled with that installer.`;
+  }
+  if (!dialog.open) dialog.showModal();
+  await renderBundledChangelog(history);
+}
+
+// Both the Updates accordion and the bell's dialog render exactly the same
+// local changelog entries. Use textContent, not innerHTML: release notes are
+// data, not executable markup.
+async function renderBundledChangelog(history) {
+  if (!history) return;
+  history.replaceChildren();
+  try {
+    const data = updateChangelogCache || await fetchJson("/api/app-updates/changelog");
+    updateChangelogCache = data;
+    const entries = Array.isArray(data?.entries) ? data.entries : [];
+    if (!entries.length) throw new Error("No release notes were found in the installed changelog.");
+    for (const entry of entries) {
+      const section = document.createElement("section");
+      const title = document.createElement("h3");
+      title.textContent = String(entry.title || entry.version || "Release notes");
+      section.append(title);
+      const changes = Array.isArray(entry.changes) ? entry.changes : [];
+      if (changes.length) {
+        const list = document.createElement("ul");
+        for (const change of changes) {
+          const item = document.createElement("li");
+          item.textContent = String(change);
+          list.append(item);
+        }
+        section.append(list);
+      } else {
+        const note = document.createElement("p");
+        note.textContent = "No changes listed.";
+        section.append(note);
+      }
+      history.append(section);
+    }
+  } catch (error) {
+    const message = document.createElement("p");
+    message.textContent = error?.message || "The installed changelog could not be loaded.";
+    history.append(message);
+  }
+}
+
+$("#sidebar-notifications")?.addEventListener("click", openUpdateNotificationPopover);
+$("#app-notifications-close")?.addEventListener("click", () => closeUpdateNotificationPopover({ restoreFocus: true }));
+$("#app-notifications-settings")?.addEventListener("click", () => {
+  closeUpdateNotificationPopover();
+  settingsView.tab = "notifications";
+  switchView("settings");
+  renderSettingsTabs();
+});
+$("#settings-app-updates-changelog-details")?.addEventListener("toggle", (event) => {
+  if (event.target.open) void renderBundledChangelog($("#settings-app-updates-changelog-inline"));
+});
+$("#app-changelog-close")?.addEventListener("click", () => $("#app-changelog-dialog")?.close());
+$("#settings-notification-update-alerts")?.addEventListener("change", (event) => {
+  localStorage.setItem(UPDATE_ALERTS_PREF, event.target.checked ? "1" : "0");
+  paintUpdateNotifications();
+  if (event.target.checked) void refreshAppUpdateSettings();
+});
+function handleOutsideUpdateNotificationClick(event) {
+  if (!$("#app-notifications-popover")?.hidden
+      && !event.target.closest("#app-notifications-popover, #sidebar-notifications")) closeUpdateNotificationPopover();
+}
+document.addEventListener("click", handleOutsideUpdateNotificationClick);
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !$("#app-notifications-popover")?.hidden) {
+    event.preventDefault();
+    closeUpdateNotificationPopover({ restoreFocus: true });
+  }
+});
+paintUpdateNotifications();
+void refreshAppUpdateSettings({ checkNotifications: true });
+setInterval(() => {
+  if (!appUpdateSettingsBusy) void refreshAppUpdateSettings({ checkNotifications: true });
+}, 60_000);
+
+function formatStorage(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(value >= 100 * 1024 ** 3 ? 0 : 1)} GB`;
+  if (value >= 1024 ** 2) return `${Math.round(value / 1024 ** 2)} MB`;
+  if (value > 0) return `${Math.max(1, Math.round(value / 1024))} KB`;
+  return "0 MB";
+}
+
+function setStorageMeter(meter, usedBytes, limitBytes) {
+  if (!meter) return;
+  const percent = limitBytes > 0 ? Math.min(100, (usedBytes / limitBytes) * 100) : 0;
+  meter.style.setProperty("--ui-progress", `${percent.toFixed(1)}%`);
+  meter.setAttribute("aria-valuenow", String(Math.round(percent)));
+  meter.classList.toggle("is-full", percent >= 95);
+}
+
+function updateStorageLimitSlider(slider) {
+  if (!slider) return;
+  const min = Number(slider.min) || 2;
+  const max = Number(slider.max) || 1000;
+  const value = Math.max(min, Math.min(max, Number(slider.value) || min));
+  slider.style.setProperty("--storage-cap-percent", ((value - min) / Math.max(1, max - min) * 100).toFixed(2) + "%");
+  slider.setAttribute("aria-valuetext", value + " GB maximum");
+}
+
+function paintStorageReport(report) {
+  const toGB = (bytes) => String(Math.round((Number(bytes) / 1024 ** 3) * 100) / 100);
+  const playerInput = $("#storage-player-gb");
+  const playerSlider = $("#storage-player-slider");
+  const clipInput = $("#storage-clip-gb");
+  if (playerInput && document.activeElement !== playerInput) playerInput.value = toGB(report.limits.playerBytes);
+  if (clipInput && document.activeElement !== clipInput) clipInput.value = toGB(report.limits.clipBytes);
+  if (playerInput) { playerInput.min = toGB(report.ranges.playerBytes.min); playerInput.max = toGB(report.ranges.playerBytes.max); }
+  if (playerSlider) {
+    playerSlider.min = toGB(report.ranges.playerBytes.min);
+    playerSlider.max = toGB(report.ranges.playerBytes.max);
+    if (document.activeElement !== playerSlider) playerSlider.value = toGB(report.limits.playerBytes);
+    updateStorageLimitSlider(playerSlider);
+  }
+  if (clipInput) { clipInput.min = toGB(report.ranges.clipBytes.min); clipInput.max = toGB(report.ranges.clipBytes.max); }
+  const videos = Number(report.player.videos) || 0;
+  $("#storage-player-usage").textContent = `${formatStorage(report.player.usedBytes)} of ${formatStorage(report.limits.playerBytes)} used${videos ? ` by ${videos} video${videos === 1 ? "" : "s"}` : ""}`;
+  setStorageMeter($("#storage-player-meter"), report.player.usedBytes, report.limits.playerBytes);
+  const clips = report.clips;
+  const lines = [clips.cardCount ? `${clips.cardCount.toLocaleString()} for cards` : "", clips.dictationCount ? `${clips.dictationCount.toLocaleString()} for dictation` : ""].filter(Boolean).join(" and ");
+  $("#storage-clip-usage").textContent = `${formatStorage(clips.usedBytes)} of ${formatStorage(report.limits.clipBytes)} used${lines ? `, ${lines}` : ""}`;
+  setStorageMeter($("#storage-clip-meter"), clips.usedBytes, report.limits.clipBytes);
+  $("#storage-deck-usage").textContent = report.decks.count
+    ? `${formatStorage(report.decks.mediaBytes)} in ${report.decks.count} deck${report.decks.count === 1 ? "" : "s"}`
+    : "No decks with media";
+  const leftovers = $("#storage-leftovers");
+  if (leftovers) {
+    leftovers.hidden = !(Number(report.player.leftoverBytes) > 0 || Number(report.player.leftoverFolders) > 0);
+    $("#storage-leftovers-title").textContent = `${formatStorage(report.player.leftoverBytes)} of leftover downloads`;
+  }
+  paintStorageRecommendations(report);
+}
+
+// "Recommended: 20 GB" under each budget, a Use button when the budget differs, and the same
+// figures in the "?" tips.
+function paintStorageRecommendations(report) {
+  const recommended = report.recommended;
+  if (!recommended) return;
+  const sizeText = (bytes) => `${Math.round((Number(bytes) / 1024 ** 3) * 100) / 100} GB`;
+  const rows = [
+    ["player", recommended.playerBytes, report.limits.playerBytes, report.disk?.playerFreeBytes],
+    ["clip", recommended.clipBytes, report.limits.clipBytes, report.disk?.dataFreeBytes],
+  ];
+  for (const [key, bytes, current, free] of rows) {
+    const label = $(`#storage-${key}-rec`);
+    const use = document.querySelector(`[data-storage-use="${key}"]`);
+    const same = Math.abs(Number(bytes) - Number(current)) < 0.01 * 1024 ** 3;
+    const freeText = Number.isFinite(free) && free !== null ? `, ${formatStorage(free)} free on this drive` : "";
+    if (label) label.textContent = same ? `This is the recommended size${freeText}` : `Recommended: ${sizeText(bytes)}${freeText}`;
+    if (use) {
+      use.hidden = same;
+      use.textContent = `Use ${sizeText(bytes)}`;
+      use.dataset.bytes = String(bytes);
+    }
+    document.querySelectorAll(`[data-storage-rec="${key}"]`).forEach((node) => { node.textContent = sizeText(bytes); });
+  }
+  const lines = Math.round((Number(recommended.linesPerGB) * Number(recommended.clipBytes)) / 1024 ** 3 / 1000) * 1000;
+  document.querySelectorAll('[data-storage-rec="clip-lines"]').forEach((node) => { node.textContent = lines.toLocaleString("en-US"); });
+}
+
+async function renderSettingsStorage({ report = null } = {}) {
+  if (!$("#storage-player-gb")) return;
+  if (!report) {
+    if (settingsStorageLoading) return;
+    settingsStorageLoading = true;
+    try {
+      report = await fetchJson("/api/storage");
+    } catch (error) {
+      setToolStatus("#storage-status", error.message || "Couldn't read the storage figures", true);
+      return;
+    } finally {
+      settingsStorageLoading = false;
+    }
+  }
+  paintStorageReport(report);
+}
+
+async function saveStorageLimits(changes) {
+  try {
+    let report;
+    try {
+      report = await postJson("/api/storage/limits", changes);
+    } catch (error) {
+      if (error?.status !== 409 || error?.data?.error !== "clip_budget_confirmation_required") throw error;
+      const affected = Number(error.data.clipCount) || 0;
+      const used = formatStorage(Number(error.data.usedBytes) || 0);
+      const requested = formatStorage(Number(error.data.requestedBytes) || 0);
+      if (!window.confirm(`Your ${affected} saved learning clips use ${used}, more than the new ${requested} limit. Some clips may be deleted. Reduce the limit anyway?`)) {
+        setToolStatus("#storage-status", "Storage limit unchanged; clips preserved.");
+        return;
+      }
+      report = await postJson("/api/storage/limits", { ...changes, confirmClipEviction: true });
+    }
+    playerStorageLimitCache = { value: report.limits.playerBytes, at: Date.now() };
+    paintStorageReport(report);
+    setToolStatus("#storage-status", "Saved");
+  } catch (error) {
+    setToolStatus("#storage-status", error.message || "Couldn't save the limit", true);
+  }
+}
+
+// The player storage limit, for checking a video's size before playing it (kept for a minute).
+let playerStorageLimitCache = { value: 0, at: 0 };
+async function playerStorageLimit() {
+  if (Date.now() - playerStorageLimitCache.at < 60_000 && playerStorageLimitCache.value) return playerStorageLimitCache.value;
+  try {
+    const report = await fetchJson("/api/storage");
+    playerStorageLimitCache = { value: Number(report.limits?.playerBytes) || 0, at: Date.now() };
+  } catch {}
+  return playerStorageLimitCache.value;
+}
+
+function wireStorageSettings() {
+  bindTabs($("#settings-tabs"), {
+    onChange: (value) => {
+      if (!learningEnabled && value === "coach") return;
+      settingsView.tab = value;
+      localStorage.setItem("blackline-settings-tab", value);
+      renderSettingsTabs();
+    },
+  });
+  const limitChange = (input, key) => input?.addEventListener("change", () => {
+    const value = Number(input.value);
+    if (!Number.isFinite(value) || value <= 0) {
+      setToolStatus("#storage-status", "Enter a size in GB", true);
+      return;
+    }
+    void saveStorageLimits({ [key]: value });
+  });
+  limitChange($("#storage-player-gb"), "playerGB");
+  limitChange($("#storage-clip-gb"), "clipGB");
+  const playerSlider = $("#storage-player-slider");
+  playerSlider?.addEventListener("input", () => {
+    $("#storage-player-gb").value = playerSlider.value;
+    updateStorageLimitSlider(playerSlider);
+  });
+  playerSlider?.addEventListener("change", () => {
+    void saveStorageLimits({ playerGB: Number(playerSlider.value) });
+  });
+  document.querySelectorAll("[data-storage-use]").forEach((button) => button.addEventListener("click", () => {
+    const gb = Math.round((Number(button.dataset.bytes) / 1024 ** 3) * 100) / 100;
+    if (gb > 0) void saveStorageLimits({ [button.dataset.storageUse === "player" ? "playerGB" : "clipGB"]: gb });
+  }));
+  $("#storage-refresh")?.addEventListener("click", () => { void renderSettingsStorage(); });
+  $("#storage-player-clear")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await postJson("/api/storage/clear-player", {});
+      paintStorageReport(result.report);
+      setToolStatus("#storage-status", result.freedBytes > 0
+        ? "Cleared " + formatStorage(result.freedBytes) + " of unused video downloads."
+        : "Nothing to clear.");
+    } catch (error) {
+      setToolStatus("#storage-status", error.message || "Couldn't free space", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+  $("#storage-leftovers-clear")?.addEventListener("click", async (event) => {
+    const size = $("#storage-leftovers-title")?.textContent || "the leftover downloads";
+    if (!window.confirm(`Delete ${size}? These are downloads from earlier runs; nothing uses them.`)) return;
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await postJson("/api/storage/clear-leftovers", {});
+      paintStorageReport(result.report);
+      setToolStatus("#storage-status", result.freedBytes > 0
+        ? "Cleared " + formatStorage(result.freedBytes) + " of leftover downloads."
+        : "Nothing to clear.");
+    } catch (error) {
+      setToolStatus("#storage-status", error.message || "Couldn't delete the leftovers", true);
+    } finally {
+      button.disabled = false;
+    }
+  });
+}
+
+function renderSettings() {
+  renderAniListAutoSettings();
+  const keyInput = $("#settings-subdl-key");
+  const wyzieInput = $("#settings-wyzie-key");
+  const subsourceInput = $("#settings-subsource-key");
+  const baseInput = $("#settings-base-language");
+  const targetInput = $("#settings-target-language");
+  if (!keyInput || !baseInput || !targetInput) return;
+  if (document.activeElement !== keyInput) keyInput.value = state.subdlKey;
+  if (wyzieInput && document.activeElement !== wyzieInput) wyzieInput.value = state.wyzieKey;
+  if (subsourceInput && document.activeElement !== subsourceInput) subsourceInput.value = state.subsourceKey;
+  if (document.activeElement !== baseInput) baseInput.value = state.baseLanguage;
+  if (document.activeElement !== targetInput) targetInput.value = state.targetLanguage;
+  renderLocaleOptions("#settings-base-locale", baseInput.value, state.baseLocale);
+  renderLocaleOptions("#settings-learning-locale", targetInput.value, state.targetLocale);
+  const interfaceInput = $("#settings-interface-language");
+  if (interfaceInput && document.activeElement !== interfaceInput) interfaceInput.value = state.interfaceLanguage;
+  const stateNode = $("#settings-subdl-state");
+  if (stateNode) {
+    const keyed = [state.subdlKey, state.wyzieKey, state.subsourceKey].filter(Boolean).length;
+    stateNode.textContent = t("{count} active", { count: 1 + keyed });
+  }
+  const artworkToggle = $("#settings-auto-artwork");
+  const artworkState = $("#settings-artwork-state");
+  if (artworkToggle && document.activeElement !== artworkToggle) artworkToggle.checked = state.autoArtwork;
+  if (artworkState) artworkState.textContent = t(state.autoArtwork ? "On" : "Off");
+  renderSettingsTabs();
+  const pathNode = $("#settings-browser-coach-path");
+  if (pathNode) pathNode.textContent = browserCoachStatus?.extensionPath || "browser-extension";
+  const providerInput = $("#settings-ai-provider");
+  const providerNote = $("#settings-ai-provider-note");
+  const provider = selectedCoachProvider();
+  if (providerInput) {
+    const options = coachProviders.length ? coachProviders : [provider];
+    providerInput.innerHTML = options.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join("");
+    providerInput.value = provider.id;
+  }
+  if (providerNote) {
+    providerNote.textContent = provider.kind === "browser-subscription"
+      ? "Uses the ChatGPT account you're signed in to in this browser, through the helper extension."
+      : provider.kind === "local" ? "Runs on this computer." : `Uses ${coachProviderShortLabel(provider.label) || "the provider"} with your API key.`;
+  }
+  renderBrowserCoachStatus();
+}
+
+function renderLocaleOptions(selector, language, selected) {
+  const select = $(selector);
+  if (!select || document.activeElement === select) return;
+  const locale = normalizeLearningLocale(language, selected);
+  select.innerHTML = learningLocaleOptions(language).map((option) => `<option value="${option.value}"${option.value === locale ? " selected" : ""} data-i18n="${option.key}">${escapeHtml(option.label)}</option>`).join("");
+}
+
+const subtitleFontGroups = [
+  { label: "Sans-serif", fonts: [
+    ["sans", "Inter", 'Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif'],
+    ["segoe", "Segoe UI", '"Segoe UI", Arial, sans-serif'],
+    ["arial", "Arial", 'Arial, "Helvetica Neue", sans-serif'],
+    ["verdana", "Verdana", 'Verdana, Geneva, sans-serif'],
+    ["trebuchet", "Trebuchet MS", '"Trebuchet MS", Arial, sans-serif'],
+    ["tahoma", "Tahoma", 'Tahoma, Geneva, sans-serif'],
+    ["noto-sans", "Noto Sans", '"Noto Sans", "Noto Sans CJK JP", "Yu Gothic", sans-serif'],
+  ] },
+  { label: "Serif", fonts: [
+    ["serif", "Georgia", 'Georgia, "Times New Roman", serif'],
+    ["times", "Times New Roman", '"Times New Roman", Times, serif'],
+    ["palatino", "Palatino", '"Palatino Linotype", Palatino, serif'],
+    ["noto-serif", "Noto Serif", '"Noto Serif", "Noto Serif CJK JP", Georgia, serif'],
+  ] },
+  { label: "Monospace", fonts: [
+    ["mono", "Consolas", 'Consolas, "SFMono-Regular", "Liberation Mono", monospace'],
+    ["courier", "Courier New", '"Courier New", Courier, monospace'],
+    ["lucida", "Lucida Console", '"Lucida Console", Monaco, monospace'],
+  ] },
+  { label: "Display", fonts: [
+    ["impact", "Impact", 'Impact, "Arial Narrow", sans-serif'],
+    ["franklin", "Franklin Gothic", '"Franklin Gothic Medium", "Arial Narrow", Arial, sans-serif'],
+  ] },
+];
+function subtitleFontFamily(value) {
+  return subtitleFontGroups.flatMap((group) => group.fonts).find(([id]) => id === value)?.[2]
+    || subtitleFontGroups[0].fonts[0][2];
+}
+
+function subtitleShadowAmount(value) {
+  // Earlier releases saved a named preset. Keep those settings when upgrading.
+  if (value === "none") return 0;
+  if (value === "soft") return 40;
+  if (value === "strong") return 85;
+  return Math.max(0, Math.min(100, Number(value) || 0));
+}
+
+function subtitleShadowValue(value) {
+  const amount = subtitleShadowAmount(value);
+  if (!amount) return "none";
+  const strength = amount / 100;
+  return `0 ${Math.round(1 + strength * 2)}px ${Math.round(2 + strength * 7)}px rgba(0,0,0,${(strength * .95).toFixed(2)}), 0 1px ${Math.round(1 + strength * 2)}px rgba(0,0,0,${strength.toFixed(2)})`;
+}
+
+function populateSubtitleFontOptions() {
+  const select = $("#subtitle-style-font");
+  if (!select || select.options.length) return;
+  subtitleFontGroups.forEach((group) => {
+    const optgroup = document.createElement("optgroup");
+    optgroup.label = group.label;
+    group.fonts.forEach(([id, label]) => {
+      const option = document.createElement("option");
+      option.value = id;
+      option.textContent = label;
+      optgroup.append(option);
+    });
+    select.append(optgroup);
+  });
+}
+
+function renderSubtitleStyleControls() {
+  const style = state.subtitleStyle;
+  populateSubtitleFontOptions();
+  const values = {
+    "#subtitle-style-font": style.font || subtitleStyleDefaults.font,
+    "#subtitle-style-weight": String(style.weight || subtitleStyleDefaults.weight),
+    "#subtitle-style-size": String(style.size),
+    "#subtitle-style-shadow": String(subtitleShadowAmount(style.shadow)),
+    "#subtitle-style-background": String(style.background),
+    "#subtitle-style-position": String(Math.max(5, Math.min(70, Number(style.position) || subtitleStyleDefaults.position))),
+    "#subtitle-style-color": style.color || subtitleStyleDefaults.color,
+  };
+  Object.entries(values).forEach(([selector, value]) => {
+    const input = $(selector);
+    if (input && document.activeElement !== input) {
+      input.value = value;
+      if (selector === "#subtitle-style-font" && !input.value) input.value = subtitleStyleDefaults.font;
+    }
+  });
+  const romanization = $("#subtitle-style-romanization");
+  if (romanization && document.activeElement !== romanization) romanization.checked = style.romanization !== false;
+  if ($("#subtitle-style-size-value")) $("#subtitle-style-size-value").textContent = `${style.size}%`;
+  if ($("#subtitle-style-shadow-value")) $("#subtitle-style-shadow-value").textContent = `${subtitleShadowAmount(style.shadow)}%`;
+  if ($("#subtitle-style-background-value")) $("#subtitle-style-background-value").textContent = `${style.background}%`;
+  if ($("#subtitle-style-position-value")) $("#subtitle-style-position-value").textContent = `${Math.max(5, Math.min(70, Number(style.position) || subtitleStyleDefaults.position))}% from bottom`;
+  renderEmbeddedSubtitleControls();
+}
+
+function embeddedSubtitleLabel(track, index) {
+  const title = String(track?.title || "").trim();
+  if (title) return title;
+  const codec = String(track?.codec || "subtitle").toUpperCase();
+  return `Embedded subtitle ${index + 1} (${codec})`;
+}
+
+const embeddedSubtitleImports = new Map();
+const embeddedSubtitleAttempts = new Map();
+function embeddedSubtitleImportKey(source, streamIndex) {
+  return `${source?.sessionId || ""}:${source?.fileIndex ?? ""}:${source?.sourceTag || ""}:${streamIndex}`;
+}
+
+async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds = null, automatic = false, activate = false, urgent = false, focused = false } = {}) {
+  const source = state.currentSource || {};
+  if (!source.sessionId || source.fileIndex === null || source.fileIndex === undefined || !Number.isInteger(Number(track?.streamIndex))) return false;
+  const key = embeddedSubtitleImportKey(source, Number(track.streamIndex));
+  const existing = currentSourceTracks().find((item) => Number(item.embeddedStreamIndex) === Number(track.streamIndex) && embeddedTrackMatchesSource(item, source));
+  if (!automatic && existing?.cues?.length && !existing.embeddedImportPartial && !existing.visible) {
+    existing.visible = true;
+    state.subtitlesVisible = true;
+    syncSelectedTrackForSource();
+    subtitleRenderMemo.key = "";
+    renderSubtitleWorkspace();
+    renderEmbeddedSubtitleControls();
+    $("#media-status").textContent = "Embedded subtitles enabled";
+    return true;
+  }
+  const seekPosition = startSeconds ?? absolutePlaybackSeconds();
+  // A manual forward jump into the end of a three-minute window should not
+  // scan its first 170s before reaching the requested subtitle. FFmpeg can
+  // seek directly into MKV and keep the absolute VTT timestamps.
+  const windowStart = focused ? embeddedSubtitleSeekStart(seekPosition) : subtitleWindowStart(seekPosition);
+  const attemptKey = `${key}:${windowStart}`;
+  const lastAttempt = embeddedSubtitleAttempts.get(attemptKey) || 0;
+  // A standard 360s extraction and a 359s focused extraction address nearly
+  // the same data. Count both toward the short explicit-seek retry guard.
+  let lastNearbyAttempt = lastAttempt;
+  if (urgent) {
+    for (let delta = -10; delta <= 10; delta++) {
+      lastNearbyAttempt = Math.max(lastNearbyAttempt,
+        embeddedSubtitleAttempts.get(`${key}:${windowStart + delta}`) || 0);
+    }
+  }
+  // Ordinary timeupdates should not hammer unavailable torrent pieces. An
+  // explicit seek can retry a just-abandoned window after a short guard.
+  if (automatic && Date.now() - (urgent ? lastNearbyAttempt : lastAttempt) < (urgent ? 1500 : 60_000)) return false;
+  const inFlight = embeddedSubtitleImports.get(key);
+  if (inFlight) {
+    if (!automatic) {
+      inFlight.abort("manual subtitle import");
+      return false;
+    }
+    // Timeupdates must not replace an extraction already covering the
+    // playhead, even when its start is not on a 180s boundary. A genuinely
+    // different explicit seek may replace it to avoid waiting for earlier
+    // packets within that same window.
+    const playback = absolutePlaybackSeconds();
+    const coversPlayback = playback >= inFlight.windowStart
+      && playback < inFlight.windowStart + EMBEDDED_WINDOW_SECONDS;
+    const nearOriginalSeek = Math.abs(playback - inFlight.seekPosition) < 12;
+    if (coversPlayback && (!urgent || nearOriginalSeek)) return false;
+    // A speculative next-window prefetch must never evict an extraction
+    // serving the current playhead.
+    if (inFlight.windowStart === windowStart
+      || (!urgent && subtitleWindowStart(playback) !== subtitleWindowStart(seekPosition))) return false;
+    inFlight.abort("playback moved to a different subtitle window");
+    embeddedSubtitleAttempts.delete(`${key}:${inFlight.windowStart}`);
+  }
+  embeddedSubtitleAttempts.set(attemptKey, Date.now());
+  const controller = new AbortController();
+  controller.windowStart = windowStart;
+  controller.seekPosition = seekPosition;
+  embeddedSubtitleImports.set(key, controller);
+  const timer = window.setTimeout(() => controller.abort("timeout"), 50_000);
+  let imported = existing || null;
+  let received = "";
+  let windowCueCount = 0;
+  let renderAt = 0;
+  let parsedAt = 0;
+  let progressTimer = null;
+  const label = embeddedSubtitleLabel(track, Number(track.order) || 0);
+  const sourceStillActive = () => embeddedSubtitleImportKey(state.currentSource || {}, Number(track.streamIndex)) === key;
+  const requestIsCurrent = () => sourceStillActive() && embeddedSubtitleImports.get(key) === controller;
+  const markWindowComplete = () => {
+    if (focused) {
+      // Never mark an aligned bucket complete when the beginning of that
+      // bucket was skipped. These bounded intervals are merged with legacy
+      // completed windows by embeddedSubtitleCovers().
+      const ranges = Array.isArray(imported.embeddedCompletedRanges) ? imported.embeddedCompletedRanges : [];
+      imported.embeddedCompletedRanges = [...ranges, {
+        start: windowStart, end: windowStart + EMBEDDED_WINDOW_SECONDS,
+      }].slice(-64);
+    } else {
+      imported.embeddedCompletedWindows = [...new Set([...(imported.embeddedCompletedWindows || []), windowStart])];
+    }
+  };
+  const waitingHintTimer = window.setTimeout(() => {
+    if (requestIsCurrent() && windowCueCount === 0 && !automatic) {
+      $("#media-status").textContent = "Waiting for torrent pieces near your playback position… Find subtitles is available too.";
+    }
+  }, 12_000);
+  const onProgress = (force = false) => {
+    if (!requestIsCurrent()) return;
+    const now = Date.now();
+    if (!force && parsedAt && now - parsedAt < 550) {
+      // A stream may stop producing chunks after a complete cue. Keep a
+      // trailing parse so that the last cue appears without a playback event.
+      if (progressTimer === null) progressTimer = window.setTimeout(() => {
+        progressTimer = null;
+        onProgress();
+      }, 550 - (now - parsedAt));
+      return;
+    }
+    if (progressTimer !== null) {
+      window.clearTimeout(progressTimer);
+      progressTimer = null;
+    }
+    parsedAt = now;
+    const cues = parseSubtitle(completedWebVttText(received, force), imported?.id || "embedded-preview");
+    if (!cues.length || (cues.length <= windowCueCount && !force)) return;
+    windowCueCount = cues.length;
+    if (!imported) {
+      const added = addSubtitleText(completedWebVttText(received, force), label, normalizeTrackLanguage(track.language), {
+        origin: "embedded", exactMedia: true, provider: "Embedded", release: source.fileName || "",
+      });
+      imported = added.track;
+      imported.embeddedStreamIndex = Number(track.streamIndex);
+    }
+    imported.cues = mergeSubtitleWindows(imported.cues, cues, imported.id);
+    imported.fingerprint = subtitleFingerprint(imported.cues);
+    imported.exactMedia = true;
+    imported.offsetMs = 0;
+    imported.syncAnchors = [];
+    imported.syncSource = "embedded";
+    imported.timelineMismatch = false; // A fetched window isn't a different cut of the video.
+    if (activate && state.subtitlesVisible && !currentSourceTracks().some((item) => item.id !== imported.id && item.visible && item.cues?.length)) {
+      imported.visible = true;
+      syncSelectedTrackForSource();
+    } else if (!automatic) {
+      state.subtitlesVisible = true;
+      imported.visible = true;
+      syncSelectedTrackForSource();
+    }
+    subtitleRenderMemo.key = ""; // Cue text can grow under an unchanged cue ID.
+    // A fetch can deliver cues between video events. Use the presented frame
+    // when known: currentTime can run ahead of the displayed frame on resume.
+    state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
+    renderSubtitles();
+    if (force || Date.now() - renderAt > 1500) {
+      renderAt = Date.now();
+      renderSubtitleWorkspace();
+      if (!automatic) $("#media-status").textContent = `Embedded subtitles - ${imported.cues.length} lines available`;
+    }
+  };
+  renderEmbeddedSubtitleControls();
+  if (!automatic) {
+    state.subtitlesVisible = true;
+    renderSubtitleStyleControls();
+    updatePlayerPreferenceButtons();
+    $("#media-status").textContent = "Reading subtitles near the current playback position…";
+  }
+  try {
+    const url = `/api/torrents/${encodeURIComponent(source.sessionId)}/files/${Number(source.fileIndex)}/subtitle?stream=${Number(track.streamIndex)}&progressive=1&start=${windowStart}`;
+    const response = await fetch(url, { headers: { Accept: "text/vtt" }, signal: controller.signal });
+    if (!response.ok) {
+      let message = await response.text();
+      try { message = JSON.parse(message)?.error || message; } catch {}
+      const error = new Error(message || `Embedded subtitle extraction failed (${response.status})`);
+      error.httpStatus = response.status;
+      throw error;
+    }
+    if (!response.body) throw new Error("This browser cannot stream embedded subtitle extraction.");
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      received += decoder.decode(value, { stream: true });
+      if (received.length > 2 * 1024 * 1024) throw new Error("Embedded subtitle track is too large");
+      onProgress();
+    }
+    received += decoder.decode();
+    onProgress(true);
+    if (!requestIsCurrent()) return false;
+    const partial = /NOTE LVL-EXTRACT-PARTIAL/.test(received);
+    const extractionError = embeddedExtractionError(received);
+    // A complete window may contain no dialogue. Preserve captions loaded from
+    // earlier windows and remember this empty window instead of flagging the
+    // entire track as partial (which makes auto-loading retry it forever).
+    if (!windowCueCount && !partial && /NOTE LVL-EXTRACT-COMPLETE/.test(received) && imported?.cues?.length) {
+      imported.embeddedImportPartial = false;
+      markWindowComplete();
+      saveCurrentEpisodeAnalysis();
+      if (!automatic) $("#media-status").textContent = "No new embedded subtitle lines near this playback position";
+      renderSubtitleWorkspace();
+      return true;
+    }
+    if (!windowCueCount) throw new Error(partial
+      ? `Subtitle extraction stopped: ${extractionError || "The video may still be downloading"}. Try again when more of the video has loaded, or use Find subtitles.`
+      : "No subtitle lines were found near this playback position. Try another point in the episode.");
+    imported.embeddedImportPartial = partial;
+    if (!partial) markWindowComplete();
+    saveCurrentEpisodeAnalysis();
+    renderSubtitleWorkspace();
+    if (!automatic) $("#media-status").textContent = partial
+      ? `${imported.cues.length} subtitle lines available. Extraction paused${extractionError ? `: ${extractionError}` : ""}. More can load as you watch.`
+      : `${imported.cues.length} embedded subtitle lines available`;
+    return true;
+  } catch (error) {
+    if (requestIsCurrent()) {
+      // The two-worker subtitle cap can reject a request while other chapters
+      // are extracting. A transient 429 should retry on a nearby playback
+      // tick, not be treated like unavailable torrent pieces for 60 seconds.
+      if (automatic && error?.httpStatus === 429) embeddedSubtitleAttempts.set(attemptKey, Date.now() - 57_000);
+      if (imported) {
+        imported.embeddedImportPartial = true;
+        saveCurrentEpisodeAnalysis();
+      }
+      const failed = controller.signal.aborted
+        ? "Subtitle extraction stopped. " + (imported?.cues?.length ? `${imported.cues.length} lines are available.` : "Try Find subtitles or Add file.")
+        : error.message || "Couldn't read that track from the video";
+      if (!automatic) $("#media-status").textContent = failed;
+      renderSubtitleWorkspace();
+    }
+    return Boolean(imported);
+  } finally {
+    if (progressTimer !== null) window.clearTimeout(progressTimer);
+    window.clearTimeout(timer);
+    window.clearTimeout(waitingHintTimer);
+    if (embeddedSubtitleImports.get(key) === controller) embeddedSubtitleImports.delete(key);
+    if (sourceStillActive()) renderEmbeddedSubtitleControls();
+  }
+}
+
+let initialEmbeddedSubtitleSource = "";
+let initialEmbeddedSubtitleRequestSerial = 0;
+function enableDefaultEmbeddedSubtitles(media, playbackSeconds = 0, { urgent = false } = {}) {
+  const source = state.currentSource;
+  if (source?.kind !== "torrent") return;
+  const key = `${source.sessionId}:${source.fileIndex}:${source.sourceTag}`;
+  const candidate = defaultEmbeddedSubtitleTrack({ media, attached: currentSourceTracks(),
+    captionsEnabled: state.subtitlesVisible, languages: preferredLanguagePair(), normalizeLanguage: normalizeTrackLanguage });
+  if (!candidate) return;
+  if (initialEmbeddedSubtitleSource === key) {
+    const inFlight = embeddedSubtitleImports.get(embeddedSubtitleImportKey(source, Number(candidate.streamIndex)));
+    if (!inFlight || (inFlight.windowStart <= playbackSeconds
+      && playbackSeconds < inFlight.windowStart + EMBEDDED_WINDOW_SECONDS
+      && (!urgent || Math.abs(playbackSeconds - inFlight.seekPosition) < 12))) return;
+  }
+  initialEmbeddedSubtitleSource = key;
+  const requestSerial = ++initialEmbeddedSubtitleRequestSerial;
+  void importEmbeddedSubtitleTrack(candidate, null, { automatic: true, activate: true, startSeconds: playbackSeconds,
+    urgent, focused: urgent }).then((loaded) => {
+    // Missing torrent pieces or an empty window must not disable automatic
+    // attempts for the remainder of playback. An aborted old-window request
+    // must not reset a newer seek's default-track extraction.
+    if (!loaded && requestSerial === initialEmbeddedSubtitleRequestSerial
+      && initialEmbeddedSubtitleSource === key) initialEmbeddedSubtitleSource = "";
+  });
+}
+
+function loadMoreEmbeddedSubtitles({ seeked = false } = {}) {
+  if (!frame.classList.contains("has-video") || !state.currentMediaProbe?.subtitleTracks?.length) return;
+  const seconds = absolutePlaybackSeconds();
+  // Retry the preferred embedded track after a failed initial extraction;
+  // importEmbeddedSubtitleTrack already rate-limits attempts per window.
+  enableDefaultEmbeddedSubtitles(state.currentMediaProbe, seconds, { urgent: seeked });
+  currentSourceTracks().filter((item) => item.origin === "embedded" && item.visible && Number.isInteger(item.embeddedStreamIndex))
+    .forEach((track) => {
+      const coveredNow = embeddedSubtitleCovers(track, seconds);
+      const coveredAhead = embeddedSubtitleCovers(track, seconds + 25);
+      if (coveredNow && coveredAhead) return;
+      const start = coveredNow ? (embeddedSubtitleCoverageEnd(track, seconds) ?? seconds + 25) : seconds;
+      // Existing aligned intervals keep using 180s windows. After a focused
+      // seek, extend the covered range from its end instead of re-extracting
+      // almost the same three minutes from an old bucket boundary.
+      const focused = (seeked && !coveredNow)
+        || Boolean(track.embeddedCompletedRanges?.length);
+      const meta = state.currentMediaProbe.subtitleTracks.find((item) => Number(item.streamIndex) === track.embeddedStreamIndex);
+      if (meta) {
+        void importEmbeddedSubtitleTrack(meta, null, { startSeconds: start, automatic: true, urgent: seeked, focused });
+      }
+    });
+}
+
+function renderEmbeddedSubtitleControls() {
+  const container = $("#embedded-subtitle-tracks");
+  const section = $("#embedded-subtitle-section");
+  if (!container || !section) return;
+  const tracks = (state.currentMediaProbe?.subtitleTracks || []).filter((track) => track?.textBased && track.streamIndex !== null && track.streamIndex !== undefined && Number.isInteger(Number(track.streamIndex)));
+  section.hidden = !tracks.length;
+  if (!tracks.length) {
+    container.innerHTML = "";
+    return;
+  }
+  const count = $("#embedded-subtitle-count");
+  if (count) count.textContent = `${tracks.length}`;
+  container.innerHTML = tracks.map((track, index) => {
+    const pending = embeddedSubtitleImports.has(embeddedSubtitleImportKey(state.currentSource, Number(track.streamIndex)));
+    const existing = currentSourceTracks().find((item) => Number(item.embeddedStreamIndex) === Number(track.streamIndex));
+    const attached = Boolean(existing?.cues?.length);
+    const incomplete = Boolean(existing?.embeddedImportPartial);
+    const hidden = attached && !existing.visible;
+    const language = normalizeTrackLanguage(track.language);
+    return `
+    <div class="embedded-subtitle-row">
+      <div><strong>${escapeHtml(embeddedSubtitleLabel(track, index))}</strong><small>${escapeHtml([language ? trackLanguageName(language) : "", String(track.codec || "text").toUpperCase()].filter(Boolean).join(", "))}</small></div>
+      <button class="ui-btn ui-btn--${pending || attached ? "ghost" : "secondary"} ui-btn--sm embedded-subtitle-add" type="button" data-embedded-stream="${Number(track.streamIndex)}" ${attached && !pending && !incomplete && !hidden ? "disabled" : ""}>${pending ? "Cancel import" : incomplete ? "Retry" : hidden ? "Show" : attached ? "Added" : "Add"}</button>
+    </div>`;
+  }).join("");
+  container.querySelectorAll(".embedded-subtitle-add").forEach((button) => button.addEventListener("click", () => {
+    const track = tracks.find((item) => Number(item.streamIndex) === Number(button.dataset.embeddedStream));
+    if (track) void importEmbeddedSubtitleTrack(track, button);
+  }));
+}
+
+function applySubtitleStyle({ save = false } = {}) {
+  const style = state.subtitleStyle;
+  const root = document.documentElement;
+  const primaryPx = Math.round(25 * (Number(style.size) / 100));
+  const secondaryPx = Math.max(12, Math.round(primaryPx * (Number(style.secondary) / 100)));
+  root.style.setProperty("--subtitle-font", subtitleFontFamily(style.font));
+  root.style.setProperty("--subtitle-weight", String(style.weight));
+  root.style.setProperty("--subtitle-primary-size", `${primaryPx}px`);
+  root.style.setProperty("--subtitle-secondary-size", `${secondaryPx}px`);
+  root.style.setProperty("--subtitle-shadow", subtitleShadowValue(style.shadow));
+  root.style.setProperty("--subtitle-bg", `rgba(0,0,0,${Math.max(0, Math.min(85, Number(style.background))) / 100})`);
+  root.style.setProperty("--subtitle-color", /^#[0-9a-f]{6}$/i.test(String(style.color || "")) ? style.color : subtitleStyleDefaults.color);
+  root.style.setProperty("--subtitle-bottom", `${Math.max(5, Math.min(70, Number(style.position) || subtitleStyleDefaults.position))}%`);
+  if (save) {
+    localStorage.setItem("blackline-subtitle-style", JSON.stringify(style));
+    persistPreferences();
+  }
+  renderSubtitleStyleControls();
+}
+
+function readSubtitleStyleControls() {
+  const font = $("#subtitle-style-font")?.value || subtitleStyleDefaults.font;
+  state.subtitleStyle = {
+    ...state.subtitleStyle,
+    font,
+    weight: Number($("#subtitle-style-weight")?.value) || subtitleStyleDefaults.weight,
+    size: Number($("#subtitle-style-size")?.value) || subtitleStyleDefaults.size,
+    shadow: subtitleShadowAmount($("#subtitle-style-shadow")?.value),
+    background: Number($("#subtitle-style-background")?.value) || 0,
+    position: Math.max(5, Math.min(70, Number($("#subtitle-style-position")?.value) || subtitleStyleDefaults.position)),
+    color: $("#subtitle-style-color")?.value || subtitleStyleDefaults.color,
+    romanization: $("#subtitle-style-romanization")?.checked !== false,
+  };
+  applySubtitleStyle({ save: true });
+  updatePlayerPreferenceButtons();
+  if (state.subtitleStyle.romanization) ensureCurrentRomanization();
+  renderSubtitles();
+}
+
+function openSubtitleStyleDialog() {
+  renderSubtitleStyleControls();
+  $("#subtitle-style-dialog")?.showModal();
+}
+
+async function postJson(url, payload, { signal } = {}) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+    signal,
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.message || data.error || `Request failed (${response.status})`);
+    error.status = response.status;
+    error.data = data;
+    throw error;
+  }
+  return data;
+}
+
+async function fetchJson(url, { signal } = {}) {
+  const response = await fetch(url, { headers: { Accept: "application/json" }, signal });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(data.error || data.message || `Request failed (${response.status})`);
+    error.httpStatus = response.status;
+    throw error;
+  }
+  return data;
+}
+
+// The player reveals the current show's logo gradually. The stage label is
+// screen-reader text; titles without artwork use the same minimal progress fill.
+let playerLoadingLibraryId = "";
+let playerLoadingArtworkRequest = 0;
+let playerLoadingColorProgress = 0;
+let playerLoadingArtworkPending = false;
+function setPlayerLoadingArtwork(primary, fallback = "") {
+  const brand = $("#video-loading-brand");
+  const ghost = $("#video-loading-logo-ghost");
+  const fill = $("#video-loading-logo-fill");
+  if (!brand || !ghost || !fill) return;
+  const key = `${primary || ""}\n${fallback || ""}`;
+  if (brand.dataset.artworkKey === key) return;
+  brand.dataset.artworkKey = key;
+  const request = ++playerLoadingArtworkRequest;
+  // An artwork request can finish long after the loading estimate jumps ahead.
+  // Reveal every newly loaded logo from gray instead of starting fully colored.
+  playerLoadingColorProgress = 0;
+  drawPlayerLoadingProgress(playerLoadingVisualProgress);
+  brand.hidden = true;
+  playerLoadingArtworkPending = Boolean(primary);
+  ghost.removeAttribute("src");
+  fill.removeAttribute("src");
+  if (!primary) return;
+  const probe = new Image();
+  const reveal = () => {
+    if (request !== playerLoadingArtworkRequest) return;
+    if (!probe.naturalWidth) return;
+    playerLoadingArtworkPending = false;
+    ghost.src = probe.src;
+    fill.src = probe.src;
+    brand.hidden = false;
+    updatePlayerLoadingAnimation();
+  };
+  probe.onload = reveal;
+  probe.onerror = () => {
+    if (request !== playerLoadingArtworkRequest) return;
+    if (fallback && probe.src !== fallback) probe.src = fallback;
+    else playerLoadingArtworkPending = false;
+  };
+  probe.src = primary;
+}
+function setPlayerLoadingTitle(entry = null, fallbackTitle = "") {
+  playerLoadingLibraryId = entry?.id || "";
+  // Local files without a verified catalog identity keep the minimal progress line.
+  if (typeof document === "undefined") return;
+  if (!entry) { setPlayerLoadingArtwork(""); return; }
+  const series = buildLibrarySeries().find((item) => item.key === (entry.seriesKey || librarySeriesKey(entry.title)));
+  const id = String(entry.catalogId || series?.catalogId || (series && watchCatalogIdFor(series)) || "");
+  const raw = id
+    ? String([catalogChapterLists.get(id)?.meta, movieArtRecords.get(id)?.meta, titleSeedMeta.get(id), homeTitleIndex.get(id)]
+      .map((meta) => meta?.logo).find(Boolean) || "")
+    : "";
+  const primary = logoUrl({ id, logo: raw });
+  setPlayerLoadingArtwork(primary, raw && raw !== primary ? raw : "");
+}
+
+// Loading stages arrive in bursts (e.g. 4%, then 68%). Interpolate the
+// presentation independently, with a slow bounded advance between updates.
+  // The reveal can never reach 100% before playback becomes ready.
+let playerLoadingHideTimer = 0;
+let playerLoadingVisualProgress = 0;
+let playerLoadingVisualFrame = 0;
+let playerLoadingVisualTime = 0;
+function drawPlayerLoadingProgress(value) {
+  const overlay = $("#video-loading");
+  overlay?.style.setProperty("--load-fill", `${Number(value.toFixed(2))}%`);
+  overlay?.style.setProperty("--logo-fill", `${Number(playerLoadingColorProgress.toFixed(2))}%`);
+}
+function stopPlayerLoadingAnimation() {
+  if (playerLoadingVisualFrame && typeof window.cancelAnimationFrame === "function")
+    window.cancelAnimationFrame(playerLoadingVisualFrame);
+  playerLoadingVisualFrame = 0;
+  playerLoadingVisualTime = 0;
+}
+function animatePlayerLoadingProgress(time) {
+  playerLoadingVisualFrame = 0;
+  const overlay = $("#video-loading");
+  if (!overlay || overlay.hidden || overlay.classList.contains("is-error")) return;
+  const delta = playerLoadingVisualTime ? Math.min(0.08, Math.max(0, (time - playerLoadingVisualTime) / 1000)) : 1 / 60;
+  playerLoadingVisualTime = time;
+  const reported = state.loadingProgress;
+  if (reported >= 100) {
+    playerLoadingVisualProgress = Math.min(100, playerLoadingVisualProgress + 225 * delta);
+  } else if (playerLoadingVisualProgress < reported) {
+    playerLoadingVisualProgress = Math.min(reported, playerLoadingVisualProgress + 17 * delta);
+  } else {
+    const ceiling = Math.min(94, reported + 22);
+    playerLoadingVisualProgress = Math.min(ceiling, playerLoadingVisualProgress + 0.85 * delta);
+  }
+  // Loading may spend minutes finding peers or preparing a decoder. Keep the
+  // logo visibly active instead of freezing its color wipe around 70-92%.
+  // The cycle is indeterminate: it does not claim a measured percentage.
+  if (!$("#video-loading-brand")?.hidden) {
+    playerLoadingColorProgress = reported >= 100
+      ? Math.min(100, playerLoadingColorProgress + 48 * delta)
+      : (playerLoadingColorProgress + 16 * delta) % 100;
+  }
+  drawPlayerLoadingProgress(playerLoadingVisualProgress);
+  if ((playerLoadingVisualProgress < 100 || (reported >= 100 && playerLoadingColorProgress < 100))
+    && typeof window.requestAnimationFrame === "function")
+    playerLoadingVisualFrame = window.requestAnimationFrame(animatePlayerLoadingProgress);
+}
+function updatePlayerLoadingAnimation({ reset = false, error = false } = {}) {
+  if (reset || error) stopPlayerLoadingAnimation();
+  if (reset) { playerLoadingVisualProgress = 0; playerLoadingColorProgress = 0; }
+  if (typeof window.requestAnimationFrame !== "function" || window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches) {
+    playerLoadingVisualProgress = state.loadingProgress;
+    // Reduced-motion mode should show a steady gray logo while loading,
+    // not a misleading half-colored pseudo-percentage frozen for minutes.
+    playerLoadingColorProgress = state.loadingProgress >= 100 ? 100 : 0;
+    drawPlayerLoadingProgress(playerLoadingVisualProgress);
+    return;
+  }
+  if (reset || error) drawPlayerLoadingProgress(playerLoadingVisualProgress);
+  if (!error && !playerLoadingVisualFrame)
+    playerLoadingVisualFrame = window.requestAnimationFrame(animatePlayerLoadingProgress);
+}
+function setPlayerLoading(percent, title = "Loading", detail = "", { error = false } = {}) {
+  window.clearTimeout(playerLoadingHideTimer);
+  playerLoadingHideTimer = 0;
+  const previousStage = Number(state.loadingProgress) || 0;
+  const value = error ? Math.min(94, Math.max(0, Number(state.loadingProgress) || 0))
+    : Math.max(0, Math.min(94, Math.round(Number(percent) || 0)));
+  state.loadingProgress = value;
+  state.loadingDetail = String(detail || "");
+  const overlay = $("#video-loading");
+  if (!overlay) return;
+  const failed = error || recoveryDisplayPhase === "failed";
+  const recovering = recoveryDisplayPhase === "recovering" && !failed;
+  // The visual bar deliberately creeps *ahead* of the last reported stage.
+  // Comparing a repeated stage against that visual estimate wrongly restarted
+  // the logo wipe on every torrent status update, leaving it half-colored
+  // throughout long peer/decoder waits. Reset only for an actual stage rewind.
+  const reset = overlay.hidden || (!failed && value + 2 < previousStage);
+  overlay.hidden = false;
+  overlay.classList.toggle("is-error", failed);
+  overlay.classList.toggle("is-recovering", recovering);
+  const actions = $("#video-loading-actions");
+  if (actions) actions.hidden = !failed || !currentRecoveryKey();
+  overlay.style.setProperty("--progress", String(value));
+  if ($("#video-loading-title")) $("#video-loading-title").textContent = recovering ? "Restoring playback" : failed && recoveryDisplayPhase === "failed" ? "Playback unavailable" : title;
+  renderRecoveryOverlay();
+  updatePlayerLoadingAnimation({ reset, error: failed });
+}
+
+function updateLoadingTransferDetail(payload) {
+  const peers = Number(payload?.numPeers) || 0;
+  const speed = Number(payload?.downloadSpeed) || 0;
+  state.loadingTransferDetail = payload && (peers || speed)
+    ? [speed ? `${formatTransferBytes(speed)}/s` : "", peers ? `${peers} peer${peers === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")
+    : "";
+}
+
+function beginSourceTransition() {
+  cancelTranscodeStart();
+  clearAutoNext();
+  // A user-selected new episode is a new incident; recovery-selected sources
+  // retain the same bounded history across their asynchronous transition.
+  if (!recoveryBusy) resetRecoveryDisplay();
+  // The episode being left keeps where it stopped.
+  if (frame.classList.contains("has-video") && video.src) recordWatchProgress({ force: true });
+  if (frame.classList.contains("has-video") && video.src) frame.classList.add("source-transition");
+}
+
+function finishPlayerLoading() {
+  const overlay = $("#video-loading");
+  frame.classList.remove("source-transition");
+  // A late event from the old buffered media must not conceal a recovery/error
+  // panel for the newly requested source.
+  if (!overlay || overlay.hidden || overlay.classList.contains("is-error") || recoveryDisplayPhase === "recovering") return;
+  state.loadingProgress = 100;
+  overlay.style.setProperty("--progress", "100");
+  updatePlayerLoadingAnimation();
+  window.clearTimeout(playerLoadingHideTimer);
+  // If playback was ready quickly, let the gray-to-color sweep visibly finish
+  // instead of abruptly concealing the loader with only a few colored pixels.
+  let artworkWaitChecks = 0;
+  const hideWhenRevealed = () => {
+    if (state.loadingProgress !== 100 || overlay.hidden) { playerLoadingHideTimer = 0; return; }
+    const brand = $("#video-loading-brand");
+    // Artwork often arrives AFTER the first canplay/playing event. Previously
+    // the loader disappeared during that image request and never showed a
+    // gray-to-color transition at all. Allow one brief, bounded grace period
+    // for the current show's logo, without holding an absent logo indefinitely.
+    if (playerLoadingArtworkPending && artworkWaitChecks++ < 12) {
+      playerLoadingHideTimer = window.setTimeout(hideWhenRevealed, 100);
+      return;
+    }
+    if (brand && !brand.hidden && playerLoadingColorProgress < 99.5 && playerLoadingVisualFrame) {
+      playerLoadingHideTimer = window.setTimeout(hideWhenRevealed, 100);
+      return;
+    }
+    overlay.hidden = true;
+    stopPlayerLoadingAnimation();
+    playerLoadingHideTimer = 0;
+  };
+  playerLoadingHideTimer = window.setTimeout(hideWhenRevealed, 550);
+}
+
+function clearPlayerControlsHideTimer() {
+  if (playerControlsHideTimer) window.clearTimeout(playerControlsHideTimer);
+  playerControlsHideTimer = null;
+}
+
+function hidePlayerControls() {
+  clearPlayerControlsHideTimer();
+  if (!frame.classList.contains("has-video")) return;
+  frame.classList.add("controls-hidden");
+}
+
+function schedulePlayerControlsHide() {
+  clearPlayerControlsHideTimer();
+  if (!frame.classList.contains("has-video")) return;
+  playerControlsHideTimer = window.setTimeout(() => hidePlayerControls(), 3000);
+}
+
+function revealPlayerControls() {
+  if (!frame.classList.contains("has-video")) return;
+  frame.classList.remove("controls-hidden");
+  schedulePlayerControlsHide();
+}
+
+function clearBufferingTimer() {
+  if (state.bufferingTimer) window.clearTimeout(state.bufferingTimer);
+  state.bufferingTimer = null;
+}
+
+let playbackRecovery = createPlaybackRecoveryState();
+let recoveryWaitingSince = null;
+let recoveryLastMotionAt = 0;
+let recoveryLastPosition = -1;
+let recoveryBusy = false;
+// A failed media load can leave paused=true even though the last user action
+// was Play. Keep that intent until an actual user pause, so errors after resume
+// still reach bounded recovery instead of being dismissed as idle.
+let recoveryPlaybackRequested = false;
+let recoveryPauseSerial = 0;
+let recoveryWatchTimer = null;
+let recoveryDisplayPhase = "";
+let recoveryDisplayEvents = [];
+let recoveryDisplayEpisode = "";
+
+function resetRecoveryDisplay() {
+  recoveryDisplayPhase = "";
+  recoveryDisplayEvents = [];
+  recoveryDisplayEpisode = "";
+  $("#video-recovery-details")?.removeAttribute("open");
+}
+
+function recordRecoveryDisplay(type, reason = "") {
+  if (!recoveryDisplayEpisode) recoveryDisplayEpisode = recoveryEpisodeCode(state.currentSource?.sourceTag || watchPendingSelection?.episode?.code);
+  const plan = video.dataset.mode === "torrent-direct" ? "direct"
+    : video.dataset.mode === "transcode" ? (state.transcodeContext?.copyVideo ? "remux" : "transcode") : "other";
+  const attempt = type === "retry" ? playbackRecovery.retryCount
+    : type === "switch" ? playbackRecovery.sourceSwitches : 0;
+  recoveryDisplayEvents = addRecoveryEvent(recoveryDisplayEvents, {
+    type, reason, plan, attempt, seconds: absolutePlaybackSeconds(),
+  });
+}
+
+function renderRecoveryOverlay() {
+  // During retries show only the regular LVL loading artwork, not a diagnostic
+  // log. Preserve the bounded history for an actionable final failure.
+  const shown = recoveryDisplayPhase === "failed";
+  const message = $("#video-recovery-message");
+  const meta = $("#video-recovery-meta");
+  const details = $("#video-recovery-details");
+  if (message) {
+    message.hidden = !shown;
+    message.textContent = "Couldn't resume this episode. Recovery attempts were unsuccessful.";
+  }
+  if (meta) {
+    meta.hidden = !shown;
+    const latestRetry = [...recoveryDisplayEvents].reverse().find((event) => event.label === "Retrying current source")?.attempt || 0;
+    const count = recoveryDisplayPhase === "failed"
+      ? `${playbackRecovery.attemptedSourceKeys.length} source${playbackRecovery.attemptedSourceKeys.length === 1 ? "" : "s"} attempted`
+      : playbackRecovery.pendingSourceKey ? `Source switch ${playbackRecovery.sourceSwitches}`
+        : `Retry ${Math.max(playbackRecovery.retryCount, latestRetry)}`;
+    meta.textContent = `${recoveryDisplayEpisode || "Current video"} - ${formatTime(absolutePlaybackSeconds() * 1000)} - ${count}`;
+  }
+  if (details) {
+    details.hidden = recoveryDisplayPhase !== "failed" || !recoveryDisplayEvents.length;
+    if (!details.hidden) {
+      const events = $("#video-recovery-events");
+      if (events) {
+        // Only predetermined labels and enum-derived reasons are logged.
+        events.replaceChildren(...recoveryDisplayEvents.map((entry) => {
+          const row = document.createElement("div");
+          const time = new Date(entry.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+          row.textContent = `${time} - ${entry.label} - ${entry.plan}${entry.reason ? ` - ${entry.reason}` : ""}${entry.attempt ? ` - Attempt ${entry.attempt}` : ""}${entry.label === "Playback restored" ? ` - ${formatTime(entry.seconds * 1000)}` : ""}`;
+          return row;
+        }));
+      }
+    }
+  }
+}
+
+function currentRecoveryKey() {
+  const source = state.currentSource;
+  return source?.kind === "torrent" ? playbackRecoverySourceKey(source.libraryId, source.fileIndex) : "";
+}
+
+function markPlaybackMotion() {
+  if (!currentRecoveryKey() || state.pendingSeek) return;
+  const position = absolutePlaybackSeconds();
+  if (position >= recoveryLastPosition + 0.3 || recoveryLastPosition < 0) {
+    const advanced = recoveryLastPosition >= 0 && position >= recoveryLastPosition + 0.3;
+    recoveryLastPosition = position;
+    recoveryLastMotionAt = Date.now();
+    recoveryWaitingSince = null;
+    playbackRecovery = recordPlaybackProgress(playbackRecovery, {
+      sourceKey: currentRecoveryKey(), currentTimeSeconds: position,
+    });
+    if (advanced && recoveryDisplayPhase === "recovering" && !recoveryBusy) {
+      recordRecoveryDisplay("restored");
+      recoveryDisplayPhase = "";
+      renderRecoveryOverlay();
+      finishPlayerLoading();
+    }
+  }
+}
+
+function beginRecoveryWatch() {
+  recoveryWaitingSince = Date.now();
+  recoveryLastMotionAt = Date.now();
+  recoveryLastPosition = -1;
+  if (recoveryWatchTimer !== null) return;
+  recoveryWatchTimer = window.setInterval(() => {
+    // PiP remains the active viewing surface after navigating to Library or
+    // Title. Hidden Watch without PiP must stay idle, but PiP still needs the
+    // same bounded torrent-stall recovery as the full player.
+    if (!currentRecoveryKey() || !frame.classList.contains("has-video")
+      || (!viewActive("watch") && !$("#view-watch")?.classList.contains("is-floating")
+        && document.pictureInPictureElement !== video && !window.documentPictureInPicture?.window)
+      || recoveryBusy || state.pendingSeek || video.seeking || video.ended || video.paused) return;
+    const now = Date.now();
+    const stalled = isPlaybackStallExpired({
+      waitingSinceMs: recoveryWaitingSince, nowMs: now,
+      paused: video.paused,
+      seeking: Boolean(state.pendingSeek || video.seeking),
+      ended: video.ended,
+      readyState: video.readyState,
+    });
+    const frozen = !video.paused && recoveryLastMotionAt && now - recoveryLastMotionAt >= 16_000
+      && (!state.mediaDurationMs || absolutePlaybackSeconds() < state.mediaDurationMs / 1000 - 3);
+    if (stalled || frozen) void recoverPlayback("stall");
+  }, 2000);
+}
+
+function stopRecoveryWatch() {
+  if (recoveryWatchTimer !== null) window.clearInterval(recoveryWatchTimer);
+  recoveryWatchTimer = null;
+  recoveryWaitingSince = null;
+}
+
+async function forceCompatibilityTranscode() {
+  const source = state.currentSource;
+  if (!source?.sessionId || source.fileIndex === null || source.fileIndex === undefined) return false;
+  const at = absolutePlaybackSeconds();
+  const baseUrl = `/api/torrents/${encodeURIComponent(source.sessionId)}/files/${source.fileIndex}/transcode`;
+  state.transcodeContext = { baseUrl, sessionId: source.sessionId, fileIndex: source.fileIndex, audioIndex: state.selectedAudioTrack || 0, forceH264: true };
+  setPlayerLoading(15, "Recovering video", "Switching to compatible playback");
+  const opened = await openTranscodeAt(at, { wasPlaying: true });
+  if (!opened) return false;
+  beginRecoveryWatch();
+  return true;
+}
+
+function reloadDirectTorrentAt(seconds) {
+  invalidateSubtitleFrameClock();
+  const source = state.currentSource;
+  if (!source?.sessionId) return false;
+  const target = Math.max(0, Number(seconds) || 0);
+  const fileIndex = source.fileIndex;
+  const baseUrl = `/api/torrents/${encodeURIComponent(source.sessionId)}/files/${source.fileIndex}/stream`;
+  const loadGeneration = (Number(video.__lvlLoadGeneration) || 0) + 1;
+  video.__lvlLoadGeneration = loadGeneration;
+  setPlayerLoading(18, "Reconnecting video", formatTime(target * 1000));
+  video.src = baseUrl;
+  video.load();
+  if (target > 0) video.addEventListener("loadedmetadata", () => {
+    if (video.__lvlLoadGeneration !== loadGeneration
+      || state.currentSource?.sessionId !== source.sessionId || state.currentSource?.fileIndex !== fileIndex
+      || video.src !== new URL(baseUrl, location.href).href) return;
+    try { video.currentTime = target; } catch {}
+  }, { once: true });
+  void video.play().catch(() => {
+    // A rejected playback promise can leave the element paused without a
+    // `waiting`/`error` event. The stall watchdog ignores paused elements, so
+    // forward this failure to the existing bounded recovery controller.
+    if (video.__lvlLoadGeneration === loadGeneration && !state.pendingSeek
+      && state.currentSource?.sessionId === source.sessionId
+      && video.src === new URL(baseUrl, location.href).href && recoveryPlaybackRequested)
+      void recoverPlayback("error");
+  });
+  beginRecoveryWatch();
+  return true;
+}
+
+async function recoverPlayback(reason = "error") {
+  if (recoveryBusy || !currentRecoveryKey() || (video.ended && reason !== "early-eof") || state.pendingSeek) return;
+  if (video.paused && state.loadingProgress >= 100 && !recoveryPlaybackRequested && reason !== "early-eof") return;
+  // Media events can arrive after Home cancelled an unfinished load. Recovery
+  // must not silently restart audio when there is no playback surface.
+  if (!viewActive("watch") && !$("#view-watch")?.classList.contains("is-floating")
+    && !floatingDesktopWindow && !floatingDesktopPending
+    && document.pictureInPictureElement !== video && !window.documentPictureInPicture?.window) return;
+  const key = currentRecoveryKey();
+  const alternatives = currentChapterSources().map(({ entry, episode }) => ({
+    key: playbackRecoverySourceKey(entry.id, episode.fileIndex), entry, episode,
+  }));
+  const next = requestPlaybackRecovery(playbackRecovery, {
+    sourceKey: key, alternateSourceKeys: alternatives.map((item) => item.key), reason,
+  });
+  playbackRecovery = next.state;
+  const action = next.action;
+  if (action.type === "none") return;
+  if (recoveryDisplayPhase !== "recovering") {
+    recoveryDisplayEvents = [];
+    recoveryDisplayEpisode = "";
+    recordRecoveryDisplay("problem", reason === "error" && [3, 4].includes(video.error?.code) ? "decode" : reason);
+  }
+  if (action.type === "give-up") {
+    recordRecoveryDisplay("stopped", reason);
+    recoveryDisplayPhase = "failed";
+    stopRecoveryWatch();
+    $("#media-status").textContent = "Playback stopped: sources did not recover";
+    setPlayerLoading(100, "Playback unavailable", "Try another source or return to Library.", { error: true });
+    toast("Playback couldn't recover. You can choose another source.", { tone: "error" });
+    return;
+  }
+  recoveryBusy = true;
+  recoveryDisplayPhase = "recovering";
+  recordRecoveryDisplay(action.type === "retry-source" ? "retry" : "switch", reason);
+  setPlayerLoading(18, "Reconnecting playback");
+  try {
+    if (action.type === "retry-source") {
+      $("#media-status").textContent = "Recovering stalled video…";
+      const strategy = playbackRetryStrategy(video.dataset.mode, reason, video.error?.code);
+      if (strategy === "compatibility") {
+        if (!await forceCompatibilityTranscode()) throw new Error("Compatibility playback could not start");
+      } else if (strategy === "restart-direct") {
+        if (!reloadDirectTorrentAt(absolutePlaybackSeconds())) throw new Error("Direct playback could not restart");
+      }
+      else if (strategy === "restart-transcode" && video.dataset.mode === "transcode") {
+        if (!await restartTranscodeAt(absolutePlaybackSeconds(), { wasPlaying: true }))
+          throw new Error("Converted playback could not restart");
+      }
+    } else if (action.type === "switch-source") {
+      const alternate = alternatives.find((item) => item.key === action.sourceKey);
+      if (!alternate) throw new Error("Alternate source no longer exists");
+      const at = absolutePlaybackSeconds();
+      setPlayerLoading(10, "Switching source", "The current video stopped responding");
+      const switched = await playLibraryEpisode(alternate.entry.id, Number(alternate.episode.fileIndex), { resumeAtSeconds: at });
+      if (!switched) {
+        playbackRecovery = failPlaybackRecoverySwitch(playbackRecovery);
+        throw new Error("The alternate source could not start.");
+      }
+    }
+    recoveryWaitingSince = Date.now();
+    recoveryLastMotionAt = Date.now();
+    recoveryLastPosition = -1;
+  } catch (error) {
+    recordRecoveryDisplay("failed", reason);
+    renderRecoveryOverlay();
+    console.warn("Playback recovery attempt failed:", error);
+    recoveryWaitingSince = Date.now() - 7_000; // retry or move to another source at next watchdog check
+    recoveryLastMotionAt = Date.now() - 15_000;
+    // A failed restart (including a rejected seek-origin lookup) can leave the
+    // video paused. The stall watchdog rightly ignores user pauses, but cannot
+    // recover this internally failed attempt; advance the bounded controller
+    // even if it was a same-source retry. Never wake a different source.
+    window.setTimeout(() => {
+      if (currentRecoveryKey() === key && recoveryDisplayPhase === "recovering")
+        void recoverPlayback(action.type === "switch-source" ? "alternate-failed" : "error");
+    }, 400);
+  } finally {
+    recoveryBusy = false;
+  }
+}
+
+function scheduleBufferingIndicator() {
+  clearBufferingTimer();
+  if (video.paused) return;
+  state.bufferingTimer = window.setTimeout(() => {
+    state.bufferingTimer = null;
+    if (video.paused || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA
+      || (video.seeking && isPlayerTimeBuffered(video.currentTime))) return;
+    setPlayerLoading(Math.max(86, state.loadingProgress), "Buffering", formatTime(state.currentMs));
+    $("#media-status").textContent = "TORRENT - BUFFERING";
+  }, 320);
+}
+
+function absolutePlaybackSeconds() {
+  if (state.pendingSeek) return state.pendingSeek.target;
+  return (video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0) + (Number(video.currentTime) || 0);
+}
+
+// End (absolute seconds) of the stretch that can play without waiting: the buffered range around
+// the playhead.
+function playerReadyEndSeconds() {
+  const ranges = video.buffered;
+  if (!ranges?.length) return 0;
+  const base = video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0;
+  const now = Number(video.currentTime) || 0;
+  for (let index = 0; index < ranges.length; index += 1) {
+    if (ranges.start(index) <= now + 0.5 && ranges.end(index) >= now) return ranges.end(index) + base;
+  }
+  return ranges.end(ranges.length - 1) + base;
+}
+
+// Only browser-buffered frames are instant seeks. A torrent's downloaded disk
+// pieces are not necessarily available to the media element yet; a transcode
+// explicitly starts a new stream for every nontrivial seek.
+function isPlayerTimeBuffered(seconds) {
+  if (video.dataset.mode === "transcode") return false;
+  const ranges = video.buffered;
+  if (!ranges || !Number.isFinite(seconds)) return false;
+  const duration = Number(video.duration);
+  const lookAhead = Number.isFinite(duration) && seconds >= duration - 0.35 ? 0 : 0.25;
+  for (let index = 0; index < ranges.length; index += 1) {
+    if (ranges.start(index) <= seconds + 0.1 && ranges.end(index) >= seconds + lookAhead) return true;
+  }
+  return false;
+}
+function hideLoadingForBufferedSeek() {
+  const overlay = $("#video-loading");
+  if (!overlay || overlay.hidden || overlay.classList.contains("is-error")) return;
+  window.clearTimeout(playerLoadingHideTimer);
+  playerLoadingHideTimer = 0;
+  overlay.hidden = true;
+  stopPlayerLoadingAnimation();
+}
+
+// Downloaded parts of the playing file, drawn faintly under the timeline (bytes ≈ time).
+function drawPlayerDownloadMap(fileMap) {
+  const canvas = $("#player-progress-map");
+  const legend = $("#player-saved-legend");
+  if (!canvas) return;
+  const context = canvas.getContext("2d");
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  if (!fileMap?.map) {
+    if (legend) legend.hidden = true;
+    return;
+  }
+  const values = decodeBase64Bytes(fileMap.map);
+  const width = canvas.width / Math.max(1, values.length);
+  for (let index = 0; index < values.length; index += 1) {
+    if (!values[index]) continue;
+    context.fillStyle = `rgba(255,255,255,${(0.1 + (values[index] / 255) * 0.28).toFixed(3)})`;
+    context.fillRect(Math.floor(index * width), 0, Math.ceil(width), canvas.height);
+  }
+  if (legend) {
+    legend.hidden = false;
+    $("#player-saved-percent").textContent = `${Math.round((Number(fileMap.progress) || 0) * 100)}%`;
+  }
+}
+
+// Status messages show briefly under the title; routine playback states are not shown at all.
+const ROUTINE_STATUS = /^(?:READY|TORRENT(?: STREAM| [-·] (?:TRANSCODING|TRANSCODE PLAYING|AUDIO → AAC|SEEKING .*|PLAYING|BUFFERING))|LOCAL .*|LIBRARY [-·] RESOLVING .*)$/i;
+let mediaStatusTimer = 0;
+function watchMediaStatus() {
+  const node = $("#media-status");
+  if (!node) return;
+  new MutationObserver(() => {
+    const text = node.textContent.trim();
+    window.clearTimeout(mediaStatusTimer);
+    const visible = Boolean(text) && !ROUTINE_STATUS.test(text);
+    node.classList.toggle("is-visible", visible);
+    if (visible) mediaStatusTimer = window.setTimeout(() => node.classList.remove("is-visible"), /fail|error|could|no |unsupported/i.test(text) ? 12_000 : 6_000);
+  }).observe(node, { childList: true, characterData: true, subtree: true });
+}
+
+function formatTransferBytes(bytes) {
+  const value = Math.max(0, Number(bytes) || 0);
+  if (value >= 1073741824) return `${(value / 1073741824).toFixed(2)} GB`;
+  if (value >= 1048576) return `${(value / 1048576).toFixed(1)} MB`;
+  if (value >= 1024) return `${(value / 1024).toFixed(0)} KB`;
+  return `${Math.round(value)} B`;
+}
+
+function updateTransferStats(payload = null) {
+  const down = Number(payload?.downloaded) || 0;
+  const up = Number(payload?.uploaded) || 0;
+  const downRate = Number(payload?.downloadSpeed) || 0;
+  const upRate = Number(payload?.uploadSpeed) || 0;
+  if ($("#player-downloaded")) $("#player-downloaded").textContent = `↓ ${formatTransferBytes(down)}`;
+  if ($("#player-uploaded")) $("#player-uploaded").textContent = `↑ ${formatTransferBytes(up)}`;
+  const stats = $("#player-transfer-stats");
+  if (stats) {
+    stats.hidden = !payload;
+    stats.setAttribute("aria-label", payload
+      ? `Downloaded ${formatTransferBytes(down)} at ${formatTransferBytes(downRate)} per second, uploaded ${formatTransferBytes(up)} at ${formatTransferBytes(upRate)} per second, ${payload.numPeers || 0} peers`
+      : "Torrent transfer totals");
+  }
+  updateLoadingTransferDetail(payload);
+}
+
+function stopTransferStats() {
+  if (state.transferStatsTimer) window.clearInterval(state.transferStatsTimer);
+  state.transferStatsTimer = null;
+}
+
+function startTransferStats(sessionId) {
+  stopTransferStats();
+  updateTransferStats();
+  if (!sessionId) { updateTransferStats(); return; }
+  const refresh = async () => {
+    try {
+      if (state.currentSource?.sessionId !== sessionId) return;
+      const fileIndex = Number(state.currentSource?.fileIndex);
+      const query = Number.isInteger(fileIndex) && fileIndex >= 0 ? `?file=${fileIndex}` : "";
+      const payload = await fetchJson(`/api/torrents/${encodeURIComponent(sessionId)}${query}`);
+      if (state.currentSource?.sessionId !== sessionId) return;
+      updateTransferStats(payload);
+      drawPlayerDownloadMap(payload.fileMap || null);
+    } catch {}
+  };
+  void refresh();
+  state.transferStatsTimer = window.setInterval(refresh, 1500);
+}
+
+function setMediaSource({ src, title, status, objectUrl = null, mode = "local", durationMs = 0, startAtSeconds = 0 }, { preserveTranscodeStart = false } = {}) {
+  invalidateSubtitleFrameClock();
+  const loadGeneration = (Number(video.__lvlLoadGeneration) || 0) + 1;
+  video.__lvlLoadGeneration = loadGeneration;
+  if (!preserveTranscodeStart) cancelTranscodeStart();
+  clearAutoNext({ resetDismissal: true });
+  if (mode === "torrent-direct" || mode === "transcode") beginRecoveryWatch();
+  else stopRecoveryWatch();
+  if (video.dataset.objectUrl) {
+    URL.revokeObjectURL(video.dataset.objectUrl);
+    delete video.dataset.objectUrl;
+  }
+  video.pause();
+  transcodePauseSnapshot = null;
+  video.dataset.mode = mode;
+  window.clearTimeout(state.pendingSeek?.timer);
+  state.pendingSeek = null;
+  state.scrubbing = false;
+  drawPlayerDownloadMap(null);
+  if (mode !== "transcode") {
+    state.transcodeBaseOffsetSeconds = 0;
+    state.transcodeRequestedStartSeconds = 0;
+    state.transcodeContext = null;
+  }
+  state.mediaDurationMs = Number(durationMs) > 0 ? Number(durationMs) : 0;
+  video.controls = false;
+  $("#compat-controls").hidden = false;
+  $("#compat-progress").max = String(Math.max(1, state.mediaDurationMs / 1000));
+  $("#compat-progress").value = "0";
+  $("#compat-time").textContent = `00:00 / ${state.mediaDurationMs ? formatTime(state.mediaDurationMs) : "--:--"}`;
+  video.src = src;
+  if (objectUrl) video.dataset.objectUrl = objectUrl;
+  frame.classList.add("has-video");
+  revealPlayerControls();
+  $("#media-title").textContent = title;
+  $("#media-status").textContent = status;
+  if (mode === "transcode") setPlayerLoading(Math.max(82, state.loadingProgress), "Starting stream");
+  else if (mode === "torrent-direct") setPlayerLoading(Math.max(78, state.loadingProgress), "Buffering");
+  else $("#video-loading").hidden = true;
+  state.currentMs = Math.max(0, Number(startAtSeconds) || 0) * 1000;
+  state.lastCueId = null;
+  video.load();
+  if (mode !== "transcode" && startAtSeconds > 0) {
+    const expectedSrc = video.src;
+    video.addEventListener("loadedmetadata", () => {
+      if (video.src !== expectedSrc || video.__lvlLoadGeneration !== loadGeneration) return;
+      try { video.currentTime = Math.max(0, Number(startAtSeconds) || 0); } catch {}
+    }, { once: true });
+  }
+  updateChapterButtons();
+  updatePlayerPreferenceButtons();
+  renderSubtitleWorkspace();
+}
+
+function updateCompatControls() {
+  const currentMs = Math.max(0, absolutePlaybackSeconds() * 1000);
+  const nativeDurationMs = Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0;
+  if (video.dataset.mode !== "transcode" && nativeDurationMs && Math.abs(state.mediaDurationMs - nativeDurationMs) > 250) {
+    state.mediaDurationMs = nativeDurationMs;
+    refreshSubtitleTimelineFits();
+  }
+  const durationMs = state.mediaDurationMs || nativeDurationMs;
+  renderEpisodeTimelineSegments();
+  const progress = $("#compat-progress");
+  progress.max = String(Math.max(1, durationMs / 1000 || 1));
+  const playing = playerIsPlaying();
+  $("#compat-play")?.classList.toggle("is-playing", playing);
+  $("#compat-play")?.setAttribute("aria-label", playing ? "Pause" : "Play");
+  $("#compat-play")?.setAttribute("data-tooltip", playing ? "Pause" : "Play");
+  // While the thumb is held, playback must not pull it back (that was the seek "ping-pong").
+  const shownMs = state.scrubbing ? Number(progress.value) * 1000 : currentMs;
+  if (!state.scrubbing) progress.value = String(Math.min(currentMs / 1000, durationMs / 1000 || currentMs / 1000));
+  $("#compat-time").textContent = `${formatTime(shownMs)} / ${durationMs ? formatTime(durationMs) : "--:--"}`;
+  const readyEnd = playerReadyEndSeconds();
+  const percent = (seconds) => (durationMs ? Math.max(0, Math.min(100, (seconds * 1000 * 100) / durationMs)) : 0);
+  $("#player-progress-played").style.width = `${percent(shownMs / 1000)}%`;
+  const readyStart = video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0;
+  $("#player-progress-ready").style.left = `${percent(readyStart)}%`;
+  $("#player-progress-ready").style.width = `${Math.max(0, percent(readyEnd) - percent(readyStart))}%`;
+  const muted = (transcodeStartAttempt?.mutedForPreroll ? transcodeStartAttempt.wantedMuted : video.muted) || video.volume === 0;
+  $("#player-mute")?.classList.toggle("is-muted", muted);
+  $("#player-mute")?.setAttribute("aria-label", muted ? "Unmute" : "Mute");
+  $("#player-mute")?.setAttribute("data-tooltip", muted ? "Unmute" : "Mute");
+  $("#player-volume").value = String(muted ? 0 : video.volume);
+}
+
+function updatePlayerPreferenceButtons() {
+  const loop = $("#player-loop-line");
+  loop.classList.toggle("is-active", state.loopLine);
+  loop.setAttribute("aria-pressed", String(state.loopLine));
+  const subs = $("#player-toggle-subs");
+  subs.classList.toggle("is-active", state.subtitlesVisible);
+  subs.setAttribute("aria-pressed", String(state.subtitlesVisible));
+  subs.setAttribute("data-tooltip", "Captions");
+  subs.setAttribute("aria-label", "Captions");
+  const swap = $("#player-swap-languages");
+  swap?.setAttribute("data-tooltip", `Swap ${state.targetLanguage} / ${state.baseLanguage} subtitles`);
+  swap?.setAttribute("aria-label", `Swap ${state.targetLanguage} and ${state.baseLanguage} subtitles`);
+}
+
+// A copied video fragment begins at the keyframe preceding the requested
+// timestamp. The server verifies that frame's original movie time before we
+// open it. Keep the requested position in the controls while silently playing
+// the preroll, then reveal/unmute only after the requested frame is presented.
+let transcodeStartAttempt = null;
+let transcodeStartSerial = 0;
+
+function cancelTranscodeStart({ preservePending = false } = {}) {
+  transcodeStartSerial += 1;
+  const attempt = transcodeStartAttempt;
+  transcodeStartAttempt = null;
+  if (!attempt) return;
+  attempt.controller.abort("new playback request");
+  if (attempt.frameId !== null && typeof video.cancelVideoFrameCallback === "function")
+    video.cancelVideoFrameCallback(attempt.frameId);
+  if (attempt.watchdog) window.clearTimeout(attempt.watchdog);
+  if (attempt.retryTimer) window.clearTimeout(attempt.retryTimer);
+  if (attempt.timeupdate) video.removeEventListener("timeupdate", attempt.timeupdate);
+  frame.classList.remove("is-sync-preroll");
+  if (attempt.overlay) {
+    if (attempt.previousOverlayAriaHidden === null) attempt.overlay.removeAttribute("aria-hidden");
+    else attempt.overlay.setAttribute("aria-hidden", attempt.previousOverlayAriaHidden);
+  }
+  if (attempt.mutedForPreroll) video.muted = attempt.wantedMuted;
+  if (!preservePending && state.pendingSeek === attempt.pending) state.pendingSeek = null;
+}
+
+function setPlayerMutePreference(muted) {
+  if (transcodeStartAttempt?.mutedForPreroll) {
+    transcodeStartAttempt.wantedMuted = Boolean(muted);
+    video.muted = true;
+  } else video.muted = Boolean(muted);
+}
+
+// Caption time follows the frame actually presented, not an HTMLMediaElement
+// clock that may run ahead of its decoder after a long pause or copied seek.
+let subtitlePresentedFrame = null;
+let subtitleFrameRequestId = null;
+let subtitleFrameGeneration = 0;
+let subtitleLastPaintMs = -Infinity;
+function invalidateSubtitleFrameClock() {
+  subtitleFrameGeneration += 1;
+  subtitlePresentedFrame = null;
+  subtitleLastPaintMs = -Infinity;
+  if (subtitleFrameRequestId !== null && typeof video.cancelVideoFrameCallback === "function")
+    video.cancelVideoFrameCallback(subtitleFrameRequestId);
+  subtitleFrameRequestId = null;
+}
+function presentedSubtitleSeconds() {
+  const presented = subtitlePresentedFrame;
+  if (!presented || state.pendingSeek || video.seeking || presented.src !== video.src
+    || presented.base !== (video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0)) return null;
+  return presented.seconds;
+}
+function schedulePresentedSubtitleFrame() {
+  if (subtitleFrameRequestId !== null || state.pendingSeek?.priming || typeof video.requestVideoFrameCallback !== "function") return;
+  const generation = subtitleFrameGeneration;
+  const src = video.src;
+  const base = video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0;
+  const id = video.requestVideoFrameCallback((_now, metadata) => {
+    if (subtitleFrameRequestId !== id) return;
+    subtitleFrameRequestId = null;
+    if (generation !== subtitleFrameGeneration || src !== video.src || state.pendingSeek?.priming) return;
+    const mediaTime = Number(metadata?.mediaTime);
+    if (Number.isFinite(mediaTime) && mediaTime >= 0) {
+      const seconds = base + mediaTime;
+      subtitlePresentedFrame = { src, base, seconds };
+      if (!state.pendingSeek && Math.abs(seconds * 1000 - subtitleLastPaintMs) >= 80) {
+        subtitleLastPaintMs = seconds * 1000;
+        state.currentMs = seconds * 1000;
+        renderSubtitles();
+      }
+    }
+    schedulePresentedSubtitleFrame();
+  });
+  subtitleFrameRequestId = id;
+}
+
+function playerWantsMuted() {
+  return transcodeStartAttempt?.mutedForPreroll ? transcodeStartAttempt.wantedMuted : video.muted;
+}
+
+async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize = null, seekRetry = 0 } = {}) {
+  const context = state.transcodeContext;
+  if (!context?.baseUrl) return false;
+  cancelTranscodeStart();
+  transcodePauseSnapshot = null;
+  const serial = transcodeStartSerial;
+  const source = state.currentSource;
+  const loadId = playbackLoadRequestId;
+  const durationSeconds = state.mediaDurationMs > 0 ? state.mediaDurationMs / 1000 : 0;
+  const target = Math.max(0, durationSeconds ? Math.min(Number(seconds) || 0, Math.max(0, durationSeconds - 0.25)) : Number(seconds) || 0);
+  const audioIndex = Number.isInteger(context.audioIndex) ? context.audioIndex : state.selectedAudioTrack || 0;
+  const query = transcodeQuery(target, audioIndex);
+  const copySeek = target > 0 && query.get("video") === "copy";
+  const controller = new AbortController();
+  const pending = { target, wasPlaying: Boolean(wasPlaying), timer: 0, priming: true,
+    streamInstalled: false };
+  const attempt = { serial, controller, pending, frameId: null, watchdog: 0,
+    seekRetry, retryTimer: 0, retryScheduled: false,
+    timeupdate: null, mutedForPreroll: false, wantedMuted: video.muted,
+    overlay: null, previousOverlayAriaHidden: null };
+  transcodeStartAttempt = attempt;
+  state.pendingSeek = pending;
+  if (!video.paused) video.pause();
+  state.currentMs = target * 1000;
+  setPlayerLoading(18, "Seeking", formatTime(state.currentMs));
+  renderSubtitles();
+  updateCompatControls();
+  const current = () => transcodeStartAttempt === attempt && transcodeStartSerial === serial
+    && !controller.signal.aborted && playbackLoadRequestId === loadId
+    && state.transcodeContext === context && state.currentSource === source;
+  // A seek may briefly overlap the old FFmpeg window or an in-flight seek
+  // probe. Retrying a *current* window here is safer than surfacing a terminal
+  // error that vanishes after one manual Retry. Keep the branded loader and
+  // requested playback intent, but never loop or revive an obsolete seek.
+  const retryTransient = (reason, { onlyWhenBusy = false } = {}) => {
+    if (!current()) return false;
+    if (attempt.retryScheduled) return true;
+    if (attempt.seekRetry >= 2) return false;
+    if (onlyWhenBusy && reason?.httpStatus !== 429
+      && !/\b(?:429|busy|too many)\b/i.test(String(reason?.message || ""))) return false;
+    attempt.retryScheduled = true;
+    setPlayerLoading(20, "Preparing video", formatTime(target * 1000));
+    const delay = attempt.seekRetry ? 1400 : 700;
+    attempt.retryTimer = window.setTimeout(() => {
+      if (!current()) return;
+      void openTranscodeAt(target, {
+        wasPlaying: pending.wasPlaying, initialize, seekRetry: attempt.seekRetry + 1,
+      });
+    }, delay);
+    return true;
+  };
+  attempt.retryTransient = retryTransient;
+  let effectiveStart = target;
+  if (copySeek) {
+    try {
+      const url = `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/transcode-start?start=${target.toFixed(3)}&video=copy`;
+      const result = await fetchJson(url, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(20_000)]) });
+      if (!current()) return false;
+      effectiveStart = Number(result?.effectiveStartSeconds);
+      if (result?.verified !== true || !Number.isFinite(effectiveStart)
+        || effectiveStart < 0 || effectiveStart > target + 0.001
+        || Math.abs(Number(result.requestedStartSeconds) - target) > 0.003)
+        throw new Error("Could not verify the copied video start timestamp");
+    } catch (error) {
+      if (!current()) return false;
+      if (retryTransient(error, { onlyWhenBusy: true })) return true;
+      cancelTranscodeStart();
+      video.pause();
+      setPlayerLoading(100, "Video synchronization unavailable",
+        error?.message || "Could not verify this video seek", { error: true });
+      return false;
+    }
+  }
+  if (!current()) return false;
+  invalidateSubtitleFrameClock();
+  state.transcodeBaseOffsetSeconds = effectiveStart;
+  const src = `${context.baseUrl}?${query}`;
+  if (initialize) {
+    // setMediaSource clears any earlier pending seek; restore this attempt's
+    // marker before its media events can release the branded loading overlay.
+    setMediaSource({ ...initialize, src, mode: "transcode", startAtSeconds: target },
+      { preserveTranscodeStart: true });
+    state.pendingSeek = pending;
+  } else {
+    video.src = src;
+    video.load();
+  }
+  // Keyframe preflight runs while the previous fragment is still attached to
+  // the video element. Its late ended/error events cannot describe the new
+  // media window before this assignment completes.
+  pending.streamInstalled = true;
+  if (!current()) return false;
+  state.transcodeRequestedStartSeconds = target;
+  video.dataset.mode = "transcode";
+  const prerollSeconds = Math.max(0, target - effectiveStart);
+  const complete = (presentedMediaTime = null) => {
+    if (!current()) return;
+    const keepPlaying = pending.wasPlaying;
+    if (presentedMediaTime !== null && Number.isFinite(presentedMediaTime)) {
+      subtitlePresentedFrame = { src: video.src, base: effectiveStart, seconds: effectiveStart + presentedMediaTime };
+    }
+    cancelTranscodeStart();
+    state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
+    renderSubtitles();
+    updateCompatControls();
+    if (!keepPlaying) video.pause();
+    finishPlayerLoading();
+    schedulePresentedSubtitleFrame();
+    if (audioSync.key) scheduleAudioSync(400);
+  };
+  if (prerollSeconds <= 0.025) {
+    if (!pending.wasPlaying) {
+      complete();
+      return true;
+    }
+    // An exact-keyframe start has no hidden GOP to consume, but the new
+    // fragment can still be rejected (notably when a previous FFmpeg job
+    // has not relinquished its slot). Do not declare it loaded while play()
+    // is still pending or silently swallow that rejection.
+    attempt.watchdog = window.setTimeout(() => {
+      if (!current() || attempt.retryScheduled) return;
+      if (retryTransient(new Error("Video is still preparing"))) return;
+      cancelTranscodeStart();
+      video.pause();
+      setPlayerLoading(100, "Video synchronization unavailable",
+        "The new video stream did not become ready.", { error: true });
+    }, 45_000);
+    try {
+      await video.play();
+    } catch (error) {
+      if (!current()) return false;
+      if (retryTransient(error)) return true;
+      cancelTranscodeStart();
+      video.pause();
+      setPlayerLoading(100, "Video synchronization unavailable",
+        error?.message || "Could not begin playback", { error: true });
+      return false;
+    }
+    if (!current()) return false;
+    if (attempt.retryScheduled) return true;
+    complete();
+    return true;
+  }
+  attempt.mutedForPreroll = true;
+  attempt.wantedMuted = video.muted;
+  frame.classList.add("is-sync-preroll");
+  attempt.overlay = $("#subtitle-overlay");
+  if (attempt.overlay) {
+    attempt.previousOverlayAriaHidden = attempt.overlay.getAttribute("aria-hidden");
+    attempt.overlay.setAttribute("aria-hidden", "true");
+  }
+  video.muted = true;
+  const ready = (mediaTime) => {
+    if (!current() || !Number.isFinite(mediaTime)) return;
+    if (effectiveStart + mediaTime + 0.012 >= target) complete(mediaTime);
+  };
+  if (typeof video.requestVideoFrameCallback === "function") {
+    const nextFrame = () => {
+      if (!current()) return;
+      attempt.frameId = video.requestVideoFrameCallback((_at, metadata) => {
+        attempt.frameId = null;
+        if (!current()) return;
+        ready(Number(metadata?.mediaTime));
+        nextFrame();
+      });
+    };
+    nextFrame();
+  } else {
+    attempt.timeupdate = () => ready(Number(video.currentTime));
+    video.addEventListener("timeupdate", attempt.timeupdate);
+  }
+  // A missing torrent keyframe must never leave a silent hidden player stuck
+  // indefinitely or release its preroll into visible/audible playback.
+  attempt.watchdog = window.setTimeout(() => {
+    if (!current()) return;
+    if (retryTransient(new Error("Video is still preparing"))) return;
+    cancelTranscodeStart();
+    video.pause();
+    setPlayerLoading(100, "Video synchronization unavailable",
+      "Couldn't reach the requested frame. Retry the seek when more video is available.", { error: true });
+  }, 45_000);
+  void video.play().catch((error) => {
+    if (!current()) return;
+    if (retryTransient(error)) return;
+    cancelTranscodeStart();
+    setPlayerLoading(100, "Video synchronization unavailable",
+      error?.message || "Could not begin synchronized playback", { error: true });
+  });
+  return true;
+}
+
+async function restartTranscodeAt(seconds, { wasPlaying = !video.paused } = {}) {
+  return openTranscodeAt(seconds, { wasPlaying });
+}
+
+// A converted stream is re-opened at the new time. Seeks that arrive close together (holding the
+// ±10 s button, dragging) are merged into one restart, so the player doesn't bounce between them.
+function scheduleTranscodeSeek(target) {
+  const wasPlaying = state.pendingSeek ? state.pendingSeek.wasPlaying : !video.paused;
+  cancelTranscodeStart();
+  window.clearTimeout(state.pendingSeek?.timer);
+  // Set before pausing, so the old stream's pause event knows a seek is waiting.
+  state.pendingSeek = { target, wasPlaying, timer: 0 };
+  if (!video.paused) video.pause();
+  state.currentMs = target * 1000;
+  setPlayerLoading(18, "Seeking", formatTime(target * 1000));
+  renderSubtitles();
+  updateCompatControls();
+  state.pendingSeek.timer = window.setTimeout(() => {
+    const pending = state.pendingSeek;
+    state.pendingSeek = null;
+    if (pending) void restartTranscodeAt(pending.target, { wasPlaying: pending.wasPlaying });
+  }, 280);
+}
+
+// While a seek is waiting, the player counts as playing if it will play once the seek lands.
+function playerIsPlaying() {
+  return state.pendingSeek ? Boolean(state.pendingSeek.wasPlaying) : !video.paused;
+}
+
+// FFmpeg's fragmented MP4 stream is a long-lived live encoder, not a stable
+// seekable MP4 file. After a long pause the browser can retain stale audio and
+// video decode queues even when its reported currentTime still looks correct.
+// Recreate ONLY transcoded playback at the exact paused movie timestamp; keep
+// directly buffered/local files untouched and preserve the selected audio track.
+let transcodePauseSnapshot = null;
+function noteTranscodePause() {
+  transcodePauseSnapshot = video.dataset.mode === "transcode" && !state.pendingSeek && state.transcodeContext?.baseUrl
+    ? { at: Date.now(), src: video.src, position: absolutePlaybackSeconds() } : null;
+}
+function resyncTranscodeAfterLongPause() {
+  const snapshot = transcodePauseSnapshot;
+  if (!snapshot) return false;
+  transcodePauseSnapshot = null;
+  if (Date.now() - snapshot.at < 30_000 || video.dataset.mode !== "transcode"
+    || state.pendingSeek || video.src !== snapshot.src || !state.transcodeContext?.baseUrl) return false;
+  const position = absolutePlaybackSeconds();
+  // Never rewind to an earlier position if the user sought while paused.
+  if (!Number.isFinite(position) || Math.abs(position - snapshot.position) > 0.5) return false;
+  void restartTranscodeAt(position, { wasPlaying: true });
+  return true;
+}
+
+function resumePlayback() {
+  if (!linePreview.pending || linePreview.active) linePreview.preventBackgroundPlayback = false;
+  if (state.pendingSeek) {
+    state.pendingSeek.wasPlaying = true;
+    updateCompatControls();
+    return;
+  }
+  if (resyncTranscodeAfterLongPause()) return;
+  // A failed play() promise can reject before a media 'play' event fires.
+  // The user still requested Resume; let the resulting media error enter the
+  // bounded recovery path instead of treating it as an idle paused player.
+  recoveryPauseSerial += 1;
+  recoveryPlaybackRequested = true;
+  video.play().catch(() => {});
+}
+
+function togglePlayback() {
+  if (state.pendingSeek) {
+    state.pendingSeek.wasPlaying = !state.pendingSeek.wasPlaying;
+    updateCompatControls();
+    return;
+  }
+  if (video.paused) resumePlayback();
+  else {
+    recoveryPlaybackRequested = false;
+    recoveryPauseSerial += 1;
+    video.pause();
+  }
+}
+
+function seekPlayerTo(seconds) {
+  const durationSeconds = state.mediaDurationMs > 0 ? state.mediaDurationMs / 1000 : (Number.isFinite(video.duration) ? video.duration : 0);
+  const target = Math.max(0, durationSeconds ? Math.min(seconds, durationSeconds) : seconds);
+  // Fragmented transcodes are intentionally treated as timestamped windows,
+  // not as one ever-growing seekable file. Native seeking inside a generated
+  // fragment is browser-dependent and was the source of the broken +/-10s
+  // behavior. Re-open the transcode at the absolute movie timestamp instead.
+  if (video.dataset.mode === "transcode" && Math.abs(target - absolutePlaybackSeconds()) > 0.2) {
+    scheduleTranscodeSeek(target);
+    // A transcode seek replaces the URL rather than dispatching native
+    // seeking/timeupdate on the old video. Request the new subtitle window
+    // immediately, including when the user seeks while paused.
+    loadMoreEmbeddedSubtitles({ seeked: true });
+    return true;
+  }
+  if (Math.abs(target - absolutePlaybackSeconds()) > 0.2 && frame.classList.contains("has-video")) {
+    if (isPlayerTimeBuffered(target)) {
+      clearBufferingTimer();
+      hideLoadingForBufferedSeek();
+    } else {
+      setPlayerLoading(18, "Seeking", formatTime(target * 1000));
+    }
+  }
+  video.currentTime = video.dataset.mode === "transcode" ? Math.max(0, target - state.transcodeBaseOffsetSeconds) : target;
+  state.currentMs = target * 1000;
+  renderSubtitles();
+  updateCompatControls();
+  return true;
+}
+
+function seekPlayerBy(deltaSeconds) {
+  return seekPlayerTo(absolutePlaybackSeconds() + deltaSeconds);
+}
+
+function normalizeCollectionTitle(...candidates) {
+  const source = candidates.find((value) => String(value || "").trim()) || "Untitled source";
+  const raw = String(source)
+    .replace(/\.(mp4|m4v|webm|mkv|avi|mov|ogv)$/i, "")
+    .replace(/^\s*\[?pseudo\]?\s*/i, "")
+    .replace(/[._]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const qualityTag = raw.match(/\[(BDRip|BluRay|WEB[- .]?DL|WEBRip|HDTV|DVDRip)\]/i)?.[1];
+  let base = raw
+    .replace(/\bSeason\s+\d+\b.*$/i, "")
+    .replace(/\bS\d{1,2}E\d{1,3}\b.*$/i, "")
+    .replace(/\b\d{1,2}x\d{1,3}\b.*$/i, "")
+    .replace(/\s+(?:19|20)\d{2}\s+(?=(?:2160p|1080p|720p|576p|480p|4K|WEB[- .]?DL|WEBRip|BluRay|BDRip|HDTV|DVDRip)\b).*$/i, "")
+    .replace(/\s+\b(?:2160p|1080p|720p|576p|480p|4K|WEB[- .]?DL|WEBRip|BluRay|BDRip|HDTV|DVDRip|REMUX)\b.*$/i, "")
+    .replace(/\[(?:UNCENSORED|1080p|720p|2160p|4K|HEVC|H\.?26[45]|x26[45]|10bit|8bit|AAC[^\]]*|DTS[^\]]*)\]/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!base) base = raw.replace(/\[[^\]]+\]/g, "").trim() || "Untitled source";
+  const canonicalQuality = qualityTag ? qualityTag.replace(/web[- .]?dl/i, "WEB-DL") : "";
+  return `${base}${canonicalQuality ? ` [${canonicalQuality}]` : ""}`.trim();
+}
+
+function episodeIdentity(fileName) {
+  const raw = String(fileName || "").replace(/\.[^.]+$/, "").replace(/[._]+/g, " ");
+  const match = raw.match(/\bS(\d{1,2})E(\d{1,3})\b/i) || raw.match(/(?:^|\D)(\d{1,2})x(\d{1,3})(?:\D|$)/i);
+  if (!match) return { code: "VIDEO", title: cleanMediaTitle(fileName) };
+  const code = `S${match[1].padStart(2, "0")}E${match[2].padStart(2, "0")}`;
+  const marker = match[0].trim();
+  const markerIndex = raw.toLowerCase().indexOf(marker.toLowerCase());
+  let title = markerIndex >= 0 ? raw.slice(markerIndex + marker.length) : "";
+  title = title
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/\b(?:BDRip|BluRay|WEB[- .]?DL|WEBRip|HDTV|HEVC|H\.?26[45]|x26[45]|1080p|720p|2160p)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return { code, title: title || code };
+}
+
+function sourceTagFor(file, collectionTitle) {
+  const episode = episodeIdentity(file?.name || "");
+  return episode.code === "VIDEO" ? collectionTitle : `${collectionTitle} - ${episode.code}`;
+}
+
+function updatePlayerIdentity(title, episode = null) {
+  const mainTitle = String(title || "Untitled").trim() || "Untitled";
+  const code = String(episode?.code || "VIDEO").toUpperCase();
+  const match = code.match(/^S(\d{1,2})E(\d{1,3})$/);
+  $("#media-title").textContent = mainTitle;
+  const label = match ? `${mainTitle}: S${Number(match[1])} E${Number(match[2])}` : mainTitle;
+  if ($("#player-now-title")) $("#player-now-title").textContent = label;
+}
+
+const storedAudioMode = localStorage.getItem("lvl-audio-output-mode");
+const legacySurroundMode = localStorage.getItem("lvl-surround-output");
+let audioOutputMode = ["auto", "stereo", "surround"].includes(storedAudioMode) ? storedAudioMode
+  : legacySurroundMode === "0" ? "stereo" : legacySurroundMode === "1" ? "surround" : "auto";
+// Session-only language intent; never rewrite a user's saved Language/Learning preferences.
+let preferredAudioLanguage = "";
+
+function preferredAudioTrackIndex(media) {
+  const tracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
+  if (!preferredAudioLanguage) return 0;
+  const index = tracks.findIndex((track) => String(track.language || "").trim().toLowerCase() === preferredAudioLanguage);
+  return index >= 0 ? index : 0;
+}
+
+function transcodeQuery(startSeconds, audioIndex = state.selectedAudioTrack || 0) {
+  const params = new URLSearchParams({ start: Math.max(0, Number(startSeconds) || 0).toFixed(3), audio: String(audioIndex) });
+  params.set("audioMode", normalizeAudioMode(audioOutputMode));
+  const codec = String(state.currentMediaProbe?.video?.codec || "").toLowerCase();
+  const bitDepth = Number(state.currentMediaProbe?.compatibility?.video?.bitDepth)
+    || Number(state.currentMediaProbe?.video?.bitDepth) || (/p10|10le|10be/i.test(String(state.currentMediaProbe?.video?.pixelFormat || "")) ? 10 : 8);
+  if (state.transcodeContext?.copyVideo) {
+    params.set("video", "copy");
+  }
+  if (codec === "hevc" && state.transcodeContext?.copyVideo) {
+    const supported = video.canPlayType(bitDepth > 8 ? 'video/mp4; codecs="hvc1.2.4.L153.B0"' : 'video/mp4; codecs="hvc1.1.6.L120.B0"');
+    if (supported) { params.set("video", "copy"); params.set("hevc", "1"); }
+  }
+  if (codec === "av1" && state.transcodeContext?.copyVideo && video.canPlayType(bitDepth > 8 ? 'video/mp4; codecs="av01.0.12M.10"' : 'video/mp4; codecs="av01.0.12M.08"')) {
+    params.set("video", "copy"); params.set("av1", "1");
+  }
+  // A codec that was advertised as playable may still fail on this PC.
+  // An error-triggered compatibility retry must not select that codec again.
+  if (state.transcodeContext?.forceH264) {
+    params.delete("hevc");
+    params.delete("av1");
+    params.set("video", "h264");
+  }
+  return params;
+}
+
+function releaseNeedsAudioTranscode(value) {
+  return /\b(?:DDP(?:5[. ]?1)?|E-?AC-?3|EAC3|AC-?3|TRUEHD|DTS(?:-HD)?|ATMOS)\b/i.test(String(value || ""));
+}
+
+function syncSelectedTrackForSource() {
+  const scoped = currentSourceTracks();
+  const target = scoped.find((track) => String(track.language || "").toUpperCase() === state.targetLanguage);
+  const base = scoped.find((track) => String(track.language || "").toUpperCase() === state.baseLanguage);
+  if (target) state.selectedTrackId = target.id;
+  else if (!scoped.some((track) => track.id === state.selectedTrackId)) state.selectedTrackId = base?.id || scoped[0]?.id || null;
+}
+
+function applyLanguagePreferencesToTracks() {
+  const scoped = currentSourceTracks();
+  const chosenIds = [];
+  preferredLanguagePair().forEach((language) => {
+    const match = scoped.find((track) => String(track.language || "").toUpperCase() === language && !chosenIds.includes(track.id));
+    if (match && chosenIds.length < 2) chosenIds.push(match.id);
+  });
+  if (!chosenIds.length) scoped.slice(0, 2).forEach((track) => chosenIds.push(track.id));
+  scoped.forEach((track) => { track.visible = chosenIds.includes(track.id); });
+  syncSelectedTrackForSource();
+}
+
+function preferredSourceTracks() {
+  const pair = preferredLanguagePair();
+  const scoped = currentSourceTracks();
+  const preferred = pair.map((language) => scoped.find((track) => String(track.language || "").toUpperCase() === language)).filter(Boolean);
+  const preferredIds = new Set(preferred.map((track) => track.id));
+  return [...preferred, ...scoped.filter((track) => !preferredIds.has(track.id))];
+}
+
+function cleanMediaTitle(value) {
+  return String(value || "")
+    .replace(/\.(mp4|m4v|webm|mkv|avi|mov|ogv)$/i, "")
+    .replace(/[._]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function activeTrack() {
+  const scoped = currentSourceTracks();
+  return scoped.find((track) => track.id === state.selectedTrackId) || scoped[0];
+}
+
+function currentSourceTracks() {
+  const sourceTag = state.currentSource?.sourceTag;
+  if (!sourceTag) return state.tracks;
+  return state.tracks.filter((track) => track.sourceTag === sourceTag &&
+    (track.origin !== "embedded" || embeddedTrackMatchesSource(track, state.currentSource)));
+}
+
+function selectSubtitleTrackForCards(track) {
+  // Subtitle selection changes the analysis language, not the player identity.
+  // Reject stale UI cards left behind by an asynchronous source transition.
+  if (!track || !currentSourceTracks().some((item) => item.id === track.id)) return false;
+  state.selectedTrackId = track.id;
+  saveCurrentEpisodeAnalysis();
+  renderSubtitleWorkspace();
+  return true;
+}
+
+function activeSourceTag() {
+  const track = activeTrack();
+  const source = track?.sourceTag || state.currentSource?.sourceTag || "No source loaded";
+  return track?.language ? `${source} - ${track.language}` : source;
+}
+
+// Stored source tags join their parts with " · " (cards and word lists match on them); on
+// screen they read "Slime, S1 E1, Japanese".
+function sourceTagText(tag) {
+  return String(tag || "").split(/\s+·\s+/).filter(Boolean).map((part) => {
+    if (/^S\d{2}E\d{2,4}$/i.test(part)) return libraryChapterName({ code: part }) || part;
+    if (/^[A-Z]{2,3}$/.test(part) && LANGUAGE_NAMES[part]) return languageName(part);
+    if (part === "VIDEO") return "";
+    return part;
+  }).filter(Boolean).join(", ");
+}
+
+function allPrimaryCues() {
+  return activeTrack()?.cues || [];
+}
+
+function trackAutoOffsetAt(track, atMs = 0) {
+  const anchors = Array.isArray(track?.syncAnchors)
+    ? track.syncAnchors.filter((anchor) => Number.isFinite(Number(anchor?.atMs)) && Number.isFinite(Number(anchor?.offsetMs)))
+      .map((anchor) => ({ ...anchor, atMs: Number(anchor.atMs), offsetMs: Number(anchor.offsetMs) }))
+      .sort((a, b) => a.atMs - b.atMs)
+    : [];
+  return anchors.length ? syncOffsetAt({ mode: String(track?.syncMode || "constant"), anchors }, Number(atMs) || 0) : 0;
+}
+
+function trackEffectiveOffsetAt(track, atMs = 0) {
+  if (track?.exactMedia) return 0; // Embedded tracks carry the video's own timestamps.
+  return Number(track?.offsetMs || 0) + trackAutoOffsetAt(track, atMs);
+}
+
+function cuePlaybackBounds(cue, track) {
+  const offset = trackEffectiveOffsetAt(track, Number(cue?.startMs) || 0);
+  return {
+    startMs: Math.max(0, Number(cue?.startMs || 0) + offset),
+    endMs: Math.max(0, Number(cue?.endMs || 0) + offset),
+  };
+}
+
+function cueNearPlaybackMs(track, playbackMs, toleranceMs = 1200) {
+  if (!track?.cues?.length || !Number.isFinite(Number(playbackMs))) return null;
+  let nearest = null;
+  let nearestDistance = Infinity;
+  for (const cue of track.cues) {
+    const bounds = cuePlaybackBounds(cue, track);
+    if (playbackMs >= bounds.startMs - toleranceMs && playbackMs <= bounds.endMs + toleranceMs) return cue;
+    const distance = Math.abs(bounds.startMs - playbackMs);
+    if (distance < nearestDistance) {
+      nearest = cue;
+      nearestDistance = distance;
+    }
+    if (bounds.startMs > playbackMs && distance > nearestDistance) break;
+  }
+  return nearestDistance <= toleranceMs ? nearest : null;
+}
+
+function getActiveCue(track, currentMs = state.currentMs) {
+  return track.cues.find((cue) => {
+    const bounds = cuePlaybackBounds(cue, track);
+    return currentMs >= bounds.startMs && currentMs <= bounds.endMs;
+  }) || null;
+}
+
+function comparisonCueForTrack(track, primaryTrack, primaryCue) {
+  const active = getActiveCue(track);
+  if (active || !primaryTrack || !primaryCue || track.id === primaryTrack.id) return active;
+  const primaryStart = cuePlaybackBounds(primaryCue, primaryTrack).startMs;
+  let nearest = null;
+  let nearestDistance = Infinity;
+  for (const cue of track.cues || []) {
+    const adjustedStart = cuePlaybackBounds(cue, track).startMs;
+    const distance = Math.abs(adjustedStart - primaryStart);
+    if (distance < nearestDistance) {
+      nearest = cue;
+      nearestDistance = distance;
+    }
+    if (adjustedStart > primaryStart && distance > nearestDistance) break;
+  }
+  return nearestDistance <= 2500 ? nearest : null;
+}
+
+function median(values) {
+  const numbers = values.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!numbers.length) return 0;
+  const middle = Math.floor(numbers.length / 2);
+  return numbers.length % 2 ? numbers[middle] : (numbers[middle - 1] + numbers[middle]) / 2;
+}
+
+function sampledCueStarts(track, maxSamples = 140) {
+  const cues = track?.cues || [];
+  if (cues.length <= maxSamples) return cues.map((cue) => Number(cue.startMs) || 0);
+  const samples = [];
+  for (let index = 0; index < maxSamples; index += 1) {
+    const ratio = index / Math.max(1, maxSamples - 1);
+    samples.push(Number(cues[Math.min(cues.length - 1, Math.round(ratio * (cues.length - 1)))].startMs) || 0);
+  }
+  return samples;
+}
+
+function subtitleOffsetEstimate(referenceTrack, candidateTrack) {
+  if (!referenceTrack?.cues?.length || !candidateTrack?.cues?.length || referenceTrack.id === candidateTrack.id) {
+    return { offsetMs: 0, confidence: 0, spanRatio: 1 };
+  }
+  const referenceStarts = sampledCueStarts(referenceTrack).map((value) => value + trackEffectiveOffsetAt(referenceTrack, value));
+  const candidateStarts = sampledCueStarts(candidateTrack);
+  if (referenceStarts.length < 2 || candidateStarts.length < 2) {
+    return {
+      offsetMs: Math.round((referenceStarts[0] || 0) - (candidateStarts[0] || 0)),
+      confidence: 0.2,
+      spanRatio: 1,
+    };
+  }
+  const bucketSize = 250;
+  const maxDelta = 30_000;
+  const buckets = new Map();
+  for (const referenceStart of referenceStarts) {
+    for (const candidateStart of candidateStarts) {
+      const diff = referenceStart - candidateStart;
+      if (Math.abs(diff) > maxDelta) continue;
+      const bucket = Math.round(diff / bucketSize) * bucketSize;
+      buckets.set(bucket, (buckets.get(bucket) || 0) + 1);
+    }
+  }
+  let bestBucket = 0;
+  let bestCount = 0;
+  for (const [bucket, count] of buckets) {
+    if (count > bestCount || (count === bestCount && Math.abs(bucket) < Math.abs(bestBucket))) {
+      bestBucket = bucket;
+      bestCount = count;
+    }
+  }
+  const refined = [];
+  for (const referenceStart of referenceStarts) {
+    for (const candidateStart of candidateStarts) {
+      const diff = referenceStart - candidateStart;
+      if (Math.abs(diff - bestBucket) <= 500) refined.push(diff);
+    }
+  }
+  const referenceSpan = Math.max(1, (referenceTrack.cues.at(-1)?.endMs || referenceTrack.cues.at(-1)?.startMs || 0) - (referenceTrack.cues[0]?.startMs || 0));
+  const candidateSpan = Math.max(1, (candidateTrack.cues.at(-1)?.endMs || candidateTrack.cues.at(-1)?.startMs || 0) - (candidateTrack.cues[0]?.startMs || 0));
+  const spanRatio = candidateSpan / referenceSpan;
+  let confidence = bestCount / Math.max(1, Math.min(referenceStarts.length, candidateStarts.length));
+  if (spanRatio < 0.9 || spanRatio > 1.1) confidence *= 0.35;
+  const offsetMs = Math.max(-120000, Math.min(120000, Math.round(median(refined.length ? refined : [bestBucket]) / 10) * 10));
+  return { offsetMs, confidence, spanRatio };
+}
+
+function syncTrackToBestReference(track, { initial = false } = {}) {
+  if (!track) return 0;
+  if (track.exactMedia) return 0;
+  if (track.syncSource === "audio") return trackEffectiveOffsetAt(track, track.cues?.[0]?.startMs || 0);
+  const scoped = currentSourceTracks().filter((item) => item.id !== track.id && item.cues?.length);
+  const ranked = scoped.slice().sort((a, b) => (Number(b.matchScore) || 0) - (Number(a.matchScore) || 0));
+  const bestReleaseMatch = (Number(ranked[0]?.matchScore) || 0) > 0 ? ranked[0] : null;
+  const reference = scoped.find((item) => item.exactMedia)
+    || scoped.find((item) => item.syncSource === "audio")
+    || bestReleaseMatch
+    || scoped.find((item) => String(item.language || "").toUpperCase() === state.targetLanguage)
+    || scoped.find((item) => item.id === state.selectedTrackId)
+    || scoped[0];
+  if (!reference) return track.offsetMs || 0;
+  const estimate = subtitleOffsetEstimate(reference, track);
+  track.syncConfidence = estimate.confidence;
+  track.syncSpanRatio = estimate.spanRatio;
+  track.syncReferenceId = reference.id;
+  track.syncReferenceExact = Boolean(reference.exactMedia);
+  const spanClose = estimate.spanRatio >= 0.92 && estimate.spanRatio <= 1.08;
+  const strongEnough = estimate.confidence >= (reference.exactMedia ? 0.12 : 0.18) && spanClose;
+  const offsetLimit = reference.exactMedia ? 60_000 : 30_000;
+  if (!strongEnough || Math.abs(estimate.offsetMs) > offsetLimit) {
+    track.syncRejected = true;
+    return trackEffectiveOffsetAt(track, track.cues?.[0]?.startMs || 0);
+  }
+  track.syncRejected = false;
+  track.offsetMs = 0;
+  track.syncMode = "constant";
+  track.syncAnchors = [{
+    atMs: Math.round(Number(track.cues?.[Math.floor((track.cues?.length || 1) / 2)]?.startMs) || 0),
+    offsetMs: estimate.offsetMs,
+    confidence: estimate.confidence,
+  }];
+  return estimate.offsetMs;
+}
+
+async function alignCurrentSubtitleSet() {
+  const tracks = currentSourceTracks().filter((track) => track.cues?.length);
+  if (tracks.length < 2) return { reference: tracks[0] || null, offsets: [], backend: false };
+  const reference = tracks.find((track) => track.exactMedia)
+    || tracks.find((track) => track.syncSource === "audio")
+    || tracks.find((track) => normalizeTrackLanguage(track.language) === state.targetLanguage)
+    || tracks.find((track) => track.id === state.selectedTrackId)
+    || tracks[0];
+  try {
+    const data = await postJson("/api/learning/subtitles/align", {
+      referenceTrackId: reference.id,
+      tracks: tracks.map((track) => ({
+        id: track.id,
+        language: normalizeTrackLanguage(track.language),
+        exactMedia: Boolean(track.exactMedia),
+        cues: track.cues.map((cue) => {
+          const bounds = track.id === reference.id ? cuePlaybackBounds(cue, track) : null;
+          return {
+            id: cue.id,
+            text: cue.text,
+            startMs: bounds ? bounds.startMs : cue.startMs,
+            endMs: bounds ? bounds.endMs : cue.endMs,
+          };
+        }),
+      })),
+    });
+    const alignedById = new Map((Array.isArray(data?.tracks) ? data.tracks : []).map((item) => [String(item.id), item]));
+    const offsets = [];
+    tracks.forEach((track) => {
+      const aligned = alignedById.get(String(track.id));
+      if (!aligned) return;
+      if (track.syncSource === "audio" && track.id !== reference.id) {
+        offsets.push("AUDIO");
+        return;
+      }
+      track.syncConfidence = Number(aligned.confidence) || 0;
+      track.syncSpanRatio = Number(aligned.spanRatio) || 0;
+      track.syncRejected = Boolean(aligned.rejected);
+      track.syncReferenceId = data?.referenceTrackId || reference.id;
+      track.syncReferenceExact = Boolean(reference.exactMedia);
+      if (track.id === reference.id) {
+        track.syncRejected = false;
+        return;
+      }
+      if (!track.syncRejected) {
+        const anchors = Array.isArray(aligned.anchors) ? aligned.anchors
+          .filter((anchor) => Number.isFinite(Number(anchor?.atMs)) && Number.isFinite(Number(anchor?.offsetMs)))
+          .map((anchor) => ({
+            atMs: Number(anchor.atMs),
+            offsetMs: Number(anchor.offsetMs),
+            confidence: Number(anchor.confidence) || 0,
+          })) : [];
+        track.offsetMs = 0;
+        track.syncMode = String(aligned.mode || "constant");
+        track.syncAnchors = anchors.length
+          ? anchors
+          : Number.isFinite(Number(aligned.offsetMs))
+            ? [{ atMs: 0, offsetMs: Number(aligned.offsetMs), confidence: track.syncConfidence }]
+            : [];
+      }
+      if (track.id !== reference.id) {
+        if (track.syncRejected) {
+          offsets.push("REJECTED");
+        } else {
+          const anchorOffsets = (track.syncAnchors || []).map((anchor) => Number(anchor.offsetMs) || 0);
+          const low = anchorOffsets.length ? Math.min(...anchorOffsets) : 0;
+          const high = anchorOffsets.length ? Math.max(...anchorOffsets) : low;
+          offsets.push(low === high
+            ? `${low >= 0 ? "+" : ""}${low}ms`
+            : `${low >= 0 ? "+" : ""}${low}→${high >= 0 ? "+" : ""}${high}ms`);
+        }
+      }
+    });
+    state.alignedSubtitleTimeline = Array.isArray(data?.timeline) ? data.timeline : [];
+    state.alignedSubtitleSourceKey = currentExposureMediaKey();
+    saveCurrentEpisodeAnalysis();
+    return { reference, offsets, backend: true };
+  } catch {
+    state.alignedSubtitleTimeline = [];
+    state.alignedSubtitleSourceKey = "";
+    const offsets = [];
+    tracks.forEach((track) => {
+      if (track.id === reference.id) return;
+      const offset = syncTrackToBestReference(track, { initial: true });
+      offsets.push(`${offset >= 0 ? "+" : ""}${offset}ms`);
+    });
+    saveCurrentEpisodeAnalysis();
+    return { reference, offsets, backend: false };
+  }
+}
+
+/* ---------------------------------------------------------------- Subtitle sync to the audio */
+
+// Every downloaded or imported subtitle track is lined up with what is actually said in the video
+// (subtitle-sync.js): short audio windows around the playhead as you watch, frame-rate
+// mismatches and cuts included. Tracks from the file itself (embedded) are exact and stay as they
+// are. Models are saved per episode and subtitle file, so a re-watch is synced right away.
+const AUDIO_SYNC_WINDOW_S = 45;
+const AUDIO_SYNC_MIN_WINDOW_S = 20;
+const AUDIO_SYNC_MAX_WINDOWS = 24;
+const audioSync = { key: "", windows: [], caches: new Map(), pending: false, timer: 0, timerDueAt: 0, failures: 0, lastCheckMs: -Infinity };
+let playerSyncChipTimer = 0;
+let playerSyncChipState = "";
+
+function audioSyncSource() {
+  const source = state.currentSource;
+  if (source?.kind !== "torrent" || !source.sessionId || source.fileIndex === null || source.fileIndex === undefined) return null;
+  return { sessionId: source.sessionId, fileIndex: Number(source.fileIndex), audio: Math.max(0, Number(state.selectedAudioTrack) || 0) };
+}
+
+function audioSyncKey(source = audioSyncSource()) {
+  return source ? `${source.sessionId}:${source.fileIndex}:${source.audio}` : "";
+}
+
+function audioSyncTracks() {
+  return currentSourceTracks().filter((track) => track.cues?.length && !track.exactMedia);
+}
+
+function resetAudioSync() {
+  window.clearTimeout(audioSync.timer);
+  const previousKey = audioSync.key;
+  const nextKey = audioSyncKey();
+  // The same episode can have differently edited language dubs. An audio
+  // model verified against dub A must not be reused for dub B. Preserve manual
+  // shifts, saved caption text and embedded timestamps.
+  if (previousKey && previousKey !== nextKey
+    && previousKey.slice(0, previousKey.lastIndexOf(":")) === nextKey.slice(0, nextKey.lastIndexOf(":"))) {
+    currentSourceTracks().filter((track) => !track.exactMedia).forEach((track) => {
+      if (track.syncSource === "audio" || track.syncFollowsId) {
+        track.syncMode = "constant";
+        track.syncAnchors = [];
+        track.syncSource = "";
+      }
+      track.audioSync = { status: "waiting", windows: 0 };
+    });
+    pairedCueMemo.clear();
+    subtitleRenderMemo.key = "";
+  }
+  Object.assign(audioSync, { key: nextKey, windows: [], caches: new Map(), pending: false, timer: 0, timerDueAt: 0, failures: 0, lastCheckMs: -Infinity });
+  state.tracks.forEach((track) => { delete track.syncFollowsId; });
+  playerSyncChipState = "";
+  updatePlayerSyncStatus();
+}
+
+function scheduleAudioSync(delayMs = 500) {
+  if (!audioSyncSource() || !audioSyncTracks().length) return;
+  // Seeking/timeupdate may already have queued a near-term coverage check.
+  // A later "playing" event must not push that check back by another 1.5 s.
+  const dueAt = Date.now() + Math.max(0, delayMs);
+  if (audioSync.timer && audioSync.timerDueAt && audioSync.timerDueAt <= dueAt) return;
+  window.clearTimeout(audioSync.timer);
+  audioSync.timerDueAt = dueAt;
+  audioSync.timer = window.setTimeout(() => {
+    audioSync.timer = 0;
+    audioSync.timerDueAt = 0;
+    void runAudioSyncStep();
+  }, Math.max(0, delayMs));
+}
+
+function currentLibraryEpisode() {
+  const source = state.currentSource;
+  if (!source?.libraryId || source.fileIndex === null || source.fileIndex === undefined) return null;
+  const entry = libraryEntryById(source.libraryId);
+  const episode = entry?.episodes?.find((item) => Number(item.fileIndex) === Number(source.fileIndex));
+  return entry && episode ? { entry, episode } : null;
+}
+
+// Where you stopped watching: kept per Library episode (Continue watching, Resume). Saved at most
+// every 30 s while playing, and right away on pause or when leaving the page.
+let watchProgressSavedAt = 0;
+// An explicit unwatch must survive timeupdate/pause events from a video that
+// was already near its ending. A subsequent rewatch arms completion only
+// after playback has returned to an earlier part of that episode.
+const explicitUnwatchCompletionArmed = new Set();
+function recordWatchProgress({ force = false } = {}) {
+  const current = currentLibraryEpisode();
+  if (!current || !frame.classList.contains("has-video") || state.pendingSeek) return;
+  const durationMs = Math.round(Number(state.mediaDurationMs) || 0);
+  // The subtitle overlay follows the last frame actually presented, which
+  // Chromium can throttle in a background tab while audio keeps playing.
+  // Continue Watching must persist the absolute *playback* clock instead.
+  const positionMs = Math.max(0, Math.round(absolutePlaybackSeconds() * 1000) || 0);
+  if (!durationMs || positionMs < 5000) return;
+  const now = Date.now();
+  const code = String(current.episode.code || "").toUpperCase();
+  const key = current.entry.seriesKey || librarySeriesKey(current.entry.title);
+  const completionKey = `${key}\0${code}`;
+  const manuallyUnwatched = explicitlyUnwatchedChapter({ key }, code);
+  if (manuallyUnwatched && positionMs <= durationMs * 0.8) explicitUnwatchCompletionArmed.add(completionKey);
+  const finished = positionMs >= durationMs * 0.92
+    && (!manuallyUnwatched || explicitUnwatchCompletionArmed.has(completionKey));
+  current.episode.progress = { positionMs, durationMs, updatedAt: now, finished };
+  if (current.episode.progress.finished) {
+    explicitUnwatchCompletionArmed.delete(completionKey);
+    for (const entry of state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === key)) {
+      if (entry.watchedChapters?.[code] === false) {
+        entry.watchedChapters = { ...entry.watchedChapters };
+        delete entry.watchedChapters[code];
+      }
+    }
+  }
+  current.entry.lastPlayedAt = now;
+  current.entry.lastPlayedFileIndex = Number(current.episode.fileIndex);
+  // Real playback (not merely loading a planned anime) promotes only Planning
+  // to Watching. Keep the user's other explicit tracking choices unchanged.
+  if (!video.paused && positionMs >= 5000) {
+    const series = buildLibrarySeries().find((item) => item.key === key);
+    if (series?.mediaKind === "anime" && watchTrackingStatus(series) === "PLANNING") {
+      setWatchTrackingStatus(key, "CURRENT", { automatic: true });
+    }
+  }
+  if (force || now - watchProgressSavedAt > 30_000) {
+    watchProgressSavedAt = now;
+    saveLibrary();
+    if ($("#watch-chapters") && !$("#watch-chapters").hidden) renderWatchChapters();
+  }
+}
+
+function trackSyncKey(track) {
+  return String(track?.fingerprint || subtitleFingerprint(track?.cues || [])).slice(0, 400);
+}
+
+// A model saved for this episode and subtitle file (from an earlier viewing) applies at once.
+function applySavedSubtitleSync(track) {
+  const store = currentLibraryEpisode()?.episode?.subtitleSync || {};
+  const audioIndex = Math.max(0, Number(state.selectedAudioTrack) || 0);
+  const fingerprint = trackSyncKey(track);
+  // Older releases stored one model for every dub. Only audio zero can use
+  // that legacy record; all new models are keyed by the selected audio track.
+  const saved = store[`${fingerprint}:audio:${audioIndex}`]
+    || (audioIndex === 0 ? store[fingerprint] : null);
+  if (saved && Number(saved.audioIndex ?? 0) !== audioIndex) return false;
+  if (!saved?.anchors?.length || track.exactMedia) return false;
+  track.syncSource = "audio";
+  track.syncMode = String(saved.mode || "constant");
+  track.syncAnchors = saved.anchors.map((anchor) => ({ ...anchor }));
+  track.syncRejected = false;
+  track.audioSync = { status: "synced", saved: true, windows: 0 };
+  return true;
+}
+
+function saveSubtitleSync(track, model) {
+  const current = currentLibraryEpisode();
+  if (!current) return;
+  const store = current.episode.subtitleSync && typeof current.episode.subtitleSync === "object" ? current.episode.subtitleSync : {};
+  const audioIndex = Math.max(0, Number(state.selectedAudioTrack) || 0);
+  store[`${trackSyncKey(track)}:audio:${audioIndex}`] = {
+    mode: model.mode, anchors: model.anchors, audioIndex, savedAt: Date.now(),
+  };
+  const keys = Object.keys(store);
+  if (keys.length > 8) keys.sort((a, b) => (store[a].savedAt || 0) - (store[b].savedAt || 0)).slice(0, keys.length - 8).forEach((key) => delete store[key]);
+  current.episode.subtitleSync = store;
+  current.entry.updatedAt = Date.now();
+  saveLibrary();
+}
+
+// Audio that can be analysed without downloading or decoding anything new: what the playback
+// conversion has already turned into audio (kept by the server), or what the browser has
+// buffered for direct play (already on disk).
+async function audioReadyRanges(source) {
+  if (video.dataset.mode === "transcode") {
+    try {
+      const data = await fetchJson(`/api/torrents/${encodeURIComponent(source.sessionId)}/files/${source.fileIndex}/speech?coverage=1&audio=${source.audio}`);
+      const ranges = (data.ranges || []).map((range) => ({ fromMs: Number(range.fromMs) || 0, toMs: Number(range.toMs) || 0, live: true }));
+      if (ranges.length) return ranges;
+    } catch {}
+    // No kept audio (older server or unknown tracks): what already played here is on disk.
+    const playedFrom = state.transcodeRequestedStartSeconds * 1000;
+    return state.currentMs > playedFrom ? [{ fromMs: playedFrom, toMs: state.currentMs, live: false }] : [];
+  }
+  const ranges = [];
+  for (let index = 0; index < (video.buffered?.length || 0); index += 1) {
+    ranges.push({ fromMs: video.buffered.start(index) * 1000, toMs: video.buffered.end(index) * 1000, live: false });
+  }
+  return ranges;
+}
+
+function analysedShare(fromMs, toMs) {
+  let covered = 0;
+  for (const item of audioSync.windows) covered += Math.max(0, Math.min(toMs, item.startMs + item.durationMs) - Math.max(fromMs, item.startMs));
+  return toMs > fromMs ? Math.min(1, covered / (toMs - fromMs)) : 1;
+}
+
+function nextAudioSyncWindow(ranges, durationMs) {
+  const windowMs = AUDIO_SYNC_WINDOW_S * 1000;
+  const minMs = AUDIO_SYNC_MIN_WINDOW_S * 1000;
+  if (audioSync.windows.length >= AUDIO_SYNC_MAX_WINDOWS) return null;
+  const now = state.currentMs;
+  const candidates = [];
+  for (const range of ranges) {
+    const fromMs = Math.max(0, range.fromMs);
+    const toMs = Math.min(durationMs || range.toMs, range.toMs);
+    if (toMs - fromMs < minMs) continue;
+    // Tile the ready stretch; the window holding the playhead (ending up to 30 s past it) first.
+    const anchor = Math.min(Math.max(fromMs, now - windowMs + 30_000), Math.max(fromMs, toMs - windowMs));
+    const starts = new Set([anchor]);
+    for (let start = anchor - windowMs + 10_000; start > fromMs - windowMs; start -= windowMs - 10_000) starts.add(Math.max(fromMs, start));
+    for (let start = anchor + windowMs - 10_000; start < toMs - minMs; start += windowMs - 10_000) starts.add(start);
+    for (const start of starts) {
+      const end = Math.min(toMs, start + windowMs);
+      if (end - start < minMs || analysedShare(start, end) > 0.5) continue;
+      const distance = now >= start && now <= end + 30_000 ? 0 : Math.min(Math.abs(now - start), Math.abs(now - end));
+      candidates.push({ startMs: Math.round(start), durationMs: Math.round(end - start), live: range.live, distance });
+    }
+  }
+  candidates.sort((a, b) => a.distance - b.distance);
+  if (candidates.length) return candidates[0];
+  // A track jumped between two windows (a cut): fill the gap between them to place the cut, only
+  // behind the playhead (already downloaded; decoded on the server if it didn't play here).
+  const lastStart = Math.max(0, durationMs - windowMs);
+  for (const track of audioSyncTracks()) {
+    if (track.syncMode !== "piecewise-step") continue;
+    const anchors = (track.syncAnchors || []).slice().sort((a, b) => a.atMs - b.atMs);
+    for (let index = 1; index < anchors.length; index += 1) {
+      if (anchors[index - 1].located) continue;
+      const fromMs = anchors[index - 1].atMs + anchors[index - 1].offsetMs;
+      const toMs = anchors[index].atMs + anchors[index].offsetMs;
+      for (let startMs = Math.max(0, fromMs); startMs < toMs; startMs += windowMs) {
+        const start = Math.min(lastStart, startMs);
+        if (start + windowMs > now + 30_000) break;
+        if (analysedShare(start, start + windowMs) < 0.9) return { startMs: start, durationMs: windowMs, live: false, distance: 0 };
+      }
+    }
+  }
+  return null;
+}
+
+function decodeBase64Bytes(value) {
+  const binary = atob(String(value || ""));
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
+  return bytes;
+}
+
+async function runAudioSyncStep() {
+  const source = audioSyncSource();
+  if (!source) return;
+  const key = audioSyncKey(source);
+  if (audioSync.key !== key) resetAudioSync();
+  if (audioSync.pending || !audioSyncTracks().length) return;
+  const durationMs = Number(state.mediaDurationMs) || 0;
+  if (!durationMs || !$("#video-loading")?.hidden) {
+    scheduleAudioSync(3000);
+    return;
+  }
+  audioSync.pending = true;
+  let slot = null;
+  try {
+    const ranges = await audioReadyRanges(source);
+    if (audioSyncKey() !== key) return;
+    slot = nextAudioSyncWindow(ranges, durationMs);
+  } finally {
+    audioSync.pending = false;
+  }
+  if (!slot) {
+    // A valid audio range may not exist yet. Don't show "Syncing" forever
+    // while no analysis is actually running (e.g. stalled peers or an intro).
+    let waiting = false;
+    audioSyncTracks().forEach((track) => {
+      if (track.syncSource !== "audio" && track.audioSync?.status !== "failed"
+        && track.audioSync?.status !== "waiting") {
+        track.audioSync = { ...(track.audioSync || {}), status: "waiting" };
+        waiting = true;
+      }
+    });
+    if (waiting) renderTracks();
+    if (audioSyncTracks().some((track) => track.syncSource !== "audio")) scheduleAudioSync(3000);
+    updatePlayerSyncStatus();
+    return;
+  }
+  audioSync.pending = true;
+  audioSyncTracks().forEach((track) => {
+    if (!track.audioSync || ["failed", "waiting"].includes(track.audioSync.status)) track.audioSync = { ...(track.audioSync || {}), status: track.syncSource === "audio" ? "synced" : "syncing" };
+  });
+  renderTracks();
+  updatePlayerSyncStatus();
+  try {
+    const params = new URLSearchParams({ start: (slot.startMs / 1000).toFixed(2), duration: (slot.durationMs / 1000).toFixed(2), audio: String(source.audio) });
+    if (slot.live) params.set("live", "only");
+    const response = await fetch(`/api/torrents/${encodeURIComponent(source.sessionId)}/files/${source.fileIndex}/speech?${params}`, { signal: AbortSignal.timeout(52_000) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(data.error || `Audio analysis failed (${response.status})`), { status: response.status });
+    if (audioSyncKey() !== key) return;
+    audioSync.windows.push({ startMs: Number(data.startMs) || 0, durationMs: Number(data.durationMs) || 0, activity: decodeBase64Bytes(data.activity) });
+    audioSync.failures = 0;
+    applyAudioSync();
+    scheduleAudioSync(2500);
+  } catch (error) {
+    if (audioSyncKey() !== key) return;
+    audioSync.failures += 1;
+    // No playable audio or a timed-out torrent cannot be fixed by immediately
+    // repeating the same expensive FFmpeg request. Surface an actionable state.
+    if ([400, 404, 422, 504].includes(error?.status) || error?.name === "TimeoutError")
+      audioSync.failures = 4;
+    if (audioSync.failures < 4) {
+      scheduleAudioSync(error.status === 429 ? 3000 : 6000 * audioSync.failures);
+    } else {
+      audioSyncTracks().forEach((track) => {
+        if (track.syncSource !== "audio") track.audioSync = { status: "failed", error: error.message };
+      });
+      renderTracks();
+    }
+  } finally {
+    audioSync.pending = false;
+  }
+}
+
+function applyAudioSync() {
+  let changed = false;
+  for (const track of audioSyncTracks()) {
+    const cacheKey = `${track.id}:${trackSyncKey(track)}`;
+    if (!audioSync.caches.has(cacheKey)) audioSync.caches.set(cacheKey, new Map());
+    const fit = syncTrackToSpeech(audioSync.windows, track.cues, { cache: audioSync.caches.get(cacheKey) });
+    const model = fit?.model;
+    const tried = audioSync.windows.length;
+    if (model) {
+      const before = JSON.stringify([track.syncMode, track.syncAnchors]);
+      track.syncSource = "audio";
+      track.syncMode = model.mode;
+      track.syncAnchors = model.anchors;
+      track.syncRejected = false;
+      track.syncConfidence = Math.max(...model.anchors.map((anchor) => Number(anchor.confidence) || 0));
+      track.audioSync = { status: "synced", windows: tried };
+      if (before !== JSON.stringify([track.syncMode, track.syncAnchors])) {
+        changed = true;
+        saveSubtitleSync(track, model);
+      }
+    } else {
+      // Keep looking while windows are left; after a few without a match, say so.
+      track.audioSync = { status: tried >= 3 && track.syncSource !== "audio" ? "failed" : (track.syncSource === "audio" ? "synced" : "syncing"), windows: tried };
+    }
+  }
+  // A track without its own match yet follows one that has it (line-by-line alignment), so the
+  // second language doesn't drift off screen while its sync is still being worked out.
+  const reference = audioSyncTracks().find((track) => track.syncSource === "audio");
+  if (reference) {
+    for (const track of audioSyncTracks()) {
+      if (track.syncSource === "audio" || track.syncFollowsId === `${reference.id}:${JSON.stringify(reference.syncAnchors)}`) continue;
+      const before = JSON.stringify([track.syncMode, track.syncAnchors]);
+      syncTrackToBestReference(track);
+      track.syncFollowsId = `${reference.id}:${JSON.stringify(reference.syncAnchors)}`;
+      if (!track.syncRejected) track.syncFollowing = normalizeTrackLanguage(reference.language) || "other track";
+      if (before !== JSON.stringify([track.syncMode, track.syncAnchors])) changed = true;
+    }
+  }
+  renderTracks();
+  updatePlayerSyncStatus();
+  if (!changed) return;
+  pairedCueMemo.clear();
+  subtitleRenderMemo.key = "";
+  renderSubtitles();
+  const repaired = learningEnabled ? refreshEpisodeCardPairs() : 0;
+  if (learningEnabled) saveCurrentEpisodeAnalysis();
+  const synced = audioSyncTracks().filter((track) => track.syncSource === "audio").length;
+  $("#media-status").textContent = `Subtitles synced to audio${synced > 1 ? ` (${synced} tracks)` : ""}${repaired ? `; ${repaired} card${repaired === 1 ? "" : "s"} re-paired` : ""}`;
+}
+
+// Called from timeupdate: a playhead away from every analysed window gets its own window.
+function checkAudioSyncCoverage() {
+  if (!audioSync.key || audioSync.pending || Math.abs(state.currentMs - audioSync.lastCheckMs) < 5000) return;
+  audioSync.lastCheckMs = state.currentMs;
+  const covered = audioSync.windows.some((item) => state.currentMs >= item.startMs - 30_000 && state.currentMs <= item.startMs + item.durationMs + 60_000);
+  const jumped = audioSyncTracks().some((track) => track.syncMode === "piecewise-step" && (track.syncAnchors || []).some((anchor, index, list) => index < list.length - 1 && !anchor.located));
+  if (!covered || jumped) scheduleAudioSync(800);
+}
+
+/* ---------------------------------------------------------------- Saved lines (clips) */
+
+// A torrent's downloaded pieces are deleted when its session ends, so a card that only pointed at
+// a timestamp could not be heard again later. While an episode plays, the lines of its cards (and
+// up to 40 other lines, for dictation) are cut from the stretch that already played: audio and a
+// still frame, saved in the data folder. Card clips stay as long as the card does.
+const CLIP_DICTATION_PER_EPISODE = 40;
+const clipPlanner = { key: "", done: new Set(), failed: new Map(), pending: false, timer: 0, saveTimer: 0 };
+
+function clipEpisodeLabel() {
+  const current = currentLibraryEpisode();
+  return {
+    series: String(current?.entry?.displayTitle || current?.entry?.title || state.currentSource?.title || "").slice(0, 200),
+    chapter: String(current?.episode?.code || "").slice(0, 40),
+  };
+}
+
+function clipCandidates() {
+  const source = state.currentSource;
+  const tracks = currentSourceTracks().filter((track) => track.cues?.length);
+  const target = tracks.find((track) => normalizeTrackLanguage(track.language) === state.targetLanguage);
+  if (!source?.libraryId || !target || !trackTimingTrusted(target)) return [];
+  const base = tracks.find((track) => normalizeTrackLanguage(track.language) === state.baseLanguage);
+  const baseTrusted = Boolean(base && trackTimingTrusted(base));
+  const cues = videoCuesForTrack(target).filter((cue) => !isNonSpeechCue(cue.text) && cue.endMs - cue.startMs >= 600 && cue.endMs - cue.startMs <= 12_000);
+  if (!cues.length) return [];
+  const items = new Map();
+  const add = (cue, kind, cardId = null) => {
+    const key = `${cue.startMs}:${cue.endMs}`;
+    const item = items.get(key) || { key, cue, kind, cardIds: [] };
+    if (kind === "card") item.kind = "card";
+    if (cardId) item.cardIds.push(cardId);
+    items.set(key, item);
+  };
+  const clean = (text) => normalizeText(String(text || "")).replace(/\s+/g, " ").trim();
+  for (const card of state.cards) {
+    if (card.clipId || !card.context || String(card.sourceLibraryId) !== String(source.libraryId) || String(card.sourceFileIndex) !== String(source.fileIndex)) continue;
+    const wanted = clean(card.context);
+    let best = null;
+    for (const cue of cues) {
+      if (clean(cue.text) !== wanted) continue;
+      const distance = Math.abs(cue.startMs - Number(card.timestampMs || 0));
+      if (!best || distance < best.distance) best = { cue, distance };
+    }
+    if (best) add(best.cue, "card", card.id);
+  }
+  const lines = cues.filter((cue) => [...String(cue.text).trim()].length >= 4 && [...String(cue.text).trim()].length <= 90);
+  const step = Math.max(1, Math.floor(lines.length / CLIP_DICTATION_PER_EPISODE));
+  for (let index = 0; index < lines.length && items.size < CLIP_DICTATION_PER_EPISODE + 200; index += step) add(lines[index], "dictation");
+  return [...items.values()].map((item) => ({
+    ...item,
+    text: String(item.cue.text || "").replace(/\s+/g, " ").trim(),
+    baseText: baseTrusted ? pairedBaseLines(target, cues.find((cue) => cue.startMs === item.cue.startMs) || item.cue)?.text || "" : "",
+  })).sort((a, b) => (a.kind === b.kind ? a.cue.startMs - b.cue.startMs : a.kind === "card" ? -1 : 1));
+}
+
+function scheduleClipStep(delayMs = 6000) {
+  if (!learningEnabled) return;
+  window.clearTimeout(clipPlanner.timer);
+  clipPlanner.timer = window.setTimeout(() => { void runClipStep(); }, delayMs);
+}
+
+async function runClipStep() {
+  if (!learningEnabled) return;
+  const source = audioSyncSource();
+  if (!source || !state.currentSource?.libraryId || !/^[a-f0-9]{40}$/i.test(String(state.currentSource.libraryId))) return;
+  const key = `${state.currentSource.libraryId}:${source.fileIndex}:${source.audio}`;
+  if (clipPlanner.key !== key) Object.assign(clipPlanner, { key, done: new Set(), failed: new Map() });
+  if (clipPlanner.pending || state.pendingSeek || !$("#video-loading")?.hidden) { scheduleClipStep(4000); return; }
+  const items = clipCandidates().filter((item) => !clipPlanner.done.has(item.key) && (clipPlanner.failed.get(item.key) || 0) < 2);
+  if (!items.length) { scheduleClipStep(15_000); return; }
+  clipPlanner.pending = true;
+  let delay = 6000;
+  let attempted = null;
+  try {
+    const ranges = await audioReadyRanges(source);
+    if (!learningEnabled) return;
+    const ready = items.find((item) => ranges.some((range) => range.fromMs <= item.cue.startMs - 300 && range.toMs >= item.cue.endMs + 400));
+    if (!ready) return;
+    attempted = ready;
+    const label = clipEpisodeLabel();
+    const response = await fetch("/api/clips", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionId: source.sessionId, libraryId: state.currentSource.libraryId, fileIndex: source.fileIndex, audio: source.audio,
+        startMs: Math.round(ready.cue.startMs), endMs: Math.round(ready.cue.endMs), kind: ready.kind,
+        lang: state.targetLanguage, baseLang: state.baseLanguage, text: ready.text, baseText: ready.baseText, ...label,
+      }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const clip = await response.json().catch(() => ({}));
+    if (!learningEnabled) return;
+    if (response.status === 429) { delay = 8000; return; }
+    if (!response.ok) throw new Error(clip.error || `Clip failed (${response.status})`);
+    clipPlanner.done.add(ready.key);
+    delay = 1500;
+    if (ready.cardIds.length) {
+      const ids = new Set(ready.cardIds);
+      state.cards = state.cards.map((card) => (ids.has(card.id) ? { ...card, clipId: clip.id, clipImage: Boolean(clip.imageUrl) } : card));
+      window.clearTimeout(clipPlanner.saveTimer);
+      clipPlanner.saveTimer = window.setTimeout(() => saveState(), 1500);
+    }
+    if (dictation.loadedFor === state.targetLanguage && !dictation.clips.some((item) => item.id === clip.id)) dictation.clips.push(clip);
+  } catch {
+    if (attempted) clipPlanner.failed.set(attempted.key, (clipPlanner.failed.get(attempted.key) || 0) + 1);
+    delay = 10_000;
+  } finally {
+    clipPlanner.pending = false;
+    if (learningEnabled && audioSyncSource() && clipPlanner.key === key) scheduleClipStep(delay);
+  }
+}
+
+function nudgeSubtitleTracks(deltaMs, tracks = currentSourceTracks().filter((track) => track.visible && !track.exactMedia)) {
+  if (!tracks.length) return;
+  tracks.forEach((track) => { track.offsetMs = Number(track.offsetMs || 0) + deltaMs; });
+  pairedCueMemo.clear();
+  subtitleRenderMemo.key = "";
+  renderSubtitles();
+  renderTracks();
+  const shown = Number(tracks[0].offsetMs || 0) / 1000;
+  $("#media-status").textContent = `Subtitle timing ${shown >= 0 ? "+" : ""}${shown.toFixed(1)} s`;
+}
+
+/* ---------------------------------------------------------------- Line pairing (dual subtitles, cards) */
+
+// Per episode: the most frequent words and phrases that aren't known or carded yet.
+const AUTO_CARD_WORDS_PER_EPISODE = 60;
+const AUTO_CARD_PHRASES_PER_EPISODE = 20;
+
+// Lines of the base-language track that belong with a cue of another track, in video time.
+const pairedCueMemo = new Map();
+
+function trackTimingTrusted(track) {
+  if (!track) return false;
+  if (track.exactMedia || track.syncSource === "audio") return true;
+  if (audioSyncSource() && track.audioSync?.status !== "failed") return false; // audio sync still running
+  return !track.syncRejected;
+}
+
+function videoCuesForTrack(track) {
+  const key = `${track.id}|${track.cues.length}|${Number(track.offsetMs || 0)}|${track.syncMode}|${JSON.stringify(track.syncAnchors || [])}`;
+  const cached = pairedCueMemo.get(track.id);
+  if (cached?.key === key) return cached.cues;
+  const cues = track.cues.map((cue) => ({ ...cue, ...cuePlaybackBounds(cue, track) }));
+  pairedCueMemo.set(track.id, { key, cues });
+  return cues;
+}
+
+function pairedBaseLines(sourceTrack, cue) {
+  const base = currentSourceTracks().find((track) => track.id !== sourceTrack?.id && track.cues?.length && normalizeTrackLanguage(track.language) === state.baseLanguage);
+  if (!base || !sourceTrack || !cue) return null;
+  const matches = pairedCues(cuePlaybackBounds(cue, sourceTrack), videoCuesForTrack(base));
+  if (!matches.length) return null;
+  return { text: matches.map((item) => String(item.text || "").trim()).filter(Boolean).join(" "), startMs: matches[0].startMs, endMs: matches.at(-1).endMs };
+}
+
+function pairingReady() {
+  const tracks = currentSourceTracks().filter((track) => track.cues?.length);
+  const target = tracks.find((track) => normalizeTrackLanguage(track.language) === state.targetLanguage);
+  const base = tracks.find((track) => normalizeTrackLanguage(track.language) === state.baseLanguage);
+  return Boolean(target && trackTimingTrusted(target) && (!base || trackTimingTrusted(base)));
+}
+
+// After a sync, cards made from this episode get the base line that really belongs to their line.
+function refreshEpisodeCardPairs() {
+  const source = state.currentSource;
+  if (!source?.libraryId || !pairingReady()) return 0;
+  const tracks = currentSourceTracks().filter((track) => track.cues?.length);
+  const target = tracks.find((track) => normalizeTrackLanguage(track.language) === state.targetLanguage);
+  if (!target || !tracks.some((track) => normalizeTrackLanguage(track.language) === state.baseLanguage)) return 0;
+  const byText = new Map();
+  target.cues.forEach((cue) => {
+    const text = String(cue.text || "").trim();
+    byText.set(text, [...(byText.get(text) || []), cue]);
+  });
+  let changed = 0;
+  state.cards = state.cards.map((card) => {
+    if (card.origin === "anki" || String(card.sourceLibraryId) !== String(source.libraryId) || String(card.sourceFileIndex ?? "") !== String(source.fileIndex ?? "")) return card;
+    const candidates = byText.get(String(card.context || "").trim()) || [];
+    if (!candidates.length) return card;
+    const cue = candidates.reduce((best, item) => (Math.abs(cuePlaybackBounds(item, target).startMs - Number(card.timestampMs || 0))
+      < Math.abs(cuePlaybackBounds(best, target).startMs - Number(card.timestampMs || 0)) ? item : best), candidates[0]);
+    const pair = pairedBaseLines(target, cue);
+    const { startMs: timestampMs, endMs } = cuePlaybackBounds(cue, target);
+    if (timestampMs === card.timestampMs && endMs === card.endMs && (!pair?.text || pair.text === card.baseContext)) return card;
+    const backFollowsContext = card.autoGenerated || !card.back || card.back === card.baseContext;
+    changed += 1;
+    return { ...card, ...(pair?.text ? { baseContext: pair.text, back: backFollowsContext ? pair.text : card.back } : {}), timestampMs, endMs };
+  });
+  if (changed) {
+    touchLearningState();
+    saveState();
+    renderReview();
+  }
+  return changed;
+}
+
+function isRomanizableLanguage(language) {
+  return ["JA", "KO", "ZH", "RU"].includes(String(language || "").toUpperCase());
+}
+
+async function ensureTrackRomanization(track) {
+  if (!track?.cues?.length || !isRomanizableLanguage(track.language) || state.subtitleStyle.romanization === false) return;
+  if (track.romanizationState === "ready" || track.romanizationState === "loading") return;
+  track.romanizationState = "loading";
+  try {
+    let cursor = 0;
+    while (cursor < track.cues.length) {
+      const chunk = [];
+      const indexes = [];
+      let charCount = 0;
+      while (cursor < track.cues.length && chunk.length < 60) {
+        const text = String(track.cues[cursor]?.text || "");
+        if (chunk.length && charCount + text.length > 8_000) break;
+        chunk.push(text);
+        indexes.push(cursor);
+        charCount += text.length;
+        cursor += 1;
+      }
+      const result = await postJson("/api/subtitles/romanize", { language: track.language, texts: chunk });
+      (result.romanized || []).forEach((text, index) => {
+        const cue = track.cues[indexes[index]];
+        if (cue) cue.romanizedText = String(text || "").trim();
+      });
+    }
+    track.romanizationState = "ready";
+  } catch (error) {
+    track.romanizationState = "error";
+    track.romanizationError = error.message || "Romanization failed";
+  }
+  renderSubtitles();
+}
+
+function ensureCurrentRomanization() {
+  if (state.subtitleStyle.romanization === false) return;
+  currentSourceTracks().filter((track) => isRomanizableLanguage(track.language)).forEach((track) => {
+    void ensureTrackRomanization(track);
+  });
+}
+
+async function ensureProcessedTrackTokens(track) {
+  if (!track?.cues?.length || normalizeTrackLanguage(track.language) !== state.targetLanguage) return;
+  if (["loading", "ready", "fallback"].includes(track.learningProcessState)) return;
+  track.learningProcessState = "loading";
+  try {
+    const data = await postJson("/api/learning/subtitles/process", {
+      track: {
+        id: track.id,
+        language: normalizeTrackLanguage(track.language),
+        exactMedia: Boolean(track.exactMedia),
+        cues: track.cues.map((cue) => ({ id: cue.id, text: cue.text, startMs: cue.startMs, endMs: cue.endMs })),
+      },
+    });
+    const tokenMap = new Map();
+    (Array.isArray(data?.artifact?.cues) ? data.artifact.cues : []).forEach((processedCue) => {
+      const processedTokens = Array.isArray(processedCue?.tokens) ? processedCue.tokens : Array.isArray(processedCue?.segments) ? processedCue.segments : [];
+      if (!processedCue?.id || !processedTokens.length) return;
+      tokenMap.set(String(processedCue.id), processedTokens.map((token) => ({
+        text: String(token?.text ?? ""),
+        normalized: token?.isWord === false ? "" : normalizeText(token?.normalized || token?.text || ""),
+        isWord: token?.isWord !== false && Boolean(normalizeText(token?.normalized || token?.text || "")),
+      })));
+    });
+    track.processedLearningArtifact = data?.artifact || null;
+    track.processedCueTokens = tokenMap;
+    track.learningProcessState = data?.artifact ? "ready" : "fallback";
+  } catch {
+    track.learningProcessState = "fallback";
+  }
+  subtitleRenderMemo.key = "";
+  renderSubtitles();
+}
+
+function cueSegments(cue, track) {
+  const processed = track?.processedCueTokens?.get(String(cue?.id));
+  if (processed?.length) return processed;
+  const language = normalizeTrackLanguage(track?.language || state.targetLanguage);
+  const cached = cueTokenCache.get(cue);
+  if (cached?.language === language && cached?.text === cue?.text) return cached.segments;
+  const segments = segmentText(cue?.text || "", language);
+  cueTokenCache.set(cue, { language, text: cue?.text || "", segments });
+  return segments;
+}
+
+function learningClassForWord(normalized) {
+  if (!normalized) return "";
+  const key = learningItemKey(state.targetLanguage, "word", normalized);
+  if (state.known.has(key) || masteredCardKeySet().has(key)) return "learning-known";
+  if (cardKeySet().has(key)) return "learning-review";
+  const rank = state.learningPreset?.language === state.targetLanguage && state.learningPreset?.status === "ready"
+    ? state.learningPreset.wordRank?.get(normalized)
+    : null;
+  if (rank && rank <= 100) return "learning-common-100";
+  if (rank && rank <= 1000) return "learning-common-1000";
+  if (rank && rank <= 5000) return "learning-common-5000";
+  return "";
+}
+
+function appendLearningCue(line, cue, track) {
+  if (!state.wordColoring) {
+    line.textContent = cue.text;
+    return;
+  }
+  cueSegments(cue, track).forEach((segment) => {
+    if (!segment.isWord) {
+      line.append(document.createTextNode(segment.text));
+      return;
+    }
+    const span = document.createElement("span");
+    const learningClass = learningClassForWord(segment.normalized);
+    if (learningClass) span.className = `subtitle-word ${learningClass}`;
+    span.textContent = segment.text;
+    line.append(span);
+  });
+}
+
+function currentExposureMediaKey() {
+  const source = state.currentSource || {};
+  return [source.libraryId || source.sourceTag || source.title || source.kind || "source", source.fileIndex ?? source.fileName ?? "file"].join("|");
+}
+
+function incrementLearningExposure(key, mediaKey, now) {
+  const previous = state.learningExposure[key] || { encounters: 0, media: 0, lastMedia: "", lastSeenAt: 0 };
+  state.learningExposure[key] = {
+    encounters: Number(previous.encounters || 0) + 1,
+    media: Number(previous.media || 0) + (previous.lastMedia === mediaKey ? 0 : 1),
+    lastMedia: mediaKey,
+    lastSeenAt: now,
+  };
+}
+
+function recordCueExposure(track, cue) {
+  if (!learningEnabled || !cue || normalizeTrackLanguage(track?.language) !== state.targetLanguage) return;
+  const mediaKey = currentExposureMediaKey();
+  if (mediaKey !== exposureMediaKey) {
+    exposureMediaKey = mediaKey;
+    exposureCueSeen.clear();
+  }
+  const cueKey = `${track.id}|${cue.id}`;
+  if (exposureCueSeen.has(cueKey)) return;
+  exposureCueSeen.add(cueKey);
+  const now = Date.now();
+  const wordList = cueSegments(cue, track).filter((segment) => segment.isWord && segment.normalized).map((segment) => segment.normalized);
+  const exposureKeys = new Set([...new Set(wordList)].map((word) => learningItemKey(state.targetLanguage, "word", word)));
+  const phraseRanks = state.learningPreset?.language === state.targetLanguage && state.learningPreset?.status === "ready" ? state.learningPreset.phraseRank : null;
+  for (let size = 2; size <= 4; size += 1) {
+    for (let index = 0; index <= wordList.length - size; index += 1) {
+      const phrase = wordList.slice(index, index + size).join(" ");
+      const key = learningItemKey(state.targetLanguage, "phrase", phrase);
+      if (phraseRanks?.has(phrase) || state.known.has(key) || cardKeySet().has(key)) exposureKeys.add(key);
+    }
+  }
+  exposureKeys.forEach((key) => incrementLearningExposure(key, mediaKey, now));
+  if (exposureKeys.size) {
+    saveLearningExposure();
+    if ($("#view-study")?.classList.contains("is-active") && video.paused) renderStudyProgress(studyRawItems(), state.studyType);
+  }
+}
+
+function subtitleFingerprint(cues) {
+  if (!Array.isArray(cues) || !cues.length) return "";
+  const picks = [0, Math.floor(cues.length / 3), Math.floor((cues.length * 2) / 3), cues.length - 1]
+    .map((index) => cues[Math.max(0, Math.min(cues.length - 1, index))])
+    .map((cue) => `${Math.round((Number(cue?.startMs) || 0) / 100)}:${String(cue?.normalizedText || cue?.text || "").replace(/\s+/g, " ").trim().toLowerCase().slice(0, 120)}`)
+    .join("|");
+  return `${cues.length}|${Math.round((Number(cues.at(-1)?.endMs) || 0) / 100)}|${picks}`;
+}
+
+function subtitleTimelineFit(cues) {
+  if (!state.mediaDurationMs || !cues?.length) return { ratio: null, severeMismatch: false };
+  const lastCueMs = Math.max(...cues.map((cue) => Number(cue.endMs) || 0));
+  const ratio = lastCueMs / state.mediaDurationMs;
+  return { ratio, severeMismatch: ratio > 1.1 || ratio < 0.65 };
+}
+
+function refreshSubtitleTimelineFits() {
+  currentSourceTracks().forEach((track) => {
+    if (track.exactMedia) {
+      track.timelineMismatch = false;
+      track.timelineRatio = null;
+      return;
+    }
+    const fit = subtitleTimelineFit(track.cues);
+    track.timelineRatio = fit.ratio;
+    track.timelineMismatch = fit.severeMismatch;
+  });
+}
+
+function cuePlaybackMs(cue, track = activeTrack()) {
+  return cuePlaybackBounds(cue, track).startMs;
+}
+
+function currentCueIndex() {
+  const track = activeTrack();
+  const cues = allPrimaryCues();
+  if (!cues.length) return -1;
+  const index = cues.findIndex((cue) => {
+    const bounds = cuePlaybackBounds(cue, track);
+    return state.currentMs >= bounds.startMs && state.currentMs <= bounds.endMs;
+  });
+  if (index >= 0) return index;
+  return Math.max(0, cues.findLastIndex((cue) => cuePlaybackBounds(cue, track).startMs <= state.currentMs));
+}
+
+function seekTo(ms) {
+  state.currentMs = Math.max(0, ms);
+  if (frame.classList.contains("has-video")) {
+    if (video.dataset.mode === "transcode") seekPlayerTo(state.currentMs / 1000);
+    else if (Number.isFinite(video.duration)) seekPlayerTo(state.currentMs / 1000);
+  }
+  renderSubtitles();
+}
+
+function renderSubtitles() {
+  const overlay = $("#subtitle-overlay");
+  if (!state.subtitlesVisible) {
+    if (subtitleRenderMemo.key !== "hidden") overlay.innerHTML = "";
+    subtitleRenderMemo.key = "hidden";
+    return;
+  }
+  const visibleTracks = preferredSourceTracks().filter((track) => track.visible);
+  const orderedTracks = visibleTracks.slice().sort((a, b) => {
+    const aLanguage = String(a.language || "").toUpperCase();
+    const bLanguage = String(b.language || "").toUpperCase();
+    const aRank = aLanguage === state.baseLanguage ? 0 : aLanguage === state.targetLanguage ? 1 : 2;
+    const bRank = bLanguage === state.baseLanguage ? 0 : bLanguage === state.targetLanguage ? 1 : 2;
+    return aRank - bRank;
+  });
+  const selectedTrack = activeTrack();
+  const activeCues = new Map(visibleTracks.map((track) => [track.id, getActiveCue(track)]));
+  const primaryTrack = visibleTracks.find((track) => activeCues.get(track.id)) || selectedTrack;
+  const primaryCue = primaryTrack ? activeCues.get(primaryTrack.id) || getActiveCue(primaryTrack) : null;
+  const rendered = orderedTracks.map((track) => ({ track, cue: comparisonCueForTrack(track, primaryTrack, primaryCue) }));
+  const selectedCue = selectedTrack ? activeCues.get(selectedTrack.id) || getActiveCue(selectedTrack) : null;
+  if (state.pauseAfterCue && state.lastCueId && selectedCue && selectedCue.id !== state.lastCueId && !video.paused) video.pause();
+  state.lastCueId = selectedCue?.id || state.lastCueId;
+  const targetPair = rendered.find(({ track, cue }) => cue && normalizeTrackLanguage(track.language) === state.targetLanguage);
+  if (targetPair && learningEnabled) {
+    recordCueExposure(targetPair.track, targetPair.cue);
+    if (state.wordColoring && !["loading", "ready", "fallback"].includes(targetPair.track.learningProcessState)) void ensureProcessedTrackTokens(targetPair.track);
+  }
+  const renderKey = `${state.subtitlesVisible}|${state.targetLanguage}|${state.wordColoring}|${learningRevision}|${rendered.map(({ track, cue }) => `${track.id}:${cue?.id || "-"}:${cue?.romanizedText || ""}`).join("|")}`;
+  if (subtitleRenderMemo.key === renderKey) return;
+  subtitleRenderMemo.key = renderKey;
+  overlay.innerHTML = "";
+  rendered.forEach(({ track, cue }) => {
+    if (!cue) return;
+    const line = document.createElement("div");
+    const isTarget = normalizeTrackLanguage(track.language) === state.targetLanguage;
+    line.className = `subtitle-line${isTarget ? "" : " secondary"}`;
+    if (isTarget && learningEnabled) appendLearningCue(line, cue, track); else line.textContent = cue.text;
+    overlay.append(line);
+    if (isTarget && state.subtitleStyle.romanization !== false && isRomanizableLanguage(track.language)) {
+      if (!cue.romanizedText && track.romanizationState !== "loading") void ensureTrackRomanization(track);
+      if (cue.romanizedText && cue.romanizedText !== cue.text) {
+        const romanized = document.createElement("div");
+        romanized.className = "subtitle-line romanized";
+        romanized.textContent = cue.romanizedText;
+        overlay.append(romanized);
+      }
+    }
+  });
+}
+
+function trackLanguageName(code) {
+  const value = String(code || "").trim();
+  if (!/^[a-z]{2,3}$/i.test(value)) return value || "Unknown language";
+  try {
+    return new Intl.DisplayNames(["en"], { type: "language" }).of(value.toLowerCase()) || value.toUpperCase();
+  } catch {
+    return value.toUpperCase();
+  }
+}
+
+// One card per subtitle track: language, name, a switch to show it on the video,
+// its line count and sync state, the track cards are made from, and a manual timing shift.
+function renderTracks() {
+  const list = $("#track-list");
+  const scopedTracks = preferredSourceTracks();
+  $("#track-count").textContent = scopedTracks.length;
+  if (!scopedTracks.length) {
+    list.innerHTML = emptyMarkup({
+      compact: true,
+      icon: "subtitles",
+      title: "No subtitles yet",
+      text: frame.classList.contains("has-video") ? "Find them online, or drop an .srt or .vtt file here." : "Play something, then find subtitles for it.",
+    });
+    return;
+  }
+  list.innerHTML = scopedTracks.map((track) => {
+    const language = normalizeTrackLanguage(track.language) || String(track.language || "?").toUpperCase();
+    const label = escapeHtml(track.label);
+    const trackShown = track.visible && state.subtitlesVisible;
+    const role = state.selectedTrackId === track.id;
+    const syncing = track.audioSync?.status === "syncing" && track.syncSource !== "audio";
+    return `<article class="track-card${track.visible ? " is-visible" : ""}" data-track-id="${escapeHtml(track.id)}">
+      <div class="track-card-head">
+        <span class="track-lang" title="${escapeHtml(trackLanguageName(language))}">${escapeHtml(language)}</span>
+        <span class="track-name" title="${label}">${label}</span>
+        <label class="ui-switch track-switch" title="Toggle this subtitle track"><span class="track-visibility-label">${trackShown ? "Showing" : track.visible ? "Captions off" : "Hidden"}</span><input class="track-visible" type="checkbox" ${track.visible ? "checked" : ""} aria-label="${track.visible ? "Hide" : "Show"} ${label} on the video"><span class="ui-switch__track" aria-hidden="true"></span></label>
+      </div>
+      <div class="track-meta">
+        <span>${track.cues.length.toLocaleString()} lines</span>
+        <button type="button" class="track-sync-state ui-tip-text${syncing ? " is-busy" : ""}" data-ui-tip="${escapeHtml(trackTipId(track))}" aria-describedby="${escapeHtml(trackTipId(track))}">${escapeHtml(trackSyncSummary(track))}</button>
+        <span id="${escapeHtml(trackTipId(track))}" class="ui-tip-content" hidden>${trackSyncExplanation(track)}</span>
+      </div>
+      <div class="track-controls">
+        <button class="ui-chip track-role" type="button" aria-pressed="${role}" title="Words, phrases and cards come from this track">${role ? `${icon("check")}Used for cards` : "Use for cards"}</button>
+        ${track.exactMedia ? "" : `<span class="track-shift" role="group" aria-label="Shift ${label}">
+          <button class="ui-btn ui-btn--ghost ui-btn--sm offset-minus" type="button" aria-label="Show ${label} 0.5 seconds earlier">−0.5 s</button>
+          <button class="ui-btn ui-btn--ghost ui-btn--sm offset-plus" type="button" aria-label="Show ${label} 0.5 seconds later">+0.5 s</button>
+        </span>`}
+      </div>
+    </article>`;
+  }).join("");
+
+  list.querySelectorAll(".track-card").forEach((card) => {
+    const track = state.tracks.find((item) => item.id === card.dataset.trackId);
+    card.querySelector(".track-visible").addEventListener("change", (event) => {
+      track.visible = event.target.checked;
+      if (track.visible && !state.subtitlesVisible) {
+        state.subtitlesVisible = true;
+        renderSubtitleStyleControls();
+      }
+      card.classList.toggle("is-visible", track.visible);
+      card.querySelector(".track-visibility-label").textContent = track.visible ? "Showing" : "Hidden";
+      event.target.setAttribute("aria-label", `${track.visible ? "Hide" : "Show"} ${track.label} on the video`);
+      subtitleRenderMemo.key = "";
+      renderSubtitles();
+    });
+    card.querySelector(".track-role").addEventListener("click", () => {
+      selectSubtitleTrackForCards(track);
+    });
+    card.querySelector(".offset-minus")?.addEventListener("click", () => nudgeSubtitleTracks(-500, [track]));
+    card.querySelector(".offset-plus")?.addEventListener("click", () => nudgeSubtitleTracks(500, [track]));
+  });
+}
+
+function trackTipId(track) {
+  return `tip-${String(track?.id || "track").replace(/[^a-zA-Z0-9_-]+/g, "-")}`;
+}
+
+// What a track's sync status means, in plain words (shown on hover, focus or tap).
+function trackSyncExplanation(track) {
+  const seconds = (ms) => `${(Math.abs(ms) / 1000).toFixed(1)} s`;
+  const direction = (ms) => (ms < 0 ? "earlier" : "later");
+  const manual = Number(track?.offsetMs || 0);
+  const manualNote = manual ? `<p>You also moved it ${seconds(manual)} ${direction(manual)} by hand.</p>` : "";
+  if (track?.exactMedia) return `<strong>Timing from the video file</strong><p>This track is stored inside the video, so it already matches it and isn't changed.</p>${manualNote}`;
+  const offsets = (Array.isArray(track?.syncAnchors) ? track.syncAnchors : []).map((anchor) => Number(anchor?.offsetMs) || 0);
+  const low = offsets.length ? Math.min(...offsets) : 0;
+  const high = offsets.length ? Math.max(...offsets) : 0;
+  if (track?.syncSource === "audio") {
+    const shape = track.syncMode === "linear-drift"
+      ? `<p>The file runs at a slightly different speed (another frame rate), so the shift changes from ${seconds(low)} to ${seconds(high)} over the episode.</p>`
+      : track.syncMode === "piecewise-step"
+        ? `<p>The file was made for a different cut of the video (for example without a recap), so the shift jumps at the cut: between ${seconds(low)} and ${seconds(high)}.</p>`
+        : `<p>Its lines are shown ${seconds(low)} ${direction(low)} than the file says.</p>`;
+    const origin = track.audioSync?.saved
+      ? "<p>Saved from an earlier viewing of this episode.</p>"
+      : track.audioSync?.windows ? `<p>Measured from ${track.audioSync.windows} stretch${track.audioSync.windows === 1 ? "" : "es"} of audio that already played.</p>` : "";
+    return `<strong>Matched to the speech</strong>${shape}${origin}${manualNote}`;
+  }
+  if (track?.audioSync?.status === "syncing" && track.syncFollowing && !track.syncRejected) {
+    return `<strong>Following the ${escapeHtml(track.syncFollowing)} track</strong><p>This track isn't matched to the audio yet. Until it is, it follows the timing of the track that is, so both languages stay on screen together.</p>${manualNote}`;
+  }
+  if (track?.audioSync?.status === "waiting") return `<strong>Waiting for audio</strong><p>Audio matching starts when enough playable speech is available. Keep the episode playing, or try a different subtitle release if timing is far off.</p>${manualNote}`;
+  if (track?.audioSync?.status === "syncing") return `<strong>Matching to the speech</strong><p>Checking short stretches of available audio. A match is not guaranteed when subtitles were made for a different release.</p>${manualNote}`;
+  if (track?.audioSync?.status === "failed") return `<strong>Couldn't match the audio</strong><p>Audio may be unavailable or the subtitles may belong to another release. Try a different subtitle file, or use ±0.5 s for small timing errors.</p>${manualNote}`;
+  if (offsets.length && !track?.syncRejected) return `<strong>Lined up with another track</strong><p>Matched line by line to the other subtitle track: ${seconds(low)} ${direction(low)} than the file says.</p>${manualNote}`;
+  return `<strong>Not synced</strong><p>Matching to the speech works for videos played from a torrent; this track keeps the file's own timing. Use ±0.5 s or <kbd>G</kbd> <kbd>H</kbd> to move it.</p>${manualNote}`;
+}
+
+function trackSyncSummary(track) {
+  const seconds = (ms) => `${ms >= 0 ? "+" : "−"}${(Math.abs(ms) / 1000).toFixed(1)} s`;
+  const manual = Number(track?.offsetMs || 0);
+  const shift = manual ? `, shifted ${seconds(manual)}` : "";
+  if (track?.exactMedia) return "From the video file";
+  const offsets = (Array.isArray(track?.syncAnchors) ? track.syncAnchors : []).map((anchor) => Number(anchor?.offsetMs) || 0);
+  const range = offsets.length
+    ? (Math.max(...offsets) - Math.min(...offsets) <= 100 ? seconds(offsets[0]) : `${seconds(Math.min(...offsets))} to ${seconds(Math.max(...offsets))}`)
+    : "";
+  if (track?.syncSource === "audio") return `Synced to audio ${range}${shift}`;
+  if (track?.audioSync?.status === "syncing" && track?.syncFollowing && !track?.syncRejected) return `Following ${track.syncFollowing}, syncing…${shift}`;
+  if (track?.audioSync?.status === "syncing") return `Syncing to audio…${shift}`;
+  if (track?.audioSync?.status === "waiting") return `Waiting for audio…${shift}`;
+  if (track?.audioSync?.status === "failed") return `Couldn't sync to audio${range ? ` (${range})` : ""}${shift}`;
+  if (offsets.length && !track?.syncRejected) return `Matched to another track ${range}${shift}`;
+  return manual ? `Shifted ${seconds(manual)}` : "Not synced";
+}
+
+// Small chip on the player: shown while subtitles are being synced, briefly once they are.
+function updatePlayerSyncStatus() {
+  const chip = $("#player-sync-status");
+  if (!chip) return;
+  const tracks = audioSyncSource() ? audioSyncTracks() : [];
+  const synced = tracks.filter((track) => track.syncSource === "audio");
+  const waiting = tracks.filter((track) => track.syncSource !== "audio" && track.audioSync?.status === "syncing");
+  const failed = tracks.filter((track) => track.syncSource !== "audio" && track.audioSync?.status === "failed");
+  const stateKey = !tracks.length ? "none" : waiting.length ? `busy:${synced.length}:${waiting.length}` : failed.length && !synced.length ? "failed" : synced.length ? "done" : "none";
+  if (stateKey === playerSyncChipState) return;
+  playerSyncChipState = stateKey;
+  window.clearTimeout(playerSyncChipTimer);
+  const busy = stateKey.startsWith("busy");
+  chip.classList.toggle("is-busy", busy);
+  if (stateKey === "none") {
+    chip.hidden = true;
+    return;
+  }
+  chip.textContent = busy ? (synced.length ? `Syncing subtitles, ${waiting.length} left` : "Syncing subtitles")
+    : stateKey === "failed" ? "Subtitles not synced"
+      : "Subtitles synced";
+  chip.hidden = false;
+  if (!busy) playerSyncChipTimer = window.setTimeout(() => { chip.hidden = true; }, stateKey === "failed" ? 8000 : 4000);
+}
+
+function getWords() {
+  return currentAnalysis().words;
+}
+
+function getPhrases() {
+  return currentAnalysis().phrases;
+}
+
+function currentAnalysis() {
+  const track = activeTrack();
+  if (!track?.cues?.length) {
+    analysisMemo = { key: "", words: [], phrases: [], wordByValue: new Map(), phraseByValue: new Map() };
+    return analysisMemo;
+  }
+  const sourceTag = activeSourceTag();
+  const fingerprint = track.fingerprint || subtitleFingerprint(track.cues);
+  const key = `${track.id}|${fingerprint}|${sourceTag}`;
+  if (analysisMemo.key === key) return analysisMemo;
+  const language = normalizeTrackLanguage(track.language || state.targetLanguage);
+  const words = analyzeWords(track.cues, { hideStopWords: true, language }).map((item) => ({ ...item, sourceTag, language, type: "word", origin: "subtitle" }));
+  const phrases = analyzePhrases(track.cues, { minCount: 2, language }).map((item) => ({ ...item, sourceTag, language, type: "phrase", origin: "subtitle" }));
+  analysisMemo = {
+    key,
+    words,
+    phrases,
+    wordByValue: new Map(words.map((item) => [normalizeText(item.value), item])),
+    phraseByValue: new Map(phrases.map((item) => [normalizeText(item.value), item])),
+  };
+  return analysisMemo;
+}
+
+function normalizePresetCollection(items, type, language) {
+  const seen = new Set();
+  return (Array.isArray(items) ? items : []).map((raw, index) => {
+    const value = String(typeof raw === "string" ? raw : raw?.value || raw?.text || "").trim();
+    const normalized = normalizeText(value);
+    if (!normalized || seen.has(normalized)) return null;
+    seen.add(normalized);
+    return {
+      value,
+      normalized,
+      rank: Math.max(1, Number(typeof raw === "object" ? raw?.rank : 0) || index + 1),
+      gloss: String(typeof raw === "object" ? raw?.gloss || raw?.meaning || "" : "").trim(),
+      language,
+      type,
+      origin: "frequency",
+      sourceTag: `COMMON ${language}`,
+      deckId: `${language}:${type}`,
+      occurrences: [],
+      count: 0,
+      scenes: 0,
+    };
+  }).filter(Boolean).sort((a, b) => a.rank - b.rank);
+}
+
+async function ensureLearningPreset(language = state.targetLanguage) {
+  if (!learningEnabled) return state.learningPreset;
+  const normalizedLanguage = normalizeTrackLanguage(language);
+  const cached = learningPresetCache.get(normalizedLanguage);
+  if (cached) {
+    state.learningPreset = cached;
+    return cached;
+  }
+  if (learningPresetRequests.has(normalizedLanguage)) return learningPresetRequests.get(normalizedLanguage);
+  state.learningPreset = { language: normalizedLanguage, words: [], phrases: [], status: "loading", error: "" };
+  if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+  const task = (async () => {
+    try {
+      const data = await fetchJson(`/api/learning/presets?language=${encodeURIComponent(normalizedLanguage)}`);
+      const preset = {
+        language: normalizeTrackLanguage(data?.language || normalizedLanguage),
+        words: normalizePresetCollection(data?.words, "word", normalizedLanguage).slice(0, 5000),
+        phrases: normalizePresetCollection(data?.phrases, "phrase", normalizedLanguage).slice(0, 1000),
+        status: "ready",
+        error: "",
+      };
+      preset.wordRank = new Map(preset.words.map((item) => [item.normalized, item.rank]));
+      preset.phraseRank = new Map(preset.phrases.map((item) => [item.normalized, item.rank]));
+      learningPresetCache.set(normalizedLanguage, preset);
+      if (state.targetLanguage === normalizedLanguage) state.learningPreset = preset;
+      touchLearningState();
+      renderSubtitles();
+      if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+      return preset;
+    } catch (error) {
+      const failed = { language: normalizedLanguage, words: [], phrases: [], status: "error", error: error.message || "Preset unavailable" };
+      if (state.targetLanguage === normalizedLanguage) state.learningPreset = failed;
+      if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+      return failed;
+    } finally {
+      learningPresetRequests.delete(normalizedLanguage);
+    }
+  })();
+  learningPresetRequests.set(normalizedLanguage, task);
+  return task;
+}
+
+function enrichPresetItem(item, type) {
+  const analysis = currentAnalysis();
+  const match = (type === "word" ? analysis.wordByValue : analysis.phraseByValue)?.get(item.normalized || normalizeText(item.value));
+  if (!match) return { ...item, itemKey: learningItemKey(item.language, type, item.value) };
+  return {
+    ...item,
+    count: match.count,
+    scenes: match.scenes || match.occurrences?.length || 0,
+    occurrences: match.occurrences || [],
+    sourceTag: `${item.sourceTag} · VIDEO`,
+    itemKey: learningItemKey(item.language, type, item.value),
+  };
+}
+
+function renderAnalysisRows(items, type) {
+  if (!items.length) return empty(`No ${type}s found`, "");
+  return items.slice(0, 100).map((item, index) => {
+    const romanized = studyRomanizationFor(item);
+    return `
+      <div class="ui-row study-vocabulary-row" data-index="${index}">
+        <span class="ui-row__lead">${index + 1}</span>
+        <span class="study-vocabulary-row__copy"><span class="ui-row__title">${escapeHtml(item.value)}</span>${romanized && romanized !== item.value ? `<span class="ui-row__sub">${escapeHtml(romanized)}</span>` : ""}<span class="ui-row__sub">${escapeHtml(sourceTagText(item.sourceTag || activeSourceTag()))}</span></span>
+        <span class="study-vocabulary-row__status">${isMasteredItem(item, type) ? '<span class="ui-learn ui-learn--known" data-i18n="Mastered">Mastered</span>' : cardKeySet().has(learningItemKeyFor(item, type)) ? '<span class="ui-learn ui-learn--review" data-i18n="Learning">Learning</span>' : ""}</span>
+        <span class="study-vocabulary-row__count">${Number(item.count) > 0 ? `${item.count}×` : "—"}</span>
+        <button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Open">Open</button>
+      </div>`;
+  }).join("");
+}
+
+function wireAnalysisRows(container, type, items) {
+  container.querySelectorAll("[data-index]").forEach((row) => row.addEventListener("click", () => openDetail(items[Number(row.dataset.index)], type)));
+}
+
+function openDetail(item, type) {
+  const occurrences = Array.isArray(item.occurrences) ? item.occurrences : [];
+  const known = isKnownItem(item, type);
+  const itemKey = learningItemKeyFor(item, type);
+  const chapterDerived = Boolean(item.sourceLibraryId && item.sourceFileIndex !== null && item.sourceFileIndex !== undefined);
+  const discarded = discardedAutoCardKeys.has(itemKey);
+  if (chapterDerived && !known && !discarded && !cardKeySet().has(itemKey)) ensureAutoCardForItem(item, type);
+  const inReview = cardKeySet().has(itemKey);
+  const cardAction = chapterDerived
+    ? inReview
+      ? "DISCARD CARD"
+      : discarded
+        ? "RESTORE CARD"
+        : known
+          ? "MASTERED"
+          : "RESTORE CARD"
+    : inReview
+      ? "IN REVIEW"
+      : "+ ADD CARD";
+  const cardDisabled = (!chapterDerived && inReview) || (chapterDerived && known && !inReview && !discarded);
+  const eyebrow = item.origin === "frequency" ? `COMMON ${type.toUpperCase()}${item.rank ? ` #${item.rank}` : ""}` : `${type.toUpperCase()} / ${item.count || 0} OCCURRENCES`;
+  const romanized = studyRomanizationFor(item);
+  $("#dialog-content").innerHTML = `
+    <div class="detail-body">
+      <span class="eyebrow">${escapeHtml(eyebrow)}</span>
+      <h2>${escapeHtml(item.value)}</h2>
+      ${romanized && romanized !== item.value ? `<p class="study-detail-reading">${escapeHtml(romanized)}</p>` : ""}
+      <p><span class="source-tag">${escapeHtml(sourceTagText(item.sourceTag || activeSourceTag()))}</span></p>
+      ${item.gloss ? `<p>${escapeHtml(item.gloss)}</p>` : ""}
+      ${occurrences.length ? `<p>Seen in ${item.scenes || occurrences.length} subtitle scenes in the current analysis track.</p>` : ""}
+      <div class="detail-actions">
+        <button id="detail-known" class="button">${known ? "MARK UNKNOWN" : "MARK KNOWN"}</button>
+        <button id="detail-card" class="button ${inReview && chapterDerived ? "button-quiet" : "button-solid"}" ${cardDisabled ? "disabled" : ""}>${cardAction}</button>
+      </div>
+      <div>${occurrences.slice(0, 30).map((occurrence) => `
+        <div class="occurrence">
+          <time>${formatTime(occurrence.startMs)}</time>
+          <p>${escapeHtml(occurrence.text)}</p>
+          <button class="tiny-btn occurrence-seek" data-seek="${occurrence.startMs}">PLAY</button>
+        </div>`).join("")}</div>
+    </div>`;
+  $("#detail-known").addEventListener("click", () => {
+    setKnownItem(item, type, !known);
+    $("#detail-dialog").close();
+    renderStudy();
+  });
+  if (!cardDisabled) $("#detail-card")?.addEventListener("click", () => {
+    if (chapterDerived && inReview) discardCardByLearningKey(itemKey);
+    else if (chapterDerived) restoreAutoCard(item, type);
+    else addCard(item, type);
+    $("#detail-dialog").close();
+  });
+  $$(".occurrence-seek").forEach((button) => button.addEventListener("click", () => {
+    const occurrence = occurrences.find((source) => Number(source.startMs) === Number(button.dataset.seek));
+    const seekMs = occurrencePlaybackMs(occurrence, item);
+    $("#detail-dialog").close();
+    void openLinePreview({ ...item, timestampMs: seekMs, endMs: seekMs + Math.max(300, Number(occurrence?.endMs) - Number(occurrence?.startMs)), context: occurrence?.text || item.value, baseContext: alignedBaseCueForOccurrence(occurrence)?.text || "" });
+  }));
+  $("#detail-dialog").showModal();
+}
+
+function alignedBaseCueForOccurrence(source) {
+  if (!source?.cueId || state.alignedSubtitleSourceKey !== currentExposureMediaKey() || !state.alignedSubtitleTimeline.length) return null;
+  const unit = state.alignedSubtitleTimeline.find((item) => Array.isArray(item?.items) && item.items.some((entry) => String(entry?.cueId) === String(source.cueId)));
+  const paired = unit?.items?.find((entry) => normalizeTrackLanguage(entry?.language) === state.baseLanguage);
+  if (!paired?.text) return null;
+  return { text: String(paired.text), startMs: Number(paired.startMs) || 0, endMs: Number(paired.endMs) || 0 };
+}
+
+function occurrencePlaybackMs(source, item = null) {
+  if (!source) return 0;
+  const referencesCurrentChapter = !item?.sourceLibraryId || (String(item.sourceLibraryId) === String(state.currentSource?.libraryId)
+    && String(item.sourceFileIndex ?? "") === String(state.currentSource?.fileIndex ?? ""));
+  if (!referencesCurrentChapter) return Number(source.startMs) || 0;
+  const sourceTrack = currentSourceTracks().find((track) => track.cues?.some((cue) => String(cue.id) === String(source.cueId))) || activeTrack();
+  return sourceTrack ? Math.max(0, Number(source.startMs || 0) + trackEffectiveOffsetAt(sourceTrack, Number(source.startMs) || 0)) : Number(source.startMs) || 0;
+}
+
+// The line a card shows: dialogue rather than a sound-effect caption, of ordinary length.
+function bestOccurrence(item) {
+  const occurrences = Array.isArray(item?.occurrences) ? item.occurrences.filter(Boolean) : [];
+  const speech = occurrences.filter((occurrence) => !isNonSpeechCue(occurrence?.text));
+  const pool = speech.length ? speech : occurrences;
+  const lengthRank = (text) => {
+    const length = [...String(text || "")].length;
+    return length < 4 ? 3 : length <= 60 ? 0 : length <= 110 ? 1 : 2;
+  };
+  return pool.slice().sort((a, b) => lengthRank(a.text) - lengthRank(b.text))[0] || null;
+}
+
+function cardRecordForItem(item, type, { autoGenerated = false } = {}) {
+  const itemKey = learningItemKeyFor(item, type);
+  if (!itemKey) return null;
+  const source = bestOccurrence(item);
+  const referencesCurrentChapter = !item.sourceLibraryId || (String(item.sourceLibraryId) === String(state.currentSource?.libraryId)
+    && String(item.sourceFileIndex ?? "") === String(state.currentSource?.fileIndex ?? ""));
+  const playbackMs = occurrencePlaybackMs(source, item);
+  const baseTrack = referencesCurrentChapter ? currentSourceTracks().find((track) => String(track.language || "").toUpperCase() === state.baseLanguage) : null;
+  const sourceTrack = referencesCurrentChapter && source ? currentSourceTracks().find((track) => track.cues?.some((cue) => String(cue.id) === String(source.cueId))) : null;
+  const sourceCue = sourceTrack?.cues.find((cue) => String(cue.id) === String(source.cueId)) || null;
+  const baseCue = referencesCurrentChapter
+    ? ((sourceCue && pairedBaseLines(sourceTrack, sourceCue)) || alignedBaseCueForOccurrence(source) || cueNearPlaybackMs(baseTrack, playbackMs))
+    : null;
+  const savedBaseContext = String(item.baseContext || "");
+  return {
+    id: crypto.randomUUID(),
+    itemKey,
+    type,
+    front: item.value,
+    romanized: studyRomanizationFor(item),
+    back: savedBaseContext || baseCue?.text || item.gloss || "",
+    context: source?.text || "",
+    timestampMs: playbackMs,
+    endMs: source ? playbackMs + Math.max(300, Number(source.endMs) - Number(source.startMs)) : 0,
+    trackLabel: item.trackLabel || (source && referencesCurrentChapter ? activeTrack()?.label || "Subtitle" : source ? "Saved chapter subtitle" : `Common ${item.language || state.targetLanguage}`),
+    sourceTag: item.sourceTag || activeSourceTag(),
+    baseLanguage: state.baseLanguage,
+    targetLanguage: item.language || state.targetLanguage,
+    baseContext: savedBaseContext || baseCue?.text || "",
+    sourceLibraryId: item.sourceLibraryId || (source ? state.currentSource?.libraryId || null : null),
+    sourceFileIndex: item.sourceFileIndex ?? (source ? state.currentSource?.fileIndex ?? null : null),
+    origin: autoGenerated ? "subtitle-auto" : item.origin || "subtitle",
+    autoGenerated: Boolean(autoGenerated),
+    deckId: item.deckId || "",
+    rank: Number(item.rank) || null,
+    createdAt: Date.now(),
+    dueAt: Date.now(),
+    state: "new",
+    learningStep: 0,
+    intervalDays: 0,
+    reviewCount: 0,
+    lapses: 0,
+  };
+}
+
+function addCard(item, type) {
+  const itemKey = learningItemKeyFor(item, type);
+  if (cardKeySet().has(itemKey)) return;
+  const restored = discardedAutoCardKeys.delete(itemKey);
+  const card = cardRecordForItem(item, type);
+  if (!card) return;
+  state.cards.push(card);
+  touchLearningState();
+  saveState();
+  if (restored) persistDiscardedAutoCardKeys();
+  renderReview();
+  renderStats();
+  renderSubtitles();
+  if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+}
+
+function persistDiscardedAutoCardKeys({ immediate = false } = {}) {
+  const values = [...discardedAutoCardKeys].slice(-20_000);
+  localStorage.setItem("blackline-discarded-auto-cards", JSON.stringify(values));
+  persistPreferences({ immediate });
+}
+
+function cardLearningKey(card) {
+  return String(card?.itemKey || learningItemKey(card?.targetLanguage || state.targetLanguage, card?.type || "word", card?.front || ""));
+}
+
+function syncEpisodeAutoCardMetadata(libraryId, fileIndex) {
+  if (!libraryId || fileIndex === null || fileIndex === undefined) return false;
+  const entry = libraryEntryById(libraryId);
+  const episode = entry?.episodes?.find((item) => Number(item.fileIndex) === Number(fileIndex));
+  if (!episode?.analysis) return false;
+  const cards = state.cards.filter((card) => card.autoGenerated
+    && String(card.sourceLibraryId) === String(libraryId)
+    && String(card.sourceFileIndex ?? "") === String(fileIndex ?? ""));
+  const nextCount = cards.length;
+  const nextWords = cards.filter((card) => card.type === "word").length;
+  const nextPhrases = cards.filter((card) => card.type === "phrase").length;
+  const changed = Number(episode.analysis.autoCardCount || 0) !== nextCount
+    || Number(episode.analysis.autoWordCardCount || 0) !== nextWords
+    || Number(episode.analysis.autoPhraseCardCount || 0) !== nextPhrases;
+  episode.analysis.autoCardCount = nextCount;
+  episode.analysis.autoWordCardCount = nextWords;
+  episode.analysis.autoPhraseCardCount = nextPhrases;
+  if (changed) entry.updatedAt = Date.now();
+  return changed;
+}
+
+function discardCardByLearningKey(itemKey, { rememberAutoDiscard = true } = {}) {
+  const key = String(itemKey || "");
+  if (!key) return false;
+  const before = state.cards.length;
+  let removedAutoOrChapter = false;
+  const affectedEpisodes = new Map();
+  state.cards = state.cards.filter((card) => {
+    if (cardLearningKey(card) !== key) return true;
+    removedAutoOrChapter ||= Boolean(card.autoGenerated || card.origin === "subtitle-auto"
+      || (card.sourceLibraryId && card.sourceFileIndex !== null && card.sourceFileIndex !== undefined));
+    if (card.sourceLibraryId && card.sourceFileIndex !== null && card.sourceFileIndex !== undefined) {
+      affectedEpisodes.set(`${card.sourceLibraryId}:${card.sourceFileIndex}`, [card.sourceLibraryId, card.sourceFileIndex]);
+    }
+    return false;
+  });
+  if (before === state.cards.length) return false;
+  if (rememberAutoDiscard && removedAutoOrChapter) {
+    discardedAutoCardKeys.add(key);
+    persistDiscardedAutoCardKeys();
+  }
+  touchLearningState();
+  saveState();
+  let libraryChanged = false;
+  for (const [libraryId, fileIndex] of affectedEpisodes.values()) {
+    libraryChanged = syncEpisodeAutoCardMetadata(libraryId, fileIndex) || libraryChanged;
+  }
+  if (libraryChanged) saveLibrary();
+  renderReview();
+  renderStats();
+  renderSubtitles();
+  if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+  return true;
+}
+
+function ensureAutoCardForItem(item, type, { persist = true } = {}) {
+  const itemKey = learningItemKeyFor(item, type);
+  if (!itemKey || cardKeySet().has(itemKey) || discardedAutoCardKeys.has(itemKey) || state.known.has(itemKey)) return false;
+  const card = cardRecordForItem(item, type, { autoGenerated: true });
+  if (!card) return false;
+  state.cards.push(card);
+  touchLearningState();
+  if (persist) {
+    saveState();
+    if (syncEpisodeAutoCardMetadata(card.sourceLibraryId, card.sourceFileIndex)) saveLibrary();
+  }
+  return true;
+}
+
+function restoreAutoCard(item, type) {
+  const itemKey = learningItemKeyFor(item, type);
+  if (!itemKey) return false;
+  const wasDiscarded = discardedAutoCardKeys.delete(itemKey);
+  let added = false;
+  if (!cardKeySet().has(itemKey)) {
+    const card = cardRecordForItem(item, type, { autoGenerated: true });
+    if (card) {
+      state.cards.push(card);
+      added = true;
+      touchLearningState();
+      saveState();
+      if (syncEpisodeAutoCardMetadata(card.sourceLibraryId, card.sourceFileIndex)) saveLibrary();
+    }
+  }
+  if (wasDiscarded) persistDiscardedAutoCardKeys();
+  if (added || wasDiscarded) {
+    renderReview();
+    renderStats();
+    renderSubtitles();
+    if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+  }
+  return added || wasDiscarded;
+}
+
+function backfillPersistedChapterAutoCards() {
+  if (!learningEnabled) return 0;
+  const existingKeys = new Set(cardKeySet());
+  let added = 0;
+  let libraryMetadataChanged = false;
+  for (const chapter of studyChapterCatalog()) {
+    if (chapter.language !== state.targetLanguage || !chapter.hasTargetAnalysis) continue;
+    const beforeChapter = state.cards.length;
+    for (const type of ["word", "phrase"]) {
+      const values = type === "phrase" ? chapter.analysis?.phrases : chapter.analysis?.words;
+      for (const rawItem of Array.isArray(values) ? values : []) {
+        if (state.cards.length >= 20_000) break;
+        const value = String(rawItem?.value || "").trim();
+        if (!value) continue;
+        const occurrence = rawItem?.occurrence && typeof rawItem.occurrence === "object" ? rawItem.occurrence : null;
+        const item = {
+          ...rawItem,
+          value,
+          language: chapter.language,
+          type,
+          origin: "subtitle-auto",
+          sourceTag: rawItem?.sourceTag || chapter.sourceTag,
+          deckId: `chapter:${chapter.id}`,
+          occurrences: Array.isArray(rawItem?.occurrences) ? rawItem.occurrences : (occurrence ? [occurrence] : []),
+          sourceLibraryId: chapter.libraryId,
+          sourceFileIndex: chapter.fileIndex,
+          baseContext: String(rawItem?.baseContext || ""),
+        };
+        const itemKey = learningItemKeyFor(item, type);
+        if (!itemKey || existingKeys.has(itemKey) || discardedAutoCardKeys.has(itemKey) || state.known.has(itemKey)) continue;
+        if (isLearningStopWord(value, chapter.language) || !bestOccurrence(item) || isNonSpeechCue(bestOccurrence(item).text)) continue;
+        const limit = type === "phrase" ? AUTO_CARD_PHRASES_PER_EPISODE : AUTO_CARD_WORDS_PER_EPISODE;
+        const chapterCount = state.cards.filter((card) => card.autoGenerated && card.type === type
+          && String(card.sourceLibraryId) === String(chapter.libraryId) && String(card.sourceFileIndex ?? "") === String(chapter.fileIndex ?? "")).length;
+        if (chapterCount >= limit) break;
+        const card = cardRecordForItem(item, type, { autoGenerated: true });
+        if (!card) continue;
+        state.cards.push(card);
+        existingKeys.add(itemKey);
+        added += 1;
+      }
+    }
+    const chapterCards = state.cards.filter((card) => card.autoGenerated
+      && String(card.sourceLibraryId) === String(chapter.libraryId)
+      && String(card.sourceFileIndex ?? "") === String(chapter.fileIndex ?? ""));
+    const nextCount = chapterCards.length;
+    const nextWords = chapterCards.filter((card) => card.type === "word").length;
+    const nextPhrases = chapterCards.filter((card) => card.type === "phrase").length;
+    if (Number(chapter.analysis.autoCardCount || 0) !== nextCount
+      || Number(chapter.analysis.autoWordCardCount || 0) !== nextWords
+      || Number(chapter.analysis.autoPhraseCardCount || 0) !== nextPhrases
+      || state.cards.length !== beforeChapter) {
+      chapter.analysis.autoCardCount = nextCount;
+      chapter.analysis.autoWordCardCount = nextWords;
+      chapter.analysis.autoPhraseCardCount = nextPhrases;
+      chapter.analysis.autoCardsGeneratedAt ||= Date.now();
+      libraryMetadataChanged = true;
+    }
+  }
+  if (added) {
+    touchLearningState();
+    saveState();
+  }
+  if (libraryMetadataChanged) saveLibrary();
+  return added;
+}
+
+const STUDY_PAGE_SIZE = 80;
+
+function studyTierForType(type) {
+  return type === "phrase" ? state.studyPhraseTier : state.studyWordTier;
+}
+
+function studyChapterCatalog() {
+  const chapters = [];
+  buildLibrarySeries().forEach((series) => {
+    [...series.seasons.entries()].sort((a, b) => Number(a[0]) - Number(b[0])).forEach(([, refs]) => {
+      groupLibraryChapters(refs).forEach((chapter) => {
+        const sources = chapter.sources.filter(({ episode }) => !episode?.extra);
+        if (!sources.length) return;
+        const ranked = sources.slice().sort((a, b) => {
+          const analysisA = a.episode?.analysis || {};
+          const analysisB = b.episode?.analysis || {};
+          const languageA = normalizeTrackLanguage(analysisA.language || "");
+          const languageB = normalizeTrackLanguage(analysisB.language || "");
+          const scoreA = (languageA === state.targetLanguage ? 100000 : 0) + (analysisA.words?.length || 0) + (analysisA.phrases?.length || 0);
+          const scoreB = (languageB === state.targetLanguage ? 100000 : 0) + (analysisB.words?.length || 0) + (analysisB.phrases?.length || 0);
+          return scoreB - scoreA;
+        });
+        const best = ranked[0];
+        const analysis = best.episode?.analysis || { words: [], phrases: [] };
+        const language = normalizeTrackLanguage(analysis.language || state.targetLanguage);
+        chapters.push({
+          id: `${series.key}|${chapter.key}`,
+          seriesKey: series.key,
+          seriesTitle: series.title,
+          code: String(chapter.code || "VIDEO").toUpperCase(),
+          title: chapter.title || best.episode?.episodeTitle || best.episode?.name || "Untitled chapter",
+          libraryId: best.entry.id,
+          fileIndex: best.episode.fileIndex,
+          sourceTag: best.episode.sourceTag || `${series.title} · ${chapter.code || "VIDEO"}`,
+          analysis,
+          language,
+          hasTargetAnalysis: language === state.targetLanguage && Boolean((analysis.words?.length || 0) + (analysis.phrases?.length || 0)),
+          sortKey: episodeSortKey(best.episode?.name) ?? 999999,
+        });
+      });
+    });
+  });
+  return chapters.sort((a, b) => a.seriesTitle.localeCompare(b.seriesTitle, undefined, { sensitivity: "base" }) || a.sortKey - b.sortKey || a.title.localeCompare(b.title));
+}
+
+function selectedStudyChapter() {
+  const chapters = studyChapterCatalog();
+  if (!chapters.length) return null;
+  let selected = chapters.find((chapter) => chapter.id === state.studyChapterId) || null;
+  if (!selected && state.currentSource?.libraryId) {
+    selected = chapters.find((chapter) => String(chapter.libraryId) === String(state.currentSource.libraryId)
+      && String(chapter.fileIndex) === String(state.currentSource.fileIndex)) || null;
+  }
+  selected ||= chapters.find((chapter) => chapter.hasTargetAnalysis) || chapters[0];
+  if (selected.id !== state.studyChapterId) {
+    state.studyChapterId = selected.id;
+    localStorage.setItem("blackline-study-chapter-id", selected.id);
+  }
+  return selected;
+}
+
+function studyChapterItems(type) {
+  const chapter = selectedStudyChapter();
+  if (!chapter || chapter.language !== state.targetLanguage) return [];
+  const values = type === "phrase" ? chapter.analysis?.phrases : chapter.analysis?.words;
+  return (Array.isArray(values) ? values : []).map((item, index) => {
+    const value = String(item?.value || "").trim();
+    const occurrence = item?.occurrence && typeof item.occurrence === "object" ? item.occurrence : null;
+    return {
+      ...item,
+      value,
+      normalized: normalizeText(value),
+      language: chapter.language,
+      type,
+      origin: "subtitle",
+      sourceTag: item?.sourceTag || chapter.sourceTag,
+      deckId: `chapter:${chapter.id}`,
+      count: Number(item?.count) || 0,
+      scenes: Number(item?.scenes) || 0,
+      occurrences: Array.isArray(item?.occurrences) ? item.occurrences : (occurrence ? [occurrence] : []),
+      sourceLibraryId: chapter.libraryId,
+      sourceFileIndex: chapter.fileIndex,
+      baseContext: String(item?.baseContext || ""),
+      chapterId: chapter.id,
+      chapterLabel: `${chapter.seriesTitle} · ${chapter.code}`,
+      savedOrder: index,
+    };
+  }).filter((item) => item.value);
+}
+
+function studyRomanizationKey(language, value) {
+  return `${normalizeTrackLanguage(language)}|${String(value || "")}`;
+}
+
+function studyRomanizationFor(item) {
+  const language = normalizeTrackLanguage(item?.language || state.targetLanguage);
+  if (!isRomanizableLanguage(language)) return "";
+  return String(item?.romanized || studyRomanizationCache.get(studyRomanizationKey(language, item?.value)) || "").trim();
+}
+
+function persistResolvedStudyRomanizations(language, resolved) {
+  const normalizedLanguage = normalizeTrackLanguage(language);
+  if (!(resolved instanceof Map) || !resolved.size) return;
+  let cardsChanged = false;
+  let libraryChanged = false;
+  for (const card of state.cards) {
+    if (normalizeTrackLanguage(card.targetLanguage || state.targetLanguage) !== normalizedLanguage) continue;
+    const romanized = resolved.get(String(card.front || ""));
+    if (!romanized || card.romanized === romanized) continue;
+    card.romanized = romanized;
+    cardsChanged = true;
+  }
+  for (const entry of state.library) {
+    let entryChanged = false;
+    for (const episode of Array.isArray(entry.episodes) ? entry.episodes : []) {
+      const analysis = episode?.analysis;
+      if (!analysis || normalizeTrackLanguage(analysis.language || "") !== normalizedLanguage) continue;
+      let analysisChanged = false;
+      for (const collection of [analysis.words, analysis.phrases]) {
+        for (const item of Array.isArray(collection) ? collection : []) {
+          const romanized = resolved.get(String(item?.value || ""));
+          if (!romanized || item.romanized === romanized) continue;
+          item.romanized = romanized;
+          libraryChanged = true;
+          analysisChanged = true;
+          entryChanged = true;
+        }
+      }
+      if (analysisChanged) analysis.updatedAt = Math.max(Number(analysis.updatedAt) || 0, Date.now());
+    }
+    if (entryChanged) entry.updatedAt = Math.max(Number(entry.updatedAt) || 0, Date.now());
+  }
+  if (cardsChanged) {
+    touchLearningState();
+    saveState();
+  }
+  if (libraryChanged) saveLibrary();
+}
+
+async function ensureStudyRomanizations(items, language = state.targetLanguage) {
+  const normalizedLanguage = normalizeTrackLanguage(language);
+  if (!isRomanizableLanguage(normalizedLanguage)) return;
+  const missing = items.filter((item) => item?.value && !studyRomanizationFor({ ...item, language: normalizedLanguage })).slice(0, STUDY_PAGE_SIZE);
+  if (!missing.length) return;
+  const requestKey = `${normalizedLanguage}|${missing.map((item) => item.value).join("\u0001")}`;
+  if (studyRomanizationRequests.has(requestKey)) return studyRomanizationRequests.get(requestKey);
+  const task = (async () => {
+    try {
+      const result = await postJson("/api/subtitles/romanize", { language: normalizedLanguage, texts: missing.map((item) => item.value) });
+      const resolved = new Map();
+      (result.romanized || []).forEach((text, index) => {
+        const item = missing[index];
+        const romanized = String(text || "").trim();
+        if (item?.value && romanized) {
+          studyRomanizationCache.set(studyRomanizationKey(normalizedLanguage, item.value), romanized);
+          resolved.set(String(item.value), romanized);
+        }
+      });
+      persistResolvedStudyRomanizations(normalizedLanguage, resolved);
+      if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+      if (reviewMode === "voice" && voiceChat.mode === "practice" && $("#view-review")?.classList.contains("is-active")) renderVoiceChatStage();
+    } catch (error) {
+      console.warn("Study romanization unavailable:", error);
+    } finally {
+      studyRomanizationRequests.delete(requestKey);
+    }
+  })();
+  studyRomanizationRequests.set(requestKey, task);
+  return task;
+}
+
+function studyRawItems() {
+  const type = state.studyType;
+  if (state.studySource === "preset") {
+    const preset = state.learningPreset;
+    if (preset.language !== state.targetLanguage || preset.status === "idle") void ensureLearningPreset(state.targetLanguage);
+    if (preset.language !== state.targetLanguage || preset.status !== "ready") return [];
+    const tier = studyTierForType(type);
+    return (type === "phrase" ? preset.phrases : preset.words).filter((item) => item.rank <= tier);
+  }
+  return studyChapterItems(type);
+}
+
+function itemMatchesStudyFilter(item, type) {
+  const known = isMasteredItem(item, type);
+  const review = cardKeySet().has(learningItemKeyFor(item, type));
+  if (state.studyFilter === "known") return known;
+  if (state.studyFilter === "review") return review;
+  if (state.studyFilter === "unknown") return !known;
+  return true;
+}
+
+function renderStudyProgress(items, type) {
+  const total = items.length;
+  const now = Date.now();
+  const dueKeys = new Set(state.cards.filter((card) => Number(card.dueAt || 0) <= now).map((card) => card.itemKey || learningItemKey(card.targetLanguage || state.targetLanguage, card.type, card.front)));
+  let known = 0;
+  let review = 0;
+  let due = 0;
+  let seen = 0;
+  items.forEach((item) => {
+    const key = learningItemKeyFor(item, type);
+    if (state.known.has(key) || masteredCardKeySet().has(key)) known += 1;
+    if (cardKeySet().has(key)) review += 1;
+    if (dueKeys.has(key)) due += 1;
+    if (Number(state.learningExposure?.[key]?.encounters || 0) > 0) seen += 1;
+  });
+  $("#study-stat-known").textContent = total ? `${known}/${total}` : "0";
+  $("#study-stat-review").textContent = review;
+  $("#study-stat-due").textContent = due;
+  $("#study-stat-seen").textContent = seen;
+}
+
+function renderStudyControlState() {
+  $$('[data-study-source]').forEach((button) => {
+    const source = button.dataset.studySource;
+    const type = button.dataset.studyType;
+    const tier = Number(button.dataset.studyTier || 0);
+    const active = source === state.studySource && type === state.studyType && (source !== "preset" || tier === studyTierForType(type));
+    button.classList.toggle("is-active", active);
+  });
+  $$('[data-study-category]').forEach((button) => button.classList.toggle("is-active", button.dataset.studyCategory === state.studySource));
+  const presetPanel = $("#study-source-presets");
+  const chapterPanel = $("#study-source-chapters");
+  if (presetPanel) presetPanel.hidden = state.studySource !== "preset";
+  if (chapterPanel) chapterPanel.hidden = state.studySource !== "chapter";
+  const chapterSelect = $("#study-chapter-select");
+  if (chapterSelect) {
+    const chapters = studyChapterCatalog();
+    const selected = selectedStudyChapter();
+    chapterSelect.innerHTML = chapters.length
+      ? chapters.map((chapter) => `<option value="${escapeHtml(chapter.id)}" ${chapter.id === selected?.id ? "selected" : ""}>${escapeHtml(chapter.seriesTitle)} ${escapeHtml(libraryChapterName({ code: chapter.code }) || chapter.code)}${chapter.title && chapter.title !== chapter.code ? `: ${escapeHtml(chapter.title)}` : ""}${chapter.hasTargetAnalysis ? "" : " (not indexed)"}</option>`).join("")
+      : `<option value="">${escapeHtml(t("No Library chapters"))}</option>`;
+    chapterSelect.disabled = !chapters.length;
+  }
+  const filter = $("#study-filter");
+  if (filter && document.activeElement !== filter) filter.value = state.studyFilter;
+  const coloring = $("#study-color-subs");
+  if (coloring) coloring.checked = state.wordColoring;
+}
+
+function renderStudy() {
+  state.studySource = "chapter";
+  renderStudyControlState();
+  const type = state.studyType;
+  const rawItems = studyRawItems();
+  renderStudyProgress(rawItems, type);
+  const filtered = rawItems.filter((item) => itemMatchesStudyFilter(item, type));
+  const pageCount = Math.max(1, Math.ceil(filtered.length / STUDY_PAGE_SIZE));
+  state.studyPage = Math.max(0, Math.min(state.studyPage, pageCount - 1));
+  const start = state.studyPage * STUDY_PAGE_SIZE;
+  const pageItems = filtered.slice(start, start + STUDY_PAGE_SIZE).map((item) => state.studySource === "preset" ? enrichPresetItem(item, type) : ({ ...item, itemKey: learningItemKey(item.language || state.targetLanguage, type, item.value) }));
+  if (isRomanizableLanguage(state.targetLanguage)) void ensureStudyRomanizations(pageItems, state.targetLanguage);
+  const list = $("#study-items");
+  const title = $("#study-list-title");
+  const selectedChapter = state.studySource === "chapter" ? selectedStudyChapter() : null;
+  if (title) title.textContent = `${t(type === "phrase" ? "Phrases" : "Words")}: ${selectedChapter ? `${selectedChapter.seriesTitle} ${libraryChapterName({ code: selectedChapter.code }) || selectedChapter.code}` : t("from your chapters")}`;
+  if (list) {
+    if (state.studySource === "preset" && state.learningPreset.status === "loading") list.innerHTML = empty("Loading common deck", state.targetLanguage);
+    else if (state.studySource === "preset" && state.learningPreset.status === "error") list.innerHTML = empty("Common deck unavailable", state.learningPreset.error || state.targetLanguage);
+    else if (state.studySource === "chapter" && !selectedChapter) list.innerHTML = empty("No chapters in Library", "");
+    else if (state.studySource === "chapter" && selectedChapter.language !== state.targetLanguage) list.innerHTML = empty("Target-language index missing", `${selectedChapter.seriesTitle} ${libraryChapterName({ code: selectedChapter.code }) || selectedChapter.code} is indexed as ${selectedChapter.language || "another language"}. Open that chapter and attach ${state.targetLanguage} subtitles.`);
+    else if (state.studySource === "chapter" && !rawItems.length) list.innerHTML = empty("No vocabulary yet", `Add ${state.targetLanguage} subtitles to ${selectedChapter.seriesTitle} ${libraryChapterName({ code: selectedChapter.code }) || selectedChapter.code}`);
+    else list.innerHTML = renderAnalysisRows(pageItems, type);
+    if (pageItems.length) wireAnalysisRows(list, type, pageItems);
+  }
+  const range = $("#study-page-range");
+  if (range) range.textContent = filtered.length ? `${start + 1}–${Math.min(start + STUDY_PAGE_SIZE, filtered.length)} / ${filtered.length}` : "0";
+  const previous = $("#study-page-prev");
+  const next = $("#study-page-next");
+  if (previous) previous.disabled = state.studyPage <= 0;
+  if (next) next.disabled = state.studyPage >= pageCount - 1;
+  const status = $("#study-preset-status");
+  if (status) {
+    if (state.studySource === "preset" && state.learningPreset.status === "ready") {
+      status.textContent = `${languageName(state.learningPreset.language)}: ${state.learningPreset.words.length.toLocaleString()} words, ${state.learningPreset.phrases.length.toLocaleString()} phrases`;
+    } else if (state.studySource === "chapter" && selectedChapter) {
+      status.textContent = `${selectedChapter.seriesTitle} ${libraryChapterName({ code: selectedChapter.code }) || selectedChapter.code}, ${languageName(selectedChapter.language || state.targetLanguage)}: ${selectedChapter.analysis?.words?.length || 0} words, ${selectedChapter.analysis?.phrases?.length || 0} phrases`;
+    } else status.textContent = "";
+  }
+}
+
+/* ---------------------------------------------------------------- Study: decks */
+
+// Study holds the flashcards (Anki's schedule): decks from videos, Top words, AnkiWeb and
+// imports. Anki decks render with their own templates and styling in a sandboxed frame; cards
+// from videos show the line's saved frame and audio. Review is a quick quiz with instant
+// answers; Tests are scored mixed tests.
+const REVIEW_STATE_LABELS = { new: "New", learning: "Learning", relearning: "Relearning", review: "Review" };
+const DECK_BADGES = { videos: "Your videos", preset: "Top words", ankiweb: "AnkiWeb", import: "Imported", legacy: "Imported", words: "Saved words" };
+let storedDecks = [];
+let storedDecksState = "idle";
+const studyView = { tab: "decks", deckKey: null, cardId: null, revealed: false, rendered: null, typed: "", undo: null, reviewed: 0, menuKey: null };
+const studyRenderCache = new Map();
+
+function viewActive(name) {
+  return Boolean($(`#view-${name}`)?.classList.contains("is-active"));
+}
+
+async function loadStoredDecks({ force = false } = {}) {
+  if (!persistentAppStateReady) return storedDecks;
+  if (storedDecksState === "loading" || (storedDecksState === "ready" && !force)) return storedDecks;
+  storedDecksState = "loading";
+  try {
+    const data = await fetchJson("/api/anki/decks");
+    storedDecks = Array.isArray(data.decks) ? data.decks : [];
+    for (const deck of [...storedDecks]) {
+      if (deck.source !== "preset" || deck.extra?.version === 2) continue;
+      const upgraded = await postJson("/api/anki/presets", { language: deck.language, languageName: languageName(deck.language), size: deck.extra?.size || 100 });
+      mergeDeckCards(upgraded.deck, upgraded.cards || []);
+      studyRenderCache.clear();
+    }
+    storedDecksState = "ready";
+  } catch {
+    storedDecksState = "error";
+  }
+  if (viewActive("study")) renderStudyPage();
+  updateDueCount();
+  return storedDecks;
+}
+
+function studyDecks(now = Date.now()) {
+  return deckSummaries(state.cards, storedDecks, { buildQueue: (cards) => buildReviewQueue(cards, { now }) });
+}
+
+function updateDueCount(decks = null) {
+  const rows = decks || studyDecks();
+  const total = rows.reduce((sum, deck) => sum + deck.counts.new + deck.counts.learning + deck.counts.review, 0);
+  const pill = $("#due-count");
+  if (pill) pill.textContent = total > 999 ? "999+" : String(total);
+  return total;
+}
+
+function deckRowMarkup(deck) {
+  const { new: fresh, learning, review } = deck.counts;
+  const label = `${deck.name}: ${fresh} new, ${learning} learning, ${review} due`;
+  const badge = DECK_BADGES[deck.source] || deck.source;
+  const meta = [deck.name.startsWith(badge) ? "" : t(badge), t("{count} cards", { count: deck.total.toLocaleString() }), deck.suspended ? `${deck.suspended} ${t("Suspended")}` : "", deck.media ? `${deck.media.toLocaleString()} media` : ""].filter(Boolean).join(", ");
+  const open = studyView.menuKey === deck.key;
+  const deletable = deck.storeId || deck.key === "legacy" || deck.key === "words";
+  return `<article class="deck-row${open ? " is-menu-open" : ""}" data-deck-key="${escapeHtml(deck.key)}">
+    <button class="deck-row__main" type="button" data-deck-open aria-label="${escapeHtml(`Study ${label}`)}"${deck.total ? "" : " disabled"}>
+      <span class="deck-row__name">${escapeHtml(deck.storeId ? deck.name : t(deck.name))}</span>
+      <span class="deck-row__meta">${escapeHtml(meta)}</span>
+    </button>
+    <span class="deck-row__counts" aria-hidden="true"><span class="is-new${fresh ? "" : " is-zero"}">${fresh}</span><span class="is-learning${learning ? "" : " is-zero"}">${learning}</span><span class="is-review${review ? "" : " is-zero"}">${review}</span></span>
+    <button class="ui-btn ui-btn--primary ui-btn--sm deck-row__study" type="button" data-deck-open${fresh + learning + review ? "" : " disabled"} data-i18n="Study">Study</button>
+    <button class="ui-icon-btn ui-icon-btn--sm deck-row__more" type="button" data-deck-menu aria-expanded="${open}" aria-label="${escapeHtml(`More for ${deck.name}`)}">${icon("more")}</button>
+    ${open ? `<div class="deck-row__menu" role="group" aria-label="${escapeHtml(`${deck.name} actions`)}">
+      <button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-deck-export="apkg"${deck.total ? "" : " disabled"} data-i18n="Export .apkg">Export .apkg</button>
+      <button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-deck-export="txt"${deck.total ? "" : " disabled"} data-i18n="Export text">Export text</button>
+      ${deletable ? '<button class="ui-btn ui-btn--ghost ui-btn--sm deck-row__delete" type="button" data-deck-delete data-i18n="Delete deck">Delete deck</button>' : ""}
+    </div>` : ""}
+  </article>`;
+}
+
+function renderStudyDecks(decks) {
+  const list = $("#study-deck-list");
+  if (!list) return;
+  if (!decks.length) {
+    list.innerHTML = emptyMarkup({
+      icon: "library",
+      title: "No decks yet",
+      text: "Add the most frequent words, pick a deck from AnkiWeb, or import an Anki file. Words you save while watching land here too.",
+      action: `${buttonMarkup({ label: "Top words", variant: "primary", attrs: { "data-empty-action": "top" } })}${buttonMarkup({ label: "AnkiWeb decks", attrs: { "data-empty-action": "ankiweb" } })}`,
+    });
+    return;
+  }
+  list.innerHTML = `<div class="deck-list__head" aria-hidden="true"><span data-i18n="Deck">Deck</span><span class="deck-list__counts"><span data-i18n="New">New</span><span data-i18n="Learning">Learning</span><span data-i18n="Due">Due</span></span></div>${decks.map(deckRowMarkup).join("")}`;
+}
+
+// Card audio: Anki [sound:…] files and saved clips play through one element, one after another.
+const studyAudio = new Audio();
+let studySoundQueue = [];
+const safeStudyAudio = (url) => /^\/api\/(?:anki\/media\/[a-z0-9-]+\/|clips\/[a-f0-9]{24}\/audio$)/.test(String(url || ""));
+
+function playStudySounds(urls) {
+  studySoundQueue = (urls || []).filter(safeStudyAudio);
+  playNextStudySound();
+}
+
+function playNextStudySound() {
+  const next = studySoundQueue.shift();
+  if (!next) return;
+  studyAudio.src = next;
+  studyAudio.play().catch(() => {});
+}
+
+function stopStudySounds() {
+  studySoundQueue = [];
+  studyAudio.pause();
+}
+studyAudio.addEventListener("ended", playNextStudySound);
+
+/* The popup owns its media. Streamed lines are extracted before playback, so neither its
+ * controls nor replay can escape the selected interval or change the main episode player. */
+function closeLinePreview() {
+  if (linePreview.active) linePreview.preventBackgroundPlayback = true;
+  linePreview.active = false;
+  linePreview.token += 1;
+  linePreview.controller?.abort();
+  linePreview.controller = null;
+  linePreview.pending = 0;
+  video.pause();
+  if (state.pendingSeek) state.pendingSeek.wasPlaying = false;
+  stopStudySounds();
+  $$("#line-preview-media > video, #line-preview-media > audio").forEach((media) => { media.pause(); media.removeAttribute("src"); media.load(); });
+  $("#line-preview-replay").disabled = true;
+  $("#line-preview-media").replaceChildren();
+}
+
+async function replayLinePreview() {
+  const media = $("#line-preview-media").querySelector("video, audio");
+  if (!linePreview.active || !media || media.readyState < 1) return;
+  media.currentTime = linePreview.startSeconds;
+  await media.play().catch(() => {});
+}
+
+async function acquirePreviewSource(libraryId) {
+  let lease = previewSourceLeases.get(libraryId);
+  while (lease?.closing) { await lease.closing; lease = previewSourceLeases.get(libraryId); }
+  if (!lease) {
+    lease = { libraryId, users: 0, sessionId: null, owned: false, closing: null };
+    previewSourceLeases.set(libraryId, lease);
+  }
+  lease.users += 1;
+  return lease;
+}
+
+async function releasePreviewSource(lease) {
+  if (!lease || --lease.users > 0) return;
+  lease.closing = lease.owned ? releaseTorrentSession(lease.sessionId) : Promise.resolve();
+  try { await lease.closing; } finally {
+    if (previewSourceLeases.get(lease.libraryId) === lease) previewSourceLeases.delete(lease.libraryId);
+  }
+}
+
+function showLinePreviewMedia(clip, item, token, { localSource = "", startMs = 0, endMs = 0 } = {}) {
+  const root = $("#line-preview-media");
+  const status = $("#line-preview-status");
+  const replay = $("#line-preview-replay");
+  const media = document.createElement(clip?.videoUrl || localSource ? "video" : "audio");
+  const isCurrent = () => linePreview.active && token === linePreview.token;
+  media.controls = !localSource;
+  media.preload = "auto";
+  if (media.tagName === "VIDEO") {
+    media.playsInline = true;
+    if (clip?.imageUrl) media.poster = clip.imageUrl;
+  } else if (clip?.imageUrl) {
+    const image = document.createElement("img");
+    image.src = clip.imageUrl;
+    image.alt = "";
+    root.append(image);
+  }
+  linePreview.startSeconds = localSource ? startMs / 1000 : 0;
+  if (localSource) {
+    // Local files stay in the browser. Hide the episode timeline and bound a separate player.
+    media.addEventListener("timeupdate", () => {
+      if (media.currentTime >= endMs / 1000 && !media.paused) { media.pause(); media.currentTime = endMs / 1000; }
+    });
+    media.addEventListener("play", () => {
+      if (media.currentTime < startMs / 1000 || media.currentTime >= endMs / 1000) media.currentTime = startMs / 1000;
+    });
+    media.addEventListener("click", () => { if (media.paused) void media.play().catch(() => {}); else media.pause(); });
+  }
+  media.addEventListener("loadedmetadata", () => {
+    if (!isCurrent()) return;
+    replay.disabled = false;
+    void replayLinePreview();
+  }, { once: true });
+  media.addEventListener("error", () => {
+    if (isCurrent()) { status.textContent = t("Video unavailable"); replay.disabled = true; }
+  }, { once: true });
+  media.src = localSource || clip.videoUrl || clip.audioUrl;
+  root.append(media);
+  $("#line-preview-target").textContent = clip?.text || item.context || item.front || item.value || "";
+  $("#line-preview-base").textContent = clip?.baseText || item.baseContext || "";
+  status.textContent = "";
+}
+
+async function openLinePreview(item) {
+  if (linePreview.pending && linePreview.active) { toast(t("Loading line…")); return; }
+  const dialog = $("#line-preview-dialog");
+  if (dialog.open) dialog.close();
+  closeLinePreview();
+  linePreview.active = true;
+  linePreview.preventBackgroundPlayback = true;
+  const token = ++linePreview.token;
+  const controller = new AbortController();
+  linePreview.controller = controller;
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(90_000)]);
+  const isCurrent = () => linePreview.active && token === linePreview.token;
+  linePreview.pending = 1;
+  let sourceLease = null;
+  const status = $("#line-preview-status");
+  $("#line-preview-target").textContent = item.context || item.front || item.value || "";
+  $("#line-preview-base").textContent = item.baseContext || "";
+  status.textContent = t("Loading line…");
+  dialog.showModal();
+  try {
+    let clip = null;
+    if (item.clipId) {
+      try { clip = await fetchJson(`/api/clips/${encodeURIComponent(item.clipId)}`, { signal }); } catch (error) { if (signal.aborted) throw error; /* Try the source if the saved clip was evicted. */ }
+    }
+    if (!linePreview.active || token !== linePreview.token) return;
+    if (clip?.videoUrl) {
+      showLinePreviewMedia(clip, item, token);
+      return;
+    }
+    const libraryId = item.sourceLibraryId || clip?.libraryId || state.currentSource?.libraryId;
+    const fileIndex = item.sourceFileIndex ?? clip?.fileIndex ?? state.currentSource?.fileIndex;
+    const sameChapter = String(libraryId) === String(state.currentSource?.libraryId) && String(fileIndex) === String(state.currentSource?.fileIndex);
+    const entry = libraryEntryById(libraryId);
+    const savedItems = entry?.episodes?.find(episode => Number(episode.fileIndex) === Number(fileIndex))?.analysis;
+    const occurrence = [...(savedItems?.words || []), ...(savedItems?.phrases || [])].map(raw => raw.occurrence)
+      .filter(cue => cue?.text === item.context && Number(cue.endMs) > Number(cue.startMs))
+      .sort((a, b) => Math.abs(a.startMs - Number(item.timestampMs || 0)) - Math.abs(b.startMs - Number(item.timestampMs || 0)))[0];
+    const matchingCard = state.cards.find(card => card.context === item.context && String(card.sourceLibraryId) === String(libraryId)
+      && String(card.sourceFileIndex) === String(fileIndex) && Number(card.endMs) > Number(card.timestampMs));
+    const cue = sameChapter ? allPrimaryCues().filter(source => source.text === item.context)
+      .map(source => cuePlaybackBounds(source, activeTrack()))
+      .sort((a, b) => Math.abs(a.startMs - Number(item.timestampMs || 0)) - Math.abs(b.startMs - Number(item.timestampMs || 0)))[0] : null;
+    let startMs = Math.max(0, Number(clip?.startMs ?? cue?.startMs ?? item.timestampMs ?? occurrence?.startMs ?? matchingCard?.timestampMs) || 0);
+    let endMs = Number(clip?.endMs ?? cue?.endMs ?? item.endMs ?? occurrence?.endMs ?? matchingCard?.endMs) || null;
+    if (!clip && (!endMs || endMs <= startMs) && /^[a-f0-9]{40}$/i.test(String(libraryId))) {
+      const saved = await fetchJson(`/api/clips?library=${encodeURIComponent(libraryId)}&file=${encodeURIComponent(fileIndex)}`, { signal });
+      const cached = saved.clips?.filter(candidate => candidate.text === item.context)
+        .sort((a, b) => Math.abs(a.startMs - startMs) - Math.abs(b.startMs - startMs))[0];
+      if (cached) { clip = await fetchJson(`/api/clips/${cached.id}`, { signal }); startMs = clip.startMs; endMs = clip.endMs; }
+    }
+    if (!isCurrent()) return;
+    if (clip?.videoUrl) { showLinePreviewMedia(clip, item, token); return; }
+    if (!clip?.audioUrl && (!endMs || endMs <= startMs)) throw new Error(t("Open this chapter once to save this line’s timing."));
+    let source = sameChapter ? audioSyncSource() : null;
+    if (!source && !clip?.audioUrl && entry?.magnet && fileIndex !== null && fileIndex !== undefined && Number.isInteger(Number(fileIndex))) {
+      status.textContent = t("Preparing video clip…");
+      sourceLease = await acquirePreviewSource(String(libraryId));
+      signal.throwIfAborted();
+      const session = await resolveTorrentMagnet(entry.magnet, null, { preferredFileIndex: Number(fileIndex), timeoutMs: 60_000, signal, releaseOnFailure: false,
+        onSession: session => { sourceLease.sessionId = session.id; sourceLease.owned ||= session.reused === false; },
+      });
+      if (!isCurrent()) return;
+      source = { sessionId: session.id, fileIndex: Number(fileIndex), audio: 0 };
+    }
+    if (source && endMs !== null && /^[a-f0-9]{40}$/i.test(String(libraryId))) {
+      status.textContent = t("Preparing video clip…");
+      try {
+        clip = await postJson("/api/clips", {
+          ...source, audio: clip?.audio ?? source.audio, libraryId, startMs, endMs, kind: "card",
+          lang: item.targetLanguage || state.targetLanguage, baseLang: item.baseLanguage || state.baseLanguage,
+          text: item.context || item.front || item.value || "", baseText: item.baseContext || "",
+          series: entry?.displayTitle || entry?.title || "", chapter: entry?.episodes?.find(episode => Number(episode.fileIndex) === Number(fileIndex))?.code || "",
+        }); // Let an in-flight cut settle before releasing its source when the popup closes.
+        if (!isCurrent()) return;
+        const card = state.cards.find(card => card.id === item.id);
+        if (card) { card.clipId = clip.id; card.clipImage = Boolean(clip.imageUrl); saveState(); }
+      } catch (error) {
+        if (signal.aborted || !clip?.audioUrl) throw error;
+        // Saved audio remains useful if the source cannot currently supply video.
+      }
+    }
+    if (!isCurrent()) return;
+    if (clip?.videoUrl || clip?.audioUrl) { showLinePreviewMedia(clip, item, token); return; }
+    if (state.currentSource?.kind === "local" && video.src && endMs !== null && !item.sourceLibraryId) {
+      showLinePreviewMedia(null, item, token, { localSource: video.src, startMs, endMs });
+      return;
+    }
+    throw new Error(t("This line has no saved clip or video source."));
+  } catch (error) {
+    if (linePreview.active && token === linePreview.token) status.textContent = error.message || t("Video unavailable");
+  } finally {
+    if (token === linePreview.token) linePreview.pending = 0;
+    await releasePreviewSource(sourceLease);
+  }
+}
+
+/* ---------------------------------------------------------------- Study: card faces */
+
+// Anki decks are shown in a sandboxed frame: the deck's templates and CSS, with Anki's night-mode
+// classes, a CSP that only allows the deck's media, and a small bridge for size, sounds and keys.
+const ANKI_FRAME_CSS = `html,body{margin:0}
+body{padding:28px 22px 32px;overflow-wrap:break-word;font-family:Inter,"Segoe UI","Hiragino Sans","Noto Sans CJK JP",sans-serif;font-size:20px;line-height:1.5;text-align:center;background-color:#fff;color:#111}
+body.nightMode{background-color:#0b0b0b;color:#f2f2f2}
+img{max-width:100%;height:auto}
+hr#answer{border:0;border-top:1px solid #ddd;margin:22px auto}
+body.nightMode hr#answer{border-top-color:#2a2a2a}
+body.nightMode a{color:#bcd4ff}
+.replay-button{display:inline-block;vertical-align:middle;margin:0 4px;text-decoration:none}
+.replay-button svg{width:36px;height:36px}
+.replay-button svg circle{fill:#f2f2f2;stroke:#777;stroke-width:2}
+.replay-button svg path{fill:#111}
+.cloze{font-weight:700;color:#0a4fd1}
+body.nightMode .cloze{color:#9cc3ff}
+.lvl-typeans,#typeans{box-sizing:border-box;width:min(440px,100%);margin-top:14px;padding:9px 12px;border:1px solid #bbb;border-radius:9px;background:#fff;color:#111;font:inherit;font-size:20px;text-align:center}
+body.nightMode .lvl-typeans,body.nightMode #typeans{border-color:#3a3a3a;background:#111;color:#fff}
+code#typeans{display:inline-block;padding:6px 10px;border-radius:8px;background:#f1f1f1;font-family:inherit;letter-spacing:.02em}
+body.nightMode code#typeans{background:#141414}
+.typeGood{color:#127a3a}
+.typeBad{color:#b3261e;text-decoration:line-through}
+.typeMissed{text-decoration:underline}
+body.nightMode .typeGood{color:#b9f5cf}
+body.nightMode .typeBad{color:#ffb4b4}
+ruby rt{font-size:.55em;opacity:.85}`;
+
+// Anki shows a card the way its deck styles it; decks with their own night-mode styles get the dark
+// card, the rest the light card they were made for (dark text on white).
+function ankiNightMode(rendered) {
+  return /night[_-]?mode/i.test(`${rendered?.css || ""}${rendered?.question || ""}`);
+}
+
+const ANKI_FRAME_BRIDGE = `(()=>{const post=(d)=>parent.postMessage(Object.assign({lvlCard:1},d),"*");
+const size=()=>post({type:"size",height:Math.ceil(Math.max(document.documentElement.scrollHeight,document.body.scrollHeight))});
+try{new ResizeObserver(size).observe(document.body)}catch(e){}addEventListener("load",size);setTimeout(size,60);setTimeout(size,500);
+document.addEventListener("click",(e)=>{const t=e.target&&e.target.closest?e.target:null;if(!t)return;const s=t.closest("[data-lvl-sound]");if(s){e.preventDefault();post({type:"sound",url:s.getAttribute("data-lvl-sound")});return}
+const h=t.closest("[data-lvl-hint]");if(h){e.preventDefault();const b=document.getElementById(h.getAttribute("data-lvl-hint"));h.style.display="none";if(b)b.style.display="block";size()}});
+const i=document.getElementById("typeans");if(i&&i.tagName==="INPUT"){setTimeout(()=>i.focus(),40);i.addEventListener("input",()=>post({type:"typed",value:i.value}));i.addEventListener("keydown",(e)=>{if(e.key==="Enter"){e.preventDefault();post({type:"typed",value:i.value,submit:true})}})}
+document.addEventListener("keydown",(e)=>{if(e.target&&e.target.id==="typeans")return;if(e.ctrlKey||e.metaKey||e.altKey)return;if(["Space","Enter","Escape","KeyR","KeyU"].includes(e.code)||["1","2","3","4"].includes(e.key)){e.preventDefault();post({type:"key",key:e.key,code:e.code})}})})();`;
+
+function typeAnswerHtml(expected, typed) {
+  if (!String(typed || "").trim()) return `<code id="typeans">${escapeHtml(expected)}</code>`;
+  return `<code id="typeans">${typeAnswerDiff(expected, typed).map((part) => `<span class="type${part.type === "good" ? "Good" : part.type === "bad" ? "Bad" : "Missed"}">${escapeHtml(part.text)}</span>`).join("")}</code>`;
+}
+
+function ankiFrameDocument(rendered, { side = "question", ord = 0, typed = "" } = {}) {
+  const media = `${location.origin}/api/anki/media/`;
+  const csp = `default-src 'none'; img-src ${media} data: blob:; media-src ${media} data: blob:; font-src ${media} data:; style-src 'unsafe-inline' ${media}; script-src 'unsafe-inline' ${media}; connect-src 'none'; form-action 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'`;
+  let html = side === "answer" ? rendered.answer : rendered.question;
+  if (side === "answer") {
+    html = html.replace(/<div class="lvl-typeans-result" data-expected="([^"]*)"><\/div>/g, (match, expected) => typeAnswerHtml(expected.replace(/&quot;/g, "\"").replace(/&#39;/g, "'").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&"), typed));
+  }
+  const css = String(rendered.css || "").replace(/<\/style/gi, "<\\/style");
+  const night = ankiNightMode(rendered);
+  return `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${csp}"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="${night ? "dark" : "light"}"><style>${ANKI_FRAME_CSS}</style><style>${css}</style></head><body class="card card${Number(ord) + 1}${night ? " nightMode night_mode" : ""}"><div id="qa">${html}</div><script>${ANKI_FRAME_BRIDGE}</script></body></html>`;
+}
+
+function reviewCardSource(card) {
+  if (card.anki?.deck) return card.anki.deck;
+  if (card.origin === "anki") return "Anki";
+  const tag = String(card.sourceTag || "").replace(/\s·\s[A-Z]{2,3}$/, "");
+  return tag || (card.rank ? `Top ${card.targetLanguage || ""} #${card.rank}` : "");
+}
+
+// The line the card came from, with the card's word or phrase marked.
+function reviewSentenceMarkup(card) {
+  const sentence = String(card.context || "").trim();
+  if (!sentence) return "";
+  const front = String(card.front || "").trim();
+  const index = front ? sentence.toLocaleLowerCase().indexOf(front.toLocaleLowerCase()) : -1;
+  const html = index >= 0
+    ? `${escapeHtml(sentence.slice(0, index))}<mark>${escapeHtml(sentence.slice(index, index + front.length))}</mark>${escapeHtml(sentence.slice(index + front.length))}`
+    : escapeHtml(sentence);
+  return `<p class="native-card__sentence" lang="${escapeHtml(String(card.targetLanguage || "").toLowerCase())}">${html}</p>`;
+}
+
+function cardClipUrls(card) {
+  return card?.clipId && /^[a-f0-9]{24}$/.test(card.clipId)
+    ? { audio: `/api/clips/${card.clipId}/audio`, image: card.clipImage === false ? "" : `/api/clips/${card.clipId}/image` }
+    : null;
+}
+
+// Cards made from videos (and text-only imports): the saved frame, the word, its line, and on
+// the back the reading, meaning and translation.
+function nativeCardMarkup(card, revealed) {
+  const clip = cardClipUrls(card);
+  const lang = escapeHtml(String(card.targetLanguage || "").toLowerCase());
+  const reading = card.romanized && card.romanized !== card.front ? card.romanized : "";
+  const translation = String(card.baseContext || "").trim();
+  const back = cardMeaning(card);
+  const seconds = Math.max(0, Math.round(Number(card.timestampMs || 0) / 1000));
+  const where = [
+    ...String(reviewCardSource(card) || "").split(/\s+·\s+/).map((part) => libraryChapterName({ code: part }) || part),
+    card.context && card.timestampMs ? `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}` : "",
+  ].filter(Boolean).join(", ");
+  return `<div class="native-card${clip?.image ? " has-still" : ""}">
+    ${clip?.image ? `<img class="native-card__still" src="${escapeHtml(clip.image)}" alt="" loading="lazy">` : ""}
+    <div class="native-card__word" lang="${lang}">${escapeHtml(card.front).replace(/\n/g, "<br>")}</div>
+    ${reviewSentenceMarkup(card)}
+    ${reading ? `<p class="native-card__reading" data-card-content>${escapeHtml(reading)}</p>` : ""}
+    ${revealed ? `<div class="native-card__answer">
+      ${back && back !== translation ? `<p class="native-card__meaning">${escapeHtml(back).replace(/\n/g, "<br>")}</p>` : ""}
+      ${translation ? `<p class="native-card__translation">${escapeHtml(translation)}</p>` : ""}
+      ${!back && !translation ? '<p class="native-card__translation is-muted">No translation for this card</p>' : ""}
+      ${where ? `<p class="native-card__where">${escapeHtml(where)}</p>` : ""}
+    </div>` : ""}
+  </div>`;
+}
+
+/* ---------------------------------------------------------------- Study: session */
+
+function currentStudyCard() {
+  return studyView.cardId ? state.cards.find((card) => card.id === studyView.cardId) || null : null;
+}
+
+function currentStudyDeck(now = Date.now()) {
+  return studyView.deckKey ? studyDecks(now).find((deck) => deck.key === studyView.deckKey) || null : null;
+}
+
+async function ankiRenderFor(card) {
+  const key = `${card.anki.deckId}|${card.anki.noteId}|${Number(card.anki.ord) || 0}`;
+  if (studyRenderCache.has(key)) return studyRenderCache.get(key);
+  const params = new URLSearchParams({ note: String(card.anki.noteId), ord: String(Number(card.anki.ord) || 0), deck: String(card.anki.deck || "") });
+  const rendered = await fetchJson(`/api/anki/decks/${encodeURIComponent(card.anki.deckId)}/render?${params}`);
+  studyRenderCache.set(key, rendered);
+  while (studyRenderCache.size > 200) studyRenderCache.delete(studyRenderCache.keys().next().value);
+  return rendered;
+}
+
+function openStudyDeck(key) {
+  stopStudySounds();
+  Object.assign(studyView, { deckKey: key, cardId: null, revealed: false, rendered: null, typed: "", undo: null, reviewed: 0, menuKey: null });
+  renderStudyPage();
+  $("#study-session")?.scrollIntoView({ block: "start", behavior: "smooth" });
+}
+
+function closeStudySession() {
+  stopStudySounds();
+  Object.assign(studyView, { deckKey: null, cardId: null, revealed: false, rendered: null, typed: "", undo: null });
+  renderStudyPage();
+}
+
+function renderStudySession() {
+  const now = Date.now();
+  const deck = currentStudyDeck(now);
+  const stage = $("#study-stage");
+  if (!deck || !stage) {
+    closeStudySession();
+    return;
+  }
+  const { queue, counts, nextDueAt } = buildReviewQueue(deck.cards, { now });
+  $("#study-session-title").textContent = deck.name;
+  $("#review-count-new").textContent = counts.new;
+  $("#review-count-learning").textContent = counts.learning;
+  $("#review-count-review").textContent = counts.review;
+  if (!queue.length) {
+    studyView.cardId = null;
+    stopStudySounds();
+    stage.innerHTML = `<div class="study-done">${emptyMarkup({
+      icon: "check",
+      title: studyView.reviewed ? `${studyView.reviewed} card${studyView.reviewed === 1 ? "" : "s"} done` : "Nothing due",
+      text: nextDueAt ? `Next card in ${formatReviewInterval(nextDueAt - now)}.` : "This deck is done for today.",
+      action: `${buttonMarkup({ label: "Back to decks", variant: "primary", attrs: { "data-study-back": "" } })}${studyView.undo ? buttonMarkup({ label: "Undo last", variant: "ghost", attrs: { "data-study-undo": "" } }) : ""}`,
+    })}</div>`;
+    return;
+  }
+  const card = queue[0];
+  if (studyView.cardId !== card.id) Object.assign(studyView, { cardId: card.id, revealed: false, rendered: null, typed: "" });
+  const reviewState = reviewQueuePriority(card, now).state;
+  const anki = Boolean(card.anki?.deckId);
+  stage.innerHTML = `<article class="study-card" data-card-id="${escapeHtml(card.id)}">
+    <header class="study-card__head">
+      <span class="study-state" data-review-state="${reviewState}">${REVIEW_STATE_LABELS[reviewState] || reviewState}</span>
+      <span class="study-card__source" title="${escapeHtml(reviewCardSource(card))}">${escapeHtml(reviewCardSource(card))}</span>
+      <span class="study-card__tools">
+        ${cardClipUrls(card) || (card.context && card.sourceLibraryId) ? '<button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-study-replay>Play line</button>' : ""}
+        ${studyView.undo ? '<button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-study-undo>Undo</button>' : ""}
+        <button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-study-suspend>${anki ? "Suspend" : "Remove"}</button>
+      </span>
+    </header>
+    <div id="study-card-face" class="study-card__face">${anki ? '<div class="study-card__loading ui-skeleton ui-skeleton--wide" aria-hidden="true"></div>' : nativeCardMarkup(card, studyView.revealed)}</div>
+    <footer id="study-card-foot" class="study-card__foot"></footer>
+  </article>`;
+  renderStudyFoot(card, now);
+  if (anki) void mountAnkiCard(card);
+  else stage.querySelectorAll(".native-card__still").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
+}
+
+async function mountAnkiCard(card) {
+  const face = $("#study-card-face");
+  try {
+    const rendered = studyView.rendered || await ankiRenderFor(card);
+    if (studyView.cardId !== card.id || !face?.isConnected) return;
+    studyView.rendered = rendered;
+    const frameNode = document.createElement("iframe");
+    frameNode.id = "study-card-frame";
+    frameNode.className = "study-card__frame";
+    frameNode.title = "Card";
+    frameNode.setAttribute("sandbox", "allow-scripts");
+    frameNode.setAttribute("referrerpolicy", "no-referrer");
+    frameNode.srcdoc = ankiFrameDocument(rendered, { side: studyView.revealed ? "answer" : "question", ord: card.anki.ord, typed: studyView.typed });
+    face.classList.toggle("is-light", !ankiNightMode(rendered));
+    face.replaceChildren(frameNode);
+    playStudySounds(studyView.revealed ? rendered.answerSounds : rendered.questionSounds);
+  } catch (error) {
+    if (studyView.cardId !== card.id || !face?.isConnected) return;
+    face.innerHTML = nativeCardMarkup(card, studyView.revealed);
+    face.insertAdjacentHTML("beforeend", `<p class="learn-footnote">${escapeHtml(error.message || "This card's deck isn't stored any more; showing its text.")}</p>`);
+  }
+}
+
+function renderStudyFoot(card, now = Date.now()) {
+  const foot = $("#study-card-foot");
+  if (!foot) return;
+  if (!studyView.revealed) {
+    foot.innerHTML = `<button id="show-answer" class="ui-btn ui-btn--primary ui-btn--lg study-show" type="button" data-i18n="Show answer">Show answer <kbd class="ui-kbd">Space</kbd></button>`;
+    return;
+  }
+  const ratings = [["again", "Again"], ["hard", "Hard"], ["good", "Good"], ["easy", "Easy"]];
+  const preview = previewReviewIntervals(card, now);
+  foot.innerHTML = `<div id="review-actions" class="study-ratings" role="group" aria-label="${escapeHtml(t("How well did you remember?"))}">${ratings.map(([rating, label], index) => `<button class="study-rating" data-rating="${rating}" type="button" aria-label="${escapeHtml(t(label))}, ${escapeHtml(preview[rating].label)} (${index + 1})"><small>${escapeHtml(preview[rating].label)}</small><strong data-i18n="${label}">${label}</strong><kbd class="ui-kbd">${index + 1}</kbd></button>`).join("")}</div>`;
+}
+
+function revealStudyAnswer() {
+  const card = currentStudyCard();
+  if (!card || studyView.revealed) return;
+  studyView.revealed = true;
+  if (card.anki?.deckId) {
+    const frameNode = $("#study-card-frame");
+    if (frameNode && studyView.rendered) {
+      frameNode.srcdoc = ankiFrameDocument(studyView.rendered, { side: "answer", ord: card.anki.ord, typed: studyView.typed });
+      playStudySounds(studyView.rendered.answerSounds);
+    } else void mountAnkiCard(card);
+  } else {
+    const face = $("#study-card-face");
+    if (face) face.innerHTML = nativeCardMarkup(card, true);
+    face?.querySelectorAll(".native-card__still").forEach((image) => image.addEventListener("error", () => image.remove(), { once: true }));
+    const clip = cardClipUrls(card);
+    if (clip) playStudySounds([clip.audio]);
+  }
+  renderStudyFoot(card);
+}
+
+function rateStudyCard(rating) {
+  const card = currentStudyCard();
+  if (!card || !studyView.revealed) return;
+  studyView.undo = { before: { ...card }, deckKey: studyView.deckKey };
+  state.cards = state.cards.map((item) => (item.id === card.id ? scheduleReview(item, rating) : item));
+  studyView.reviewed += 1;
+  studyView.cardId = null;
+  touchLearningState();
+  saveState();
+  stopStudySounds();
+  renderStudySession();
+  updateDueCount();
+  renderStats();
+  renderSubtitles();
+}
+
+function undoStudyRating() {
+  const undo = studyView.undo;
+  if (!undo) return;
+  state.cards = state.cards.map((item) => (item.id === undo.before.id ? undo.before : item));
+  studyView.undo = null;
+  studyView.reviewed = Math.max(0, studyView.reviewed - 1);
+  studyView.cardId = null;
+  touchLearningState();
+  saveState();
+  renderStudySession();
+  updateDueCount();
+}
+
+function suspendStudyCard() {
+  const card = currentStudyCard();
+  if (!card) return;
+  if (card.anki?.deckId) {
+    studyView.undo = { before: { ...card }, deckKey: studyView.deckKey };
+    state.cards = state.cards.map((item) => (item.id === card.id ? { ...item, suspended: true } : item));
+    touchLearningState();
+    saveState();
+    toast("Card suspended");
+  } else {
+    discardCardByLearningKey(cardLearningKey(card), { rememberAutoDiscard: true });
+  }
+  studyView.cardId = null;
+  renderStudySession();
+  updateDueCount();
+}
+
+function replayStudyCard() {
+  const card = currentStudyCard();
+  if (!card) return;
+  if (card.anki?.deckId && studyView.rendered) {
+    playStudySounds(studyView.revealed ? [...studyView.rendered.questionSounds, ...studyView.rendered.answerSounds] : studyView.rendered.questionSounds);
+    return;
+  }
+  if (card.clipId || card.context) void openLinePreview(card);
+}
+
+async function replayCardSource(card) {
+  return openLinePreview(card);
+}
+
+window.addEventListener("message", (event) => {
+  const frameNode = $("#study-card-frame");
+  const data = event.data;
+  if (!frameNode || event.source !== frameNode.contentWindow || !data || data.lvlCard !== 1) return;
+  if (data.type === "size") frameNode.style.height = `${Math.min(4000, Math.max(140, Number(data.height) || 0))}px`;
+  else if (data.type === "sound") playStudySounds([String(data.url || "")]);
+  else if (data.type === "typed") {
+    studyView.typed = String(data.value || "").slice(0, 500);
+    if (data.submit) revealStudyAnswer();
+  } else if (data.type === "key") handleStudyKey({ key: String(data.key || ""), code: String(data.code || ""), preventDefault() {} });
+});
+
+/* ---------------------------------------------------------------- Study: adding and removing decks */
+
+function ankiCardType(front) {
+  const text = String(front || "").trim();
+  return /\s/.test(text) || [...text].length > 12 ? "phrase" : "word";
+}
+
+/**
+ * Adds a stored deck's cards to the card list. Cards already there (same note and card) keep
+ * their schedule unless the incoming one has more reviews (a newer export from Anki). A
+ * never-reviewed card the app made for the same word is taken over by the deck's card (its line
+ * and translation are kept); with skipTwins (Top words) a word that's already a card is
+ * not added twice.
+ */
+function mergeDeckCards(deck, rawCards) {
+  const language = String(deck?.language || state.targetLanguage).toUpperCase();
+  const byAnkiId = new Map();
+  const byLearningKey = new Map();
+  state.cards.forEach((card, index) => {
+    if (card.anki?.guid) byAnkiId.set(`${card.anki.deckId || ""}|${card.anki.guid}|${Number(card.anki.ord) || 0}`, index);
+    byLearningKey.set(cardLearningKey(card), index);
+  });
+  const replaced = new Set();
+  const now = Date.now();
+  const tally = { added: 0, updated: 0, merged: 0, skipped: 0 };
+  (rawCards || []).forEach((raw, index) => {
+    // The card list keeps short text only (search, quiz, tests); the card itself is drawn from the
+    // stored deck. This keeps large decks small in the saved state.
+    const front = String(raw.front || "").slice(0, 600);
+    if (!front) return;
+    const ord = Number(raw.ord) || 0;
+    const type = ankiCardType(front);
+    const vocabulary = !/\n/.test(front) && [...front].length <= 40;
+    const itemKey = vocabulary ? learningItemKey(language, type, front) : `anki|${raw.guid}|${ord}`;
+    const schedule = {
+      state: raw.state || "new", learningStep: Number(raw.learningStep) || 0, intervalDays: Number(raw.intervalDays) || 0, dueAt: Number(raw.dueAt) || now,
+      reviewCount: Number(raw.reviewCount) || 0, lapses: Number(raw.lapses) || 0, suspended: Boolean(raw.suspended),
+      ...(raw.ease ? { ease: raw.ease } : {}), ...(raw.lastReviewedAt ? { lastReviewedAt: raw.lastReviewedAt } : {}),
+      ...(raw.firstReviewedAt ? { firstReviewedAt: raw.firstReviewedAt } : {}), ...(raw.lapseIntervalDays ? { lapseIntervalDays: raw.lapseIntervalDays } : {}),
+    };
+    const content = {
+      front,
+      back: String(raw.back || "").slice(0, 600),
+      romanized: String(raw.reading || "").slice(0, 200),
+      ...(deck.extra?.meaningLanguage ? { baseLanguage: deck.extra.meaningLanguage } : {}),
+      ...(raw.sentence ? { context: String(raw.sentence).slice(0, 600) } : {}),
+      ...(raw.translation ? { baseContext: String(raw.translation).slice(0, 600) } : {}),
+      rank: Number(raw.rank) || null,
+      newPosition: Number.isFinite(Number(raw.newPosition)) ? Number(raw.newPosition) : index,
+      anki: { deckId: deck.id, guid: raw.guid, noteId: raw.noteId, cardId: raw.cardId, ord, deck: String(raw.deck || deck.name).slice(0, 200), notetype: String(raw.notetype || "").slice(0, 120), tags: (raw.tags || []).slice(0, 12).map((tag) => String(tag).slice(0, 60)) },
+    };
+    const existing = byAnkiId.get(`${deck.id}|${raw.guid}|${ord}`);
+    if (existing !== undefined) {
+      const current = state.cards[existing];
+      state.cards[existing] = { ...current, ...content, ...(schedule.reviewCount > (Number(current.reviewCount) || 0) ? schedule : {}) };
+      tally.updated += 1;
+      return;
+    }
+    const twinIndex = vocabulary ? byLearningKey.get(itemKey) : undefined;
+    const twin = twinIndex !== undefined && !replaced.has(twinIndex) ? state.cards[twinIndex] : null;
+    // Presets keep every note, including words already present in video cards.
+    if (deck.source !== "preset" && twin && twin.anki?.deckId === deck.id) { tally.skipped += 1; return; }
+    const keep = deck.source !== "preset" && twin && !Number(twin.reviewCount) && !twin.anki?.deckId
+      ? { context: content.context || twin.context || "", baseContext: content.baseContext || twin.baseContext || "", romanized: content.romanized || twin.romanized || "", timestampMs: twin.timestampMs || 0, endMs: twin.endMs || null, sourceLibraryId: twin.sourceLibraryId ?? null, sourceFileIndex: twin.sourceFileIndex ?? null, trackLabel: twin.trackLabel || "", clipId: twin.clipId || undefined }
+      : null;
+    if (keep) { replaced.add(twinIndex); tally.merged += 1; }
+    state.cards.push({
+      id: crypto.randomUUID(), itemKey, type, timestampMs: 0, trackLabel: "", sourceLibraryId: null, sourceFileIndex: null,
+      ...content, ...(keep || {}),
+      sourceTag: deck.name, baseLanguage: deck.extra?.meaningLanguage || state.baseLanguage, targetLanguage: language, origin: "anki", autoGenerated: false,
+      deckId: `store:${deck.id}`, createdAt: now, ...schedule,
+    });
+    byAnkiId.set(`${deck.id}|${raw.guid}|${ord}`, state.cards.length - 1);
+    tally.added += 1;
+  });
+  if (replaced.size) state.cards = state.cards.filter((_, index) => !replaced.has(index));
+  touchLearningState();
+  saveState();
+  const known = storedDecks.findIndex((item) => item.id === deck.id);
+  if (known >= 0) storedDecks[known] = deck; else storedDecks.unshift(deck);
+  return tally;
+}
+
+function deckTallyText(deck, tally) {
+  return [`${tally.added.toLocaleString()} new card${tally.added === 1 ? "" : "s"} in ${deck.name}`, tally.updated ? `${tally.updated.toLocaleString()} updated` : "", tally.merged ? `${tally.merged.toLocaleString()} merged` : "", tally.skipped ? `${tally.skipped.toLocaleString()} already in your cards` : ""].filter(Boolean).join(", ");
+}
+
+async function importAnkiFile(file) {
+  if (!file) return;
+  const button = $("#review-import-anki");
+  const label = button?.textContent || "";
+  if (button) { button.disabled = true; button.textContent = "Importing…"; }
+  try {
+    const response = await fetch("/api/anki/import", { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: file, signal: AbortSignal.timeout(600_000) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Import failed (${response.status})`);
+    const tally = mergeDeckCards(data.deck, data.cards || []);
+    toast(deckTallyText(data.deck, tally));
+    renderStudyPage();
+    updateDueCount();
+    renderStats();
+  } catch (error) {
+    toast(error.message || "Couldn't import that file", { tone: "error" });
+  } finally {
+    if (button) { button.disabled = false; button.textContent = label; }
+    const input = $("#review-import-file");
+    if (input) input.value = "";
+  }
+}
+
+async function exportCardsToAnki(format = "apkg", { cards = null, deckName = "", button = null } = {}) {
+  const list = cards || state.cards.filter((card) => !card.targetLanguage || card.targetLanguage === state.targetLanguage);
+  if (!list.length) return;
+  const control = button || (format === "txt" ? $("#review-export-text") : $("#review-export-anki"));
+  const label = control?.textContent || "";
+  if (control) { control.disabled = true; control.textContent = "Exporting…"; }
+  try {
+    const response = await fetch("/api/anki/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ format, deckName: deckName || `LVL::${state.targetLanguage}`, cards: list }),
+      signal: AbortSignal.timeout(120_000),
+    });
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `Export failed (${response.status})`);
+    }
+    const blob = await response.blob();
+    const name = (response.headers.get("Content-Disposition") || "").match(/filename="([^"]+)"/)?.[1] || `lvl.${format}`;
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = name;
+    anchor.click();
+    window.setTimeout(() => URL.revokeObjectURL(url), 10_000);
+  } catch (error) {
+    toast(error.message || "Export failed", { tone: "error" });
+  } finally {
+    if (control?.isConnected) { control.disabled = false; control.textContent = label; }
+  }
+}
+
+async function deleteStudyDeck(deck) {
+  if (!deck) return;
+  if (!window.confirm(`Delete "${deck.name}" and its ${deck.total.toLocaleString()} card${deck.total === 1 ? "" : "s"}? Their progress is lost.`)) return;
+  try {
+    if (deck.storeId) {
+      const response = await fetch(`/api/anki/decks/${encodeURIComponent(deck.storeId)}`, { method: "DELETE", signal: AbortSignal.timeout(30_000) });
+      if (!response.ok && response.status !== 404) throw new Error(`Couldn't delete the deck (${response.status})`);
+      storedDecks = storedDecks.filter((item) => item.id !== deck.storeId);
+    }
+    const ids = new Set(deck.cards.map((card) => card.id));
+    state.cards = state.cards.filter((card) => !ids.has(card.id));
+    touchLearningState();
+    saveState();
+    studyView.menuKey = null;
+    toast(`${deck.name} deleted`);
+    renderStudyPage();
+    updateDueCount();
+    renderStats();
+  } catch (error) {
+    toast(error.message || "Couldn't delete the deck", { tone: "error" });
+  }
+}
+
+/* ---------------------------------------------------------------- Study: Top words and AnkiWeb */
+
+const LANGUAGE_NAMES = { EN: "English", ES: "Spanish", FR: "French", DE: "German", IT: "Italian", PT: "Portuguese", JA: "Japanese", KO: "Korean", ZH: "Chinese", RU: "Russian", NL: "Dutch", PL: "Polish", TR: "Turkish" };
+const languageName = (code) => LANGUAGE_NAMES[String(code || "").toUpperCase()] || String(code || "");
+
+async function openTopWordsDialog() {
+  const dialog = $("#top-words-dialog");
+  const options = $("#top-words-options");
+  const language = state.targetLanguage;
+  $("#top-words-language").textContent = `${languageName(language)} words, ranked by how often they're said in films and series`;
+  options.innerHTML = '<div class="ui-skeleton ui-skeleton--wide" aria-hidden="true"></div>';
+  $("#top-words-status").textContent = "";
+  if (!dialog.open) dialog.showModal();
+  try {
+    const info = await fetchJson(`/api/anki/presets?language=${encodeURIComponent(language)}`);
+    const deck = storedDecks.find((item) => item.id === `preset-words-${language.toLowerCase()}`);
+    const localCards = deck ? state.cards.filter((card) => card.anki?.deckId === deck.id).length : 0;
+    const added = localCards ? Number(deck?.extra?.size) || 0 : 0;
+    if (!info.available) {
+      options.innerHTML = emptyMarkup({ compact: true, title: `No meanings bundled for ${languageName(language)}`, text: "Pick another target language, or get a deck from AnkiWeb." });
+      return;
+    }
+    options.innerHTML = info.sizes.map(({ size, cards }) => {
+      const done = added >= size;
+      return `<button class="top-words-option${done ? " is-added" : ""}" type="button" data-top-size="${size}" aria-label="${escapeHtml(`Top ${size.toLocaleString()}: ${cards.toLocaleString()} cards${done ? ", added" : ""}`)}">
+        <strong>Top ${size.toLocaleString()}</strong>
+        <span>${cards.toLocaleString()} cards</span>
+        <em>${done ? "Added" : added && size > added ? `Adds ${(cards - (info.sizes.find((item) => item.size === added)?.cards || 0)).toLocaleString()}` : "Add"}</em>
+      </button>`;
+    }).join("");
+  } catch (error) {
+    options.innerHTML = "";
+    $("#top-words-status").textContent = error.message || "Couldn't load the word lists";
+  }
+}
+
+async function addTopWords(size, button) {
+  const language = state.targetLanguage;
+  const status = $("#top-words-status");
+  if (button) button.disabled = true;
+  status.textContent = `Adding the Top ${Number(size).toLocaleString()}…`;
+  try {
+    const response = await fetch("/api/anki/presets", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ language, languageName: languageName(language), size: Number(size) }),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `Couldn't add the deck (${response.status})`);
+    const tally = mergeDeckCards(data.deck, data.cards || []);
+    status.textContent = deckTallyText(data.deck, tally);
+    await openTopWordsDialog();
+    status.textContent = deckTallyText(data.deck, tally);
+    renderStudyPage();
+    updateDueCount();
+  } catch (error) {
+    status.textContent = error.message || "Couldn't add the deck";
+    if (button) button.disabled = false;
+  }
+}
+
+const ankiweb = { query: "", results: [], stale: false, details: new Map(), open: null, jobs: new Map() };
+
+function openAnkiwebDialog() {
+  const dialog = $("#ankiweb-dialog");
+  const input = $("#ankiweb-query");
+  const query = ankiweb.query || languageName(state.targetLanguage).toLowerCase();
+  input.value = query;
+  if (!dialog.open) dialog.showModal();
+  if (!ankiweb.results.length || ankiweb.query !== query) void searchAnkiweb(query);
+  else renderAnkiwebResults();
+}
+
+async function searchAnkiweb(query) {
+  const text = String(query || "").trim();
+  if (!text) return;
+  ankiweb.query = text;
+  const results = $("#ankiweb-results");
+  results.innerHTML = '<div class="ui-skeleton ui-skeleton--wide" aria-hidden="true"></div><div class="ui-skeleton ui-skeleton--wide" aria-hidden="true"></div>';
+  try {
+    const data = await fetchJson(`/api/ankiweb/search?${new URLSearchParams({ q: text, limit: "40" })}`);
+    ankiweb.results = data.decks || [];
+    ankiweb.stale = Boolean(data.stale);
+    renderAnkiwebResults();
+  } catch (error) {
+    results.innerHTML = emptyMarkup({ compact: true, icon: "alert", title: "AnkiWeb didn't answer", text: error.message || "Try again in a moment." });
+  }
+}
+
+function ankiwebRowMarkup(deck) {
+  const details = ankiweb.details.get(deck.id);
+  const job = ankiweb.jobs.get(deck.id);
+  const stored = storedDecks.some((item) => item.id === `ankiweb-${deck.id}`);
+  const open = ankiweb.open === deck.id;
+  const media = [deck.audio ? `${deck.audio.toLocaleString()} audio` : "", deck.images ? `${deck.images.toLocaleString()} images` : ""].filter(Boolean).join(", ");
+  const progress = job && (job.status === "downloading" || job.status === "importing")
+    ? `<div class="ui-progress" role="progressbar" aria-label="Download" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${job.total ? Math.round((job.received / job.total) * 100) : 0}"><span style="width:${job.total ? Math.round((job.received / job.total) * 100) : 8}%"></span></div><small>${job.status === "importing" ? "Saving cards and media…" : `Downloading ${formatBytes(job.received)}${job.total ? ` of ${formatBytes(job.total)}` : ""}`}</small>`
+    : "";
+  const action = stored || job?.status === "done"
+    ? '<button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-ankiweb-study>Study</button>'
+    : job && job.status !== "error"
+      ? '<button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" disabled>Adding…</button>'
+      : '<button class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-ankiweb-add>Add deck</button>';
+  return `<article class="ankiweb-row${open ? " is-open" : ""}" data-shared-id="${deck.id}">
+    <button class="ankiweb-row__main" type="button" data-ankiweb-toggle aria-expanded="${open}">
+      <strong>${escapeHtml(deck.title)}</strong>
+      <span>${[`👍 ${deck.thumbsUp.toLocaleString()}`, `${deck.notes.toLocaleString()} notes`, media].filter(Boolean).join(", ")}</span>
+    </button>
+    <div class="ankiweb-row__action">${action}</div>
+    ${open ? `<div class="ankiweb-row__details">${details === "loading" || !details ? '<div class="ui-skeleton ui-skeleton--text" aria-hidden="true"></div>'
+      : details.error ? `<p class="learn-status">${escapeHtml(details.error)}</p>`
+        : `<p class="ankiweb-row__facts">${escapeHtml([details.size ? formatBytes(details.size) : "", details.lastUpdated ? `Updated ${new Date(details.lastUpdated).toLocaleDateString()}` : "", details.tags].filter(Boolean).join(", "))}</p><p class="ankiweb-row__description">${escapeHtml(details.description || "No description.").slice(0, 1200)}</p><a class="ui-link" href="https://ankiweb.net/shared/info/${deck.id}" target="_blank" rel="noopener noreferrer">Open on AnkiWeb</a>`}</div>` : ""}
+    ${progress ? `<div class="ankiweb-row__progress">${progress}</div>` : ""}
+    ${job?.status === "error" ? `<p class="learn-status ankiweb-row__error">${escapeHtml(job.error || "Download failed")}</p>` : ""}
+  </article>`;
+}
+
+function renderAnkiwebResults() {
+  const results = $("#ankiweb-results");
+  if (!results) return;
+  results.innerHTML = ankiweb.results.length
+    ? `${ankiweb.stale ? `<p class="learn-status">${escapeHtml(t("Cached results: AnkiWeb is temporarily unavailable."))}</p>` : ""}<p class="learn-footnote">${ankiweb.results.length} decks for "${escapeHtml(ankiweb.query)}", best rated first</p>${ankiweb.results.map(ankiwebRowMarkup).join("")}`
+    : emptyMarkup({ compact: true, title: "No shared decks found", text: "Try another word, like the language's name." });
+}
+
+async function toggleAnkiwebDetails(sharedId) {
+  ankiweb.open = ankiweb.open === sharedId ? null : sharedId;
+  renderAnkiwebResults();
+  if (ankiweb.open !== sharedId || ankiweb.details.has(sharedId)) return;
+  ankiweb.details.set(sharedId, "loading");
+  try {
+    ankiweb.details.set(sharedId, await fetchJson(`/api/ankiweb/decks/${sharedId}`));
+  } catch (error) {
+    ankiweb.details.set(sharedId, { error: error.message || "Couldn't read this deck" });
+  }
+  renderAnkiwebResults();
+}
+
+async function addAnkiwebDeck(sharedId) {
+  try {
+    const started = await postJson(`/api/ankiweb/decks/${sharedId}/download`, {});
+    ankiweb.jobs.set(sharedId, started);
+    renderAnkiwebResults();
+    let job = started;
+    for (let tick = 0; tick < 1800 && (job.status === "downloading" || job.status === "importing"); tick += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      job = await fetchJson(`/api/ankiweb/jobs/${started.id}`);
+      ankiweb.jobs.set(sharedId, job);
+      if ($("#ankiweb-dialog")?.open) renderAnkiwebResults();
+    }
+    if (job.status !== "done") throw new Error(job.error || "The download didn't finish");
+    const result = await fetchJson(`/api/ankiweb/jobs/${started.id}?result=1`);
+    const tally = mergeDeckCards(result.deck, result.cards || []);
+    ankiweb.jobs.set(sharedId, { ...job, status: "done" });
+    toast(deckTallyText(result.deck, tally));
+    renderAnkiwebResults();
+    renderStudyPage();
+    updateDueCount();
+  } catch (error) {
+    ankiweb.jobs.set(sharedId, { status: "error", error: error.message || "Download failed" });
+    renderAnkiwebResults();
+  }
+}
+
+/* ---------------------------------------------------------------- Study: page and dictation */
+
+function renderStudyLanguageSelect(select) {
+  if (!select) return;
+  select.innerHTML = Object.keys(SPEECH_LOCALES)
+    .filter((language) => language !== state.baseLanguage)
+    .map((language) => `<option value="${language}" ${language === state.targetLanguage ? "selected" : ""}>${escapeHtml(languageName(language))}</option>`)
+    .join("");
+}
+
+function renderStudyPage() {
+  if (storedDecksState === "idle") void loadStoredDecks();
+  renderStudyLanguageSelect($("#study-target-language"));
+  const now = Date.now();
+  const decks = studyDecks(now);
+  const due = updateDueCount(decks);
+  $("#study-summary").textContent = state.cards.length
+    ? t("{due} to study today, from {cards} cards in {decks} decks", { due: due.toLocaleString(), cards: state.cards.length.toLocaleString(), decks: decks.filter((deck) => deck.total).length })
+    : "";
+  const inSession = Boolean(studyView.deckKey);
+  $("#study-session").hidden = !inSession;
+  $("#study-tabs").hidden = inSession;
+  for (const tab of ["decks", "dictation", "words"]) {
+    const panel = $(`#study-panel-${tab}`);
+    if (panel) panel.hidden = inSession || studyView.tab !== tab;
+  }
+  setActiveTab($("#study-tabs"), studyView.tab);
+  const summary = $("#review-deck-summary");
+  const suspended = state.cards.filter((card) => card.suspended).length;
+  if (summary) summary.textContent = suspended ? `${suspended.toLocaleString()} suspended card${suspended === 1 ? "" : "s"} are not shown.` : "";
+  $("#review-export-anki")?.toggleAttribute("disabled", !state.cards.length);
+  $("#review-export-text")?.toggleAttribute("disabled", !state.cards.length);
+  if (inSession) {
+    if (!studyView.cardId || !$("#study-stage .study-card, #study-stage .study-done")) renderStudySession();
+    return;
+  }
+  if (studyView.tab === "decks") renderStudyDecks(decks);
+  else if (studyView.tab === "dictation") renderDictation();
+  else renderStudy();
+}
+
+// Dictation: lines saved from watched episodes. Hear the line, type it, compare with the subtitle.
+const dictation = { clips: [], status: "idle", error: "", loadedFor: "", group: null, queue: [], index: 0, answer: null, results: [] };
+
+async function loadDictationClips({ force = false } = {}) {
+  const language = state.targetLanguage;
+  if (dictation.status === "loading" || (!force && dictation.loadedFor === language && dictation.status === "ready")) return dictation.clips;
+  dictation.status = "loading";
+  try {
+    const data = await fetchJson(`/api/clips?${new URLSearchParams({ lang: language, limit: "3000" })}`);
+    const cardLanguages = new Map(state.cards.filter((card) => card.clipId).map((card) => [card.clipId, card.baseLanguage]));
+    dictation.clips = (data.clips || []).filter((clip) => clip.text).map((clip) => ({ ...clip,
+      baseLang: clip.baseLang || cardLanguages.get(clip.id) || "" }));
+    dictation.status = "ready";
+    dictation.loadedFor = language;
+  } catch (error) {
+    dictation.status = "error";
+    dictation.error = error.message || "Couldn't load saved lines";
+  }
+  if (viewActive("study") && studyView.tab === "dictation") renderDictation();
+  if (viewActive("test")) renderTest();
+  if (viewActive("review") && quiz.direction === "listening") renderQuiz();
+  return dictation.clips;
+}
+
+function dictationGroups() {
+  const groups = new Map();
+  for (const clip of dictation.clips) {
+    const key = `${clip.libraryId}|${clip.fileIndex}`;
+    if (!groups.has(key)) groups.set(key, { key, series: clip.series || "Video", chapter: clip.chapter || "", clips: [] });
+    groups.get(key).clips.push(clip);
+  }
+  return [...groups.values()].sort((a, b) => a.series.localeCompare(b.series) || a.chapter.localeCompare(b.chapter, undefined, { numeric: true }));
+}
+
+function startDictation(groupKey) {
+  const pool = groupKey === "all" ? dictation.clips : dictationGroups().find((group) => group.key === groupKey)?.clips || [];
+  dictation.group = groupKey;
+  dictation.queue = shuffle(pool).slice(0, 15);
+  dictation.index = 0;
+  dictation.answer = null;
+  dictation.results = [];
+  renderDictation();
+}
+
+function currentDictationClip() {
+  return dictation.group ? dictation.queue[dictation.index] || null : null;
+}
+
+function renderDictation() {
+  const stage = $("#dictation-stage");
+  if (!stage) return;
+  if (dictation.loadedFor !== state.targetLanguage || dictation.status === "idle") void loadDictationClips({ force: true });
+  if (dictation.status === "loading" && !dictation.clips.length) {
+    stage.innerHTML = '<div class="ui-skeleton ui-skeleton--wide" aria-hidden="true"></div>';
+    return;
+  }
+  const clip = currentDictationClip();
+  if (!dictation.group || (!clip && !dictation.results.length)) {
+    const groups = dictationGroups();
+    stage.innerHTML = groups.length
+      ? `<div class="dictation-intro"><p>${dictation.clips.length.toLocaleString()} ${escapeHtml(languageName(state.targetLanguage))} lines saved from ${groups.length} chapter${groups.length === 1 ? "" : "s"}. Rounds of 15.</p>${buttonMarkup({ label: "Mix all chapters", variant: "primary", attrs: { "data-dictation-start": "all" } })}</div>
+        <div class="dictation-groups">${groups.map((group) => `<button class="dictation-group" type="button" data-dictation-start="${escapeHtml(group.key)}"><strong>${escapeHtml(group.series)}</strong><span>${escapeHtml([group.chapter, `${group.clips.length} line${group.clips.length === 1 ? "" : "s"}`].filter(Boolean).join(", "))}</span></button>`).join("")}</div>`
+      : emptyMarkup({ icon: "subtitles", title: "No saved lines yet", text: `While you watch with ${languageName(state.targetLanguage)} subtitles, lines are saved here with their audio. Come back after an episode.` });
+    return;
+  }
+  if (!clip) {
+    const average = Math.round(dictation.results.reduce((sum, item) => sum + item.accuracy, 0) / Math.max(1, dictation.results.length));
+    stage.innerHTML = `<div class="dictation-card dictation-done"><strong class="dictation-score">${average}%</strong><p>${dictation.results.length} lines, ${dictation.results.filter((item) => item.accuracy >= 80).length} right</p><div class="dictation-actions">${buttonMarkup({ label: "Another round", variant: "primary", attrs: { "data-dictation-start": dictation.group } })}${buttonMarkup({ label: "Chapters", variant: "ghost", attrs: { "data-dictation-exit": "" } })}</div></div>`;
+    return;
+  }
+  const result = dictation.answer;
+  const diff = result?.diff?.map((item) => {
+    if (item.type === "correct") return `<span class="dictation-token is-correct">${escapeHtml(item.expected)}</span>`;
+    if (item.type === "missing") return `<span class="dictation-token is-missing">${escapeHtml(item.expected)}</span>`;
+    if (item.type === "extra") return `<span class="dictation-token is-extra">${escapeHtml(item.actual)}</span>`;
+    return `<span class="dictation-token is-substituted"><del>${escapeHtml(item.actual)}</del> <ins>${escapeHtml(item.expected)}</ins></span>`;
+  }).join(" ") || "";
+  stage.innerHTML = `<article class="dictation-card">
+    <header class="dictation-card__head"><span>${escapeHtml([clip.series, clip.chapter].filter(Boolean).join(", "))}</span><strong>${dictation.index + 1} / ${dictation.queue.length}</strong></header>
+    ${result && clip.imageUrl ? `<img class="dictation-card__still" src="${escapeHtml(clip.imageUrl)}" alt="" loading="lazy">` : ""}
+    <button id="dictation-play" class="dictation-play" type="button" aria-label="Play the line (Ctrl+Space)">${icon("play")}<span>Play line</span></button>
+    ${result ? `<div class="dictation-result"><strong>${result.accuracy}%</strong><div class="dictation-diff" lang="${escapeHtml(state.targetLanguage.toLowerCase())}">${diff}</div>${clip.baseText ? `<p class="dictation-translation">${escapeHtml(clip.baseText)}</p>` : ""}</div>
+      <div class="dictation-actions">${buttonMarkup({ label: "Next", variant: "primary", attrs: { id: "dictation-next" } })}</div>`
+      : `<form id="dictation-form" class="dictation-form"><label for="dictation-input">Type what you hear</label><textarea id="dictation-input" rows="2" autocomplete="off" autocapitalize="off" spellcheck="false" lang="${escapeHtml(state.targetLanguage.toLowerCase())}"></textarea><div class="dictation-actions">${buttonMarkup({ label: "Check", variant: "primary", type: "submit" })}<span class="learn-footnote">Enter checks, Ctrl+Space plays it again</span></div></form>`}
+  </article>`;
+  stage.querySelector(".dictation-card__still")?.addEventListener("error", (event) => event.target.remove(), { once: true });
+  if (!result) {
+    playStudySounds([clip.audioUrl]);
+    queueMicrotask(() => $("#dictation-input")?.focus());
+  } else $("#dictation-next")?.focus();
+}
+
+function submitDictationAnswer() {
+  const clip = currentDictationClip();
+  const input = $("#dictation-input");
+  if (!clip || !input || dictation.answer) return;
+  const typed = input.value.trim();
+  if (!typed) return;
+  const aligned = alignDictation(clip.text, typed);
+  dictation.answer = { ...aligned, typed };
+  dictation.results.push({ clipId: clip.id, accuracy: aligned.accuracy });
+  renderDictation();
+}
+
+function nextDictation() {
+  if (!dictation.answer) return;
+  dictation.index += 1;
+  dictation.answer = null;
+  renderDictation();
+}
+
+/* ---------------------------------------------------------------- Review: quick quiz */
+
+// Four options per question; the answer shows right away. Studied cards come first, weakest first.
+const quiz = { deckKey: "all", direction: "forward", question: null, picked: null, correct: 0, total: 0, streak: 0, recent: [] };
+
+function quizDeckOptions() {
+  return studyDecks().filter((deck) => quizPool(deck.cards).length >= 4);
+}
+
+function quizCards() {
+  if (quiz.deckKey === "all") return state.cards.filter((card) => !card.targetLanguage || card.targetLanguage === state.targetLanguage);
+  return state.cards.filter((card) => studyDeckKey(card) === quiz.deckKey);
+}
+
+function nextQuizQuestion() {
+  quiz.picked = null;
+  if (quiz.direction === "listening") {
+    const clips = dictation.clips.filter((clip) => clip.lang === state.targetLanguage && clip.baseLang === state.baseLanguage);
+    const fresh = clips.filter((clip) => !quiz.recent.includes(`clip:${clip.id}`));
+    quiz.question = null;
+    for (const clip of shuffle(fresh.length ? fresh : clips)) {
+      quiz.question = listeningMeaningQuestion(clip, clips);
+      if (quiz.question) break;
+    }
+    if (quiz.question) quiz.recent = [`clip:${quiz.question.clipId}`, ...quiz.recent].slice(0, Math.min(12, Math.floor(clips.length / 2)));
+    return;
+  }
+  const pool = quizPool(quizCards());
+  if (pool.length < 4) {
+    quiz.question = null;
+    return;
+  }
+  const fresh = pool.filter((card) => !quiz.recent.includes(card.id));
+  const candidates = shuffle(fresh.length ? fresh : pool);
+  const reverse = quiz.direction === "reverse" || (quiz.direction === "mixed" && Math.random() < 0.5);
+  quiz.question = null;
+  for (const card of candidates) {
+    quiz.question = choiceQuestion(card, pool, { reverse }) || choiceQuestion(card, pool, { reverse: !reverse });
+    if (quiz.question) break;
+  }
+  if (quiz.question) quiz.recent = [quiz.question.cardId, ...quiz.recent].slice(0, Math.min(12, Math.floor(pool.length / 2)));
+}
+
+function answerQuiz(index) {
+  const question = quiz.question;
+  if (!question || quiz.picked !== null) return;
+  quiz.picked = Number(index);
+  const right = quiz.picked === question.answerIndex;
+  quiz.total += 1;
+  quiz.correct += right ? 1 : 0;
+  quiz.streak = right ? quiz.streak + 1 : 0;
+  state.cards = state.cards.map((card) => (card.id === question.cardId
+    ? { ...card, quiz: { right: (Number(card.quiz?.right) || 0) + (right ? 1 : 0), wrong: (Number(card.quiz?.wrong) || 0) + (right ? 0 : 1), lastAt: Date.now() } }
+    : card));
+  saveState();
+  renderQuiz();
+}
+
+function renderQuiz() {
+  const panel = $("#quiz-panel");
+  if (!panel) return;
+  const decks = quizDeckOptions();
+  const listening = quiz.direction === "listening";
+  if (listening && dictation.loadedFor !== state.targetLanguage && !["loading", "error"].includes(dictation.status)) void loadDictationClips();
+  if (quiz.deckKey !== "all" && !decks.some((deck) => deck.key === quiz.deckKey)) quiz.deckKey = "all";
+  if (!quiz.question) nextQuizQuestion();
+  const question = quiz.question;
+  const card = question ? state.cards.find((item) => item.id === question.cardId) : null;
+  const controls = `<div class="quiz-controls">
+    ${!listening ? `<label class="learn-select"><span data-i18n="Deck">Deck</span><select id="quiz-deck"><option value="all">${escapeHtml(t("All {language} cards", { language: languageName(state.targetLanguage) }))}</option>${decks.map((deck) => `<option value="${escapeHtml(deck.key)}" ${deck.key === quiz.deckKey ? "selected" : ""}>${escapeHtml(deck.name)}</option>`).join("")}</select></label>` : ""}
+    <div class="ui-segmented" role="group" aria-label="${escapeHtml(t("Question direction"))}">${[["forward", "Word → meaning"], ["reverse", "Meaning → word"], ["mixed", "Mixed"], ["listening", "Listening"]].map(([value, label]) => `<button class="ui-segmented__item" type="button" data-quiz-direction="${value}" aria-pressed="${quiz.direction === value}" data-i18n="${label}">${label}</button>`).join("")}</div>
+    <span class="quiz-score" aria-live="polite">${quiz.total ? escapeHtml(t("Quiz score: {correct}/{total}", { correct: quiz.correct, total: quiz.total })) : ""}</span>
+  </div>`;
+  if (!question || (!listening && !card)) {
+    panel.innerHTML = `${controls}${emptyMarkup({ icon: "sparkle", title: t(listening ? dictation.status === "loading" ? "Loading saved lines…" : "Not enough translated lines" : "Not enough cards to quiz"), text: t(listening ? "Listening needs four saved lines with different translations in your current language pair. Watch a chapter with both subtitle languages to save lines." : "A quiz needs at least four cards with a meaning. Add Top words or a deck in Study.") })}`;
+    return;
+  }
+  const answered = quiz.picked !== null;
+  const right = answered && quiz.picked === question.answerIndex;
+  const cloze = question.kind === "cloze";
+  const promptLang = question.reverse && !cloze ? card?.baseLanguage || state.baseLanguage : card?.targetLanguage || state.targetLanguage;
+  const optionLang = question.reverse ? card?.targetLanguage || state.targetLanguage : card?.baseLanguage || state.baseLanguage;
+  const ask = listening ? "Which line do you hear?" : cloze ? "Which word completes the line?" : question.kind === "sentence" ? "What does this line mean?" : question.reverse ? "Which word means" : "What does this mean?";
+  panel.innerHTML = `${controls}<article class="quiz-card${answered ? (right ? " is-right" : " is-wrong") : ""}">
+    <p class="quiz-card__ask">${escapeHtml(t(ask))}</p>
+    ${listening ? buttonMarkup({ label: t("Play line"), icon: "play", attrs: { "data-quiz-play": "" } }) : `<div class="quiz-card__prompt" lang="${escapeHtml(String(promptLang).toLowerCase())}" data-card-content>${escapeHtml(question.prompt)}</div>`}
+    ${cloze && question.context ? `<p class="native-card__translation" data-card-content>${escapeHtml(question.context)}</p>` : ""}
+    ${!question.reverse && card?.romanized && card.romanized !== card.front && answered ? `<p class="quiz-card__reading" data-card-content>${escapeHtml(card.romanized)}</p>` : ""}
+    <div class="quiz-options" role="group" aria-label="Answers">${question.options.map((option, index) => {
+      const state_ = !answered ? "" : index === question.answerIndex ? " is-answer" : index === quiz.picked ? " is-picked" : " is-dim";
+      return `<button class="quiz-option${state_}" type="button" data-quiz-option="${index}" lang="${escapeHtml(String(optionLang).toLowerCase())}"${answered ? ' aria-disabled="true"' : ""}><kbd class="ui-kbd">${index + 1}</kbd><span>${escapeHtml(option)}</span>${answered && index === question.answerIndex ? `<b class="quiz-option__mark">${icon("check")}<span class="ui-visually-hidden">Correct answer</span></b>` : answered && index === quiz.picked ? '<b class="quiz-option__mark">✕<span class="ui-visually-hidden">Your answer</span></b>' : ""}</button>`;
+    }).join("")}</div>
+    ${answered ? `<div class="quiz-feedback" role="status"><strong>${escapeHtml(t(right ? "Right" : "Not quite"))}</strong>${listening ? `<p class="native-card__word" data-card-content>${escapeHtml(question.sourceText)}</p>` : card.context ? reviewSentenceMarkup(card) : ""}${!listening && card.baseContext && card.baseContext !== question.answer ? `<p class="native-card__translation" data-card-content>${escapeHtml(card.baseContext)}</p>` : ""}<div class="quiz-feedback__actions">${buttonMarkup({ label: t("Next"), variant: "primary", attrs: { id: "quiz-next" } })}<span class="learn-footnote" data-i18n="Enter for next, 1–4 to answer">Enter for next, 1–4 to answer</span></div></div>` : ""}
+  </article>`;
+  if (answered) $("#quiz-next")?.focus({ preventScroll: true });
+}
+
+function renderReview() {
+  updateDueCount();
+  if (viewActive("study")) renderStudyPage();
+  if (!viewActive("review")) return;
+  const activeTab = reviewTabId();
+  $$("[data-review-tab]").forEach((button) => {
+    const active = button.dataset.reviewTab === activeTab;
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-selected", String(active));
+    button.tabIndex = active ? 0 : -1;
+  });
+  renderStudyLanguageSelect($("#review-target-language"));
+  const voice = reviewMode === "voice";
+  $("#quiz-panel").hidden = voice;
+  $("#review-stage").hidden = !voice;
+  $("#review-summary").textContent = t(!voice ? "A quick quiz: pick the answer and see right away if it's right."
+    : voiceChat.mode === "practice" ? "Say words you've studied out loud and get feedback from your coach."
+      : "Talk with a ChatGPT coach about a topic, by voice.");
+  $("#review-stage")?.classList.toggle("is-voice-practice", voice);
+  $("#review-stage")?.closest(".review-layout")?.classList.toggle("is-voice-mode", voice);
+  if (voice) {
+    renderVoiceChatStage();
+    if (voiceChat.bridgeAvailable === null) void refreshBrowserCoachStatus();
+    return;
+  }
+  renderQuiz();
+}
+
+/* ---------------------------------------------------------------- Tests: scored mixed tests */
+
+// Multiple choice, typing (meaning or word) and listening (saved lines): answers are only shown
+// at the end, with the score, a breakdown and the questions that were missed.
+const testSetup = { deckKey: "all", size: 10, types: { choice: true, typing: true, listening: true } };
+const TEST_TYPE_LABELS = { choice: "Multiple choice", "listen-choice": "Listening", typing: "Typing", dictation: "Listening" };
+
+function testCards() {
+  if (testSetup.deckKey === "all") return state.cards.filter((card) => !card.targetLanguage || card.targetLanguage === state.targetLanguage);
+  return state.cards.filter((card) => studyDeckKey(card) === testSetup.deckKey);
+}
+
+function startTestSession() {
+  const questions = buildMixedTest({ cards: testCards(), clips: dictation.clips, size: testSetup.size, types: testSetup.types });
+  if (!questions.length) {
+    toast("Not enough cards or saved lines for a test", { tone: "error" });
+    return;
+  }
+  testSession = { id: crypto.randomUUID(), questions, index: 0, answers: [], startedAt: Date.now(), completed: false };
+  renderTest();
+}
+
+function currentTestQuestion() {
+  return testSession && !testSession.completed ? testSession.questions[testSession.index] || null : null;
+}
+
+function answerTestQuestion(response) {
+  const question = currentTestQuestion();
+  if (!question) return;
+  stopStudySounds();
+  testSession.answers.push({ response, ...gradeQuestion(question, response) });
+  testSession.index += 1;
+  if (testSession.index >= testSession.questions.length) finishTestSession();
+  else renderTest();
+}
+
+function finishTestSession() {
+  const total = testSession.questions.length;
+  const points = testSession.answers.reduce((sum, answer) => sum + (Number(answer.points) || 0), 0);
+  const result = {
+    id: testSession.id,
+    mode: "mixed",
+    targetLanguage: state.targetLanguage,
+    score: total ? Math.round(points / total) : 0,
+    correct: testSession.answers.filter((answer) => answer.correct).length,
+    total,
+    startedAt: testSession.startedAt,
+    completedAt: Date.now(),
+  };
+  state.testResults.push(result);
+  saveTestResults();
+  testSession = { ...testSession, completed: true, result };
+  renderTest();
+}
+
+function testHistorySvg(results) {
+  if (!results.length) return '<p class="learn-footnote">Scores appear here after your first test.</p>';
+  const recent = results.slice(-20);
+  const width = 320;
+  const height = 116;
+  const pad = 10;
+  const step = recent.length > 1 ? (width - pad * 2) / (recent.length - 1) : 0;
+  const points = recent.map((result, index) => ({
+    x: recent.length > 1 ? pad + index * step : width / 2,
+    y: pad + ((100 - Math.max(0, Math.min(100, Number(result.score) || 0))) / 100) * (height - pad * 2),
+    score: result.score,
+  }));
+  return `<svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Test scores over time"><path class="test-chart-guide" d="M${pad} ${pad}H${width - pad}M${pad} ${height / 2}H${width - pad}M${pad} ${height - pad}H${width - pad}"/><polyline class="test-chart-line" points="${points.map(({ x, y }) => `${x.toFixed(1)},${y.toFixed(1)}`).join(" ")}"/>${points.map(({ x, y, score }) => `<circle class="test-chart-point" cx="${x}" cy="${y}" r="3"><title>${score}%</title></circle>`).join("")}</svg>`;
+}
+
+function renderTestHistory() {
+  const results = state.testResults.filter((result) => result && Number.isFinite(Number(result.score)));
+  const scores = results.map((result) => Number(result.score));
+  $("#test-stat-last").textContent = scores.length ? `${scores.at(-1)}%` : "—";
+  $("#test-stat-average").textContent = scores.length ? `${Math.round(scores.reduce((sum, value) => sum + value, 0) / scores.length)}%` : "—";
+  $("#test-stat-best").textContent = scores.length ? `${Math.max(...scores)}%` : "—";
+  $("#test-stat-sessions").textContent = String(scores.length);
+  $("#test-history-chart").innerHTML = testHistorySvg(results);
+  const modeName = (mode) => ({ mixed: "Mixed", recall: "Recall", listening: "Listening", dictation: "Dictation" })[mode] || "Test";
+  $("#test-history-list").innerHTML = results.slice(-6).reverse().map((result) => `<div><span>${escapeHtml(modeName(result.mode))}, ${new Date(Number(result.completedAt) || Date.now()).toLocaleDateString()}</span><strong>${Math.round(Number(result.score) || 0)}%</strong></div>`).join("");
+}
+
+function testSetupMarkup() {
+  const decks = studyDecks().filter((deck) => deck.total >= 4);
+  const clips = dictation.clips.length;
+  const pool = quizPool(testCards()).length;
+  const types = [["choice", "Multiple choice"], ["typing", "Typing"], ["listening", `Listening${clips ? "" : " (no saved lines yet)"}`]];
+  return `<div class="test-setup">
+    <div class="test-setup__row">
+      <label class="learn-select"><span>Deck</span><select id="test-deck"><option value="all">All ${escapeHtml(languageName(state.targetLanguage))} cards</option>${decks.map((deck) => `<option value="${escapeHtml(deck.key)}" ${deck.key === testSetup.deckKey ? "selected" : ""}>${escapeHtml(deck.name)}</option>`).join("")}</select></label>
+      <div class="ui-segmented" role="group" aria-label="Questions">${[10, 20, 30].map((size) => `<button class="ui-segmented__item" type="button" data-test-size="${size}" aria-pressed="${testSetup.size === size}">${size} questions</button>`).join("")}</div>
+    </div>
+    <div class="test-setup__row test-setup__types" role="group" aria-label="Question types">${types.map(([key, label]) => `<label class="ui-check"><input type="checkbox" data-test-type="${key}" ${testSetup.types[key] ? "checked" : ""}${key === "listening" && !clips ? " disabled" : ""}><span class="ui-check__box" aria-hidden="true"></span>${escapeHtml(label)}</label>`).join("")}</div>
+    <div class="test-setup__row">${buttonMarkup({ label: "Start test", variant: "primary", size: "lg", attrs: { id: "test-start", ...(pool >= 4 || clips ? {} : { disabled: true }) } })}<span class="learn-footnote">${pool.toLocaleString()} cards ready${clips ? `, ${clips.toLocaleString()} saved lines` : ""}</span></div>
+  </div>`;
+}
+
+function renderTestResults(stage) {
+  const { result, questions, answers } = testSession;
+  const byType = new Map();
+  questions.forEach((question, index) => {
+    const label = TEST_TYPE_LABELS[question.type] || question.type;
+    const row = byType.get(label) || { right: 0, total: 0 };
+    row.total += 1;
+    row.right += answers[index]?.correct ? 1 : 0;
+    byType.set(label, row);
+  });
+  const mistakes = questions.map((question, index) => ({ question, answer: answers[index] })).filter(({ answer }) => !answer?.correct);
+  const shown = (question, answer) => question.type === "choice" || question.type === "listen-choice" ? question.options[Number(answer.response)] ?? "—" : String(answer.response || "—");
+  stage.innerHTML = `<article class="test-card test-results">
+    <div class="test-results__score"><strong>${result.score}%</strong><span>${result.correct} of ${result.total} right</span></div>
+    <div class="test-results__types">${[...byType.entries()].map(([label, row]) => `<span class="ui-chip">${escapeHtml(label)} <b>${row.right}/${row.total}</b></span>`).join("")}</div>
+    ${mistakes.length ? `<h3>To go over</h3><ol class="test-mistakes">${mistakes.map(({ question, answer }) => `<li><span class="test-mistakes__prompt">${escapeHtml(question.prompt || (question.type === "dictation" || question.type === "listen-choice" ? "Listening" : ""))}</span><span class="test-mistakes__yours">${escapeHtml(shown(question, answer))}</span><span class="test-mistakes__right">${escapeHtml(question.answer)}</span></li>`).join("")}</ol>` : "<p>No mistakes.</p>"}
+    <div class="test-results__actions">${buttonMarkup({ label: "New test", variant: "primary", attrs: { id: "test-restart" } })}${buttonMarkup({ label: "Change setup", variant: "ghost", attrs: { id: "test-setup-back" } })}</div>
+  </article>`;
+}
+
+function renderTestStage() {
+  const stage = $("#test-stage");
+  if (!stage) return;
+  if (!testSession) {
+    stage.innerHTML = testSetupMarkup();
+    return;
+  }
+  if (testSession.completed) {
+    renderTestResults(stage);
+    return;
+  }
+  const question = currentTestQuestion();
+  const progress = `<div class="test-progress"><span>${testSession.index + 1} / ${testSession.questions.length}</span><div class="ui-progress" aria-hidden="true"><span style="width:${Math.round((testSession.index / testSession.questions.length) * 100)}%"></span></div><button class="ui-btn ui-btn--ghost ui-btn--sm" type="button" id="test-quit">Stop</button></div>`;
+  const lang = escapeHtml(state.targetLanguage.toLowerCase());
+  let body = "";
+  if (question.type === "choice" || question.type === "listen-choice") {
+    const listening = question.type === "listen-choice";
+    body = `${listening ? `<p class="quiz-card__ask">Which line do you hear?</p><button class="dictation-play" type="button" data-test-play>${icon("play")}<span>Play</span></button>` : `<p class="quiz-card__ask">${question.reverse ? "Which word means" : "What does this mean?"}</p><div class="quiz-card__prompt" lang="${question.reverse ? escapeHtml(state.baseLanguage.toLowerCase()) : lang}">${escapeHtml(question.prompt)}</div>`}
+      <div class="quiz-options" role="group" aria-label="Answers">${question.options.map((option, index) => `<button class="quiz-option" type="button" data-test-option="${index}"><kbd class="ui-kbd">${index + 1}</kbd><span>${escapeHtml(option)}</span></button>`).join("")}</div>`;
+  } else if (question.type === "typing") {
+    body = `<p class="quiz-card__ask">${question.reverse ? "Type the word for" : "Type the meaning of"}</p><div class="quiz-card__prompt" lang="${question.reverse ? escapeHtml(state.baseLanguage.toLowerCase()) : lang}">${escapeHtml(question.prompt)}</div>
+      <form class="test-type-form" data-test-form><input id="test-answer" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" aria-label="Your answer"${question.reverse ? ` lang="${lang}"` : ""}>${buttonMarkup({ label: "Next", variant: "primary", type: "submit" })}</form>`;
+  } else {
+    body = `<p class="quiz-card__ask">Type what you hear</p><button class="dictation-play" type="button" data-test-play>${icon("play")}<span>Play</span></button>
+      <form class="test-type-form" data-test-form><textarea id="test-answer" rows="2" autocomplete="off" spellcheck="false" lang="${lang}" aria-label="What you heard"></textarea>${buttonMarkup({ label: "Next", variant: "primary", type: "submit" })}</form>`;
+  }
+  stage.innerHTML = `<article class="test-card quiz-card">${progress}${body}</article>`;
+  if (question.audioUrl) playStudySounds([question.audioUrl]);
+  queueMicrotask(() => $("#test-answer")?.focus());
+}
+
+function renderTest() {
+  if (dictation.loadedFor !== state.targetLanguage && dictation.status !== "loading") void loadDictationClips({ force: true });
+  if (storedDecksState === "idle") void loadStoredDecks();
+  renderTestHistory();
+  renderTestStage();
+}
+
+/* ---------------------------------------------------------------- keys and wiring */
+
+// Study keys (Anki's): Space/Enter show or Good, 1–4 rate, R replay, U undo, Esc decks.
+function handleStudyKey(event) {
+  if (!viewActive("study") || !studyView.deckKey) return false;
+  if (event.ctrlKey || event.metaKey || event.altKey) return false;
+  const card = currentStudyCard();
+  if (event.code === "Escape") { closeStudySession(); return true; }
+  if (event.key?.toLowerCase() === "u") { event.preventDefault(); undoStudyRating(); return true; }
+  if (!card) return false;
+  if ((event.code === "Space" || event.code === "Enter") && !studyView.revealed) { event.preventDefault(); revealStudyAnswer(); return true; }
+  if ((event.code === "Space" || event.code === "Enter") && studyView.revealed && (!event.target?.closest?.("button") || event.target.id === "show-answer" || event.target.classList?.contains("study-rating"))) { event.preventDefault(); rateStudyCard("good"); return true; }
+  const rating = { 1: "again", 2: "hard", 3: "good", 4: "easy" }[event.key];
+  if (rating && studyView.revealed) { event.preventDefault(); rateStudyCard(rating); return true; }
+  if (event.key?.toLowerCase() === "r") { event.preventDefault(); replayStudyCard(); return true; }
+  return false;
+}
+
+function handleQuizKey(event) {
+  if (!viewActive("review") || reviewMode === "voice" || event.ctrlKey || event.metaKey || event.altKey) return false;
+  if (!quiz.question) return false;
+  if (quiz.picked === null && /^[1-4]$/.test(event.key) && Number(event.key) <= quiz.question.options.length) { event.preventDefault(); answerQuiz(Number(event.key) - 1); return true; }
+  if (quiz.picked !== null && event.code === "Enter") { event.preventDefault(); quiz.question = null; renderQuiz(); return true; }
+  return false;
+}
+
+function handleTestKey(event, typing) {
+  if (!viewActive("test") || event.metaKey || event.altKey) return false;
+  const question = currentTestQuestion();
+  if (!question) return false;
+  if (event.ctrlKey && event.code === "Space" && question.audioUrl) { event.preventDefault(); playStudySounds([question.audioUrl]); return true; }
+  if (!typing && (question.type === "choice" || question.type === "listen-choice") && /^[1-4]$/.test(event.key) && Number(event.key) <= question.options.length) {
+    event.preventDefault();
+    answerTestQuestion(Number(event.key) - 1);
+    return true;
+  }
+  return false;
+}
+
+function wireLearningViews() {
+  bindTabs($("#study-tabs"), { onChange: (value) => { studyView.tab = value; renderStudyPage(); } });
+  $("#study-target-language")?.addEventListener("change", (event) => changeReviewTargetLanguage(event.target.value));
+  $("#study-add-top")?.addEventListener("click", () => { void openTopWordsDialog(); });
+  $("#study-add-ankiweb")?.addEventListener("click", openAnkiwebDialog);
+  $("#study-deck-list")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.dataset.emptyAction === "top") { void openTopWordsDialog(); return; }
+    if (button.dataset.emptyAction === "ankiweb") { openAnkiwebDialog(); return; }
+    const row = button.closest("[data-deck-key]");
+    const deck = row ? studyDecks().find((item) => item.key === row.dataset.deckKey) : null;
+    if (!deck) return;
+    if (button.hasAttribute("data-deck-open")) openStudyDeck(deck.key);
+    else if (button.hasAttribute("data-deck-menu")) { studyView.menuKey = studyView.menuKey === deck.key ? null : deck.key; renderStudyPage(); }
+    else if (button.dataset.deckExport) void exportCardsToAnki(button.dataset.deckExport, { cards: deck.cards, deckName: deck.name, button });
+    else if (button.hasAttribute("data-deck-delete")) void deleteStudyDeck(deck);
+  });
+  $("#study-session-back")?.addEventListener("click", closeStudySession);
+  $("#study-stage")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.id === "show-answer") revealStudyAnswer();
+    else if (button.dataset.rating) rateStudyCard(button.dataset.rating);
+    else if (button.hasAttribute("data-study-replay")) replayStudyCard();
+    else if (button.hasAttribute("data-study-undo")) undoStudyRating();
+    else if (button.hasAttribute("data-study-suspend")) suspendStudyCard();
+    else if (button.hasAttribute("data-study-back")) closeStudySession();
+  });
+  $("#dictation-stage")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.dataset.dictationStart) startDictation(button.dataset.dictationStart);
+    else if (button.hasAttribute("data-dictation-exit")) { dictation.group = null; dictation.results = []; renderDictation(); }
+    else if (button.id === "dictation-play") { const clip = currentDictationClip(); if (clip) playStudySounds([clip.audioUrl]); }
+    else if (button.id === "dictation-next") nextDictation();
+  });
+  $("#dictation-stage")?.addEventListener("submit", (event) => { event.preventDefault(); submitDictationAnswer(); });
+  $("#dictation-stage")?.addEventListener("keydown", (event) => {
+    if (event.target.id === "dictation-input" && event.key === "Enter" && !event.shiftKey) { event.preventDefault(); submitDictationAnswer(); }
+    else if (event.ctrlKey && event.code === "Space") { event.preventDefault(); const clip = currentDictationClip(); if (clip) playStudySounds([clip.audioUrl]); }
+  });
+  $("#top-words-options")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-top-size]");
+    if (button && !button.disabled) void addTopWords(Number(button.dataset.topSize), button);
+  });
+  $("#ankiweb-search-form")?.addEventListener("submit", (event) => { event.preventDefault(); void searchAnkiweb($("#ankiweb-query").value); });
+  $("#ankiweb-results")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    const row = button?.closest("[data-shared-id]");
+    if (!row) return;
+    const sharedId = Number(row.dataset.sharedId);
+    if (button.hasAttribute("data-ankiweb-toggle")) void toggleAnkiwebDetails(sharedId);
+    else if (button.hasAttribute("data-ankiweb-add")) void addAnkiwebDeck(sharedId);
+    else if (button.hasAttribute("data-ankiweb-study")) { $("#ankiweb-dialog").close(); studyView.tab = "decks"; switchView("study"); openStudyDeck(`store:ankiweb-${sharedId}`); }
+  });
+  $("#quiz-panel")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.dataset.quizOption !== undefined) answerQuiz(Number(button.dataset.quizOption));
+    else if (button.dataset.quizDirection) { stopStudySounds(); quiz.direction = button.dataset.quizDirection; quiz.question = null; if (quiz.direction === "listening") void loadDictationClips({ force: dictation.status === "error" }); renderQuiz(); }
+    else if (button.hasAttribute("data-quiz-play")) { if (quiz.question?.audioUrl) playStudySounds([quiz.question.audioUrl]); }
+    else if (button.id === "quiz-next") { stopStudySounds(); quiz.question = null; renderQuiz(); }
+  });
+  $("#quiz-panel")?.addEventListener("change", (event) => {
+    if (event.target.id === "quiz-deck") { quiz.deckKey = event.target.value; quiz.question = null; quiz.recent = []; renderQuiz(); }
+  });
+  $("#test-stage")?.addEventListener("click", (event) => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.id === "test-start" || button.id === "test-restart") startTestSession();
+    else if (button.id === "test-setup-back" || button.id === "test-quit") { testSession = null; stopStudySounds(); renderTest(); }
+    else if (button.dataset.testSize) { testSetup.size = Number(button.dataset.testSize); renderTest(); }
+    else if (button.dataset.testOption !== undefined) answerTestQuestion(Number(button.dataset.testOption));
+    else if (button.hasAttribute("data-test-play")) { const question = currentTestQuestion(); if (question?.audioUrl) playStudySounds([question.audioUrl]); }
+  });
+  $("#test-stage")?.addEventListener("change", (event) => {
+    if (event.target.id === "test-deck") { testSetup.deckKey = event.target.value; renderTest(); }
+    else if (event.target.dataset.testType) { testSetup.types[event.target.dataset.testType] = event.target.checked; renderTest(); }
+  });
+  $("#test-stage")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const input = $("#test-answer");
+    if (input) answerTestQuestion(input.value.trim());
+  });
+  $("#test-stage")?.addEventListener("keydown", (event) => {
+    if (event.target.id === "test-answer" && event.target.tagName === "TEXTAREA" && event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      answerTestQuestion(event.target.value.trim());
+    }
+  });
+}
+
+function renderStats() {
+  const cues = allPrimaryCues();
+  const analysis = currentAnalysis();
+  $("#cue-stat").textContent = cues.length;
+  $("#word-stat").textContent = analysis.words.length;
+  $("#card-stat").textContent = state.cards.length;
+}
+
+function renderSubtitleWorkspace({ includeLearning = true } = {}) {
+  if (!learningEnabled) {
+    renderTracks();
+    renderSubtitles();
+    updatePlayerPreferenceButtons();
+    return;
+  }
+  renderTracks();
+  renderSubtitles();
+  if (includeLearning) {
+    renderStats();
+    if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+  }
+  updatePlayerPreferenceButtons();
+}
+
+function renderAll() {
+  renderTracks();
+  renderSubtitles();
+  if (learningEnabled) {
+    renderStudy();
+    renderReview();
+    renderTest();
+    renderStats();
+  }
+  renderLibrary();
+  if (state.homeLoaded) renderHome();
+  renderSettings();
+  renderTitlePage();
+  updatePlayerPreferenceButtons();
+  updateChapterButtons();
+}
+
+const calendarUi = createCalendarView({
+  root: $("#calendar-root"),
+  getSeries: () => buildLibrarySeries(),
+  getChapterList: (id, callback) => catalogChapterList(id, callback),
+  openTitle: (event) => {
+    if (event.seriesKey && buildLibrarySeries().some((series) => series.key === event.seriesKey))
+      openLibrarySeries(event.seriesKey);
+    else if (event.catalogId) openTitlePage({ id: event.catalogId, type: event.type === "movie" ? "movie" : "series" });
+  },
+});
+$("#calendar-root")?.addEventListener("calendar-open-request", () => switchView("calendar"));
+
+const VIEW_ROUTES = Object.freeze({ home: "/home", watch: "/watch", library: "/library", calendar: "/calendar", study: "/study", review: "/review", test: "/test", settings: "/settings", title: "/title" });
+const ROUTE_VIEWS = Object.freeze(Object.fromEntries(Object.entries(VIEW_ROUTES).map(([view, route]) => [route, view])));
+const LAST_WATCH_SELECTION_KEY = "lvl-last-watch-selection-v1";
+let watchRestoreReady = false;
+let watchRestoreStarted = false;
+
+function rememberWatchSelection(libraryId, fileIndex) {
+  if (!libraryId || !Number.isInteger(Number(fileIndex))) return;
+  try {
+    localStorage.setItem(LAST_WATCH_SELECTION_KEY, JSON.stringify({ libraryId, fileIndex: Number(fileIndex) }));
+  } catch (error) {
+    console.warn("Could not save the last Watch selection:", error);
+  }
+}
+
+function lastWatchSelection() {
+  let saved = null;
+  try { saved = JSON.parse(localStorage.getItem(LAST_WATCH_SELECTION_KEY) || "null"); } catch {}
+  const candidates = [saved, ...state.library.filter((entry) => entry.lastPlayedAt)
+    .sort((a, b) => Number(b.lastPlayedAt) - Number(a.lastPlayedAt))
+    .map((entry) => ({ libraryId: entry.id, fileIndex: entry.lastPlayedFileIndex }))];
+  for (const candidate of candidates) {
+    const entry = libraryEntryById(candidate?.libraryId);
+    if (candidate?.fileIndex === null || candidate?.fileIndex === undefined || candidate?.fileIndex === "") continue;
+    const fileIndex = Number(candidate?.fileIndex);
+    const episode = entry?.episodes?.find((item) => Number(item.fileIndex) === fileIndex);
+    // Older Library snapshots may contain the source but no chapter listing.
+    // Torrent resolution can still reopen the selected file by its saved index.
+    if (entry?.magnet && Number.isInteger(fileIndex) && fileIndex >= 0)
+      return { entry, episode: episode || { fileIndex } };
+  }
+  return null;
+}
+
+function restoreLastWatchOnVisit() {
+  if (!watchRestoreReady || watchRestoreStarted || !viewActive("watch")
+    || state.currentSource?.kind !== "idle" || watchPendingSelection) return;
+  const target = lastWatchSelection();
+  if (!target) return;
+  watchRestoreStarted = true;
+  const progress = target.episode.progress;
+  const atMs = !progress?.finished && Number(progress?.positionMs) < Number(progress?.durationMs) * 0.92
+    ? Math.max(0, Number(progress?.positionMs) || 0) : 0;
+  void playLibraryEpisode(target.entry.id, Number(target.episode.fileIndex), { resumeAtSeconds: atMs / 1000 });
+}
+
+function viewFromLocation() {
+  const pathname = window.location.pathname.replace(/\/$/, "") || "/";
+  return ROUTE_VIEWS[pathname] || (pathname === "/tests" ? "test" : "home");
+}
+
+// A single live video/subtitle DOM is shared by the normal, site-floating and
+// browser-managed always-on-top Document PiP surfaces. No playback recreation.
+const FLOAT_AUTO_KEY = "lvl-floating-auto-v1";
+// v2 does not carry forward older native-PiP selections: the default is the
+// borderless in-app window. Desktop PiP remains an explicit Settings opt-in.
+const FLOAT_SCOPE_KEY = "lvl-floating-scope-v2";
+const floatingPrefs = {
+  auto: localStorage.getItem(FLOAT_AUTO_KEY) !== "0",
+  // Site-floating has no browser-controlled origin/title strip. Keep an
+  // explicitly saved desktop choice for users who need cross-app topmost PiP.
+  scope: localStorage.getItem(FLOAT_SCOPE_KEY) === "desktop" ? "desktop" : "site",
+};
+let floatingManual = false;
+let floatingSiteBounds = null;
+let floatingDesktopWindow = null;
+let floatingDesktopPending = false;
+let floatingSeekScrubbing = false;
+let floatingFrameAnchor = null;
+let floatingDesiredDesktop = false;
+let floatingControlsIdleTimer = null;
+let floatingControlHeld = false;
+let floatingControlsLastActivityAt = 0;
+
+function scheduleFloatingControlsIdle(delayMs) {
+  floatingControlsIdleTimer = window.setTimeout(() => {
+    floatingControlsIdleTimer = null;
+    const actions = $("#floating-player-actions");
+    if (!actions || actions.hidden) return;
+    if (floatingControlHeld || floatingSeekScrubbing || $("#player-subtitle-menu")?.hidden === false) {
+      floatingControlsLastActivityAt = Date.now();
+      scheduleFloatingControlsIdle(2000);
+      return;
+    }
+    const remaining = 2000 - (Date.now() - floatingControlsLastActivityAt);
+    if (remaining > 0) {
+      scheduleFloatingControlsIdle(remaining);
+      return;
+    }
+    actions.classList.add("is-idle");
+  }, delayMs);
+}
+
+function revealFloatingControls() {
+  const actions = $("#floating-player-actions");
+  if (!actions || actions.hidden) return;
+  actions.classList.remove("is-idle");
+  floatingControlsLastActivityAt = Date.now();
+  // Pointermove may fire dozens of times a second. One pending timer is enough:
+  // when it fires, it checks the last actual activity before fading controls.
+  if (floatingControlsIdleTimer === null) scheduleFloatingControlsIdle(2000);
+}
+
+function floatMayDisplay() {
+  return frame.classList.contains("has-video") && !video.ended && !linePreview.active && !linePreview.pending;
+}
+
+function updateFloatingControls() {
+  const actions = $("#floating-player-actions");
+  if (actions) {
+    const wasHidden = actions.hidden;
+    actions.hidden = !$("#view-watch")?.classList.contains("is-floating") && !floatingDesktopWindow;
+    if (!actions.hidden && wasHidden) revealFloatingControls();
+    if (actions.hidden) {
+      window.clearTimeout(floatingControlsIdleTimer);
+      floatingControlsIdleTimer = null;
+      floatingControlHeld = false;
+      actions.classList.remove("is-idle");
+    }
+  }
+  const pause = $("#floating-player-pause");
+  if (pause) {
+    pause.classList.toggle("is-playing", playerIsPlaying());
+    pause.setAttribute("aria-label", playerIsPlaying() ? "Pause video" : "Play video");
+  }
+  const mute = $("#floating-player-mute");
+  if (mute) {
+    mute.classList.toggle("is-muted", playerWantsMuted() || video.volume === 0);
+    mute.setAttribute("aria-label", playerWantsMuted() || video.volume === 0 ? "Unmute" : "Mute");
+  }
+  const volume = $("#floating-player-volume");
+  if (volume) volume.value = String(playerWantsMuted() ? 0 : video.volume);
+  const progress = $("#floating-player-progress");
+  const durationMs = state.mediaDurationMs || (Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0);
+  const elapsed = Math.max(0, absolutePlaybackSeconds());
+  if (progress) {
+    progress.max = String(Math.max(1, durationMs / 1000));
+    if (!floatingSeekScrubbing) progress.value = String(Math.min(elapsed, durationMs / 1000 || elapsed));
+  }
+  const time = $("#floating-player-time");
+  if (time) time.textContent = `${formatTime((floatingSeekScrubbing ? Number(progress?.value) || 0 : elapsed) * 1000)} / ${durationMs ? formatTime(durationMs) : "--:--"}`;
+}
+
+function clampSiteFloatBounds(bounds) {
+  const maxWidth = Math.max(180, Math.min(window.innerWidth - 16, (window.innerHeight - 16) * 16 / 9));
+  const width = Math.min(maxWidth, Math.max(Math.min(260, maxWidth), Number(bounds?.width) || 380));
+  const height = width * 9 / 16;
+  return {
+    width,
+    x: Math.min(Math.max(8, Number(bounds?.x) || 8), Math.max(8, window.innerWidth - width - 8)),
+    y: Math.min(Math.max(8, Number(bounds?.y) || 8), Math.max(8, window.innerHeight - height - 8)),
+  };
+}
+
+function positionSiteFloating() {
+  const watch = $("#view-watch");
+  if (!watch) return;
+  if (!floatingSiteBounds) {
+    const width = Math.min(380, Math.max(180, window.innerWidth - 16));
+    floatingSiteBounds = {
+      width,
+      x: Math.max(8, window.innerWidth - width - 16),
+      y: Math.max(8, window.innerHeight - width * 9 / 16 - 16),
+    };
+  }
+  floatingSiteBounds = clampSiteFloatBounds(floatingSiteBounds);
+  watch.style.left = `${floatingSiteBounds.x}px`;
+  watch.style.top = `${floatingSiteBounds.y}px`;
+  watch.style.width = `${floatingSiteBounds.width}px`;
+}
+
+function showSiteFloating(show) {
+  const watch = $("#view-watch");
+  watch?.classList.toggle("is-floating", Boolean(show));
+  frame.style.cursor = show ? "grab" : "";
+  if (show) positionSiteFloating();
+  else if (watch) {
+    // Fixed-position popup geometry must not constrain the normal Watch layout.
+    watch.style.left = "";
+    watch.style.top = "";
+    watch.style.width = "";
+    closePlayerPopovers();
+  }
+  updateFloatingControls();
+}
+
+function restoreDocumentFloating({ closeWindow = false } = {}) {
+  const pip = floatingDesktopWindow;
+  floatingDesktopWindow = null;
+  frame.classList.remove("is-document-pip");
+  if (floatingFrameAnchor?.parentNode) {
+    floatingFrameAnchor.parentNode.insertBefore(frame, floatingFrameAnchor);
+    floatingFrameAnchor.remove();
+  }
+  floatingFrameAnchor = null;
+  const placeholder = $("#floating-player-placeholder");
+  if (placeholder) placeholder.hidden = true;
+  if (closeWindow && pip && !pip.closed) pip.close();
+  updateFloatingControls();
+}
+
+function closeDesktopFloating() {
+  floatingDesiredDesktop = false;
+  if (floatingDesktopWindow) restoreDocumentFloating({ closeWindow: true });
+  if (document.pictureInPictureElement === video) {
+    void document.exitPictureInPicture().catch(() => {});
+  }
+}
+
+// This function MUST be called synchronously during a click/keypress when
+// requesting PiP: browsers require transient user activation.
+async function openDesktopFloating() {
+  if (floatingDesktopPending || floatingDesktopWindow || document.pictureInPictureElement === video) return true;
+  if (!floatMayDisplay()) return false;
+  floatingDesiredDesktop = true;
+  floatingDesktopPending = true;
+  try {
+    if (window.documentPictureInPicture?.requestWindow) {
+      // Chromium owns the PiP origin/title strip. We cannot hide that native
+      // chrome, but its redundant "back to tab" button can be suppressed: LVL
+      // already provides its own Return control inside the floating player.
+      const pip = await window.documentPictureInPicture.requestWindow({ width: 460, height: 302, disallowReturnToOpener: true });
+      if (!floatingDesiredDesktop) { pip.close(); return false; }
+      floatingDesktopWindow = pip;
+      const styles = [...document.querySelectorAll('link[rel="stylesheet"],style')];
+      styles.forEach((node) => {
+        const clone = node.cloneNode(true);
+        if (node.tagName === "LINK") clone.href = node.href;
+        pip.document.head.append(clone);
+      });
+      const base = pip.document.createElement("style");
+      base.textContent = `html,body{height:100%;width:100%;margin:0;overflow:hidden;background:#000}
+        body{display:block;padding:0} #video-frame{position:relative;display:block!important;width:100%!important;
+        height:100dvh!important;min-height:0!important;aspect-ratio:auto!important;margin:0!important;
+        border:0!important;border-radius:0!important;box-shadow:none!important}
+        #compat-controls{display:none!important} #floating-player-actions{display:flex!important}`;
+      pip.document.head.append(base);
+      if (!floatingFrameAnchor) {
+        floatingFrameAnchor = document.createComment("LVL live video home");
+        frame.parentNode.insertBefore(floatingFrameAnchor, frame);
+      }
+      frame.classList.add("is-document-pip");
+      pip.document.body.append(frame);
+      const placeholder = $("#floating-player-placeholder");
+      if (placeholder) placeholder.hidden = false;
+      pip.addEventListener("pagehide", () => {
+        if (floatingDesktopWindow !== pip) return;
+        restoreDocumentFloating();
+        // The browser's own window close must not leave invisible audio playing
+        // on a hidden Watch route.
+        floatingManual = false;
+        if (!viewActive("watch")) video.pause();
+      }, { once: true });
+      showSiteFloating(false);
+      updateFloatingControls();
+      return true;
+    }
+    // Classic video PiP remains a fallback on Chromium versions without
+    // Document PiP; its browser-provided controls cannot show LVL subtitles.
+    if (document.pictureInPictureEnabled && typeof video.requestPictureInPicture === "function") {
+      await video.requestPictureInPicture();
+      if (!floatingDesiredDesktop) { await document.exitPictureInPicture().catch(() => {}); return false; }
+      showSiteFloating(false);
+      return true;
+    }
+    throw new Error("This browser does not support a desktop picture-in-picture window.");
+  } catch (error) {
+    console.warn("Floating desktop player unavailable:", error);
+    if (floatMayDisplay()) showSiteFloating(true);
+    toast("Desktop popup unavailable; showing the player inside LVL instead.", { tone: "error" });
+    return false;
+  } finally {
+    floatingDesktopPending = false;
+  }
+}
+
+function updateFloatingPlayback(destination) {
+  const leaving = destination !== "watch";
+  const shouldFloat = floatMayDisplay() && (floatingManual || (leaving && floatingPrefs.auto && !video.paused));
+  if (!leaving && !floatingManual) {
+    closeDesktopFloating();
+    showSiteFloating(false);
+    return;
+  }
+  if (!shouldFloat) {
+    showSiteFloating(false);
+    return;
+  }
+  if (floatingPrefs.scope === "desktop") {
+    showSiteFloating(false);
+    if (!floatingDesktopWindow && !floatingDesktopPending && document.pictureInPictureElement !== video) void openDesktopFloating();
+  } else {
+    closeDesktopFloating();
+    showSiteFloating(true);
+  }
+}
+
+function stopPlaybackIfHiddenAfterNavigation(destination) {
+  if (destination === "watch" || !viewActive("watch")) return;
+  // A source may still be resolving when Home is opened. The popup decision
+  // was made before media could play: never let that old request start hidden
+  // audio later unless an actual floating/PiP surface remains active.
+  if ($("#view-watch")?.classList.contains("is-floating") || floatingDesktopWindow
+    || floatingDesktopPending || document.pictureInPictureElement === video) return;
+  playbackLoadRequestId += 1;
+  cancelTranscodeStart();
+  libraryPlaybackResolveController?.abort("left player without floating playback");
+  libraryPlaybackResolveController = null;
+  libraryPlaybackPendingMagnet = "";
+  video.pause();
+  clearBufferingTimer();
+  resetRecoveryDisplay();
+}
+
+// restoreScroll: Back and Forward return to where the page was scrolled (the title page is
+// opened at its top).
+let lastRandomEntry = null;
+let suppressRandomFocusPreview = false;
+function switchView(view, { historyMode = "push", restoreScroll = false } = {}) {
+  if (!learningEnabled && ["study", "review", "test"].includes(view)) view = "home";
+  if (view === "watch" && (linePreview.active || linePreview.pending)) return;
+  if (catalogSearchIsOpen()) closeCatalogSearch();
+  if (view === "watch") linePreview.preventBackgroundPlayback = false;
+  if (view === "watch") floatingManual = false;
+  if (!VIEW_ROUTES[view]) view = "home";
+  updateFloatingPlayback(view);
+  stopPlaybackIfHiddenAfterNavigation(view);
+  if (view !== "watch") {
+    clearAutoNext();
+    closePlayerPopovers();
+    if ($("#player-subtitle-dialog")?.open) $("#player-subtitle-dialog").close();
+  }
+  if (lastViewKey) viewScroll.set(lastViewKey, window.scrollY);
+  if (view !== "home" && state.homeLoaded && $("#view-home")?.classList.contains("is-active")) {
+    homeSavedPlace = captureHomePlace($("#home-hero"), $("#home-rows"));
+  }
+  $$(".view").forEach((element) => element.classList.toggle("is-active", element.id === `view-${view}`));
+  const topbarLabel = $("#app-topbar-view-label");
+  if (topbarLabel) topbarLabel.textContent = t(({ home: "Home", watch: "Watch", library: "Library", calendar: "Calendar", study: "Study", review: "Review", test: "Tests", settings: "Settings", title: "Library" })[view]);
+  if ($(".app-shell")?.classList.contains("sidebar-expanded")) setSidebarExpanded(false, { persist: false });
+  if (view !== "title") $$(".nav-btn").forEach((button) => button.classList.toggle("is-active", button.dataset.view === view));
+  const route = view === "title" ? `${VIEW_ROUTES.title}${window.location.search}` : VIEW_ROUTES[view];
+  const here = view === "title" ? `${window.location.pathname}${window.location.search}` : window.location.pathname;
+  if (historyMode === "replace") window.history.replaceState({ view }, "", route);
+  else if (historyMode === "push" && here !== route) window.history.pushState({ view }, "", route);
+  if (view === "title") renderTitlePage();
+  else if (document.title !== DEFAULT_DOCUMENT_TITLE) document.title = DEFAULT_DOCUMENT_TITLE;
+  if (typeof refreshRandomPickIndicator === "function") refreshRandomPickIndicator();
+  const previousKey = lastViewKey;
+  lastViewKey = view === "title" ? `title${window.location.search}` : view;
+  if (restoreScroll) {
+    const top = viewScroll.get(lastViewKey) || 0;
+    requestAnimationFrame(() => window.scrollTo({ top, behavior: "instant" }));
+  } else if (previousKey && previousKey !== lastViewKey) {
+    window.scrollTo({ top: 0, behavior: "instant" });
+  }
+  if (view === "study") renderStudyPage();
+  if (view === "review") renderReview();
+  if (view === "test") renderTest();
+  if (view === "library") {
+    renderLibrary();
+    void loadHomeCatalog();
+  }
+  if (view === "calendar") calendarUi.activate();
+  else calendarUi.deactivate();
+  if (view === "settings") {
+    renderSettings();
+    if (learningEnabled) {
+      if (!coachProviders.length) void refreshCoachProviders();
+      if (!browserCoachStatus && !browserCoachChecking) void refreshBrowserCoachStatus();
+    }
+  }
+  if (view === "review" && reviewMode === "voice" && !coachProviders.length) void refreshCoachProviders();
+  if (view === "home") void loadHomeCatalog();
+  if (view === "watch") restoreLastWatchOnVisit();
+}
+
+function setLearningEnabled(enabled) {
+  const next = LEARNING_DEV_ENABLED && Boolean(enabled);
+  if (learningEnabled === next) return;
+  learningEnabled = next;
+  localStorage.setItem(LEARNING_ENABLED_KEY, next ? "1" : "0");
+  document.documentElement.dataset.learningMode = next ? "on" : "off";
+  if (!next) {
+    window.clearTimeout(clipPlanner.timer);
+    // Close learning popovers and active speech sessions. Playback and saved
+    // subtitle/card data are left alone so enabling the feature restores them.
+    for (const id of ["line-preview-dialog", "library-words-dialog", "top-words-dialog", "ankiweb-dialog"]) {
+      const dialog = $(`#${id}`);
+      if (dialog?.open) dialog.close();
+    }
+    if (voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting) void closeLiveCoachSession();
+    try { voiceRecognition?.abort?.(); } catch {}
+    stopVoiceSpeech({ render: false });
+    stopStudySounds();
+    if (settingsView.tab === "coach") {
+      settingsView.tab = "general";
+      localStorage.setItem("blackline-settings-tab", "general");
+    }
+    if (["study", "review", "test"].some((view) => viewActive(view))) switchView("home", { historyMode: "replace" });
+  }
+  renderSettingsTabs();
+  renderSubtitles();
+  if (next) {
+    renderAll();
+    // Re-enabling while a video is already playing must restart the learning
+    // work; the player's `playing` event will not fire again automatically.
+    if (frame.classList.contains("has-video") && !video.paused) {
+      scheduleClipStep(5000);
+    }
+    if (viewActive("settings")) {
+      if (!coachProviders.length) void refreshCoachProviders();
+      if (!browserCoachStatus && !browserCoachChecking) void refreshBrowserCoachStatus();
+    }
+    if (state.wordColoring || state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
+  }
+}
+
+async function handleSubtitleFiles(files) {
+  let duplicates = 0;
+  for (const file of files) {
+    const text = await file.text();
+    const label = file.name.replace(/\.(srt|vtt)$/i, "");
+    const result = addSubtitleText(text, label);
+    if (!result.added) duplicates += 1;
+  }
+  renderSubtitleWorkspace();
+  if (duplicates) $("#media-status").textContent = `${duplicates} duplicate subtitle file${duplicates === 1 ? "" : "s"} skipped`;
+}
+
+function addSubtitleText(text, label, language = "", options = {}) {
+  const id = `track-${crypto.randomUUID()}`;
+  const cues = parseSubtitle(text, id);
+  if (!cues.length) throw new Error("No SRT/VTT cues were found in that subtitle file.");
+  const inferredLanguage = label.match(/(?:^|[._ -])(en|es|fr|de|it|pt|ja|jp|ko|zh)(?:$|[._ -])/i)?.[1] || "";
+  const languageGuess = normalizeTrackLanguage(language) || normalizeTrackLanguage(inferredLanguage) || `T${state.tracks.length + 1}`;
+  const source = state.currentSource ? structuredClone(state.currentSource) : null;
+  const sourceTag = source?.sourceTag || label;
+  const fingerprint = subtitleFingerprint(cues);
+  const duplicate = currentSourceTracks().find((track) => {
+    if (String(track.language || "").toUpperCase() !== languageGuess) return false;
+    return (track.fingerprint || subtitleFingerprint(track.cues)) === fingerprint;
+  });
+  if (duplicate) return { id: duplicate.id, added: false, duplicate: true, track: duplicate };
+  const isPreferred = preferredLanguagePair().includes(languageGuess);
+  const timelineFit = options.exactMedia ? { ratio: null, severeMismatch: false } : subtitleTimelineFit(cues);
+  state.tracks.push({
+    id,
+    label,
+    language: languageGuess,
+    visible: isPreferred,
+    offsetMs: 0,
+    syncMode: "constant",
+    syncAnchors: [],
+    cues,
+    source,
+    sourceTag,
+    origin: String(options.origin || "external"),
+    exactMedia: Boolean(options.exactMedia),
+    provider: String(options.provider || ""),
+    release: String(options.release || ""),
+    matchScore: Number(options.matchScore) || 0,
+    fingerprint,
+    timelineRatio: timelineFit.ratio,
+    timelineMismatch: timelineFit.severeMismatch,
+    romanizationState: "idle",
+  });
+  const addedTrack = state.tracks.find((track) => track.id === id);
+  if (!timelineFit.severeMismatch && currentSourceTracks().some((track) => track.id !== id && track.cues?.length)) {
+    syncTrackToBestReference(addedTrack, { initial: true });
+  }
+  applySavedSubtitleSync(addedTrack);
+  scheduleAudioSync(600);
+  if (languageGuess === state.targetLanguage || !state.selectedTrackId) state.selectedTrackId = id;
+  const visibleTracks = currentSourceTracks().filter((track) => track.visible);
+  if (visibleTracks.length > 2) addedTrack.visible = false;
+  if (isRomanizableLanguage(languageGuess) && state.subtitleStyle.romanization !== false) void ensureTrackRomanization(addedTrack);
+  if (timelineFit.severeMismatch) {
+    $("#media-status").textContent = `These subtitles may be for a different cut: they cover ${Math.round((timelineFit.ratio || 0) * 100)}% of the video`;
+  }
+  saveCurrentEpisodeAnalysis();
+  return { id, added: true, duplicate: false, track: addedTrack };
+}
+
+function setToolStatus(selector, message, error = false) {
+  const node = $(selector);
+  node.textContent = message;
+  node.classList.toggle("is-error", error);
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes);
+  if (!Number.isFinite(value) || value <= 0) return "SIZE UNKNOWN";
+  if (value >= 1073741824) return `${(value / 1073741824).toFixed(2)} GB`;
+  if (value >= 1048576) return `${(value / 1048576).toFixed(1)} MB`;
+  return `${Math.ceil(value / 1024)} KB`;
+}
+
+function episodeSortKey(name) {
+  const match = String(name).match(/S(\d{1,2})E(\d{1,3})/i) || String(name).match(/(?:^|\D)(\d{1,2})x(\d{1,3})(?:\D|$)/i);
+  if (!match) return null;
+  return Number(match[1]) * 1000 + Number(match[2]);
+}
+
+function sortedVideoFiles(files) {
+  return files.filter((file) => file.video).sort((a, b) => {
+    const aEpisode = episodeSortKey(a.name);
+    const bEpisode = episodeSortKey(b.name);
+    if (aEpisode !== null && bEpisode !== null) return aEpisode - bEpisode;
+    if (aEpisode !== null) return -1;
+    if (bEpisode !== null) return 1;
+    return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+  });
+}
+
+function partitionTorrentVideos(files) {
+  const videos = sortedVideoFiles(files);
+  const bestByEpisode = new Map();
+  videos.forEach((file) => {
+    const key = episodeSortKey(file.name);
+    if (key === null) return;
+    const current = bestByEpisode.get(key);
+    if (!current || Number(file.length || 0) > Number(current.length || 0)) bestByEpisode.set(key, file);
+  });
+  if (bestByEpisode.size < 2) return { primary: videos, extras: [] };
+  const primaryIndexes = new Set([...bestByEpisode.values()].map((file) => file.index));
+  return {
+    primary: videos.filter((file) => primaryIndexes.has(file.index)),
+    extras: videos.filter((file) => !primaryIndexes.has(file.index)),
+  };
+}
+
+function libraryEntryById(id) {
+  return state.library.find((entry) => entry.id === id);
+}
+
+function normalizeLibrarySourceMeta(sourceMeta, existing = null) {
+  const incoming = sourceMeta && typeof sourceMeta === "object" ? sourceMeta : {};
+  const previous = existing && typeof existing === "object" ? existing : {};
+  const providers = [...new Set([
+    ...(Array.isArray(previous.providers) ? previous.providers : []),
+    ...(Array.isArray(incoming.providers) ? incoming.providers : []),
+    previous.provider,
+    incoming.provider,
+  ].filter(Boolean).map(String))];
+  const audioLanguages = [...new Set([
+    ...(Array.isArray(previous.audioLanguages) ? previous.audioLanguages : []),
+    ...(Array.isArray(incoming.audioLanguages) ? incoming.audioLanguages : []),
+  ].filter(Boolean).map(String))];
+  const coveredEpisodes = [...new Set([
+    ...(Array.isArray(previous.coveredEpisodes) ? previous.coveredEpisodes : []),
+    ...(Array.isArray(incoming.coveredEpisodes) ? incoming.coveredEpisodes : []),
+  ].map(Number).filter((value) => Number.isInteger(value) && value >= 1))].sort((a, b) => a - b);
+  return {
+    provider: String(incoming.provider || previous.provider || providers[0] || "MANUAL"),
+    providers,
+    releaseName: String(incoming.releaseName || previous.releaseName || "").slice(0, 800),
+    quality: String(incoming.quality || previous.quality || "UNKNOWN"),
+    codec: String(incoming.codec || previous.codec || "UNKNOWN"),
+    peers: Number.isFinite(Number(incoming.peers)) ? Number(incoming.peers) : (Number(previous.peers) || 0),
+    sizeBytes: Number.isFinite(Number(incoming.sizeBytes)) ? Number(incoming.sizeBytes) : (Number(previous.sizeBytes) || 0),
+    audioLanguages,
+    filename: String(incoming.filename || previous.filename || "").slice(0, 500),
+    score: Number.isFinite(Number(incoming.score)) ? Number(incoming.score) : (Number(previous.score) || 0),
+    sourceKind: String(incoming.sourceKind || previous.sourceKind || ""),
+    packLabel: String(incoming.packLabel || previous.packLabel || "").slice(0, 60),
+    coverage: Number.isInteger(Number(incoming.coverage)) ? Number(incoming.coverage) : (Number(previous.coverage) || coveredEpisodes.length || 1),
+    totalSeasonEpisodes: Number.isInteger(Number(incoming.totalSeasonEpisodes)) ? Number(incoming.totalSeasonEpisodes) : (Number(previous.totalSeasonEpisodes) || 0),
+    coveredEpisodes,
+  };
+}
+
+function upsertLibrarySession(session, magnet = "", {
+  seriesKeyOverride = null,
+  displayTitleOverride = "",
+  coverUrlOverride = "",
+  catalogId = "",
+  catalogType = "",
+  mediaKind = "",
+  sourceMeta = null,
+  aliases = [],
+  fileIndexes = null,
+  chapterLabels = null,
+  render = true,
+} = {}) {
+  const id = String(session.infoHash || session.id || crypto.randomUUID()).toLowerCase();
+  const existing = libraryEntryById(id);
+  // Chapters added from a pack keep only the picked files; see libraryFileScope().
+  const scope = libraryFileScope(existing, fileIndexes);
+  const allFiles = session.files || [];
+  const files = scope ? allFiles.filter((file) => scope.includes(Number(file.index))) : allFiles;
+  const videos = sortedVideoFiles(files);
+  if (!videos.length) return null;
+  const { primary, extras } = partitionTorrentVideos(files);
+  const labels = { ...(existing?.chapterLabels || {}), ...(chapterLabels || {}) };
+  const collectionTitle = normalizeCollectionTitle(session.name, primary[0]?.name, videos[0]?.name);
+  const anchorSeries = seriesKeyOverride ? buildLibrarySeries().find((item) => item.key === seriesKeyOverride) : null;
+  const storedDisplayTitle = String(existing?.displayTitle || existing?.title || "").trim();
+  const storedLooksLikeRelease = /\b(?:2160p|1080p|720p|576p|480p|4K|WEB[- .]?DL|WEBRip|BluRay|BDRip|HDTV|REMUX|DDP(?:5[. ]?1)?|E-?AC-?3|H[ ._-]?26[45]|x26[45])\b/i.test(storedDisplayTitle);
+  const migratedDisplayTitle = storedLooksLikeRelease ? collectionTitle : storedDisplayTitle;
+  const seriesTitle = displayTitleOverride || anchorSeries?.title || migratedDisplayTitle || collectionTitle;
+  const previousEpisodes = new Map((existing?.episodes || []).map((episode) => [String(episode.fileIndex), episode]));
+  const makeEpisode = (file, isExtra = false) => {
+    const label = labels[String(file.index)];
+    const identity = label?.code ? { code: label.code, title: label.title || label.code } : episodeIdentity(file.name);
+    const previous = previousEpisodes.get(String(file.index));
+    return {
+      fileIndex: file.index,
+      name: file.name,
+      length: file.length,
+      needsTranscode: Boolean(file.needsTranscode),
+      code: identity.code,
+      episodeTitle: identity.title,
+      sourceTag: label?.code ? `${seriesTitle} · ${label.code}` : sourceTagFor(file, seriesTitle),
+      extra: isExtra && !label?.code,
+      analysis: previous?.analysis || { words: [], phrases: [], updatedAt: null },
+      // Saved per episode: subtitle sync models and where you stopped watching.
+      ...(previous?.subtitleSync ? { subtitleSync: previous.subtitleSync } : {}),
+      ...(previous?.progress ? { progress: previous.progress } : {}),
+    };
+  };
+  const entry = {
+    id,
+    magnet: magnet || existing?.magnet || "",
+    title: collectionTitle,
+    seriesKey: seriesKeyOverride || (storedLooksLikeRelease ? librarySeriesKey(collectionTitle) : existing?.seriesKey) || librarySeriesKey(existing?.title || collectionTitle),
+    displayTitle: displayTitleOverride || anchorSeries?.title || migratedDisplayTitle || collectionTitle,
+    coverUrl: (existing?.artworkPinned ? existing.coverUrl : "") || (anchorSeries?.artworkPinned ? anchorSeries.coverUrl : "") || coverUrlOverride || existing?.coverUrl || anchorSeries?.coverUrl || "",
+    artworkIndex: Number.isInteger(existing?.artworkIndex) ? existing.artworkIndex : (Number.isInteger(anchorSeries?.artworkIndex) ? anchorSeries.artworkIndex : 0),
+    artworkSource: existing?.artworkSource || anchorSeries?.artworkSource || "",
+    artworkPinned: Boolean(existing?.artworkPinned || anchorSeries?.artworkPinned),
+    rawName: session.name || existing?.rawName || collectionTitle,
+    catalogId: catalogId || existing?.catalogId || "",
+    catalogType: catalogType || existing?.catalogType || "",
+    mediaKind: mediaKind || existing?.mediaKind || anchorSeries?.mediaKind || "",
+    // A torrent refresh is not an AniList unlink. Keep account-scoped verified
+    // season mappings and imported list metadata on the same stored source.
+    ...(existing?.anilist ? { anilist: existing.anilist } : {}),
+    ...(Array.isArray(existing?.anilistManualLinks) ? { anilistManualLinks: existing.anilistManualLinks } : {}),
+    ...(Array.isArray(existing?.anilistAutoLinks) ? { anilistAutoLinks: existing.anilistAutoLinks } : {}),
+    ...(existing?.anilistImported ? { anilistImported: true } : {}),
+    ...(existing?.externalSource ? { externalSource: existing.externalSource } : {}),
+    ...(existing?.externalId ? { externalId: existing.externalId } : {}),
+    // Manual watched flags are independent of torrent availability. Keep them
+    // when an updated torrent source replaces the existing Library entry.
+    watchedChapters: existing?.watchedChapters || {},
+    aliases: [...new Set([...(Array.isArray(existing?.aliases) ? existing.aliases : []), ...(Array.isArray(anchorSeries?.aliases) ? anchorSeries.aliases : []), ...(Array.isArray(aliases) ? aliases : [])].map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 20),
+    sourceMeta: normalizeLibrarySourceMeta(sourceMeta, existing?.sourceMeta),
+    addedAt: existing?.addedAt || Date.now(),
+    updatedAt: Date.now(),
+    ...(existing?.lastPlayedAt ? { lastPlayedAt: existing.lastPlayedAt, lastPlayedFileIndex: existing.lastPlayedFileIndex } : {}),
+    episodes: [...primary.map((file) => makeEpisode(file, false)), ...extras.map((file) => makeEpisode(file, true))],
+  };
+  if (scope) entry.chapterFileIndexes = scope;
+  const labelled = Object.fromEntries(Object.entries(labels).filter(([index]) => !scope || scope.includes(Number(index))));
+  if (Object.keys(labelled).length) entry.chapterLabels = labelled;
+  const index = state.library.findIndex((item) => item.id === id);
+  if (index >= 0) state.library[index] = entry; else state.library.unshift(entry);
+  saveLibrary();
+  if (render && $("#view-library")?.classList.contains("is-active")) renderLibrary();
+  else updateLibrarySummary();
+  if (state.autoArtwork && !entry.coverUrl) {
+    queueMicrotask(() => { void fetchArtworkForSeriesKey(entry.seriesKey, { quiet: true }); });
+  }
+  return entry;
+}
+
+function saveCurrentEpisodeAnalysis() {
+  if (!learningEnabled) return;
+  const source = state.currentSource;
+  if (!source?.libraryId || source.fileIndex === null || source.fileIndex === undefined) return;
+  const entry = libraryEntryById(source.libraryId);
+  const episode = entry?.episodes?.find((item) => Number(item.fileIndex) === Number(source.fileIndex));
+  const track = activeTrack();
+  if (!entry || !episode || !track || track.sourceTag !== source.sourceTag || !track.cues?.length) return;
+  const baseTrack = currentSourceTracks().find((item) => normalizeTrackLanguage(item.language) === state.baseLanguage);
+  const compact = (item) => {
+    const occurrence = item.occurrences?.[0] || null;
+    const playbackMs = occurrence ? occurrencePlaybackMs(occurrence, { sourceLibraryId: source.libraryId, sourceFileIndex: source.fileIndex }) : 0;
+    const aligned = alignedBaseCueForOccurrence(occurrence)
+      || cueNearPlaybackMs(baseTrack, playbackMs);
+    return {
+      value: item.value,
+      count: item.count,
+      scenes: item.scenes || item.occurrences?.length || 0,
+      sourceTag: activeSourceTag(),
+      occurrence: occurrence ? { cueId: String(occurrence.cueId || "").slice(0, 180), startMs: playbackMs,
+        endMs: playbackMs + Math.max(300, Number(occurrence.endMs) - Number(occurrence.startMs)), text: String(occurrence.text || "").slice(0, 800) } : null,
+      baseContext: String(aligned?.text || "").slice(0, 800),
+    };
+  };
+  episode.analysis = {
+    words: getWords().slice(0, 300).map(compact),
+    phrases: getPhrases().slice(0, 200).map(compact),
+    updatedAt: Date.now(),
+    trackLabel: track.label,
+    language: track.language,
+  };
+  if (normalizeTrackLanguage(track.language) === state.targetLanguage) {
+    autoCreateEpisodeCards(entry, episode, track);
+  }
+  entry.updatedAt = Date.now();
+  saveLibrary();
+}
+
+function autoCreateEpisodeCards(entry, episode, track) {
+  if (!entry || !episode || !track?.cues?.length || normalizeTrackLanguage(track.language) !== state.targetLanguage) return 0;
+  // Only once the lines are synced (or matched): a card's translation comes from the base track.
+  if (!pairingReady()) return 0;
+  const existingKeys = new Set(cardKeySet());
+  const deckId = `chapter:${entry.seriesKey || librarySeriesKey(entry.displayTitle || entry.title)}|${String(episode.code || episode.fileIndex || "video").toUpperCase()}`;
+  const dialogue = (item) => {
+    const occurrence = bestOccurrence(item);
+    return occurrence && !isNonSpeechCue(occurrence.text);
+  };
+  const candidates = [
+    ...getWords().filter(dialogue).slice(0, AUTO_CARD_WORDS_PER_EPISODE).map((item) => ({ item, type: "word" })),
+    ...getPhrases().filter(dialogue).slice(0, AUTO_CARD_PHRASES_PER_EPISODE).map((item) => ({ item, type: "phrase" })),
+  ];
+  let added = 0;
+  for (const candidate of candidates) {
+    const rawItem = candidate.item;
+    const type = candidate.type;
+    const item = {
+      ...rawItem,
+      language: state.targetLanguage,
+      type,
+      origin: "subtitle-auto",
+      deckId,
+      sourceTag: rawItem.sourceTag || activeSourceTag(),
+      sourceLibraryId: entry.id,
+      sourceFileIndex: episode.fileIndex,
+    };
+    const key = learningItemKeyFor(item, type);
+    if (!key || existingKeys.has(key) || discardedAutoCardKeys.has(key) || state.known.has(key)) continue;
+    const card = cardRecordForItem(item, type, { autoGenerated: true });
+    if (!card) continue;
+    state.cards.push(card);
+    existingKeys.add(key);
+    added += 1;
+  }
+  episode.analysis.autoCardsGeneratedAt = Date.now();
+  const episodeCards = state.cards.filter((card) => card.autoGenerated
+    && String(card.sourceLibraryId) === String(entry.id)
+    && String(card.sourceFileIndex ?? "") === String(episode.fileIndex ?? ""));
+  episode.analysis.autoCardCount = episodeCards.length;
+  episode.analysis.autoWordCardCount = episodeCards.filter((card) => card.type === "word").length;
+  episode.analysis.autoPhraseCardCount = episodeCards.filter((card) => card.type === "phrase").length;
+  if (!added) return 0;
+  touchLearningState();
+  saveState();
+  renderReview();
+  renderStats();
+  renderSubtitles();
+  if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+  return added;
+}
+
+function libraryChapterKey(episode, fallbackIndex = 0) {
+  const code = String(episode?.code || "").toUpperCase();
+  if (/^S\d{2}E\d{2,3}$/.test(code)) return code;
+  const title = String(episode?.episodeTitle || episode?.name || "").trim().toLowerCase();
+  return title || `chapter-${fallbackIndex}`;
+}
+
+function groupLibraryChapters(refs) {
+  const groups = new Map();
+  refs.forEach((ref, index) => {
+    const key = libraryChapterKey(ref.episode, index);
+    const current = groups.get(key) || {
+      key,
+      code: ref.episode.code || "VIDEO",
+      title: ref.episode.episodeTitle || ref.episode.name || "Untitled chapter",
+      sources: [],
+    };
+    current.sources.push(ref);
+    groups.set(key, current);
+  });
+  // The chapter code wins over the file name: files from a pack can be numbered 1…148 across seasons.
+  const sortKey = (group) => episodeSortKey(group.code) ?? episodeSortKey(group.sources[0]?.episode?.name) ?? 999999;
+  return [...groups.values()].sort((a, b) => sortKey(a) - sortKey(b) || a.title.localeCompare(b.title));
+}
+
+function librarySourceDetails(entry, episode) {
+  const meta = normalizeLibrarySourceMeta(entry.sourceMeta);
+  const releaseText = `${meta.releaseName || ""} ${entry.rawName || ""} ${episode.name || ""}`;
+  const inferredQuality = /\b(?:2160p|4k)\b/i.test(releaseText) ? "4K"
+    : /\b1080p\b/i.test(releaseText) ? "1080p"
+      : /\b720p\b/i.test(releaseText) ? "720p"
+        : /\b(?:480p|576p)\b/i.test(releaseText) ? "SD" : "UNKNOWN";
+  const inferredCodec = /\b(?:x265|h\.?265|hevc)\b/i.test(releaseText) ? "HEVC"
+    : /\b(?:x264|h\.?264|avc)\b/i.test(releaseText) ? "H264"
+      : /\bav1\b/i.test(releaseText) ? "AV1" : "UNKNOWN";
+  const inferredVoices = [];
+  if (/\b(?:english|eng)\b/i.test(releaseText)) inferredVoices.push("English");
+  if (/\b(?:spanish|spa|castellano|latino)\b/i.test(releaseText)) inferredVoices.push("Spanish");
+  if (/\b(?:french|fre|fra|vff|vfq)\b/i.test(releaseText)) inferredVoices.push("French");
+  if (/\b(?:italian|ita)\b/i.test(releaseText)) inferredVoices.push("Italian");
+  if (/\b(?:german|ger|deu)\b/i.test(releaseText)) inferredVoices.push("German");
+  if (/\b(?:japanese|jpn)\b/i.test(releaseText)) inferredVoices.push("Japanese");
+  if (meta.quality === "UNKNOWN") meta.quality = inferredQuality;
+  if (meta.codec === "UNKNOWN") meta.codec = inferredCodec;
+  if (!meta.audioLanguages.length && inferredVoices.length) meta.audioLanguages = inferredVoices;
+  const providers = meta.providers.length ? meta.providers.join(" + ") : (meta.provider || "MANUAL");
+  const voices = meta.audioLanguages.length ? meta.audioLanguages.join(" / ") : "Unknown voice";
+  const releaseName = meta.releaseName || entry.rawName || episode.name || "Torrent source";
+  const inferredStoredKind = (entry.episodes || []).filter((item) => !item.extra).length > 1 ? "season-pack" : "episode";
+  const sourceKind = meta.sourceKind === "season-pack" ? "season-pack"
+    : meta.sourceKind === "multi-episode-pack" ? "multi-episode-pack"
+      : meta.sourceKind === "pack-file" ? "pack-file"
+        : inferredStoredKind;
+  const sourceKindLabel = entry.catalogType === "movie" ? "MOVIE SOURCE"
+    : sourceKind === "pack-file" ? `FROM ${meta.packLabel || "PACK"}${episode.code ? ` - ${episode.code}` : ""}`
+      : sourceKind === "season-pack" ? "SEASON PACK"
+        : sourceKind === "multi-episode-pack" ? "MULTI-EPISODE PACK"
+          : `EPISODE SOURCE${episode.code ? ` - ${episode.code}` : ""}`;
+  const coverageLabel = sourceKind === "episode" || sourceKind === "pack-file" ? ""
+    : meta.totalSeasonEpisodes
+      ? `COVERS ${meta.coverage || meta.coveredEpisodes.length} / ${meta.totalSeasonEpisodes} CHAPTERS`
+      : `COVERS ${meta.coverage || meta.coveredEpisodes.length} CHAPTERS`;
+  return { ...meta, providers, voices, releaseName, sourceKind, sourceKindLabel, coverageLabel };
+}
+
+function librarySeriesKey(title) {
+  return String(title || "Untitled series").replace(/\s+\[(?:BDRip|BluRay|WEB[- .]?DL|WEBRip|HDTV|DVDRip)\]\s*$/i, "").trim().toLowerCase();
+}
+
+function catalogMediaKind(meta) {
+  const animeIds = new Set((state.homeCatalog.anime || []).map((item) => item.id).filter(Boolean));
+  return libraryCategory({ catalogId: meta?.id, type: meta?.type, kind: meta?.kind, genres: meta?.genres },
+    { animeIds, details: meta }) === "anime" ? "anime" : "";
+}
+
+function buildLibrarySeries() {
+  const groups = new Map();
+  state.library.forEach((entry) => {
+    // A removed Library listing can retain its saved chapter/source records.
+    // Re-adding the title unhides those records without losing watch history.
+    if (entry.libraryHidden === true) return;
+    const key = entry.seriesKey || librarySeriesKey(entry.title);
+    const displayTitle = entry.displayTitle || entry.title;
+    const group = groups.get(key) || {
+      key,
+      title: displayTitle,
+      type: entry.catalogType === "movie" ? "movie" : "series",
+      mediaKind: entry.mediaKind || "",
+      coverUrl: entry.coverUrl || "",
+      artworkIndex: Number.isInteger(entry.artworkIndex) ? entry.artworkIndex : 0,
+      artworkSource: entry.artworkSource || "",
+      artworkPinned: Boolean(entry.artworkPinned),
+      catalogId: entry.catalogId || "",
+      catalogType: entry.catalogType || "",
+      aliases: Array.isArray(entry.aliases) ? entry.aliases.slice() : [],
+      releaseInfo: entry.releaseInfo || "",
+      externalSource: entry.externalSource || "",
+      externalId: entry.externalId || "",
+      updatedAt: entry.updatedAt || entry.addedAt || 0,
+      sources: [],
+      seasons: new Map(),
+      extras: [],
+    };
+    group.sources.push(entry);
+    if (!group.catalogId && entry.catalogId) group.catalogId = entry.catalogId;
+    if (!group.catalogType && entry.catalogType) group.catalogType = entry.catalogType;
+    if (!group.releaseInfo && entry.releaseInfo) group.releaseInfo = entry.releaseInfo;
+    if (!group.externalSource && entry.externalSource) group.externalSource = entry.externalSource;
+    if (!group.externalId && entry.externalId) group.externalId = entry.externalId;
+    group.aliases = [...new Set([...(group.aliases || []), ...(Array.isArray(entry.aliases) ? entry.aliases : [])])].slice(0, 20);
+    if (entry.catalogType === "movie") group.type = "movie";
+    if (entry.mediaKind === "anime") group.mediaKind = "anime";
+    if (!group.coverUrl && entry.coverUrl) {
+      group.coverUrl = entry.coverUrl;
+      group.artworkIndex = Number.isInteger(entry.artworkIndex) ? entry.artworkIndex : 0;
+      group.artworkSource = entry.artworkSource || "";
+      group.artworkPinned = Boolean(entry.artworkPinned);
+    }
+    if ((entry.updatedAt || 0) >= group.updatedAt) {
+      group.updatedAt = entry.updatedAt || group.updatedAt;
+      group.title = displayTitle || group.title;
+    }
+    (entry.episodes || []).forEach((episode) => {
+      const ref = { entry, episode };
+      const match = String(episode.code || "").match(/^S(\d{1,2})E(\d{1,3})$/i);
+      if (episode.extra) {
+        group.extras.push(ref);
+        return;
+      }
+      const seasonNumber = match ? Number(match[1]) : 1;
+      const season = group.seasons.get(seasonNumber) || [];
+      season.push(ref);
+      group.seasons.set(seasonNumber, season);
+    });
+    groups.set(key, group);
+  });
+  return [...groups.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
+}
+
+function addCatalogPlaceholder(meta, { aliases = [], externalSource = "CATALOG", externalId = "", render = true } = {}) {
+  const name = String(meta?.name || aliases[0] || "Untitled").trim();
+  if (!name) return null;
+  const catalogType = meta?.type === "movie" ? "movie" : "series";
+  const catalogId = /^tt\d{5,12}$/.test(String(meta?.id || "")) ? String(meta.id) : "";
+  const id = catalogId
+    ? `catalog:${catalogType}:${catalogId}`
+    : `${String(externalSource || "external").toLowerCase()}:${String(externalId || name).toLowerCase()}`;
+  const existing = state.library.find((item) => item.id === id);
+  const entry = {
+    ...(existing || {}),
+    id,
+    magnet: existing?.magnet || "",
+    title: existing?.title || name,
+    seriesKey: existing?.seriesKey || librarySeriesKey(name),
+    displayTitle: name,
+    coverUrl: String(existing?.coverUrl || meta?.poster || ""),
+    artworkIndex: Number.isInteger(existing?.artworkIndex) ? existing.artworkIndex : 0,
+    artworkSource: existing?.artworkSource || (meta?.poster ? externalSource : ""),
+    artworkPinned: Boolean(existing?.artworkPinned),
+    rawName: existing?.rawName || name,
+    catalogId: catalogId || existing?.catalogId || "",
+    catalogType,
+    mediaKind: catalogMediaKind(meta) || existing?.mediaKind || (String(externalSource).toUpperCase() === "ANILIST" ? "anime" : ""),
+    aliases: [...new Set([name, ...(Array.isArray(existing?.aliases) ? existing.aliases : []), ...aliases].map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 20),
+    releaseInfo: String(meta?.releaseInfo || existing?.releaseInfo || ""),
+    externalSource: externalSource || existing?.externalSource || "",
+    externalId: String(externalId || existing?.externalId || ""),
+    catalogOnly: true,
+    addedAt: existing?.addedAt || Date.now(),
+    updatedAt: Date.now(),
+    episodes: Array.isArray(existing?.episodes) ? existing.episodes : [],
+  };
+  const index = state.library.findIndex((item) => item.id === id);
+  // Explicitly re-adding a title restores chapters retained by "Remove entry".
+  for (const item of state.library) {
+    if ((item.seriesKey || librarySeriesKey(item.title)) === entry.seriesKey) delete item.libraryHidden;
+  }
+  delete entry.libraryHidden;
+  if (index >= 0) state.library[index] = entry; else state.library.unshift(entry);
+  if (render) {
+    saveLibrary();
+    if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+    else updateLibrarySummary();
+    // Catalog-only anime need a verified AniList identity *before* any watch
+    // history exists. A read-only, nonblocking match does not start remote sync.
+    if (catalogId && catalogType === "series" && String(externalSource).toUpperCase() !== "ANILIST") {
+      const account = readAniListAccount(localStorage);
+      if (account) void autoLinkNewlyAddedAnime({ catalogId, seriesKey: entry.seriesKey,
+        entryId: entry.id, account }).catch((error) => console.warn("AniList association deferred:", error?.message));
+    }
+  }
+  return entry;
+}
+
+function currentSeriesChapters() {
+  const source = state.currentSource;
+  if (!source?.libraryId || source.fileIndex === null || source.fileIndex === undefined) return [];
+  const entry = libraryEntryById(source.libraryId);
+  if (!entry) return [];
+  const key = entry.seriesKey || librarySeriesKey(entry.title);
+  const series = buildLibrarySeries().find((item) => item.key === key);
+  if (!series) return [];
+  const chapters = [];
+  [...series.seasons.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .forEach(([seasonNumber, refs]) => {
+      groupLibraryChapters(refs).forEach((chapter) => {
+        const preferred = chapter.sources.slice().sort(compareLibrarySourceRefsByPeers)[0];
+        if (preferred) chapters.push({ ...preferred, seasonNumber });
+      });
+    });
+  return chapters;
+}
+
+function librarySeriesChapterCount(series) {
+  return [...series.seasons.values()].reduce((total, refs) => total + groupLibraryChapters(refs).length, 0);
+}
+
+function currentChapterNavigation() {
+  const chapters = currentSeriesChapters();
+  const source = state.currentSource;
+  const currentEntry = source?.libraryId ? libraryEntryById(source.libraryId) : null;
+  const currentEpisode = currentEntry?.episodes?.find((episode) => Number(episode.fileIndex) === Number(source?.fileIndex));
+  const currentKey = currentEpisode ? libraryChapterKey(currentEpisode) : "";
+  const index = currentKey
+    ? chapters.findIndex(({ episode }) => libraryChapterKey(episode) === currentKey)
+    : -1;
+  return {
+    chapters,
+    index,
+    previous: index > 0 ? chapters[index - 1] : null,
+    next: index >= 0 && index < chapters.length - 1 ? chapters[index + 1] : null,
+  };
+}
+
+function currentChapterSources() {
+  const source = state.currentSource;
+  if (!source?.libraryId || source.fileIndex === null || source.fileIndex === undefined) return [];
+  const currentEntry = libraryEntryById(source.libraryId);
+  const currentEpisode = currentEntry?.episodes?.find((episode) => Number(episode.fileIndex) === Number(source.fileIndex));
+  if (!currentEntry || !currentEpisode) return [];
+  const seriesKey = currentEntry.seriesKey || librarySeriesKey(currentEntry.title);
+  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  if (!series) return [];
+  if (series.type === "movie") {
+    return [...series.seasons.values()].flatMap((items) => items).concat(series.extras || []).sort(compareLibrarySourceRefsByPeers);
+  }
+  const wantedKey = libraryChapterKey(currentEpisode);
+  const refs = [...series.seasons.values()].flatMap((items) => items).concat(series.extras || []);
+  const chapter = groupLibraryChapters(refs).find((item) => item.key === wantedKey);
+  return (chapter?.sources || []).slice().sort(compareLibrarySourceRefsByPeers);
+}
+
+function closePlayerPopovers(except = null) {
+  const speedMenu = $("#player-speed-menu");
+  if (speedMenu && speedMenu !== except) {
+    speedMenu.hidden = true;
+    $("#speed-select")?.setAttribute("aria-expanded", "false");
+  }
+  ["#player-source-menu", "#player-audio-menu", "#player-subtitle-menu"].forEach((selector) => {
+    const node = $(selector);
+    if (node && node !== except) {
+      node.hidden = true;
+      if (selector === "#player-subtitle-menu") {
+        $("#player-toggle-subs")?.setAttribute("aria-expanded", "false");
+        $("#floating-player-captions")?.setAttribute("aria-expanded", "false");
+      }
+    }
+  });
+}
+
+function renderPlayerSubtitleMenu() {
+  const menu = $("#player-subtitle-menu");
+  if (!menu) return;
+  const embedded = (state.currentMediaProbe?.subtitleTracks || []).filter((track) =>
+    track?.textBased && Number.isInteger(Number(track.streamIndex)));
+  const attached = preferredSourceTracks();
+  const renderRow = (label, description, active, attrs, action) =>
+    `<button type="button" role="menuitem" class="player-popover-row${active ? " is-active" : ""}" ${attrs}>
+      <div><strong>${escapeHtml(label)}</strong><small>${escapeHtml(description)}</small></div><span>${escapeHtml(action)}</span></button>`;
+  menu.innerHTML = `<div class="player-popover-head"><span>Captions</span><button type="button" class="player-caption-customize" role="menuitem" data-caption-customize>Customize</button></div>`
+    + renderRow("All captions", "Hide every subtitle overlay", !state.subtitlesVisible, "data-caption-off", state.subtitlesVisible ? "Hide all" : "Hidden")
+    + (embedded.length ? `<div class="player-popover-head"><span>Embedded in video</span></div>`
+      + embedded.map((track, index) => {
+        const imported = attached.find((item) => Number(item.embeddedStreamIndex) === Number(track.streamIndex));
+        const active = state.subtitlesVisible && Boolean(imported?.visible);
+        const loading = embeddedSubtitleImports.has(embeddedSubtitleImportKey(state.currentSource, Number(track.streamIndex)));
+        return renderRow(embeddedSubtitleLabel(track, index), trackLanguageName(normalizeTrackLanguage(track.language)),
+          active, `data-caption-embedded="${Number(track.streamIndex)}"`,
+          loading ? "Loading…" : active ? "Hide" : "Show");
+      }).join("") : "")
+    + (attached.some((track) => track.origin !== "embedded") ? `<div class="player-popover-head"><span>Added tracks</span></div>`
+      + attached.filter((track) => track.origin !== "embedded").map((track) => renderRow(track.label,
+        trackLanguageName(normalizeTrackLanguage(track.language)), state.subtitlesVisible && track.visible,
+        `data-caption-track="${escapeHtml(track.id)}" aria-pressed="${state.subtitlesVisible && track.visible}"`, state.subtitlesVisible && track.visible ? "Hide" : "Show")).join("") : "");
+}
+
+function openPlayerSubtitleManager() {
+  closePlayerPopovers();
+  renderTracks();
+  renderEmbeddedSubtitleControls();
+  $("#player-subtitle-dialog")?.showModal();
+}
+
+function renderPlayerSourceMenu() {
+  const menu = $("#player-source-menu");
+  if (!menu) return;
+  const sources = currentChapterSources();
+  $("#player-source-switcher")?.setAttribute("data-tooltip", sources.length > 1 ? `Video sources (${sources.length})` : "Video source");
+  if (!sources.length) {
+    menu.innerHTML = `<div class="player-popover-head"><span>Video sources</span><span>1</span></div><div class="player-popover-row is-active"><div><strong>${escapeHtml(state.currentSource?.title || "Current source")}</strong><small>No other sources are saved for this chapter.</small></div><span>Playing</span></div>`;
+    return;
+  }
+  menu.innerHTML = `<div class="player-popover-head"><span>Video sources</span><span>${sources.length}</span></div>${sources.map(({ entry, episode }, index) => {
+    const details = librarySourceDetails(entry, episode);
+    const active = entry.id === state.currentSource?.libraryId && Number(episode.fileIndex) === Number(state.currentSource?.fileIndex);
+    return `<button class="player-popover-row${active ? " is-active" : ""}" type="button" data-source-index="${index}">
+      <div><strong>${escapeHtml(details.releaseName)}</strong><small>${escapeHtml([details.providers, details.quality !== "UNKNOWN" ? details.quality : "", details.voices, details.peers ? `${details.peers} peers` : null].filter(Boolean).join(", "))}</small></div>
+      <span>${active ? "Playing" : "Switch"}</span>
+    </button>`;
+  }).join("")}`;
+  menu.querySelectorAll("[data-source-index]").forEach((button) => button.addEventListener("click", () => {
+    const target = sources[Number(button.dataset.sourceIndex)];
+    if (!target) return;
+    const resumeAtSeconds = absolutePlaybackSeconds();
+    menu.hidden = true;
+    void playLibraryEpisode(target.entry.id, Number(target.episode.fileIndex), { resumeAtSeconds });
+  }));
+}
+
+function audioTrackLabel(track, index) {
+  const language = String(track?.language || "").toUpperCase();
+  const title = String(track?.title || "").trim();
+  const codec = String(track?.codec || "audio").toUpperCase();
+  const channels = Number(track?.channels) > 0 ? `${track.channels}ch` : "";
+  return {
+    title: title || (language ? `${language} audio` : `Audio ${index + 1}`),
+    meta: [language, codec, channels].filter(Boolean).join(", "),
+  };
+}
+
+function renderAudioPlaybackDetails() {
+  const media = state.currentMediaProbe;
+  const track = media?.audioTracks?.[state.selectedAudioTrack] || media?.audioTracks?.[0] || media?.audio;
+  if (!media || !track) return '<p class="player-audio-info-note">Audio details are not available for this source.</p>';
+  const converted = video.dataset.mode === "transcode";
+  const audio = converted ? planCompatibleAudio(track, {
+    audioMode: audioOutputMode, startSeconds: state.transcodeRequestedStartSeconds,
+  }) : null;
+  const bitrate = (value) => Number(value) > 0 ? `${Math.round(Number(value) / 1000)} kbps` : "Unknown";
+  const channels = (value) => Number(value) > 0 ? `${value} channels` : "Unknown";
+  const originalCodec = String(track.codec || "Unknown").toUpperCase();
+  const outputCodec = converted ? String(audio.outputCodec || "Unknown").toUpperCase() : originalCodec;
+  const source = [track.language?.toUpperCase(), originalCodec, channels(track.channels), bitrate(track.bitRate)].filter(Boolean).join(" - ");
+  const output = [outputCodec, channels(converted ? audio.channels : track.channels), converted && audio.codec !== "copy" ? `${audio.bitRate.replace("k", " kbps")} target` : "Original encoded stream"].join(" - ");
+  const videoMode = converted ? (state.transcodeContext?.forceH264 ? "Video conversion" : state.transcodeContext?.copyVideo ? "Video remux (planned)" : "Video conversion (planned)") : "Direct playback";
+  const resolution = media.video?.width && media.video?.height ? `${media.video.width}×${media.video.height}` : "Unknown resolution";
+  const hdr = media.video?.colorTransfer ? ` - ${String(media.video.colorTransfer).toUpperCase()} source transfer` : "";
+  const dvProfile = media.video?.dolbyVision?.profile;
+  const dvNote = Number.isInteger(dvProfile) ? ` - Dolby Vision P${dvProfile} source (DV enhancements not verified)` : "";
+  const originalVideo = String(media.video?.codec || "Unknown").toUpperCase();
+  const videoCopied = !converted || (state.transcodeContext?.copyVideo && !state.transcodeContext?.forceH264);
+  const outputVideo = videoCopied ? `${originalVideo} encoded video retained (planned)`
+    : `H.264 conversion (planned)${hdr ? " - SDR BT.709 target" : ""}`;
+  return `<dl class="player-audio-info-grid">
+    <dt>Source</dt><dd>${escapeHtml(String(media.format || "Unknown container"))} - ${escapeHtml(originalVideo)} - ${escapeHtml(resolution)}${escapeHtml(hdr)}${escapeHtml(dvNote)}</dd>
+    <dt>Audio track</dt><dd>${escapeHtml(source)}</dd>
+    <dt>Playback path</dt><dd>${escapeHtml(videoMode)}</dd>
+    <dt>Video output</dt><dd>${escapeHtml(outputVideo)}</dd>
+    <dt>Audio output</dt><dd>${escapeHtml(output)}</dd>
+  </dl>`;
+}
+
+function renderPlayerAudioMenu() {
+  const menu = $("#player-audio-menu");
+  if (!menu) return;
+  const tracks = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks : [];
+  if (!tracks.length) {
+    $("#player-audio-switcher")?.setAttribute("data-tooltip", "Audio track");
+    menu.innerHTML = `<div class="player-popover-head"><span>Audio tracks</span><span>0</span></div><div class="player-popover-row"><div><strong>No audio track found</strong><small>This video may be silent, or its details couldn't be read.</small></div><span>—</span></div>`;
+    return;
+  }
+  const activeAudioLabel = audioTrackLabel(tracks[state.selectedAudioTrack] || tracks[0], state.selectedAudioTrack || 0);
+  $("#player-audio-switcher")?.setAttribute("data-tooltip", `Audio: ${activeAudioLabel.title}`);
+  const detailsOpen = Boolean(menu.querySelector(".player-audio-info")?.open);
+  const outputOption = `<label class="player-audio-mode">Audio output <select id="player-audio-output-mode" aria-label="Audio output mode">
+    <option value="auto"${audioOutputMode === "auto" ? " selected" : ""}>Auto - best compatible</option>
+    <option value="stereo"${audioOutputMode === "stereo" ? " selected" : ""}>Stereo</option>
+    <option value="surround"${audioOutputMode === "surround" ? " selected" : ""}>Up to 5.1</option>
+  </select></label>`;
+  menu.innerHTML = `<div class="player-popover-head"><span>Audio tracks</span><span>${tracks.length}</span></div>${outputOption}${tracks.map((track, index) => {
+    const label = audioTrackLabel(track, index);
+    return `<button class="player-popover-row${index === state.selectedAudioTrack ? " is-active" : ""}" type="button" data-audio-index="${index}"><div><strong>${escapeHtml(label.title)}</strong><small>${escapeHtml(label.meta)}</small></div><span>${index === state.selectedAudioTrack ? "Playing" : "Use"}</span></button>`;
+  }).join("")}<details class="player-audio-info"${detailsOpen ? " open" : ""}><summary>Playback information</summary>${renderAudioPlaybackDetails()}</details>`;
+  menu.querySelectorAll("[data-audio-index]").forEach((button) => button.addEventListener("click", () => {
+    const index = Number(button.dataset.audioIndex);
+    if (!Number.isInteger(index) || index === state.selectedAudioTrack) return;
+    menu.hidden = true;
+    void switchAudioTrack(index);
+  }));
+  menu.querySelector("#player-audio-output-mode")?.addEventListener("change", (event) => {
+    const next = normalizeAudioMode(event.target.value);
+    if (next === audioOutputMode) return;
+    audioOutputMode = next;
+    localStorage.setItem("lvl-audio-output-mode", next);
+    const at = absolutePlaybackSeconds();
+    const source = state.currentSource;
+    if (video.dataset.mode === "transcode") void restartTranscodeAt(at, { wasPlaying: playerIsPlaying() });
+    else if (video.dataset.mode === "torrent-direct" && source?.sessionId && source.fileIndex != null && next === "stereo" && Number(tracks[state.selectedAudioTrack]?.channels) > 2) {
+      // An explicitly requested downmix cannot be applied to unmodified direct audio.
+      void switchAudioTrack(state.selectedAudioTrack, { force: true });
+    }
+    renderPlayerAudioMenu();
+  });
+}
+
+let audioTrackSwitchGeneration = 0;
+async function switchAudioTrack(index, { force = false } = {}) {
+  const source = state.currentSource;
+  if (!source?.sessionId || source.fileIndex === null || source.fileIndex === undefined) return;
+  const tracks = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks : [];
+  if (!tracks[index]) return;
+  if (!force && index === state.selectedAudioTrack && video.dataset.mode === "transcode") return;
+  const wasPlaying = playerIsPlaying();
+  const target = absolutePlaybackSeconds();
+  const previous = {
+    track: state.selectedAudioTrack,
+    language: preferredAudioLanguage,
+    context: state.transcodeContext,
+    mode: video.dataset.mode,
+    src: video.src,
+  };
+  const generation = ++audioTrackSwitchGeneration;
+  state.selectedAudioTrack = index;
+  preferredAudioLanguage = String(tracks[index].language || "").trim().toLowerCase();
+  const baseUrl = `/api/torrents/${encodeURIComponent(source.sessionId)}/files/${source.fileIndex}/transcode`;
+  const requestedContext = { baseUrl, sessionId: source.sessionId, fileIndex: source.fileIndex, audioIndex: index,
+    copyVideo: video.dataset.mode === "torrent-direct" || Boolean(state.transcodeContext?.copyVideo),
+    forceH264: Boolean(state.transcodeContext?.forceH264) };
+  state.transcodeContext = requestedContext;
+  video.dataset.mode = "transcode";
+  setPlayerLoading(22, "Switching audio", audioTrackLabel(tracks[index], index).title);
+  resetAudioSync();
+  const opened = await openTranscodeAt(target, { wasPlaying });
+  // Verification can fail before the old media URL changes (for example a
+  // copied HDR seek whose source clock cannot be proven). Keep the actual
+  // audible dub in the menu and the next-seek transcode context. A stale
+  // request must never roll back a later audio selection or active seek.
+  if (!opened && generation === audioTrackSwitchGeneration
+    && state.currentSource === source && state.transcodeContext === requestedContext
+    && !state.pendingSeek && video.src === previous.src) {
+    state.selectedAudioTrack = previous.track;
+    preferredAudioLanguage = previous.language;
+    state.transcodeContext = previous.context;
+    video.dataset.mode = previous.mode;
+    resetAudioSync();
+  }
+  renderPlayerAudioMenu();
+  scheduleAudioSync(3000);
+}
+
+function updateChapterButtons() {
+  const nav = currentChapterNavigation();
+  const catalog = currentCatalogNeighbors();
+  const previousButton = $("#player-prev-chapter");
+  const nextButton = $("#player-next-chapter");
+  if (previousButton) previousButton.disabled = !(catalog?.previous || nav.previous);
+  if (nextButton) nextButton.disabled = !(catalog?.next || nav.next);
+  renderWatchChapters();
+}
+
+// Miruro-style episode browser: one collapsible block on the Watch page,
+// with individual collapsible seasons and progress from the saved Library.
+let watchChaptersSourceKey = "";
+let watchChapterActions = new Map();
+let watchEpisodeSourcesOpen = "";
+const watchEpisodeSourceLookups = new Map();
+// Keep the intended title/episode visible in the normal split Watch layout
+// while torrent discovery and media probing are still in progress.
+let watchPendingSelection = null;
+let watchSelectedSeason = null;
+let watchInfoRenderKey = "";
+const watchCatalogMatches = new Map();
+function watchCatalogIdFor(series) {
+  if (!series) return "";
+  if (/^tt\d{5,12}$/.test(String(series.catalogId || ""))) return series.catalogId;
+  const aliases = [series.title, ...(series.aliases || [])].filter(Boolean);
+  const normalize = (name) => String(name || "").normalize("NFKC").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const keys = new Set(aliases.map(normalize).filter(Boolean));
+  const type = series.type === "movie" ? "movie" : "series";
+  if (!keys.size) return "";
+  // A strict title match can reuse a known Home record without extra traffic.
+  const local = [...homeTitleIndex.values()].find((item) => item.type === type && /^tt\d{5,12}$/.test(String(item.id || "")) && keys.has(normalize(item.name)));
+  if (local) return local.id;
+  const key = `${type}:${series.key}`;
+  const cached = watchCatalogMatches.get(key);
+  if (cached?.id) return cached.id;
+  if (cached && (cached.pending || Date.now() < cached.retryAfter)) return "";
+  const record = { id: "", pending: true, retryAfter: 0, failed: false };
+  watchCatalogMatches.set(key, record);
+  void fetchJson(`/api/catalog/search?q=${encodeURIComponent(series.title)}`)
+    .then((data) => {
+      const exact = (data.results || []).find((item) => item.type === type && /^tt\d{5,12}$/.test(String(item.id || "")) && keys.has(normalize(item.name)));
+      if (exact) record.id = exact.id;
+      else record.retryAfter = Date.now() + 10 * 60_000;
+    })
+    .catch(() => { record.failed = true; record.retryAfter = Date.now() + 60_000; })
+    .finally(() => { record.pending = false; refreshWatchCatalogDetails(); });
+  return "";
+}
+function refreshWatchCatalogDetails() {
+  if ((playerLoadingLibraryId || state.currentSource?.libraryId)
+    && $("#view-watch")?.classList.contains("is-active")) {
+    renderWatchChapters();
+    if (!$("#video-loading")?.hidden)
+      setPlayerLoadingTitle(libraryEntryById(playerLoadingLibraryId || state.currentSource.libraryId));
+  }
+}
+
+// Manual watched marks belong to the Library series, not a torrent file: a
+// catalog-only chapter remains watched even before a playable source is saved.
+function manuallyWatchedChapter(series, code) {
+  if (!series || !/^S\d{2}E\d{2,4}$/.test(String(code))) return false;
+  return state.library.some((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key
+    && Boolean(item.watchedChapters?.[code]));
+}
+function explicitlyUnwatchedChapter(series, code) {
+  return Boolean(series) && state.library.some((item) =>
+    (item.seriesKey || librarySeriesKey(item.title)) === series.key
+    && Object.hasOwn(item.watchedChapters || {}, code) && item.watchedChapters[code] === false);
+}
+
+function watchEpisodeStatus(series, chapter) {
+  if (explicitlyUnwatchedChapter(series, String(chapter.code || "").toUpperCase()))
+    return { ...chapterWatchStatus(chapter.stored?.sources || []), watched: false, percent: 0, resume: null };
+  const status = chapterWatchStatus(chapter.stored?.sources || []);
+  return manuallyWatchedChapter(series, String(chapter.code || "").toUpperCase())
+    ? { ...status, watched: true, percent: 100, resume: null }
+    : status;
+}
+function markWatchEpisodeUnwatched(series, code) {
+  const normalized = String(code || "").toUpperCase();
+  if (!series || !/^S\d{2}E\d{2,4}$/.test(normalized)) return false;
+  explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
+  const entries = state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
+  if (!anchor) return false;
+  for (const entry of entries) {
+    if (entry.watchedChapters && Object.hasOwn(entry.watchedChapters, normalized)) {
+      entry.watchedChapters = { ...entry.watchedChapters };
+      delete entry.watchedChapters[normalized];
+    }
+    for (const episode of entry.episodes || []) {
+      if (String(episode.code || "").toUpperCase() !== normalized || !episode.progress) continue;
+      // Removing a watched mark is not a request to erase the resume point.
+      episode.progress = { ...episode.progress, finished: false, updatedAt: Date.now() };
+    }
+  }
+  // An explicit false flag prevents stale AniList imports from immediately
+  // re-watching this episode before the remote correction has completed.
+  anchor.watchedChapters = { ...anchor.watchedChapters, [normalized]: false };
+  persistAniListQueue(anilistStoredQueue().filter((row) =>
+    !(row.seriesKey === series.key && row.code === normalized)));
+  saveLibrary();
+  return true;
+}
+
+const ANILIST_UNWATCH_QUEUE_KEY = "lvl-anilist-unwatch-queue";
+function pendingAniListUnwatches() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(ANILIST_UNWATCH_QUEUE_KEY) || "[]");
+    return Array.isArray(rows) ? rows.slice(-100) : [];
+  } catch { return []; }
+}
+function savePendingAniListUnwatches(rows) {
+  localStorage.setItem(ANILIST_UNWATCH_QUEUE_KEY, JSON.stringify(rows.slice(-100)));
+}
+function invalidateAniListUnwatchApprovals() {
+  // Previous approvals must never silently survive logout, account changes,
+  // or reauthorization, even when an old account is later reconnected.
+  const pending = pendingAniListUnwatches();
+  if (pending.some((row) => row.approvedProgress !== null))
+    savePendingAniListUnwatches(pending.map((row) => ({ ...row, approvedProgress: null })));
+}
+
+let explicitAniListUnwatchRun = null;
+async function syncExplicitAniListUnwatch(series, code) {
+  const account = readAniListAccount(localStorage);
+  if (!account) {
+    toast("Unwatched locally. Connect AniList to sync this change.");
+    return;
+  }
+  const info = seriesAniList(series, account.userId);
+  const mapped = resolveAniListEpisode({ seasons: info?.seasons, ranges: info?.ranges || [],
+    episodeCode: code, type: series.type });
+  if (!mapped) {
+    toast("Unwatched locally. AniList needs a verified season link before progress can change.");
+    return;
+  }
+  const pending = pendingAniListUnwatches().filter((item) => !(item.accountId === account.userId
+    && item.seriesKey === series.key && item.code === code));
+  pending.push({ accountId: account.userId, seriesKey: series.key, code,
+    mediaId: mapped.mediaId, episode: mapped.episode, episodeCount: mapped.episodeCount,
+    approvedProgress: null });
+  savePendingAniListUnwatches(pending);
+  clearTimeout(anilistAutoTimer);
+  await flushAniListUnwatches({ interactive: true,
+    only: { accountId: account.userId, seriesKey: series.key, code } });
+}
+
+async function flushAniListUnwatches({ interactive = false, only = null } = {}) {
+  if (explicitAniListUnwatchRun) {
+    const currentRun = explicitAniListUnwatchRun;
+    if (!interactive) return currentRun;
+    // An additional unwatch pressed during an ongoing request must not get
+    // stranded behind the first run's snapshot of pending rows.
+    await currentRun;
+    return flushAniListUnwatches({ interactive, only });
+  }
+  explicitAniListUnwatchRun = (async () => {
+    const account = readAniListAccount(localStorage);
+    if (!account) return;
+    if (anilistAutoRun) await anilistAutoRun;
+    const stillConnected = () => readAniListAccount(localStorage)?.token === account.token;
+    for (const row of pendingAniListUnwatches()) {
+      if (!stillConnected()) return;
+      if (row.accountId !== account.userId) continue;
+      if (only && (row.accountId !== only.accountId
+        || row.seriesKey !== only.seriesKey || row.code !== only.code)) continue;
+      const series = buildLibrarySeries().find((item) => item.key === row.seriesKey);
+      const part = seriesAniList(series, account.userId);
+      const mapped = resolveAniListEpisode({ seasons: part?.seasons, ranges: part?.ranges || [],
+        episodeCode: row.code, type: series?.type });
+      if (!mapped || mapped.mediaId !== row.mediaId || mapped.episode !== row.episode
+        || mapped.episodeCount !== row.episodeCount || !explicitlyUnwatchedChapter(series, row.code)) continue;
+      try {
+        const fresh = await anilistGraphql(account.token, ANILIST_SINGLE_PROGRESS_QUERY,
+          { id: account.userId, mediaId: row.mediaId });
+        if (!stillConnected()) return;
+        const planned = planAniListUnwatch({ mapped, remote: fresh?.MediaList, accountId: account.userId });
+        if (!planned) throw new Error("AniList entry missing, protected, or no longer matches the verified season.");
+        if (planned.alreadySynced) {
+          savePendingAniListUnwatches(pendingAniListUnwatches().filter((item) => item !== row
+            && !(item.accountId === row.accountId && item.seriesKey === row.seriesKey && item.code === row.code)));
+          continue;
+        }
+        if (row.approvedProgress !== null && row.approvedProgress !== planned.previousProgress
+          && planned.previousProgress !== planned.progress) {
+          if (!interactive) throw new Error("AniList progress changed since you approved this edit. Recheck before retrying.");
+          // A fresh user gesture may approve the *new* count; never reuse a
+          // stale consent against an updated remote AniList list.
+          row.approvedProgress = null;
+        }
+        if (row.approvedProgress === null) {
+          if (!interactive) continue; // Never silently approve a remote reduction on reload.
+          const span = planned.discardedFollowing > 0
+            ? ` This also reduces AniList's contiguous progress for ${planned.discardedFollowing} later episode(s).` : "";
+          const approved = window.confirm(`AniList stores episode progress as one number. Change this title from episode ${planned.previousProgress} to ${planned.progress}?${span}`);
+          if (!approved) {
+            savePendingAniListUnwatches(pendingAniListUnwatches().filter((item) =>
+              !(item.accountId === row.accountId && item.seriesKey === row.seriesKey && item.code === row.code)));
+            toast("Episode unwatched locally; AniList was left unchanged.");
+            continue;
+          }
+          row.approvedProgress = planned.previousProgress;
+          savePendingAniListUnwatches(pendingAniListUnwatches().map((item) =>
+            item.accountId === row.accountId && item.seriesKey === row.seriesKey && item.code === row.code ? row : item));
+        }
+        if (!stillConnected() || !explicitlyUnwatchedChapter(series, row.code)) return;
+        const sent = await anilistGraphql(account.token, ANILIST_SAVE_PROGRESS,
+          { mediaId: row.mediaId, progress: planned.progress, ...(planned.status ? { status: planned.status } : {}) });
+        if (!stillConnected()) return;
+        if (Number(sent?.SaveMediaListEntry?.mediaId) !== row.mediaId
+          || sent.SaveMediaListEntry.progress !== planned.progress) throw new Error("AniList did not confirm the decreased episode count.");
+        const readback = await anilistGraphql(account.token, ANILIST_SINGLE_PROGRESS_QUERY,
+          { id: account.userId, mediaId: row.mediaId });
+        if (!stillConnected()) return;
+        if (Number(readback?.MediaList?.progress) !== planned.progress
+          || (planned.status && readback.MediaList.status !== planned.status))
+          throw new Error("AniList did not confirm the updated count and status on reread.");
+        savePendingAniListUnwatches(pendingAniListUnwatches().filter((item) =>
+          !(item.accountId === row.accountId && item.seriesKey === row.seriesKey && item.code === row.code)));
+        writeAniListPreference(localStorage, { lastPush: Date.now() });
+        toast(`AniList progress updated to ${planned.progress}`);
+      } catch (error) {
+        if (!stillConnected()) return;
+        toast(`Episode unwatched locally. AniList not updated: ${error.message}`, { tone: "error" });
+      }
+    }
+  })().finally(() => { explicitAniListUnwatchRun = null; });
+  return explicitAniListUnwatchRun;
+}
+
+function toggleEpisodeWatched(series, code, saved = null) {
+  const normalized = String(code || "").toUpperCase();
+  const status = watchEpisodeStatus(series, { code: normalized, stored: saved });
+  if (status.watched) {
+    if (!markWatchEpisodeUnwatched(series, normalized)) return false;
+    void syncExplicitAniListUnwatch(series, normalized);
+    return "unwatched";
+  }
+  return markWatchEpisodeWatched(series, normalized, saved) ? "watched" : false;
+}
+
+function markWatchEpisodeWatched(series, code, saved = null) {
+  const normalized = String(code || "").toUpperCase();
+  if (!series || !/^S\d{2}E\d{2,4}$/.test(normalized)) return false;
+  explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
+  const entries = state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
+  if (!anchor) return false;
+  savePendingAniListUnwatches(pendingAniListUnwatches().filter((item) =>
+    !(item.seriesKey === series.key && item.code === normalized)));
+  const now = Date.now();
+  for (const item of entries) {
+    if (item.watchedChapters?.[normalized] === false) {
+      item.watchedChapters = { ...item.watchedChapters };
+      delete item.watchedChapters[normalized];
+    }
+  }
+  anchor.watchedChapters = { ...(anchor.watchedChapters || {}), [normalized]: now };
+  for (const { episode } of saved?.sources || []) {
+    if (!episode) continue;
+    const durationMs = Math.max(1, Number(episode.progress?.durationMs) || 0, Number(episode.progress?.positionMs) || 0);
+    episode.progress = { ...episode.progress, positionMs: durationMs, durationMs, updatedAt: now, finished: true };
+  }
+  saveLibrary();
+  return true;
+}
+
+function markTitleChapterWatched(code) {
+  const series = titleSubject().series;
+  const normalized = String(code || "").toUpperCase();
+  if (!series || series.type !== "series") return false;
+  const chapter = libraryOrderedChapters(series).find((item) => String(item.code || "").toUpperCase() === normalized);
+  const result = toggleEpisodeWatched(series, normalized, chapter ? { sources: chapter.sources } : null);
+  if (!result) return false;
+  refreshTitlePage();
+  toast(result === "unwatched" ? "Episode marked as not watched" : "Episode marked as watched");
+  return true;
+}
+
+// LVL's editable tracking status is kept distinct from the last imported
+// AniList value. A playback event must not silently write to a remote account
+// or change a user-selected Paused, Dropped, Completed or Rewatching status.
+function watchTrackingStatus(series) {
+  return (series?.sources || []).map((item) => item.trackingStatus)
+    .find((value) => Object.hasOwn(ANILIST_STATUS_LABELS, value))
+    || seriesAniList(series)?.status || "";
+}
+
+function setWatchTrackingStatus(seriesKey, status, { automatic = false } = {}) {
+  if (!Object.hasOwn(ANILIST_STATUS_LABELS, status)) return false;
+  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  if (!series || series.mediaKind !== "anime") return false;
+  const previous = watchTrackingStatus(series);
+  if (automatic && previous !== "PLANNING") return false;
+  if (previous === status && series.sources.every((item) => item.trackingStatus === status)) return false;
+  const at = Date.now();
+  for (const entry of series.sources) {
+    entry.trackingStatus = status;
+    entry.updatedAt = at;
+  }
+  saveLibrary();
+  const active = state.currentSource?.libraryId && libraryEntryById(state.currentSource.libraryId);
+  if (active && (active.seriesKey || librarySeriesKey(active.title)) === seriesKey) {
+    renderWatchInfo(buildLibrarySeries().find((item) => item.key === seriesKey), active);
+  }
+  return true;
+}
+
+function renderWatchInfo(series, entry) {
+  const info = $("#watch-title-info");
+  const rail = $("#watch-side-rail");
+  const layout = $("#watch-player-layout");
+  const related = $("#watch-related");
+  const recommended = $("#watch-recommended");
+  if (!info || !rail || !layout || !related || !recommended) return;
+  if (!entry || !series) {
+    info.hidden = true;
+    rail.hidden = true;
+    layout.classList.remove("has-chapters");
+    watchInfoRenderKey = "";
+    return;
+  }
+  info.hidden = false;
+  rail.hidden = false;
+  layout.classList.add("has-chapters");
+  const catalogId = watchCatalogIdFor(series) || entry.catalogId || "";
+  // Home's abbreviated synopsis is useful while loading, but does not contain
+  // cast, status or the episode stills. Always request the full title record.
+  const full = (series.type === "movie" ? movieArtRecords : catalogChapterLists).get(catalogId)?.meta;
+  if (!full && /^tt\d{5,12}$/.test(catalogId)) {
+    if (series.type === "movie") libraryArtFor({ ...series, catalogId }, refreshWatchCatalogDetails, { full: true });
+    else catalogChapterList(catalogId, refreshWatchCatalogDetails);
+  }
+  const meta = full || libraryArtCached(series) || {};
+  const details = titleInfo({ id: catalogId, type: series.type, series }, meta);
+  const anilist = seriesAniList(series);
+  const title = series.title || entry.displayTitle || entry.title || "Untitled";
+  const genres = details.genres || [];
+  const cover = series.coverUrl || details.posterFallback || seriesAniList(series)?.cover || "";
+  const originalPoster = details.poster || largePosterUrl(cover);
+  const poster = boundedPosterUrl(originalPoster);
+  const posterSrcsetValue = posterSrcset({ poster });
+  const imageFallback = poster !== originalPoster ? originalPoster : details.posterFallback;
+  const image = poster ? `<img src="${escapeHtml(poster)}"${posterSrcsetValue ? ` srcset="${escapeHtml(posterSrcsetValue)}" sizes="(max-width:680px) 120px, (min-width:1440px) 275px, 19vw"` : ""} alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(title)}"${imageFallback && imageFallback !== poster ? ` data-fallback-src="${escapeHtml(imageFallback)}"` : ""} />`
+    : `<img src="${escapeHtml(artworkFallback(title))}" alt="" />`;
+  const description = String(details.description || entry.description || "").trim();
+  const savedChapters = series.type === "movie" ? 0 : libraryOrderedChapters(series).length;
+  const episodeCount = details.chapterTotal || savedChapters;
+  const facts = [
+    ["Format", series.mediaKind === "anime" ? "Anime" : series.type === "movie" ? "Movie" : "TV series"],
+    [series.type === "movie" ? "Released" : "First aired", formatTitleDay(details.released) || details.releaseInfo],
+    ["Broadcast status", details.status],
+    ["Rating", details.rating ? `★ ${details.rating} / 10` : ""],
+    ["Episodes", episodeCount ? String(episodeCount) : ""],
+    ["Seasons", details.seasonCount ? String(details.seasonCount) : ""],
+    ["Runtime", details.runtime ? (series.type === "movie" ? formatRuntime(details.runtime) || details.runtime : `${details.runtime} per episode`) : ""],
+    ["Country", details.country],
+    ["Starring", series.mediaKind === "anime" || eligibleForPublicAnimeRating({ genres, country: details.country })
+      ? "" : titleListText(details.cast, 5)],
+    ["Written by", titleListText(details.writer, 4)],
+    ["Directed by", titleListText(details.director, 4)],
+    ["Awards", details.awards],
+    ["AniList status (last synced)", ANILIST_STATUS_LABELS[anilist?.status] || ""],
+    ["Your AniList progress", anilistProgressText(anilist)],
+  ].filter(([, value]) => String(value || "").trim());
+  const localStatus = series.mediaKind === "anime" ? watchTrackingStatus(series) : "";
+  const tracking = series.mediaKind === "anime" ? `<div class="watch-info-tracking">
+    <label for="watch-tracking-status">Tracking status</label>
+    <select id="watch-tracking-status" data-watch-tracking-status aria-label="Edit LVL tracking status">
+      <option value="" disabled${localStatus ? "" : " selected"}>Choose status</option>
+      ${Object.entries(ANILIST_STATUS_LABELS).map(([value, label]) =>
+        `<option value="${value}"${localStatus === value ? " selected" : ""}>${escapeHtml(label)}</option>`).join("")}
+    </select>
+    <small>Saved in LVL. AniList status above changes only after a verified AniList sync.</small>
+  </div>` : "";
+  const subject = { id: catalogId, type: series.type === "movie" ? "movie" : "series", genres };
+  const picks = watchSidebarPicks(state.homeCatalog, subject, { excluded: [subject.id], relatedLimit: 5, recommendedLimit: 6 });
+  const signature = JSON.stringify([entry.id, title, cover, poster, description, genres, facts, localStatus,
+    state.homeCatalogUpdatedAt, picks.related.map((item) => item.id), picks.recommended.map((item) => item.id)]);
+  if (signature === watchInfoRenderKey) return;
+  watchInfoRenderKey = signature;
+  info.innerHTML = `<div class="watch-info-poster">${image}</div>
+    <div class="watch-info-copy"><h2><button type="button" class="watch-info-title-link" data-watch-title-details
+        data-watch-series-key="${escapeHtml(series.key || "")}" data-watch-catalog-id="${escapeHtml(catalogId)}"
+        data-watch-catalog-type="${series.type === "movie" ? "movie" : "series"}"
+        aria-label="${escapeHtml(`Open ${title} in Library`)}">${escapeHtml(title)}</button></h2>
+      ${genres.length ? `<ul class="watch-info-genres" aria-label="Genres">${genres.map((genre) => `<li>${escapeHtml(genre)}</li>`).join("")}</ul>` : ""}
+      <p class="watch-info-description">${description ? escapeHtml(description) : "Description is not available for this title yet."}</p>
+      <dl class="watch-info-facts">${facts.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd></div>`).join("")}</dl>
+      ${tracking}
+    </div>`;
+  const cardMarkup = (item) => {
+    const thumb = metahubVariant(item.poster || "", "small") || item.poster || artworkFallback(item.name);
+    const genresText = (item.genres || []).slice(0, 2).join(" - ") || (item.type === "movie" ? "Movie" : "Series");
+    return `<li><button type="button" class="watch-discovery-card" data-watch-title-id="${escapeHtml(item.id)}"
+      aria-label="${escapeHtml(`View ${item.name}`)}">
+      <span class="watch-discovery-cover"><img src="${escapeHtml(thumb)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(item.name)}" /></span>
+      <span class="watch-discovery-copy"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(genresText)}</small></span>
+      ${icon("chevron-right")}</button></li>`;
+  };
+  for (const [element, items, heading] of [[related, picks.related, "Related"], [recommended, picks.recommended, "Recommended"]]) {
+    element.hidden = false;
+    element.innerHTML = `<h3 class="watch-side-heading">${heading}</h3>`
+      + (items.length ? `<ol class="watch-discovery-list">${items.map(cardMarkup).join("")}</ol>`
+        : `<p class="watch-side-empty">${state.homeLoaded ? "No matching titles in the catalog yet." : "Loading catalog suggestions…"}</p>`);
+  }
+  refreshImages(info);
+  refreshImages(rail);
+  if (!state.homeLoaded) void loadHomeCatalog();
+}
+
+function renderWatchChapters() {
+  const root = $("#watch-chapters");
+  const body = $("#watch-chapters-body");
+  const layout = $("#watch-player-layout");
+  if (!root || !body) return;
+  const source = watchPendingSelection || state.currentSource;
+  const entry = source?.libraryId ? libraryEntryById(source.libraryId) : null;
+  const seriesKey = entry?.seriesKey || (entry ? librarySeriesKey(entry.title) : "");
+  const series = seriesKey ? buildLibrarySeries().find((item) => item.key === seriesKey) : null;
+  renderWatchInfo(series, entry);
+  if (!series || series.type === "movie" || source?.fileIndex === undefined || source?.fileIndex === null) {
+    root.hidden = true;
+    body.replaceChildren();
+    $("#watch-seasons").hidden = true;
+    watchChapterActions = new Map();
+    watchChaptersSourceKey = "";
+    return;
+  }
+  root.hidden = false;
+  const playingEpisode = entry.episodes?.find((item) => Number(item.fileIndex) === Number(source.fileIndex));
+  const playingCode = String(playingEpisode?.code || source.episode?.code || "").toUpperCase();
+  const sourceKey = `${seriesKey}:${source.libraryId}:${source.fileIndex}`;
+  const sourceChanged = sourceKey !== watchChaptersSourceKey;
+  if (sourceChanged) {
+    watchChaptersSourceKey = sourceKey;
+    watchEpisodeSourcesOpen = "";
+    watchSelectedSeason = null;
+  }
+  const stored = new Map();
+  [...series.seasons.entries()].forEach(([, refs]) => {
+    groupLibraryChapters(refs).forEach((chapter) => {
+      const code = String(chapter.code || "").toUpperCase();
+      if (code) stored.set(code, chapter);
+    });
+  });
+  const catalogId = watchCatalogIdFor(series) || entry.catalogId || "";
+  const hasCatalog = /^tt\d{5,12}$/.test(catalogId) && series.type !== "movie";
+  const cached = hasCatalog ? catalogChapterLists.get(catalogId)?.list : null;
+  // Fetch even when the collapsible chapter panel is closed. A previously
+  // collapsed panel used to show only saved episodes indefinitely.
+  if (hasCatalog && !cached) catalogChapterList(catalogId, refreshWatchCatalogDetails);
+  const collected = new Map();
+  if (cached) {
+    for (const season of cached.seasons || []) {
+      collected.set(season.season, (season.episodes || []).map((episode) => ({
+        ...episode, season: season.season, code: chapterCode(season.season, episode.episode),
+        stored: stored.get(chapterCode(season.season, episode.episode)),
+      })));
+    }
+  }
+  for (const [season, refs] of series.seasons) {
+    const existing = collected.get(season) || [];
+    const listed = new Set(existing.map((chapter) => chapter.code));
+    for (const group of groupLibraryChapters(refs)) {
+      if (listed.has(String(group.code).toUpperCase())) continue;
+      existing.push({ code: group.code, season, name: group.title || group.code, stored: group });
+    }
+    existing.sort((a, b) => (Number(String(a.code).match(/E(\d+)/)?.[1]) || 0)
+      - (Number(String(b.code).match(/E(\d+)/)?.[1]) || 0));
+    collected.set(season, existing);
+  }
+  const seasons = [...collected.entries()].sort((a, b) => a[0] - b[0]);
+  const chapters = seasons.flatMap(([, rows]) => rows);
+  const watchedCount = chapters.filter((chapter) => watchEpisodeStatus(series, chapter).watched).length;
+  const catalogRecord = hasCatalog ? catalogChapterLists.get(catalogId) : null;
+  const titleLookup = !hasCatalog ? watchCatalogMatches.get(`${series.type}:${series.key}`) : null;
+  const loading = catalogRecord?.pending || titleLookup?.pending;
+  const unavailable = (catalogRecord?.failedAt && !cached) || (titleLookup && !titleLookup.pending && !titleLookup.id);
+  $("#watch-chapters-summary").textContent = `${chapters.length} episodes - ${watchedCount} watched${loading ? " - Loading full list…" : unavailable ? " - Catalog unavailable" : ""}`;
+  const currentSeason = String(Number(playingCode.match(/^S(\d+)E/)?.[1] ?? seasons[0]?.[0] ?? 1));
+  if (!seasons.some(([season]) => String(season) === String(watchSelectedSeason))) watchSelectedSeason = currentSeason;
+  const chapterArt = catalogChapterLists.get(catalogId)?.meta || libraryArtCached(series) || {};
+  const posterFallback = series.coverUrl || chapterArt.poster || seriesAniList(series)?.cover || "";
+  const wideFallback = chapterArt.background || posterFallback;
+  const seasonsNode = $("#watch-seasons");
+  if (seasonsNode) {
+    seasonsNode.hidden = seasons.length < 2;
+    seasonsNode.innerHTML = seasons.length < 2 ? "" : `<h3 class="watch-side-heading">Seasons</h3><div class="watch-season-tiles">${seasons.map(([season, episodes]) => {
+      const still = episodes.find((item) => item.thumbnail)?.thumbnail || "";
+      const image = still || wideFallback;
+      const backup = still ? wideFallback : posterFallback;
+      const picture = image
+        ? `<img src="${escapeHtml(image)}" alt="" loading="lazy" decoding="async" data-fallback="wide" data-fallback-title="${escapeHtml(series.title)}"${backup && backup !== image ? ` data-fallback-src="${escapeHtml(backup)}"` : ""} />`
+        : `<img src="${escapeHtml(artworkFallback(series.title, { ratio: "wide", label: `Season ${season}` }))}" alt="" />`;
+      const finished = episodes.filter((item) => watchEpisodeStatus(series, item).watched).length;
+      return `<button type="button" class="watch-season-tile${String(season) === String(watchSelectedSeason) ? " is-selected" : ""}"
+        data-watch-season="${season}" aria-pressed="${String(season) === String(watchSelectedSeason)}">
+        ${picture}<span>${season === 0 ? "Specials" : `Season ${season}`}</span><small>${finished}/${episodes.length}</small>
+      </button>`;
+    }).join("")}</div>`;
+    refreshImages(seasonsNode);
+  }
+  const scrollTop = body.scrollTop;
+  const focusedEpisode = body.contains(document.activeElement) ? document.activeElement.closest?.(".watch-episode[data-watch-episode-code]") : null;
+  const previouslyFocused = focusedEpisode?.dataset.watchEpisodeCode || "";
+  const focusedControl = document.activeElement?.hasAttribute?.("data-watch-episode-sources") ? "sources"
+    : document.activeElement?.hasAttribute?.("data-watch-episode") ? "play" : "card";
+  watchChapterActions = new Map();
+  body.innerHTML = (unavailable ? `<div class="watch-chapter-notice"><span>Full episode information couldn't load; your saved episodes remain available.</span><button type="button" class="ui-btn ui-btn--secondary ui-btn--sm" data-watch-retry-chapters>Retry</button></div>` : "") + seasons.filter(([season]) => String(season) === String(watchSelectedSeason)).map(([, rows]) => {
+    return `<ol class="watch-episode-list">${rows.map((chapter) => {
+        const code = String(chapter.code || "").toUpperCase();
+        const status = watchEpisodeStatus(series, chapter);
+        const current = playingCode === code;
+        const upcoming = Boolean(chapter.id && chapterUpcoming(chapter));
+        const label = status.watched ? "Watched" : status.percent > 0 ? `${status.percent}% watched` : status.saved ? "Not started" : "No source saved";
+        const name = chapter.name && chapter.name !== code ? String(chapter.name) : `Episode ${Number(code.match(/E(\d+)/)?.[1] || 0)}`;
+        const sourceRefs = chapter.stored?.sources?.slice().sort(compareLibrarySourceRefsByPeers) || [];
+        const best = sourceRefs[0] || null;
+        const sourcesOpen = watchEpisodeSourcesOpen === code;
+        const lookup = chapter.id ? watchEpisodeSourceLookups.get(chapter.id) : null;
+        const candidates = [
+          ...sourceRefs.map((ref) => ({ kind: "saved", ref, peers: Number(normalizeLibrarySourceMeta(ref.entry?.sourceMeta).peers) || 0 })),
+          ...(lookup?.status === "ready" ? lookup.rows.map((stream) => ({ kind: "remote", stream, peers: Number(stream.peers) || 0 }))
+            .filter((item) => !sourceRefs.some((ref) => String(ref.entry?.id || "").toLowerCase() === String(item.stream.infoHash || "").toLowerCase())) : []),
+        ].sort((a, b) => b.peers - a.peers).slice(0, 3);
+        const thumbnail = chapter.thumbnail || wideFallback;
+        const backup = chapter.thumbnail ? wideFallback : posterFallback;
+        const picture = thumbnail
+          ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" decoding="async" data-fallback="wide" data-fallback-title="${escapeHtml(series.title)}"${backup && backup !== thumbnail ? ` data-fallback-src="${escapeHtml(backup)}"` : ""} />`
+          : `<img src="${escapeHtml(artworkFallback(series.title, { ratio: "wide", label: code }))}" alt="" />`;
+        watchChapterActions.set(code, { best, candidates, sourceRefs, saved: chapter.stored || null, catalog: chapter.id ? chapter : null, entry, series, list: cached, current });
+        return `<li class="watch-episode${current ? " is-current" : ""}${status.watched ? " is-watched" : ""}" tabindex="0"
+          data-watch-episode-code="${escapeHtml(code)}" aria-label="${escapeHtml(`${code} ${name}, ${current ? "currently playing" : label}. Press Shift+F10 for actions`)}" aria-keyshortcuts="Shift+F10">
+          <div class="watch-episode__shell">
+          <button class="watch-episode__details" type="button" data-watch-episode-sources="${escapeHtml(code)}" aria-expanded="${sourcesOpen}" aria-controls="watch-episode-sources-${escapeHtml(code)}"
+            aria-label="${escapeHtml(`Choose sources for ${code} ${name}`)}">
+            <span class="lib-chapter-thumb watch-episode__thumb">${picture}${status.percent > 0 && !status.watched ? `<span class="lib-chapter-progress" aria-hidden="true"><span style="width:${status.percent}%"></span></span>` : ""}${status.watched ? `<span class="lib-chapter-watched" aria-hidden="true">${icon("check")}</span>` : ""}</span>
+            <span class="watch-episode__copy"><span class="watch-episode__code">${escapeHtml(code)}</span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(current ? "Playing now" : upcoming ? "Upcoming" : label)}</small>
+              ${status.percent > 0 ? `<span class="watch-episode__progress"><span style="width:${status.percent}%"></span></span>` : ""}
+            </span>
+          </button>
+          <button type="button" class="watch-episode__play" data-watch-episode="${escapeHtml(code)}" ${upcoming || (!current && !best && !chapter.id) ? 'disabled' : ""}
+            aria-label="${escapeHtml(current ? `Return to playing episode ${code} ${name}` : `Play ${code} ${name}`)}" title="${current ? "Return to playing episode" : upcoming ? "Not released yet" : "Play episode"}">${icon("play")}</button>
+          </div>
+          <div class="watch-episode__sources" id="watch-episode-sources-${escapeHtml(code)}"${sourcesOpen ? "" : " hidden"}>
+            <div class="watch-episode__sources-head"><strong>Episode sources</strong></div>
+            ${candidates.map((item, index) => {
+              const info = item.kind === "saved" ? librarySourceDetails(item.ref.entry, item.ref.episode) : item.stream;
+              const release = item.kind === "saved" ? info.releaseName : String(info.title || "Episode source").split("\n")[0];
+              const quality = info.quality && info.quality !== "UNKNOWN" ? info.quality : "";
+              return `<button type="button" class="watch-episode__source" data-watch-episode-source-index="${index}" data-watch-episode-source-code="${escapeHtml(code)}"><span><strong title="${escapeHtml(release)}">${escapeHtml(release)}</strong><small>${escapeHtml([quality, item.peers ? `${item.peers} peers` : "Peers unavailable", item.kind === "saved" ? "Saved" : "Online"].filter(Boolean).join(" - "))}</small></span><span>Play</span></button>`;
+            }).join("")}
+            ${lookup?.status === "loading" ? '<p role="status">Finding episode sources…</p>' : ""}
+            ${lookup?.status === "error" ? `<p role="alert">${escapeHtml(lookup.error || "Source search failed")} <button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-watch-episode-sources-retry="${escapeHtml(code)}">Retry</button></p>` : ""}
+            ${!candidates.length && lookup?.status !== "loading" && lookup?.status !== "error" ? '<p>No episode sources available yet.</p>' : ""}
+          </div>
+        </li>`;
+      }).join("")}</ol>`;
+  }).join("") || '<p class="watch-episode-empty">No chapters have been identified for this title yet.</p>';
+  body.scrollTop = scrollTop;
+  if (previouslyFocused) {
+    const item = [...body.querySelectorAll(".watch-episode[data-watch-episode-code]")].find((node) => node.dataset.watchEpisodeCode === previouslyFocused);
+    (focusedControl === "card" ? item : item?.querySelector(focusedControl === "sources" ? "[data-watch-episode-sources]" : "[data-watch-episode]"))?.focus({ preventScroll: true });
+  }
+  refreshImages(body);
+}
+
+async function findWatchEpisodeSources(action, { force = false } = {}) {
+  const chapter = action?.catalog;
+  if (!chapter?.id || !action.list) return;
+  const existing = watchEpisodeSourceLookups.get(chapter.id);
+  if (!force && (existing?.status === "ready" || existing?.status === "loading")) return;
+  const lookup = { status: "loading", rows: [] };
+  watchEpisodeSourceLookups.set(chapter.id, lookup);
+  renderWatchChapters();
+  try {
+    const view = { seasons: action.list.seasons };
+    const data = await fetchJson(`/api/streams?type=series&id=${encodeURIComponent(chapter.id)}`);
+    const groups = groupChapterSources(data.streams || [], catalogChapterTarget(view, chapter));
+    lookup.rows = [...groups.episodeFiles, ...groups.others]
+      .filter((stream) => stream.magnet)
+      .sort(compareStreamsByPeers);
+    lookup.status = "ready";
+  } catch (error) {
+    lookup.status = "error";
+    lookup.error = error.message || "Source lookup failed";
+  }
+  if (watchEpisodeSourceLookups.get(chapter.id) === lookup && watchEpisodeSourcesOpen === chapter.code) renderWatchChapters();
+}
+
+let autoNextInterval = null;
+let autoNextRemaining = 0;
+let autoNextSource = "";
+let autoNextDismissedSource = "";
+let autoNextPrefetchKey = "";
+let autoNextEnabled = localStorage.getItem("lvl-autoplay-next") !== "0";
+const AUTO_NEXT_SECONDS = 8;
+
+function autoNextSourceId() {
+  const source = state.currentSource;
+  return source?.libraryId && source.fileIndex !== null && source.fileIndex !== undefined
+    ? `${source.libraryId}:${source.fileIndex}` : "";
+}
+
+function clearAutoNext({ resetDismissal = false } = {}) {
+  if (autoNextInterval !== null) window.clearInterval(autoNextInterval);
+  autoNextInterval = null;
+  autoNextSource = "";
+  $("#player-up-next").hidden = true;
+  if (resetDismissal) autoNextDismissedSource = "";
+}
+
+function cancelAutoNext() {
+  autoNextDismissedSource = autoNextSource || autoNextSourceId();
+  clearAutoNext();
+}
+
+function playAutoNextNow() {
+  if (!autoNextSource || autoNextSourceId() !== autoNextSource) return clearAutoNext();
+  clearAutoNext();
+  void playAdjacentChapter(1);
+}
+
+function startAutoNext() {
+  if (!autoNextEnabled) return;
+  const key = autoNextSourceId();
+  if (!key || key === autoNextDismissedSource || autoNextInterval !== null || !viewActive("watch")) return;
+  const catalog = currentCatalogNeighbors();
+  const next = catalog?.next || currentChapterNavigation().next?.episode;
+  if (!next || adjacentChapterBusy) return;
+  autoNextSource = key;
+  autoNextRemaining = AUTO_NEXT_SECONDS;
+  const label = next.code || (Number.isInteger(next.season) && Number.isInteger(next.episode)
+    ? chapterCode(next.season, next.episode) : next.episodeTitle || "Next episode");
+  $("#player-up-next-title").textContent = `Next: ${label}`;
+  const update = () => { $("#player-up-next-countdown").textContent = `Playing in ${autoNextRemaining} second${autoNextRemaining === 1 ? "" : "s"}`; };
+  update();
+  $("#player-up-next").hidden = false;
+  revealPlayerControls();
+  autoNextInterval = window.setInterval(() => {
+    if (autoNextSourceId() !== key || !viewActive("watch")) return clearAutoNext();
+    autoNextRemaining -= 1;
+    if (autoNextRemaining <= 0) return playAutoNextNow();
+    update();
+  }, 1000);
+}
+
+// SkipDB is a lightweight, optional source of episode timestamps. A single
+// anonymous request is made for a known IMDb episode; there is no audio scan,
+// torrent read, persistent cache or speculative time-based skipping.
+let episodeSkipKey = "";
+let episodeSkipTimes = { intro: null, outro: null };
+let episodeSkipController = null;
+let episodeSkipFetchState = "idle";
+const episodeAutoSkip = {
+  intro: localStorage.getItem("lvl-auto-skip-intro") === "1",
+  outro: localStorage.getItem("lvl-auto-skip-ending") === "1",
+  attemptedIntro: "", attemptedOutro: "",
+};
+
+function setEpisodeAutoSkip(kind, enabled) {
+  episodeAutoSkip[kind] = Boolean(enabled);
+  localStorage.setItem(kind === "intro" ? "lvl-auto-skip-intro" : "lvl-auto-skip-ending", enabled ? "1" : "0");
+  renderEpisodeSkipOptions();
+  applyEpisodeAutoSkips();
+}
+
+function checkedSkipInterval(value, duration, type) {
+  // SkipDB reports "agnostic" for timestamps not tied to a particular cut.
+  // These are suitable for a user-initiated skip only, never automatic seeking.
+  if (!value || !["exact", "shifted", "agnostic"].includes(value.match)
+    || !Number.isFinite(Number(value.confidence)) || Number(value.confidence) < .65) return null;
+  const start = Number(value.start_ms) / 1000;
+  const end = Number(value.end_ms) / 1000;
+  if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start + 4
+    || end > duration + 1) return null;
+  if (type === "intro" && (start > duration * .4 || end > duration * .5)) return null;
+  if (type === "outro" && start < duration * .6) return null;
+  return { start, end: Math.min(end, duration), match: value.match };
+}
+
+function currentEpisodeSkipIdentity() {
+  if (!viewActive("watch") || watchPendingSelection) return null;
+  const source = state.currentSource;
+  if (source?.kind !== "torrent" || source.fileIndex === null || source.fileIndex === undefined) return null;
+  const entry = libraryEntryById(source.libraryId);
+  const catalogId = String(entry?.catalogId || source.catalogId || "");
+  if (!/^tt\d{5,12}$/.test(catalogId) || entry?.catalogType === "movie" || source.catalogType === "movie") return null;
+  const episode = entry?.episodes?.find((item) => Number(item.fileIndex) === Number(source.fileIndex));
+  // Library chapter labels are authoritative for a pack whose filenames are
+  // numbered across seasons. Accept both S1E3 and zero-padded S01E03 codes.
+  const code = entry?.chapterLabels?.[String(source.fileIndex)]?.code || episode?.code || source.episode?.code || "";
+  const match = String(code).match(/^S(\d{1,2})E(\d{1,4})$/i);
+  const duration = Math.round(state.mediaDurationMs / 1000);
+  if (!match || duration < 300 || duration > 18_000) return null;
+  return {
+    key: `${source.libraryId}:${source.fileIndex}|${catalogId}|${match[0]}|${duration}`,
+    imdbId: catalogId,
+    season: Number(match[1]), episode: Number(match[2]), duration,
+  };
+}
+
+// Exact/shifted timestamps match this stream length. Agnostic timestamps are
+// real crowdsourced episode markers, but no source-duration comparison is
+// possible. Show their simple timeline labels; NEVER auto-skip them.
+function episodeTimelineRanges() {
+  const identity = currentEpisodeSkipIdentity();
+  if (!identity || identity.key !== episodeSkipKey) return [];
+  const duration = identity.duration;
+  const ranges = [];
+  for (const [kind, label, interval] of [
+    ["opening", "Opening", episodeSkipTimes.intro],
+    ["ending", "Ending", episodeSkipTimes.outro],
+  ]) {
+    if (interval && ["exact", "shifted", "agnostic"].includes(interval.match)) {
+      const unverified = interval.match === "agnostic";
+      ranges.push({ kind, label,
+        start: interval.start, end: interval.end, unverified });
+    }
+  }
+  // Footage after the ending remains playable, without another tooltip/tag.
+  // Skipping continues to preserve after-credit scenes in applyEpisodeAutoSkips.
+  return ranges;
+}
+
+let episodeTimelineRenderKey = "";
+function renderEpisodeTimelineSegments() {
+  const layer = $("#player-timeline-segments");
+  const summary = $("#player-timeline-summary");
+  if (!layer) return;
+  const ranges = episodeTimelineRanges();
+  const duration = Math.round((state.mediaDurationMs || (Number(video.duration) || 0) * 1000) / 1000);
+  const renderKey = JSON.stringify([duration, ranges]);
+  if (renderKey === episodeTimelineRenderKey) return;
+  episodeTimelineRenderKey = renderKey;
+  layer.innerHTML = duration ? ranges.map(({ kind, start, end }) => {
+    const left = (start / duration * 100).toFixed(3);
+    const width = ((end - start) / duration * 100).toFixed(3);
+    return `<span class="player-timeline-segment player-timeline-segment--${kind}" style="left:${left}%;width:${width}%"></span>`;
+  }).join("") : "";
+  if (summary) {
+    summary.textContent = ranges.length
+      ? ranges.map(({ label, start, end }) => `${label}: ${formatTime(start * 1000)} to ${formatTime(end * 1000)}`).join("; ")
+      : "";
+  }
+}
+
+function renderEpisodeSkipOptions() {
+  const intro = $("#watch-skip-intro");
+  const credits = $("#watch-skip-credits");
+  if (!intro || !credits) return;
+  intro.setAttribute("aria-pressed", String(episodeAutoSkip.intro));
+  credits.setAttribute("aria-pressed", String(episodeAutoSkip.outro));
+  // Keep the controls visually simple. A pressed control stores the user's
+  // preference; the existing source-matching safety gate still governs seeks.
+  intro.textContent = "Skip intro";
+  credits.textContent = "Skip ending";
+  intro.title = "Automatically skip a matching opening when available";
+  credits.title = "Automatically skip a matching ending when available";
+}
+
+function applyEpisodeAutoSkips() {
+  if (video.paused || state.pendingSeek || !episodeSkipKey || !viewActive("watch")
+    || currentEpisodeSkipIdentity()?.key !== episodeSkipKey) return;
+  const at = absolutePlaybackSeconds();
+  const opening = episodeSkipTimes.intro;
+  const ending = episodeSkipTimes.outro;
+  if (episodeAutoSkip.intro && opening && ["exact", "shifted"].includes(opening.match)
+    && episodeAutoSkip.attemptedIntro !== episodeSkipKey
+    && at >= opening.start && at < opening.end - 3) {
+    episodeAutoSkip.attemptedIntro = episodeSkipKey;
+    seekPlayerTo(opening.end);
+  } else if (episodeAutoSkip.outro && ending && ["exact", "shifted"].includes(ending.match)
+    && episodeAutoSkip.attemptedOutro !== episodeSkipKey
+    && at >= ending.start && at < ending.end - 2) {
+    episodeAutoSkip.attemptedOutro = episodeSkipKey;
+    const remaining = Math.max(0, state.mediaDurationMs / 1000 - ending.end);
+    if (remaining >= 12) seekPlayerTo(ending.end);
+    else if (currentCatalogNeighbors()?.next || currentChapterNavigation().next) void playAdjacentChapter(1);
+    else seekPlayerTo(Math.max(0, state.mediaDurationMs / 1000 - 1));
+  }
+}
+
+function refreshEpisodeSkipOptions() {
+  const identity = currentEpisodeSkipIdentity();
+  const key = identity?.key || "";
+  if (key !== episodeSkipKey) {
+    episodeSkipController?.abort();
+    episodeSkipController = null;
+    episodeSkipKey = key;
+    episodeSkipTimes = { intro: null, outro: null };
+    episodeSkipFetchState = identity ? "loading" : "idle";
+    renderEpisodeTimelineSegments();
+    episodeAutoSkip.attemptedIntro = "";
+    episodeAutoSkip.attemptedOutro = "";
+    if (identity) {
+      const controller = new AbortController();
+      episodeSkipController = controller;
+      const query = new URLSearchParams({
+        imdb_id: identity.imdbId, season: String(identity.season),
+        episode: String(identity.episode), duration: String(identity.duration), adjust: "conservative",
+      });
+      void fetch(`https://api.skipdb.tv/api/segments?${query}`, {
+        signal: controller.signal, credentials: "omit", referrerPolicy: "no-referrer",
+      }).then((response) => response.ok ? response.json() : null).then((payload) => {
+        if (controller.signal.aborted || episodeSkipKey !== key
+          || currentEpisodeSkipIdentity()?.key !== key) return;
+        episodeSkipFetchState = payload ? "loaded" : "unavailable";
+        episodeSkipTimes = {
+          intro: checkedSkipInterval(payload?.segments?.intro, identity.duration, "intro"),
+          outro: checkedSkipInterval(payload?.segments?.outro, identity.duration, "outro"),
+        };
+        renderEpisodeTimelineSegments();
+        renderEpisodeSkipOptions();
+        applyEpisodeAutoSkips();
+      }).catch(() => {
+        if (controller.signal.aborted || episodeSkipKey !== key) return;
+        episodeSkipFetchState = "unavailable";
+        renderEpisodeSkipOptions();
+      }); // Missing service or unsupported episode leaves controls inactive.
+    }
+  }
+  renderEpisodeSkipOptions();
+  applyEpisodeAutoSkips();
+}
+
+function prefetchUpcomingChapter() {
+  if (!autoNextEnabled || !autoNextSourceId() || !state.mediaDurationMs) return;
+  const remaining = state.mediaDurationMs - state.currentMs;
+  if (remaining > 60_000 || remaining < 0) return;
+  const catalog = currentCatalogNeighbors();
+  const chapter = catalog?.next;
+  if (!chapter?.id) return;
+  const key = `${autoNextSourceId()}|${chapter.id}`;
+  if (autoNextPrefetchKey === key) return;
+  autoNextPrefetchKey = key;
+  // Warm the server's short-lived source cache without starting a second
+  // player or torrent. The actual episode begins only after the countdown.
+  void fetch(`/api/streams?type=series&id=${encodeURIComponent(chapter.id)}`).catch(() => {});
+}
+
+// Chapters are saved one at a time, so previous/next follow the catalog's chapter order when the
+// series is known: a saved neighbor plays right away, an unsaved one gets a source first (same
+// order as Play in series details). Without catalog data they follow the Library's saved chapters.
+const catalogChapterLists = new Map();
+let adjacentChapterBusy = false;
+
+function catalogChapterListFrom(meta) {
+  // Specials (S00) belong in the Watch episode rail, but never precede the
+  // main series in automatic next/previous episode playback.
+  const seasons = (meta?.seasons || []).filter((season) =>
+    Number.isInteger(season?.season) && season.season >= 0
+    && Array.isArray(season.episodes) && season.episodes.length);
+  const chapters = seasons.filter((season) => season.season > 0)
+    .flatMap((season) => season.episodes.map((episode) => ({ ...episode, season: season.season })));
+  return { seasons, chapters };
+}
+
+// Catalog art and details (backdrop, logo, synopsis, year) for Library titles with a catalog id:
+// Home's catalog first, then one metadata request per title. Series share the request that
+// brings their chapter list (catalogChapterList).
+const movieArtRecords = new Map();
+
+function libraryArtCached(series) {
+  const id = series?.catalogId;
+  if (!id) return null;
+  return homeTitleIndex.get(id) || catalogChapterLists.get(id)?.meta || movieArtRecords.get(id)?.meta || null;
+}
+
+function libraryArtFor(series, onReady = null, { full = false } = {}) {
+  const id = String(series?.catalogId || "");
+  if (!/^tt\d{5,12}$/.test(id)) return null;
+  const cached = libraryArtCached(series);
+  if (!full && (cached?.background || cached?.description)) return cached;
+  if (series.type !== "movie") {
+    const record = catalogChapterLists.get(id);
+    if (record?.meta) return record.meta;
+    if (record?.list && !record.meta) return cached;
+    catalogChapterList(id, onReady);
+    return cached;
+  }
+  const record = movieArtRecords.get(id);
+  if (record?.meta) return record.meta;
+  if (record?.pending) {
+    if (onReady && !record.listeners.includes(onReady)) record.listeners.push(onReady);
+    return cached;
+  }
+  if (record?.failedAt && Date.now() - record.failedAt < 60_000) return cached;
+  const next = { meta: null, pending: true, failedAt: 0, listeners: onReady ? [onReady] : [] };
+  movieArtRecords.set(id, next);
+  fetchJson(`/api/catalog/meta?type=movie&id=${encodeURIComponent(id)}`)
+    .then((data) => { next.meta = data.meta || null; })
+    .catch(() => { next.failedAt = Date.now(); })
+    .finally(() => {
+      next.pending = false;
+      const listeners = next.listeners;
+      next.listeners = [];
+      if (next.meta) listeners.forEach((listener) => { try { listener(next.meta); } catch {} });
+    });
+  return cached;
+}
+
+function catalogChapterList(catalogId, onReady = null) {
+  const record = catalogChapterLists.get(catalogId);
+  if (record?.list) return record.list;
+  if (record?.pending) {
+    if (onReady && !(record.listeners || []).includes(onReady)) record.listeners = [...(record.listeners || []), onReady];
+    return null;
+  }
+  if (record?.failedAt && Date.now() - record.failedAt < 60_000) return null;
+  const next = { list: null, pending: true, failedAt: 0, listeners: onReady ? [onReady] : [] };
+  catalogChapterLists.set(catalogId, next);
+  fetchJson(`/api/catalog/meta?type=series&id=${encodeURIComponent(catalogId)}`)
+    .then((data) => {
+      next.meta = data.meta || null;
+      const list = catalogChapterListFrom(next.meta);
+      if (!list.seasons.length) {
+        next.failedAt = Date.now();
+        next.error = "No episodes were included in the catalog response";
+      } else next.list = list;
+    })
+    .catch((error) => { next.failedAt = Date.now(); next.error = error.message || ""; })
+    .finally(() => {
+      next.pending = false;
+      updateChapterButtons();
+      const listeners = next.listeners || [];
+      next.listeners = [];
+      listeners.forEach((listener) => { try { listener(next.list); } catch {} });
+    });
+  return null;
+}
+
+function currentCatalogNeighbors() {
+  const source = state.currentSource;
+  if (!source?.libraryId || source.fileIndex === null || source.fileIndex === undefined) return null;
+  const entry = libraryEntryById(source.libraryId);
+  if (!/^tt\d{5,12}$/.test(String(entry?.catalogId || "")) || entry.catalogType === "movie") return null;
+  const episode = entry.episodes?.find((item) => Number(item.fileIndex) === Number(source.fileIndex));
+  const match = String(episode?.code || "").match(/^S(\d{2})E(\d{2,4})$/i);
+  if (!match) return null;
+  const list = catalogChapterList(entry.catalogId);
+  if (!list) return null;
+  const index = list.chapters.findIndex((chapter) => chapter.season === Number(match[1]) && chapter.episode === Number(match[2]));
+  if (index < 0) return null;
+  const pick = (offset) => {
+    const chapter = list.chapters[index + offset];
+    return chapter && !chapterUpcoming(chapter) ? chapter : null;
+  };
+  return { entry, list, previous: pick(-1), next: pick(1) };
+}
+
+async function playCatalogNeighbor({ entry, list }, chapter) {
+  // An unsaved Up Next chapter can spend time looking up providers. A newer
+  // selection or leaving Watch must win even if that lookup resolves later.
+  let expectedLoadId = playbackLoadRequestId;
+  const expectedManualSelection = manualCatalogPlaybackId;
+  const stillCurrent = () => viewActive("watch") && playbackLoadRequestId === expectedLoadId
+    && manualCatalogPlaybackId === expectedManualSelection;
+  const code = chapterCode(chapter.season, chapter.episode);
+  const view = {
+    meta: { id: entry.catalogId, type: "series", name: entry.displayTitle || entry.title, poster: entry.coverUrl || "", aliases: entry.aliases || [] },
+    seasons: list.seasons,
+  };
+  const saved = savedCatalogChapters(view.meta).get(code);
+  if (saved) {
+    if (!stillCurrent()) return;
+    await playLibraryEpisode(saved.entry.id, Number(saved.episode.fileIndex));
+    return;
+  }
+  $("#media-status").textContent = `Finding a source for ${code}…`;
+  toast(`Finding a source for ${code}…`);
+  try {
+    const data = await fetchJson(`/api/streams?type=series&id=${encodeURIComponent(chapter.id)}`);
+    if (!stillCurrent()) return;
+    const candidates = chapterPlayOrder(groupChapterSources(data.streams || [], catalogChapterTarget(view, chapter)));
+    if (!candidates.length) throw new Error(`No playable source was found for ${code}.`);
+    let lastError = null;
+    for (const stream of candidates) {
+      if (!stillCurrent()) return;
+      try {
+        await addCatalogChapterSource(view, chapter, stream, {
+          play: true, quiet: true, stillCurrent,
+          onPlaybackStart: (loadId) => { expectedLoadId = loadId; },
+        });
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return; // Another selection owns playback now.
+        lastError = error;
+      }
+    }
+    throw lastError || new Error(`No source for ${code} passed torrent validation.`);
+  } catch (error) {
+    if (!stillCurrent()) return;
+    $("#media-status").textContent = `Couldn't play ${code}`;
+    toast(error.message || `Couldn't play ${code}`, { tone: "error" });
+  }
+}
+
+async function playAdjacentChapter(direction) {
+  clearAutoNext();
+  if (adjacentChapterBusy) return;
+  adjacentChapterBusy = true;
+  try {
+    const catalog = currentCatalogNeighbors();
+    const chapter = catalog ? (direction < 0 ? catalog.previous : catalog.next) : null;
+    if (chapter) {
+      await playCatalogNeighbor(catalog, chapter);
+      return;
+    }
+    const nav = currentChapterNavigation();
+    const target = direction < 0 ? nav.previous : nav.next;
+    if (target) await playLibraryEpisode(target.entry.id, Number(target.episode.fileIndex));
+  } finally {
+    adjacentChapterBusy = false;
+  }
+}
+
+/* ---------------------------------------------------------------- Library dialog: chapter list */
+
+const libraryDialogView = { key: "", season: null, open: new Set(), series: null, transientMeta: null };
+
+function libraryDialogThumbs(series, rerender) {
+  const thumbs = new Map();
+  if (!series.catalogId || series.type === "movie") return thumbs;
+  const list = catalogChapterList(series.catalogId, rerender);
+  (list?.chapters || []).forEach((episode) => {
+    thumbs.set(chapterCode(episode.season, episode.episode), { thumbnail: episode.thumbnail || "", name: episode.name || "", released: episode.released || "" });
+  });
+  return thumbs;
+}
+
+function libraryOriginText(details) {
+  const release = details.releaseName.length > 90 ? `${details.releaseName.slice(0, 88)}…` : details.releaseName;
+  const pack = details.sourceKind === "pack-file" || details.sourceKind === "season-pack" || details.sourceKind === "multi-episode-pack";
+  return { pack, release };
+}
+
+// A shared torrent only means shared episode content when it resolves to the
+// same file within that torrent. Season packs use one hash for many files.
+function libraryTorrentFileKey({ entry, episode } = {}) {
+  const id = String(entry?.id || "").trim();
+  const magnetHash = String(entry?.magnet || "").match(/(?:[?&]xt=urn:btih:)([a-z0-9]{32}|[a-f0-9]{40})(?:&|$)/i)?.[1] || "";
+  const hash = /^[a-f0-9]{40}$/i.test(id) ? id : magnetHash;
+  const index = Number(episode?.fileIndex);
+  return hash && Number.isInteger(index) && index >= 0 ? `${hash.toLowerCase()}:${index}` : "";
+}
+
+function repeatedLibrarySourceIndexes(refs) {
+  const seen = new Set();
+  return new Set(refs.flatMap((ref, index) => {
+    const key = libraryTorrentFileKey(ref);
+    if (!key) return [];
+    if (seen.has(key)) return [index];
+    seen.add(key);
+    return [];
+  }));
+}
+
+function repeatedLibrarySourceTag(duplicate) {
+  return duplicate ? '<span class="lib-source-duplicate">Same source/content</span>' : "";
+}
+
+function libraryCodecLabel(codec) {
+  const value = String(codec || "").toUpperCase();
+  return value === "H264" ? "H.264" : value === "UNKNOWN" ? "" : value;
+}
+
+function libraryDialogChapterMarkup(series, chapter, thumbs, { movie = false } = {}) {
+  const sources = chapter.sources.slice().sort(compareLibrarySourceRefsByPeers);
+  const repeated = repeatedLibrarySourceIndexes(sources);
+  const best = sources[0];
+  const details = librarySourceDetails(best.entry, best.episode);
+  const code = String(chapter.code || "").toUpperCase();
+  const match = code.match(/^S(\d{2})E(\d{2,4})$/);
+  const catalog = thumbs.get(code);
+  const title = movie ? series.title : (chapter.title && !/^S\d{2}E\d{2,4}$/i.test(chapter.title) ? chapter.title : catalog?.name || chapter.title || "Chapter");
+  const number = match ? `Chapter ${Number(match[2])}` : movie ? "Movie" : "Video";
+  const progress = sources.map(({ episode }) => episode.progress).filter((item) => item?.durationMs > 0).sort((a, b) => b.updatedAt - a.updatedAt)[0];
+  const watched = !explicitlyUnwatchedChapter(series, code)
+    && (Boolean(progress?.finished) || (!movie && manuallyWatchedChapter(series, code)));
+  const ratio = progress && !watched ? Math.min(1, progress.positionMs / progress.durationMs) : 0;
+  const art = catalog?.thumbnail
+    ? `<img src="${escapeHtml(catalog.thumbnail)}" alt="" loading="lazy" decoding="async" data-fallback="wide" data-fallback-title="${escapeHtml(series.title)}" />`
+    : `<img src="${escapeHtml(artworkFallback(series.title, { ratio: "wide", label: movie ? "Movie" : number }))}" alt="" />`;
+  const analysis = best.episode.analysis || {};
+  const stats = [
+    analysis.words?.length ? `<button class="lib-chapter-link library-vocab" type="button" data-kind="words" data-library-id="${escapeHtml(best.entry.id)}" data-file-index="${best.episode.fileIndex}">${analysis.words.length} words</button>` : "",
+    analysis.phrases?.length ? `<button class="lib-chapter-link library-vocab" type="button" data-kind="phrases" data-library-id="${escapeHtml(best.entry.id)}" data-file-index="${best.episode.fileIndex}">${analysis.phrases.length} phrases</button>` : "",
+    Number(analysis.autoCardCount) ? `<span>${Number(analysis.autoCardCount)} cards</span>` : "",
+  ].filter(Boolean).join("");
+  const key = `${series.key}|${chapter.key}`;
+  const open = libraryDialogView.open.has(key);
+  const others = sources.slice(1);
+  const origin = libraryOriginText(details);
+  const resumeAt = ratio ? Math.max(0, progress.positionMs - 5000) : 0;
+  const playLabel = ratio ? "Resume" : "Play";
+  return `<li class="lib-chapter${open ? " is-open" : ""}${watched ? " is-watched" : ""}" data-chapter-key="${escapeHtml(key)}"${match && !movie ? ` data-chapter-code="${escapeHtml(code)}" tabindex="0" aria-keyshortcuts="Shift+F10"` : ""}>
+    <div class="lib-chapter-row">
+      <span class="lib-chapter-thumb">${art}${ratio ? `<span class="lib-chapter-progress" aria-hidden="true"><span style="width:${Math.round(ratio * 100)}%"></span></span>` : ""}${watched ? `<span class="lib-chapter-watched" aria-hidden="true">${icon("check")}</span>` : ""}</span>
+      <div class="lib-chapter-copy">
+        <span class="lib-chapter-facts">${metaMarkup([number, details.quality !== "UNKNOWN" ? details.quality : "", libraryCodecLabel(details.codec), watched ? "Watched" : ratio ? `${Math.max(1, Math.round((progress.durationMs - progress.positionMs) / 60_000))} min left` : ""])}</span>
+        <strong>${escapeHtml(title)}</strong>
+        <small class="lib-chapter-origin" title="${escapeHtml(details.releaseName)}">${origin.pack ? '<span class="lib-origin-kind">From a pack</span>' : ""}<span class="lib-origin-release">${escapeHtml(origin.release)}</span><span class="lib-origin-provider">${escapeHtml(details.providers)}</span></small>
+        ${stats ? `<span class="lib-chapter-stats">${stats}</span>` : ""}
+      </div>
+      <div class="lib-chapter-actions">
+        <button class="ui-btn ui-btn--primary ui-btn--sm library-play" type="button" data-library-id="${escapeHtml(best.entry.id)}" data-file-index="${best.episode.fileIndex}" data-resume-ms="${resumeAt}" aria-label="${escapeHtml(`${playLabel} ${movie ? series.title : `${number}: ${title}`}`)}">${icon("play")}<span>${playLabel}</span></button>
+        ${match && !movie ? `<button class="ui-btn ui-btn--ghost ui-btn--sm title-mark-watched" type="button" data-title-mark-watched="${escapeHtml(code)}">${watched ? "Mark as not watched" : "Mark as watched"}</button>` : ""}
+        ${others.length ? `<button class="ui-btn ui-btn--ghost ui-btn--sm lib-chapter-more" type="button" aria-expanded="${open}"><span>${others.length + 1} sources</span>${icon("chevron-down")}</button>` : ""}
+      </div>
+    </div>
+    ${others.length ? `<div class="lib-chapter-sources"${open ? "" : " hidden"}>${sources.map(({ entry, episode }, index) => {
+      const item = librarySourceDetails(entry, episode);
+      const itemOrigin = libraryOriginText(item);
+      return `<div class="lib-source"><div><span class="lib-source-title"><strong>${escapeHtml(itemOrigin.release)}</strong>${repeatedLibrarySourceTag(repeated.has(index))}</span>${metaMarkup([itemOrigin.pack ? "From a pack" : "", item.providers, item.quality !== "UNKNOWN" ? item.quality : "", libraryCodecLabel(item.codec), item.peers ? `${item.peers} peers` : "", episode.length ? formatBytes(episode.length) : ""])}</div><button class="ui-btn ui-btn--secondary ui-btn--sm library-play" type="button" data-library-id="${escapeHtml(entry.id)}" data-file-index="${episode.fileIndex}">Play</button></div>`;
+    }).join("")}</div>` : ""}
+  </li>`;
+}
+
+function libraryDialogChaptersMarkup(series, rerender) {
+  const thumbs = libraryDialogThumbs(series, rerender);
+  if (series.type === "movie") {
+    const videos = [...[...series.seasons.values()].flat(), ...series.extras];
+    return `<ol class="lib-chapter-list">${libraryDialogChapterMarkup(series, { key: "movie", code: "VIDEO", title: series.title, sources: videos }, thumbs, { movie: true })}</ol>`;
+  }
+  const seasons = [...series.seasons.entries()].sort((a, b) => a[0] - b[0]);
+  const tabs = seasons.map(([number, refs]) => ({ id: String(number), label: number === 0 ? "Specials" : `Season ${number}`, chapters: groupLibraryChapters(refs) }));
+  if (series.extras.length) tabs.push({ id: "extras", label: "Extras", chapters: groupLibraryChapters(series.extras) });
+  if (libraryDialogView.key !== series.key || !tabs.some((tab) => tab.id === libraryDialogView.season)) {
+    libraryDialogView.key = series.key;
+    libraryDialogView.season = tabs[0]?.id ?? null;
+  }
+  const current = tabs.find((tab) => tab.id === libraryDialogView.season) || tabs[0];
+  if (!current) return "";
+  return `${tabs.length > 1 ? `<div class="ui-chip-row lib-season-switch" role="group" aria-label="Season">${tabs.map((tab) => `<button class="ui-chip lib-season-option" type="button" data-season="${escapeHtml(tab.id)}" aria-pressed="${tab.id === current.id}">${escapeHtml(tab.label)}<span class="ui-chip__count">${tab.chapters.length}</span></button>`).join("")}</div>` : ""}
+    <ol class="lib-chapter-list" aria-label="${escapeHtml(`${series.title}, ${current.label}`)}">${current.chapters.map((chapter) => libraryDialogChapterMarkup(series, chapter, thumbs)).join("")}</ol>`;
+}
+
+/* ---------------------------------------------------------------- Title page */
+
+// A show or movie on its own page: /title?id=tt…&type=series for catalog titles (in the Library
+// or not), /title?key=… for a Library title without catalog data. Backdrop and facts, your
+// progress, every chapter (or the movie's sources) with what the Library has, and the details.
+const TITLE_STATUS = "#title-status";
+const DEFAULT_DOCUMENT_TITLE = document.title;
+const titleView = { routeKey: "", id: "", type: "series", key: "", fromApp: false };
+const titleSeedMeta = new Map();
+const viewScroll = new Map();
+let lastViewKey = "";
+let titleMovieView = null;
+let titleRenderQueued = false;
+
+function titleRoute() {
+  const params = new URLSearchParams(window.location.search);
+  const id = String(params.get("id") || "");
+  return {
+    id: /^tt\d{5,12}$/.test(id) ? id : "",
+    type: params.get("type") === "movie" ? "movie" : "series",
+    key: String(params.get("key") || "").slice(0, 300),
+  };
+}
+
+function titleUrl({ id = "", type = "series", key = "" } = {}) {
+  const params = new URLSearchParams();
+  if (/^tt\d{5,12}$/.test(String(id || ""))) {
+    params.set("id", id);
+    params.set("type", type === "movie" ? "movie" : "series");
+  }
+  if (key) params.set("key", key);
+  return `${VIEW_ROUTES.title}?${params}`;
+}
+
+function openTitlePage({ id = "", type = "series", key = "", meta = null } = {}, { historyMode = "push" } = {}) {
+  if (meta?.id) titleSeedMeta.set(meta.id, meta);
+  const url = titleUrl({ id, type, key });
+  if (historyMode === "push") {
+    if (`${window.location.pathname}${window.location.search}` !== url) {
+      viewScroll.set(lastViewKey, window.scrollY);
+      window.history.pushState({ view: "title" }, "", url);
+      titleView.fromApp = true;
+    }
+  } else if (historyMode === "replace") window.history.replaceState({ view: "title" }, "", url);
+  switchView("title", { historyMode: "none" });
+  window.scrollTo({ top: 0, behavior: "instant" });
+}
+
+function openLibrarySeries(seriesKey) {
+  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  if (series) openTitlePage({ id: series.catalogId, type: series.type, key: series.key });
+}
+
+function openHomeTitle(meta) {
+  if (!meta) return;
+  const existing = buildLibrarySeries().find((series) => (meta.id && series.catalogId === meta.id) || series.key === librarySeriesKey(meta.name));
+  openTitlePage({ id: meta.id || existing?.catalogId || "", type: meta.type === "movie" ? "movie" : "series", key: existing?.key || "", meta });
+}
+
+// The Library title the page is about, if any: the one with this catalog id, then the saved key,
+// then a title of the same name that has no catalog id yet.
+function titleSubject(route = titleRoute()) {
+  const all = buildLibrarySeries();
+  const seed = route.id ? titleSeedMeta.get(route.id) || homeTitleIndex.get(route.id) : null;
+  const series = (route.id && all.find((item) => item.catalogId === route.id))
+    || (route.key && all.find((item) => item.key === route.key && (!route.id || !item.catalogId || item.catalogId === route.id)))
+    || (seed?.name && all.find((item) => !item.catalogId && item.key === librarySeriesKey(seed.name)))
+    || null;
+  return {
+    id: route.id || series?.catalogId || "",
+    type: series ? (series.type === "movie" ? "movie" : "series") : route.type,
+    key: series?.key || "",
+    series,
+  };
+}
+
+// Full catalog details (chapters with ratings, people, trailers): one request per title, shared
+// with the chapter list the player uses for previous/next and with the Library's artwork.
+function titleMetaFor(type, id) {
+  if (!id) return null;
+  if (type === "movie") {
+    const record = movieArtRecords.get(id);
+    if (record?.meta) return record.meta;
+    if (record?.pending) {
+      if (!record.listeners.includes(refreshTitlePage)) record.listeners.push(refreshTitlePage);
+      return null;
+    }
+    if (record?.failedAt && Date.now() - record.failedAt < 30_000) return null;
+    const next = { meta: null, pending: true, failedAt: 0, error: "", listeners: [refreshTitlePage] };
+    movieArtRecords.set(id, next);
+    fetchJson(`/api/catalog/meta?type=movie&id=${encodeURIComponent(id)}`)
+      .then((data) => { next.meta = data.meta || null; })
+      .catch((error) => { next.failedAt = Date.now(); next.error = error.message || ""; })
+      .finally(() => {
+        next.pending = false;
+        const listeners = next.listeners;
+        next.listeners = [];
+        listeners.forEach((listener) => { try { listener(next.meta); } catch {} });
+      });
+    return null;
+  }
+  const record = catalogChapterLists.get(id);
+  if (record?.meta) return record.meta;
+  catalogChapterList(id, refreshTitlePage);
+  return null;
+}
+
+function titleMetaState(type, id) {
+  const record = id ? (type === "movie" ? movieArtRecords.get(id) : catalogChapterLists.get(id)) : null;
+  return {
+    pending: Boolean(!record || record.pending),
+    failed: Boolean(record && !record.pending && !record.meta && record.failedAt),
+    error: record?.error || "",
+  };
+}
+
+function retryTitleMeta(subject) {
+  const records = subject.type === "movie" ? movieArtRecords : catalogChapterLists;
+  if (subject.id && !records.get(subject.id)?.pending) records.delete(subject.id);
+  renderTitlePage();
+}
+
+// The title page shows the poster at up to 240 px (480 px on sharp screens): ask for a larger
+// size of the same image when its host has sizes in the URL. The stored URL is the fallback.
+function largePosterUrl(url) {
+  const value = String(url || "");
+  const metahub = metahubVariant(value, "large");
+  if (metahub) return metahub;
+  const anilist = largeAniListCover(value);
+  if (anilist) return anilist;
+  if (/^https:\/\/m\.media-amazon\.com\/images\/M\/[^?#]+@\._V1_[^/?#]*\.jpg$/i.test(value)) return value.replace(/\._V1_[^/?#]*\.jpg$/i, "._V1_SX780.jpg");
+  return value;
+}
+
+// What the page shows: Library name and poster when the title is saved, catalog details for the
+// rest, the larger image sizes for the backdrop and poster.
+function titleInfo(subject, meta) {
+  const series = subject.series;
+  const seed = subject.id ? titleSeedMeta.get(subject.id) || homeTitleIndex.get(subject.id) || (series ? libraryArtCached(series) : null) : null;
+  const pick = (field) => (meta && meta[field]) || (seed && seed[field]) || "";
+  const artwork = preferredPosterArt({
+    saved: series?.coverUrl || "",
+    catalog: pick("poster"),
+    anilist: series ? seriesAniList(series)?.cover : "",
+    artworkSource: series?.artworkSource,
+    pinned: series?.artworkPinned,
+  });
+  const posterRaw = artwork.image;
+  const background = pick("background");
+  const logo = pick("logo");
+  const seasons = (Array.isArray(meta?.seasons) ? meta.seasons : []).filter((item) => Number(item.count) || item.episodes?.length);
+  const count = (item) => Number(item.count) || item.episodes.length;
+  const regular = seasons.filter((item) => item.season > 0);
+  return {
+    id: subject.id,
+    type: subject.type,
+    name: series?.title || pick("name") || "Untitled",
+    poster: boundedPosterUrl(largePosterUrl(posterRaw)),
+    posterFallback: boundedPosterUrl(largePosterUrl(posterRaw)) !== largePosterUrl(posterRaw)
+      ? largePosterUrl(posterRaw) : (artwork.fallback || (posterRaw !== largePosterUrl(posterRaw) ? posterRaw : "")),
+    backdrop: background ? metahubVariant(background, "large") || background : "",
+    backdropFallback: background,
+    logo: logo ? metahubVariant(logo, "medium") || logo : "",
+    description: pick("description"),
+    genres: (meta?.genres?.length ? meta.genres : seed?.genres || []).slice(0, 6),
+    releaseInfo: pick("releaseInfo") || series?.releaseInfo || "",
+    runtime: pick("runtime"),
+    rating: pick("imdbRating"),
+    imdbSeasons: regular.map((season) => ({ season: season.season,
+      score: Number.isFinite(Number(season.imdbRating)) && Number(season.imdbRating) > 0 && Number(season.imdbRating) <= 10
+        ? Number(season.imdbRating) : null })),
+    cast: meta?.cast || [],
+    writer: meta?.writer || [],
+    director: meta?.director || [],
+    country: meta?.country || "",
+    awards: meta?.awards || "",
+    status: meta?.status || "",
+    released: meta?.released || "",
+    trailers: Array.isArray(meta?.trailers) ? meta.trailers : [],
+    seasonCount: regular.length,
+    chapterTotal: regular.reduce((sum, item) => sum + count(item), 0),
+    specialCount: seasons.filter((item) => item.season === 0).reduce((sum, item) => sum + count(item), 0),
+  };
+}
+
+// The catalog record new sources are saved under: the Library title's own name and poster when
+// it has them, so a renamed or re-postered title stays one title.
+function titleCatalogMeta(subject = titleSubject()) {
+  const meta = (subject.id && (titleMetaFor(subject.type, subject.id) || titleSeedMeta.get(subject.id) || homeTitleIndex.get(subject.id))) || {};
+  const series = subject.series;
+  const name = series?.title || meta.name || "Untitled";
+  return {
+    ...meta,
+    id: subject.id,
+    type: subject.type,
+    name,
+    poster: series?.coverUrl || meta.poster || "",
+    releaseInfo: meta.releaseInfo || series?.releaseInfo || "",
+    aliases: [...new Set([name, meta.name, ...(series?.aliases || [])].filter(Boolean))],
+  };
+}
+
+function refreshTitlePage() {
+  if (!viewActive("title") || titleRenderQueued) return;
+  titleRenderQueued = true;
+  queueMicrotask(() => {
+    titleRenderQueued = false;
+    renderTitlePage();
+  });
+}
+
+function titleListText(names = [], limit = 6) {
+  const list = names.slice(0, limit);
+  return list.length > 1 ? `${list.slice(0, -1).join(", ")} and ${list.at(-1)}` : list.join("");
+}
+
+function formatTitleDay(day) {
+  const match = String(day || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric", timeZone: "UTC" });
+}
+
+const publicTitleRatingCache = new Map();
+const titleRelatedMovieCache = new Map();
+let relatedMovieOpenToken = 0;
+
+// Public, read-only franchise links: only request from AniList media that was
+// unambiguously verified against the anime's catalog seasons. No title guessing
+// and no MediaList/account write or backend restart is necessary.
+function titleRelatedMovies(confirmedRating, subject = null, meta = null) {
+  const ids = [...new Set((confirmedRating?.seasons || []).flatMap((season) =>
+    (season.parts || []).map((part) => part.id)).filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, 24);
+  if (!ids.length) {
+    // Strict display-only fallback for long shows split across catalog seasons,
+    // or localized releases whose year differs from AniList's original airing.
+    if (!meta || !eligibleForPublicAnimeRating({ mediaKind: subject?.series?.mediaKind,
+      genres: meta.genres, country: meta.country })) return null;
+    const totals = publicCatalogSeasonCounts(meta.seasons || []);
+    const count = totals.filter((season) => season.season > 0).reduce((sum, season) => sum + season.count, 0);
+    if (!count || !meta.name) return null;
+    const key = `franchise:${meta.name}:${count}`;
+    const prior = titleRelatedMovieCache.get(key);
+    if (prior && Date.now() - prior.createdAt < (prior.failed ? 5 * 60_000 : 60 * 60_000)) return prior;
+    const record = { items: [], pending: true, failed: false, createdAt: Date.now() };
+    titleRelatedMovieCache.set(key, record);
+    void fetchPublicAniListTitle(meta.name).then(async (media) => {
+      const rootId = verifiedPublicAnimeFranchiseRoot(media, { title: meta.name, totalEpisodes: count });
+      if (!rootId) { record.failed = true; return; }
+      record.items = await fetchPublicAnimeRelatedMovies([rootId]);
+    }).catch(() => { record.failed = true; }).finally(() => {
+      record.pending = false;
+      if (titleRelatedMovieCache.get(key) === record) refreshTitlePage();
+    });
+    return record;
+  }
+  const key = ids.slice().sort((a, b) => a - b).join(",");
+  const old = titleRelatedMovieCache.get(key);
+  if (old && Date.now() - old.createdAt < (old.failed ? 5 * 60_000 : 60 * 60_000)) return old;
+  const record = { items: [], pending: true, failed: false, createdAt: Date.now() };
+  if (titleRelatedMovieCache.size >= 80) titleRelatedMovieCache.clear();
+  titleRelatedMovieCache.set(key, record);
+  void fetchPublicAnimeRelatedMovies(ids).then((movies) => {
+    record.items = movies;
+  }).catch(() => {
+    record.failed = true;
+  }).finally(() => {
+    record.pending = false;
+    if (titleRelatedMovieCache.get(key) === record) refreshTitlePage();
+  });
+  return record;
+}
+
+function titleRelatedMoviesMarkup(record) {
+  if (!record || (!record.pending && !record.items.length)) return "";
+  const movies = record.items || [];
+  return `<div class="title-section__head"><h2 class="title-section__title" id="title-related-movies-heading">Movies</h2>
+    <span class="catalog-sources-note">Connected to this anime on AniList</span></div>
+    ${record.pending ? '<p class="title-note" role="status">Finding related films…</p>' : ""}
+    ${movies.length ? `<div class="title-related-movies__grid">${movies.map((movie) =>
+      `<button type="button" class="title-related-movie" data-title-action="related-movie" data-anime-movie-id="${movie.id}"
+        aria-label="${escapeHtml(`Open ${movie.title}`)}">
+        <span class="title-related-movie__art">${movie.cover ? `<img src="${escapeHtml(movie.cover)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(movie.title)}"/>` : icon("film")}</span>
+        <strong>${escapeHtml(movie.title)}</strong>
+        <small>${escapeHtml([movie.year, "Film"].filter(Boolean).join(" - "))}</small>
+      </button>`).join("")}</div>` : ""}`;
+}
+
+function titleCommunityRating(subject, meta) {
+  if (subject.type !== "series" || !meta?.id || !Array.isArray(meta.seasons)) return null;
+  if (!eligibleForPublicAnimeRating({ mediaKind: subject.series?.mediaKind,
+    genres: meta.genres, country: meta.country })) return null;
+  const seasons = publicCatalogSeasonCounts(meta.seasons).filter((item) => item.season > 0 && Number(item.count) > 0);
+  const year = Number(String(meta.releaseInfo || "").match(/\d{4}/)?.[0]);
+  const name = String(meta.name || "").trim();
+  if (!seasons.length || !Number.isInteger(year) || !name) return null;
+  const aliases = subject.series?.aliases || [];
+  const key = `${meta.id}:${year}:${name}:${aliases.join("|")}:${seasons.map((item) => `${item.season}:${item.count}`).join(",")}`;
+  const existing = publicTitleRatingCache.get(key);
+  // Missing ratings can be a transient match/indexing gap; don't persist a
+  // blank chip for six hours. Successful public ratings remain long-cached.
+  if (existing && Date.now() - existing.createdAt < (existing.failed ? 5 * 60_000
+    : existing.rating?.score && existing.rating?.seasons?.length === existing.rating?.totalSeasons
+      ? 6 * 60 * 60_000 : 15 * 60_000)) return existing.rating;
+  // Serve a previously verified rating while it is being refreshed. A
+  // temporary AniList error or expired TTL must not make the visible badge
+  // disappear for an otherwise unchanged catalog title/season identity.
+  const entry = { createdAt: Date.now(), rating: existing?.rating || null, failed: false };
+  if (publicTitleRatingCache.size > 80) publicTitleRatingCache.clear();
+  publicTitleRatingCache.set(key, entry);
+  // Community ratings are PUBLIC and read directly in the browser. Never use
+  // a personal OAuth token or store this match as an AniList watch association.
+  void fetchMatchedPublicAniListSeasons({ title: name, aliases, year, seasons }).then((rating) => {
+    if (rating) entry.rating = rating;
+    else entry.failed = true;
+  }).catch(() => { entry.failed = true; }).finally(() => {
+    if (publicTitleRatingCache.get(key) === entry) refreshTitlePage();
+  });
+  return entry.rating;
+}
+
+function titleRatingBreakdownMarkup({ provider, value, seasons = [], totalSeasons = 0, href = "", note = "", root = false } = {}) {
+  if (!Number.isFinite(Number(value)) || Number(value) <= 0 || Number(value) > 10) return "";
+  const score = Number(value).toFixed(1);
+  const showLink = /^https:\/\/(?:www\.imdb\.com|anilist\.co)\//.test(href);
+  const seenSharedRuns = new Set();
+  const rows = seasons.map((season) => {
+    // Cinemeta can split one continuous AniList series into multiple seasons.
+    // Keep their catalog-season rating weights unchanged, but present the ONE
+    // actual AniList entry just once in the expanded breakdown.
+    const sharedSeasons = provider === "AniList" && Array.isArray(season.sharedSeasons)
+      && season.sharedSeasons.length > 1 ? season.sharedSeasons : null;
+    const sharedKey = sharedSeasons ? `${sharedSeasons.join(",")}:${(season.parts || []).map((part) => part.id).join(",")}` : "";
+    if (sharedKey && seenSharedRuns.has(sharedKey)) return "";
+    if (sharedKey) seenSharedRuns.add(sharedKey);
+    const seasonScore = Number.isFinite(season.score) && season.score > 0 ? season.score.toFixed(1) : "—";
+    const shared = sharedSeasons
+      ? `One AniList series covers all ${sharedSeasons.length} catalog seasons (${(season.parts || []).map((part) => part.episodes).filter(Number.isInteger).join(" + ") || "multiple"} episodes)`
+      : "";
+    const parts = (season.parts || []).map((part) => {
+      const image = /^https:\/\/s\d+\.anilist\.co\//.test(part.cover || "")
+        ? `<img src="${escapeHtml(part.cover)}" alt="" loading="lazy" />` : icon("film");
+      const scoreText = Number.isFinite(part.score) && part.score > 0 ? `${part.score.toFixed(1)}/10` : "Not rated";
+      return `<div class="title-rating-part">${image}<span>${escapeHtml(part.title)}</span><strong>${escapeHtml(scoreText)}</strong></div>`;
+    }).join("");
+    const catalogLabel = sharedSeasons ? `Seasons ${sharedSeasons[0]}–${sharedSeasons.at(-1)}` : `Season ${season.season}`;
+    const seasonLabel = catalogLabel;
+    return `<div class="title-rating-season"><div class="title-rating-season__head">${provider === "IMDb" ? icon("star") : ""}<span>${escapeHtml(seasonLabel)}</span><strong>${escapeHtml(seasonScore === "—" ? "Unavailable" : `${seasonScore}/10`)}</strong></div>${shared ? `<small class="title-rating-season__source">${escapeHtml(shared)}</small>` : ""}${parts}</div>`;
+  }).join("");
+  const cover = totalSeasons > seasons.length ? `${seasons.length} of ${totalSeasons} seasons matched. ` : "";
+  return `<details class="title-rating-wrap" data-title-rating-provider="${provider}">
+    <summary class="title-rating" aria-label="${escapeHtml(`${provider} ${score} out of 10; show season breakdown`)}">${icon("star")}<strong>${score}</strong><span>${escapeHtml(provider)}</span>${icon("chevron-down")}</summary>
+    <div class="title-rating-breakdown"><div class="title-rating-breakdown__heading"><strong>${escapeHtml(provider)}</strong>${provider === "AniList" ? "" : `<span>${root ? "Overall series score" : "Mean of rated seasons"}</span>`}</div>
+      ${rows || '<p class="title-rating-breakdown__note">No season scores available.</p>'}
+      ${provider !== "AniList" && (note || cover) ? `<p class="title-rating-breakdown__note">${escapeHtml(cover + note)}</p>` : ""}
+      ${showLink && provider !== "AniList" ? `<a href="${escapeHtml(href)}" target="_blank" rel="noopener noreferrer">Open on ${escapeHtml(provider)} ↗</a>` : ""}
+    </div></details>`;
+}
+
+// The rating popup lives inside the poster hero. Choose the side of its badge
+// with more actual viewport room, and constrain its scroll area accordingly.
+function positionTitleRatingBreakdown(wrap) {
+  const badge = wrap?.querySelector("summary");
+  const popup = wrap?.querySelector(".title-rating-breakdown");
+  if (!badge || !popup) return;
+  const rect = badge.getBoundingClientRect();
+  // The badges may wrap or sit close to either viewport edge. Anchor the
+  // floating panel to its own badge while keeping the full panel on screen.
+  const popupWidth = popup.getBoundingClientRect().width;
+  const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+  const margin = 16;
+  const preferredLeft = wrap.dataset.titleRatingProvider === "LVL" ? rect.right - popupWidth : rect.left;
+  const left = Math.max(margin, Math.min(preferredLeft, viewportWidth - margin - popupWidth));
+  popup.style.left = `${Math.round(left - rect.left)}px`;
+  popup.style.right = "auto";
+  const above = Math.max(0, rect.top - 12);
+  const below = Math.max(0, window.innerHeight - rect.bottom - 12);
+  const placeBelow = below > above;
+  wrap.classList.toggle("is-below", placeBelow);
+  popup.style.setProperty("--rating-available-height", `${Math.max(70, Math.floor(placeBelow ? below : above))}px`);
+}
+
+function keepTitleRatingExclusive(wrap) {
+  if (!wrap?.open) return;
+  const scores = wrap.closest(".title-hero__scores");
+  for (const other of scores?.querySelectorAll(".title-rating-wrap[open]") || []) {
+    if (other !== wrap) other.open = false;
+  }
+}
+
+function titleRatingMarkup(info) {
+  if (!info.rating) return "";
+  const seasons = info.imdbSeasons || [];
+  const rated = seasons.filter((item) => Number.isFinite(item.score) && item.score > 0);
+  const complete = seasons.length > 0 && rated.length === seasons.length;
+  // IMDb's series-wide user rating is a distinct source value, not the average
+  // of IMDb season page ratings (whose voter pools and weights can differ).
+  // Never overwrite it with a derived arithmetic mean just because all seasons
+  // happened to provide scores, or pretend the derived number is from IMDb.
+  return titleRatingBreakdownMarkup({ provider: "IMDb", value: Number(info.rating), seasons, totalSeasons: seasons.length,
+    root: true, href: info.id ? `https://www.imdb.com/title/${info.id}/` : "",
+    note: complete ? "IMDb overall series rating shown above; season ratings are separate and are not averaged into it."
+      : "IMDb season scores are not supplied by the catalog. The badge shows the IMDb series rating." });
+}
+
+function titleAniListRatingMarkup(rating, { eligible = false } = {}) {
+  if (!rating || !Number.isFinite(rating.score) || rating.score <= 0) {
+    // Keep the provider in its usual place on anime title pages, without
+    // inventing a numeric zero or a clickable breakdown for missing data.
+    return eligible ? `<span class="title-rating title-rating--unavailable" data-title-rating-provider="AniList" aria-label="AniList score unavailable">${icon("star")}<strong aria-hidden="true"></strong><span>AniList</span></span>` : "";
+  }
+  const first = rating.seasons[0]?.parts[0];
+  return titleRatingBreakdownMarkup({ provider: "AniList", value: rating.score,
+    seasons: rating.seasons, totalSeasons: rating.totalSeasons,
+    href: first ? `https://anilist.co/anime/${first.id}` : "" });
+}
+
+function titleTrailerUrl(trailer) {
+  return `https://www.youtube.com/watch?v=${encodeURIComponent(trailer.id)}`;
+}
+
+// Keep trailers inside the current LVL window when modal video embeds are
+// supported. The original link remains the fallback without dialog support.
+function openTitleTrailer(id, watchUrl) {
+  if (!/^[a-zA-Z0-9_-]{11}$/.test(String(id || "")) || typeof HTMLDialogElement === "undefined") return false;
+  let dialog = $("#title-trailer-dialog");
+  if (!dialog) {
+    dialog = document.createElement("dialog");
+    dialog.id = "title-trailer-dialog";
+    dialog.className = "title-trailer-dialog";
+    dialog.setAttribute("aria-label", "Trailer video");
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "title-trailer-dialog__close";
+    close.textContent = "×";
+    close.setAttribute("aria-label", "Close trailer");
+    close.title = "Close trailer";
+    close.addEventListener("click", () => dialog.close());
+    const frame = document.createElement("iframe");
+    frame.className = "title-trailer-dialog__frame";
+    frame.title = "Trailer video";
+    frame.allow = "accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; web-share";
+    frame.allowFullscreen = true;
+    frame.referrerPolicy = "strict-origin-when-cross-origin";
+    dialog.append(frame, close);
+    dialog.addEventListener("close", () => frame.removeAttribute("src"));
+    dialog.addEventListener("click", (event) => { if (event.target === dialog) dialog.close(); });
+    document.body.append(dialog);
+  }
+  dialog.querySelector(".title-trailer-dialog__frame").src = `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0`;
+  if (!dialog.open) dialog.showModal();
+  // Keep initial keyboard focus in the parent dialog rather than the YouTube
+  // iframe, so the native Escape action and accessible close stay reachable.
+  dialog.querySelector(".title-trailer-dialog__close")?.focus();
+  return true;
+}
+
+// The first chapter that has aired, for "Play S1 E1" on a title with nothing saved yet.
+function titleFirstChapter(view) {
+  const season = view?.seasons.find((item) => item.season > 0) || view?.seasons[0];
+  const episode = season?.episodes.find((item) => !chapterUpcoming(item));
+  return episode ? { ...episode, season: season.season } : null;
+}
+
+function savedTitleBadge(series) {
+  if (!series) return null;
+  // A magnet is a reusable torrent source, not downloaded video bytes.
+  return (series.sources || []).some((entry) =>
+    Boolean(entry?.magnet) && (entry.episodes || []).some((episode) =>
+      episode.fileIndex !== null && episode.fileIndex !== undefined
+      && Number.isInteger(Number(episode.fileIndex)) && Number(episode.fileIndex) >= 0))
+    ? { label: "Torrent saved", title: "Torrent source saved in your Library" }
+    : { label: "On your list", title: "Title added to your Library; no torrent source saved" };
+}
+
+function titleHeroMarkup(subject, info, view, communityRating = null) {
+  const series = subject.series;
+  const savedBadge = savedTitleBadge(series);
+  const movie = subject.type === "movie";
+  const next = series ? seriesNextUp(series) : null;
+  const first = !next && !movie ? titleFirstChapter(view) : null;
+  const facts = [
+    movie ? "Movie" : "Series",
+    info.releaseInfo,
+    !movie && info.seasonCount ? `${info.seasonCount} season${info.seasonCount === 1 ? "" : "s"}` : "",
+    !movie && info.chapterTotal ? `${info.chapterTotal} chapter${info.chapterTotal === 1 ? "" : "s"}` : "",
+    movie ? formatRuntime(info.runtime) || info.runtime : info.runtime,
+    info.status ? `${movie ? "Release status" : "Broadcast status"}: ${info.status}` : "",
+  ];
+  const actions = [];
+  if (next) actions.push(buttonMarkup({ label: next.label, variant: "primary", size: "lg", icon: "play", attrs: { "data-title-action": "play-next" } }));
+  else if (first) actions.push(buttonMarkup({ label: `Play ${libraryChapterName({ code: chapterCode(first.season, first.episode) }) || "the first chapter"}`, variant: "primary", size: "lg", icon: "play", attrs: { "data-title-action": "play-first" } }));
+  else if (movie && info.id) actions.push(buttonMarkup({ label: "Find sources", variant: "primary", size: "lg", icon: "search", attrs: { "data-title-action": "movie-sources" } }));
+  if (!series && info.id) actions.push(buttonMarkup({ label: "Add to Library", variant: "glass", size: "lg", icon: "plus", attrs: { "data-title-action": "add" } }));
+  if (info.trailers.length) actions.push(`<a class="ui-btn ui-btn--glass ui-btn--lg title-trailer" data-trailer-id="${escapeHtml(info.trailers[0].id)}" href="${escapeHtml(titleTrailerUrl(info.trailers[0]))}" target="_blank" rel="noopener noreferrer">${icon("film")}<span>Trailer</span></a>`);
+  if (series && !info.id) actions.push(buttonMarkup({ label: "Find this title", variant: "glass", size: "lg", icon: "search", attrs: { "data-title-action": "find-title" } }));
+  if (series && !movie) actions.push(buttonMarkup({ label: "Magnet link", variant: "glass", size: "lg", attrs: { "data-title-action": "magnet" } }));
+  if (series) actions.push('<div id="title-watch-status-slot" class="title-watch-status-slot"></div>');
+  if (series) actions.push(iconButtonMarkup({ icon: "more", label: `More for ${info.name}`, variant: "glass", attrs: { "data-title-action": "menu", "aria-haspopup": "menu", "aria-expanded": "false" } }));
+  const fallbackAttr = (url, shown) => (url && url !== shown ? ` data-fallback-src="${escapeHtml(url)}"` : "");
+  const heroPosterSrcset = posterSrcset({ poster: info.poster });
+  const poster = info.poster
+    ? `<img class="title-hero__poster" src="${escapeHtml(info.poster)}"${heroPosterSrcset ? ` srcset="${escapeHtml(heroPosterSrcset)}" sizes="(max-width:680px) 112px, (max-width:1067px) 160px, (min-width:1600px) 240px, 15vw"` : ""} alt="${escapeHtml(`${info.name} poster`)}" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(info.name)}"${fallbackAttr(info.posterFallback, info.poster)} />`
+    : `<img class="title-hero__poster" src="${escapeHtml(artworkFallback(info.name, { label: movie ? "Movie" : "Series" }))}" alt="" />`;
+  return `<div class="title-hero${info.backdrop ? " has-backdrop" : ""}">
+    <div class="title-hero__media" aria-hidden="true">${info.backdrop ? `<img class="title-hero__backdrop" src="${escapeHtml(info.backdrop)}" alt="" decoding="async" fetchpriority="high"${fallbackAttr(info.backdropFallback, info.backdrop)} />` : ""}</div>
+    <div class="title-hero__shade" aria-hidden="true"></div>
+    <div class="title-hero__bar">${buttonMarkup({ label: titleView.fromApp ? "Back" : "Library", variant: "glass", size: "sm", icon: "chevron-left", className: "title-back", attrs: { "data-title-action": "back" } })}</div>
+    <div class="title-hero__content">
+      <div class="title-hero__poster-wrap">${poster}${savedBadge ? `<span class="title-hero__poster-saved" title="${escapeHtml(savedBadge.title)}">${icon("check")}<span>${escapeHtml(savedBadge.label)}</span></span>` : ""}</div>
+      <div class="title-hero__copy">
+        <h1 class="ui-hero__title title-hero__title" id="title-name">${info.logo ? `<img class="ui-hero__logo title-hero__logo" src="${escapeHtml(info.logo)}" alt="" data-ui-logo="" />` : ""}<span class="ui-hero__title-text">${escapeHtml(info.name)}</span></h1>
+        <div class="title-hero__facts">${metaMarkup(facts)}<div class="title-hero__scores">${titleRatingMarkup(info)}${titleAniListRatingMarkup(communityRating, { eligible: eligibleForPublicAnimeRating({ mediaKind: series?.mediaKind, genres: info.genres, country: info.country }) })}<div id="title-lvl-rating-slot" class="title-lvl-rating-slot"></div></div></div>
+        ${info.genres.length ? `<ul class="title-genres" aria-label="Genres">${info.genres.map((genre) => `<li>${escapeHtml(genre)}</li>`).join("")}</ul>` : ""}
+        ${info.description ? `<p class="title-hero__synopsis">${escapeHtml(info.description)}</p>` : ""}
+        ${info.cast.length && !eligibleForPublicAnimeRating({ mediaKind: series?.mediaKind,
+          genres: info.genres, country: info.country }) ? `<p class="title-hero__people"><span>Starring</span> ${escapeHtml(titleListText(info.cast, 4))}</p>` : ""}
+        <div class="title-hero__actions">${actions.join("")}</div>
+      </div>
+    </div>
+  </div>`;
+}
+
+// Your progress with a Library title: playback/AniList always, learning metrics
+// only while Learning is enabled. Do not hide rating or watched progress.
+function titleProgressMarkup(subject, info) {
+  const series = subject.series;
+  if (!series) return "";
+  // The title hero already carries the essential metadata and ratings.
+  // The hero already shows the scores. Leave unavailable ratings blank there;
+  // only a small collapsed manual URL/ID fallback belongs below the hero.
+  const account = series.mediaKind === "anime" ? readAniListAccount(localStorage) : null;
+  const seasons = [...new Set([
+    ...series.seasons.keys(),
+    ...(subject.id && catalogSeriesView?.meta?.id === subject.id
+      ? catalogSeriesView.seasons.map((season) => season.season) : []),
+  ])].filter((season) => Number.isInteger(season) && season > 0).sort((a, b) => a - b);
+  const mapped = account && seriesAniList(series, account.userId);
+  const missing = account && seasons.filter((season) => !(mapped?.seasons || []).some((part) => part.season === season));
+  if (!missing?.length || !/^tt\d{5,12}$/.test(series.catalogId || "")) return "";
+  return `<details class="title-anilist-manual" aria-label="Manual AniList season link">
+    <summary>Link AniList manually</summary>
+    <div class="title-anilist-manual__controls">
+      <label>Season <select id="title-anilist-link-season">${missing.map((season) => `<option value="${season}">${season}</option>`).join("")}</select></label>
+      <label>AniList URL or ID <input id="title-anilist-link-id" type="text" inputmode="url" autocomplete="off" maxlength="512" placeholder="anilist.co/anime/5114" /></label>
+      <button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-title-anilist-link>Verify & link</button>
+    </div><p id="title-anilist-link-results" class="title-anilist-manual__status" role="status" aria-live="polite"></p>
+  </details>`;
+}
+
+let anilistTitleManualLinkSerial = 0;
+function anilistLinkTitle(media) {
+  return String(media?.title?.english || media?.title?.romaji || "Untitled");
+}
+async function handleTitleAniListLink(event) {
+  if (!event.target.closest("[data-title-anilist-link]")) return;
+  const series = titleSubject().series;
+  const account = readAniListAccount(localStorage);
+  const input = $("#title-anilist-link-id");
+  const season = Number($("#title-anilist-link-season")?.value);
+  if (!series || !account?.token || !input || !Number.isInteger(season) || season < 1) return;
+  // Capture immutable identity: the Library can mutate the same series object
+  // in place while an authenticated lookup is still pending.
+  const seriesKey = series.key;
+  const catalogId = series.catalogId;
+  const serial = ++anilistTitleManualLinkSerial;
+  const id = parseManualAniListId(input.value);
+  const current = () => {
+    const active = titleSubject().series;
+    const signed = readAniListAccount(localStorage);
+    return serial === anilistTitleManualLinkSerial && signed?.token === account.token
+      && signed?.userId === account.userId && active?.key === seriesKey
+      && active?.catalogId === catalogId && Number($("#title-anilist-link-season")?.value) === season
+      && parseManualAniListId($("#title-anilist-link-id")?.value) === id ? active : null;
+  };
+  const show = (message, error = false) => {
+    const results = $("#title-anilist-link-results");
+    if (results?.isConnected && current()) {
+      results.textContent = message;
+      results.classList.toggle("is-error", error);
+    }
+  };
+  try {
+    if (!id) throw new Error("Paste a valid AniList anime URL or numeric media ID.");
+    if (!/^tt\d{5,12}$/.test(catalogId || "")) throw new Error("Find the catalog title before linking AniList.");
+    show("Verifying season and AniList entry…");
+    const [catalog, data] = await Promise.all([
+      fetchJson(`/api/catalog/meta?type=series&id=${encodeURIComponent(catalogId)}`),
+      anilistGraphql(account.token, ANILIST_MANUAL_ID_VERIFY, { id }),
+    ]);
+    const active = current();
+    if (!active) return;
+    const media = data?.Media;
+    if (media?.id !== id) throw new Error("AniList returned a different media ID. No link was saved.");
+    const planned = planVerifiedManualAniListSeason({ media, meta: catalog?.meta,
+      series: active, linked: seriesAniList(active, account.userId), season, accountId: account.userId });
+    if (!planned) throw new Error("This AniList entry cannot be verified as the selected complete catalog season. Split cours or ambiguous seasons need an exact mapping; no watched progress was linked.");
+    const locallyWatched = Object.keys(Object.assign({}, ...active.sources.map((entry) => entry.watchedChapters || {})));
+    // Imported video files can have a verified SxxEyy code without parsed
+    // season/episode numbers (e.g. JoJo S01E01). Check both representations,
+    // so a shorter remote season cannot be linked by bypassing this guard.
+    const localEpisodes = [...active.sources.flatMap((entry) => (entry.episodes || []).flatMap((episode) => [
+      String(episode.code || "").toUpperCase(),
+      ...(Number.isInteger(episode.season) && episode.season > 0 && Number.isInteger(episode.episode) && episode.episode > 0
+        ? [chapterCode(episode.season, episode.episode)] : []),
+    ])), ...locallyWatched]
+      .filter((code) => new RegExp(`^S${String(season).padStart(2, "0")}E\\d{2,4}$`).test(code))
+      .map((code) => Number(code.split("E")[1]));
+    if (localEpisodes.some((episode) => episode > planned.episodes))
+      throw new Error("The selected AniList entry has fewer episodes than the Library season.");
+    if (!current()) return;
+    if (!window.confirm(`Link ${active.title} season ${season} to ${anilistLinkTitle(media)} (${planned.episodes} episodes, AniList #${id})? Watched episodes may then sync to your AniList account. No scores are changed.`)) {
+      show("No mapping saved.");
+      return;
+    }
+    const latest = current();
+    if (!latest || seriesAniList(latest, account.userId)?.seasons?.some((part) => part.season === season)) return;
+    updateLibrarySeriesEntries(latest.key, (entry) => {
+      if (entry.id !== latest.sources[0]?.id) return;
+      const links = Array.isArray(entry.anilistManualLinks) ? entry.anilistManualLinks : [];
+      entry.anilistManualLinks = [...links.filter((link) => !(link.userId === account.userId && link.season === season)), {
+        ...planned, verifiedAt: Date.now(),
+      }];
+    });
+    toast(`AniList season ${season} linked. Watched progress will sync if enabled.`);
+  } catch (error) {
+    show(error.message || "Could not verify that AniList season.", true);
+  }
+}
+
+function titleAboutMarkup(subject, info) {
+  const movie = subject.type === "movie";
+  const anime = eligibleForPublicAnimeRating({ mediaKind: subject.series?.mediaKind,
+    genres: info.genres, country: info.country });
+  const text = (value) => (value ? escapeHtml(value) : "");
+  const chapters = !movie && info.chapterTotal
+    ? [`${info.seasonCount} season${info.seasonCount === 1 ? "" : "s"}`, `${info.chapterTotal} chapter${info.chapterTotal === 1 ? "" : "s"}`, info.specialCount ? `${info.specialCount} special${info.specialCount === 1 ? "" : "s"}` : ""].filter(Boolean).join(", ")
+    : "";
+  const rows = [
+    ["Genres", text(info.genres.join(", "))],
+    ["Starring", anime ? "" : text(titleListText(info.cast, 12))],
+    ["Written by", text(titleListText(info.writer, 12))],
+    ["Directed by", text(titleListText(info.director, 12))],
+    [movie ? "Released" : "First aired", text(formatTitleDay(info.released) || info.releaseInfo)],
+    [movie ? "Release status" : "Broadcast status", text(info.status)],
+    ["Runtime", text(info.runtime ? (movie ? formatRuntime(info.runtime) || info.runtime : `${info.runtime} per chapter`) : "")],
+    ["Chapters", text(chapters)],
+    ["Country", text(info.country)],
+    ["Awards", text(info.awards)],
+    ["Rating", info.rating ? titleRatingMarkup(info) : ""],
+    ["Trailers", info.trailers.map((trailer, index) => `<a class="title-trailer" data-trailer-id="${escapeHtml(trailer.id)}" href="${escapeHtml(titleTrailerUrl(trailer))}" target="_blank" rel="noopener noreferrer">${escapeHtml(info.trailers.length > 1 ? `Trailer ${index + 1}` : "Trailer")}</a>`).join(" ")],
+  ].filter(([, value]) => value);
+  if (!info.description && !rows.length) return "";
+  // The hero shows about four lines of the synopsis; the full text goes here when it's longer.
+  const longSynopsis = info.description.length > 260;
+  return `<h2 class="title-section__title" id="title-about-heading">About</h2>
+    ${longSynopsis ? `<p class="title-about__synopsis">${escapeHtml(info.description)}</p>` : ""}
+    ${rows.length ? `<dl class="title-facts">${rows.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${value}</dd></div>`).join("")}</dl>` : ""}`;
+}
+
+// Chapters: the catalog's full list (rendered by renderTitleChapters), or the saved chapters while
+// it loads, when it failed, or when the title has no catalog data.
+function titleChaptersSectionMarkup(subject, meta, view) {
+  const series = subject.series;
+  if (view) return `<section class="title-block" aria-labelledby="title-chapters-heading"><div id="title-chapters"></div></section>${titleOtherVideosMarkup(subject, view)}`;
+  const status = titleMetaState(subject.type, subject.id);
+  const saved = Boolean(series && (librarySeriesChapterCount(series) || series.extras.length));
+  let note = "";
+  if (subject.id && status.pending) note = '<p class="title-note" role="status">Loading the chapter list…</p>';
+  else if (subject.id && status.failed) note = `<p class="title-note is-error" role="alert">${escapeHtml(status.error || "Couldn't load the chapter list.")} ${buttonMarkup({ label: "Try again", variant: "ghost", size: "sm", icon: "refresh", attrs: { "data-title-action": "retry" } })}</p>`;
+  else if (subject.id && meta) note = '<p class="title-note">No chapters are listed for this title yet.</p>';
+  else if (!subject.id && series) note = '<p class="title-note">Only the chapters you saved are shown. Find this title to list all of them.</p>';
+  const body = saved ? libraryDialogChaptersMarkup(series, refreshTitlePage) : note ? "" : emptyMarkup({ compact: true, title: "No chapters saved yet" });
+  return `<section class="title-block" aria-labelledby="title-chapters-heading">
+    <div class="title-section__head"><h2 class="title-section__title" id="title-chapters-heading">Chapters</h2></div>
+    ${note}<div id="title-chapters" class="title-saved-list">${body}</div>
+  </section>`;
+}
+
+// Saved videos the catalog's chapter list doesn't have: extras, and files with other numbers.
+function titleOtherVideosMarkup(subject, view) {
+  const series = subject.series;
+  if (!series) return "";
+  const listed = new Set(view.seasons.flatMap((season) => season.episodes.map((episode) => chapterCode(season.season, episode.episode))));
+  const unmatched = [...series.seasons.values()].flatMap((refs) => groupLibraryChapters(refs))
+    .filter((chapter) => !listed.has(String(chapter.code || "").toUpperCase()));
+  const chapters = [...unmatched, ...groupLibraryChapters(series.extras)];
+  if (!chapters.length) return "";
+  const thumbs = libraryDialogThumbs(series, refreshTitlePage);
+  return `<section class="title-block" aria-labelledby="title-other-heading">
+    <div class="title-section__head"><h2 class="title-section__title" id="title-other-heading">Other videos</h2><span class="catalog-sources-note">Extras and files outside the chapter list</span></div>
+    <ol class="lib-chapter-list">${chapters.map((chapter) => libraryDialogChapterMarkup(series, chapter, thumbs)).join("")}</ol>
+  </section>`;
+}
+
+function titleMovieMarkup(subject, info) {
+  const series = subject.series;
+  const saved = series && ([...series.seasons.values()].flat().length || series.extras.length)
+    ? `<section class="title-block" aria-labelledby="title-saved-heading"><div class="title-section__head"><h2 class="title-section__title" id="title-saved-heading">In your Library</h2></div><div id="title-chapters" class="title-saved-list">${libraryDialogChaptersMarkup(series, refreshTitlePage)}</div></section>`
+    : "";
+  const sources = info.id ? `<section class="title-block" id="title-sources" aria-labelledby="title-sources-heading">${titleMovieSourcesMarkup(info)}</section>` : "";
+  return saved + sources || emptyMarkup({ compact: true, title: "No sources saved" });
+}
+
+// A movie's torrents, looked up only when asked (Find sources), best first.
+function titleMovieSourcesMarkup(info) {
+  const view = titleMovieView?.id === info.id ? titleMovieView : null;
+  const head = (title, extra = "") => `<div class="title-section__head"><h2 class="title-section__title" id="title-sources-heading">${escapeHtml(title)}</h2>${extra}</div>`;
+  const best = buttonMarkup({ label: "Add the best source", variant: "secondary", size: "sm", icon: "plus", className: "catalog-add-best-detail" });
+  if (!view || view.status === "idle") {
+    return `${head("Sources")}<div class="title-source-actions">${buttonMarkup({ label: "Find sources", variant: "secondary", size: "sm", icon: "search", attrs: { "data-title-action": "movie-sources" } })}${best}</div>`;
+  }
+  if (view.status === "loading") return `${head("Sources")}<p class="catalog-chapter-sources-status" role="status">Finding sources…</p>`;
+  if (view.status === "error") {
+    return `${head("Sources")}<p class="catalog-chapter-sources-status is-error" role="alert">${escapeHtml(view.error)}</p>
+      <div class="title-source-actions">${buttonMarkup({ label: "Try again", variant: "secondary", size: "sm", icon: "refresh", attrs: { "data-title-action": "movie-sources" } })}</div>`;
+  }
+  const height = (stream) => Number(stream.height) || heightFromQualityLabel(stream.quality) || 0;
+  view.visible = view.floorOnly
+    ? view.streams.filter((stream) => meetsSourceFloor(stream)).sort((a, b) => height(b) - height(a) || (Number(b.peers) || 0) - (Number(a.peers) || 0))
+    : view.streams.slice().sort(compareStreamsByPeers).slice(0, 30);
+  const title = view.floorOnly ? `${view.visible.length} magnet${view.visible.length === 1 ? "" : "s"}` : `${view.streams.length} source${view.streams.length === 1 ? "" : "s"}`;
+  const toggle = view.floorOnly
+    ? buttonMarkup({ label: `Show all ${view.streams.length}`, variant: "ghost", size: "sm", className: "catalog-movie-all" })
+    : buttonMarkup({ label: "Fetch all magnets", variant: "ghost", size: "sm", className: "catalog-fetch-all-movie" });
+  return `${head(title, view.floorOnly ? '<span class="catalog-sources-note">720p or better, 2+ peers</span>' : "")}
+    <div class="title-source-actions">${best}${toggle}</div>
+    <div class="catalog-stream-list">${view.visible.length
+      ? view.visible.map((stream, index) => catalogStreamRowMarkup(stream, index, { contentType: "movie" })).join("")
+      : emptyMarkup({ compact: true, title: view.floorOnly ? "None at 720p or better with 2+ peers" : "No sources found" })}</div>`;
+}
+
+function renderTitleMovieSources() {
+  const section = $("#title-sources");
+  if (!section) return;
+  const subject = titleSubject();
+  section.innerHTML = titleMovieSourcesMarkup(titleInfo(subject, titleMetaFor(subject.type, subject.id)));
+}
+
+async function loadTitleMovieSources({ scroll = false } = {}) {
+  const id = titleView.id;
+  if (!id) return;
+  titleMovieView = { id, status: "loading", streams: [], floorOnly: false, error: "", visible: [] };
+  renderTitleMovieSources();
+  if (scroll) $("#title-sources")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  try {
+    const data = await fetchJson(`/api/streams?type=movie&id=${encodeURIComponent(id)}`);
+    if (titleMovieView?.id === id) titleMovieView = { ...titleMovieView, status: "ready", streams: data.streams || [] };
+  } catch (error) {
+    if (titleMovieView?.id === id) titleMovieView = { ...titleMovieView, status: "error", error: error.message || "The source lookup failed" };
+  }
+  renderTitleMovieSources();
+}
+
+function titleMissingMarkup() {
+  return `<div class="title-missing">${emptyMarkup({
+    icon: "film",
+    title: "This title isn't here",
+    text: "It may have been removed from your Library.",
+    action: buttonMarkup({ label: "Go to the Library", variant: "primary", attrs: { "data-title-action": "library" } }),
+  })}</div>`;
+}
+
+// Parts are only replaced when their markup changed, so a refresh doesn't reload the backdrop.
+const titleRendered = { hero: "", progress: "", main: "", related: "", about: "", chapters: "" };
+
+function setTitlePart(node, part, markup) {
+  if (titleRendered[part] === markup) return false;
+  titleRendered[part] = markup;
+  node.innerHTML = markup;
+  node.hidden = !markup;
+  return true;
+}
+
+// Catalog backdrops are usually 1920 px wide; one far smaller than the hero is shown at its own
+// size on the right, faded into the page, instead of stretched soft.
+function fitTitleBackdrop() {
+  const hero = $("#view-title .title-hero");
+  const img = hero?.querySelector(".title-hero__backdrop");
+  if (!hero || !img) return;
+  const apply = () => {
+    if (!img.naturalWidth || !img.isConnected) return;
+    hero.style.setProperty("--backdrop-w", `${img.naturalWidth}px`);
+    hero.style.setProperty("--backdrop-h", `${img.naturalHeight}px`);
+    hero.classList.toggle("has-small-backdrop", img.naturalWidth < hero.clientWidth * 0.75);
+  };
+  if (img.complete) apply();
+  else img.addEventListener("load", apply, { once: true });
+}
+
+// What "Your rating" saves with a rating: the title, its year, its kind (anime is matched on
+// AniList, other titles on TMDB) and the seasons that can be rated one by one.
+function titleRatingSubject(subject, info, meta) {
+  const movie = subject.type === "movie";
+  // Public/legacy AniList annotations may be displayed elsewhere, but cannot
+  // supply the signed-in account's editable score or remote write target.
+  const linkedAniList = authenticatedTitleAniList(subject, readAniListAccount(localStorage));
+  const anime = Boolean(subject.series?.sources?.some((entry) => entry.anilistId))
+    || eligibleForPublicAnimeRating({ mediaKind: subject.series?.mediaKind,
+      genres: info.genres, country: info.country });
+  const seasonsFromCatalog = movie ? [] : (Array.isArray(meta?.seasons) ? meta.seasons : [])
+    .filter((item) => item.season > 0 && (Number(item.count) || item.episodes?.length))
+    .map((item) => item.season);
+  const seasons = movie ? [] : [...new Set([
+    ...seasonsFromCatalog,
+    ...(linkedAniList?.seasons || []).map((part) => part.season).filter((season) => Number.isInteger(season) && season > 0),
+  ])].sort((a, b) => a - b);
+  return {
+    catalogId: subject.id || "",
+    seriesKey: subject.key || "",
+    title: info.name === "Untitled" ? "" : info.name,
+    year: Number(String(info.releaseInfo || info.released || "").match(/\d{4}/)?.[0]) || null,
+    kind: anime ? (movie ? "anime-movie" : "anime") : movie ? "movie" : "series",
+    seasons,
+    anilist: linkedAniList,
+  };
+}
+
+function renderTitlePage() {
+  if (!viewActive("title")) return;
+  const route = titleRoute();
+  const routeKey = `${route.id}|${route.key}|${route.type}`;
+  if (titleView.routeKey !== routeKey) {
+    titleView.routeKey = routeKey;
+    catalogSeriesView = null;
+    catalogSeriesToken += 1;
+    titleMovieView = null;
+    libraryDialogView.key = "";
+    libraryDialogView.season = null;
+    libraryDialogView.open.clear();
+    Object.keys(titleRendered).forEach((part) => { titleRendered[part] = ""; });
+    setToolStatus(TITLE_STATUS, "");
+  }
+  const subject = titleSubject(route);
+  Object.assign(titleView, { id: subject.id, type: subject.type, key: subject.key });
+  $$(".nav-btn").forEach((button) => button.classList.toggle("is-active", button.dataset.view === (subject.series ? "library" : "home")));
+  const hero = $("#title-hero");
+  const progress = $("#title-progress");
+  const main = $("#title-main");
+  const related = $("#title-related-movies");
+  const about = $("#title-about");
+  if (!hero || !progress || !main || !related || !about) return;
+  if (!subject.id && !subject.series) {
+    document.title = DEFAULT_DOCUMENT_TITLE;
+    setTitlePart(hero, "hero", titleMissingMarkup());
+    ["progress", "main", "related", "about"].forEach((part) => setTitlePart({ progress, main, related, about }[part], part, ""));
+    recsUi.renderTitleRating($("#title-your-rating"), null);
+    return;
+  }
+  const meta = titleMetaFor(subject.type, subject.id);
+  const info = titleInfo(subject, meta);
+  const view = subject.type !== "movie" && meta ? titleSeriesView(subject, meta) : null;
+  const communityRating = titleCommunityRating(subject, meta);
+  document.title = `${info.name} | ${DEFAULT_DOCUMENT_TITLE}`;
+  const heroChanged = setTitlePart(hero, "hero", titleHeroMarkup(subject, info, view, communityRating));
+  if (heroChanged) fitTitleBackdrop();
+  setTitlePart(progress, "progress", titleProgressMarkup(subject, info));
+  // The rating needs the details (genres, country) to know an anime from a series.
+  const detailsReady = !subject.id || meta || !titleMetaState(subject.type, subject.id).pending;
+  recsUi.renderTitleRating($("#title-your-rating"), detailsReady ? titleRatingSubject(subject, info, meta) : null);
+  const mainChanged = setTitlePart(main, "main", subject.type === "movie" ? titleMovieMarkup(subject, info) : titleChaptersSectionMarkup(subject, meta, view));
+  if (mainChanged) titleRendered.chapters = "";
+  if (view) renderTitleChapters();
+  const movies = subject.type === "series" ? titleRelatedMovies(communityRating, subject, meta) : null;
+  const relatedChanged = setTitlePart(related, "related", titleRelatedMoviesMarkup(movies));
+  const aboutChanged = setTitlePart(about, "about", titleAboutMarkup(subject, info));
+  if (heroChanged || mainChanged || relatedChanged || aboutChanged) refreshImages($("#view-title"));
+}
+
+async function openRelatedAnimeMovie(id) {
+  const selected = Number(id);
+  if (!Number.isSafeInteger(selected) || selected <= 0) return;
+  const movie = [...titleRelatedMovieCache.values()].flatMap((entry) => entry.items || [])
+    .find((item) => item.id === selected);
+  if (!movie || !viewActive("title")) return;
+  const route = titleRoute();
+  const token = ++relatedMovieOpenToken;
+  setToolStatus(TITLE_STATUS, `Finding ${movie.title} in the LVL catalog…`);
+  try {
+    const matched = await resolveAnimeBrowserCatalog(movie);
+    if (token !== relatedMovieOpenToken || !viewActive("title")
+      || titleRoute().id !== route.id || titleRoute().key !== route.key) return;
+    setToolStatus(TITLE_STATUS, "");
+    openTitlePage({ id: matched.id, type: matched.type, meta: matched });
+  } catch (error) {
+    if (token !== relatedMovieOpenToken || !viewActive("title")
+      || titleRoute().id !== route.id || titleRoute().key !== route.key) return;
+    setToolStatus(TITLE_STATUS, error.message || "No verified LVL movie title was found.", true);
+  }
+}
+
+function handleTitleAction(event) {
+  const button = event.target.closest("[data-title-action]");
+  if (!button || button.disabled || !$("#view-title")?.contains(button)) return;
+  const subject = titleSubject();
+  const series = subject.series;
+  const action = button.dataset.titleAction;
+  if (action === "back") {
+    if (titleView.fromApp) window.history.back();
+    else switchView("library");
+  } else if (action === "related-movie") void openRelatedAnimeMovie(button.dataset.animeMovieId);
+  else if (action === "library") switchView("library");
+  else if (action === "play-next" && series) void resumeLibrarySeries(series.key);
+  else if (action === "play-first") {
+    const chapter = titleFirstChapter(catalogSeriesView);
+    if (catalogSeriesView && chapter) void playCatalogChapter(catalogSeriesView, chapter, button);
+  } else if (action === "add") titleAddToLibrary(subject);
+  else if (action === "magnet" && series) openMagnetDialog({ seriesKey: series.key });
+  else if (action === "menu" && series) openLibraryContextMenu(event, series.key, { anchor: button });
+  else if (action === "find-title" && series) void titleFindCatalogMatch(series, button);
+  else if (action === "retry") retryTitleMeta(subject);
+  else if (action === "movie-sources") void loadTitleMovieSources({ scroll: !button.closest("#title-sources") });
+}
+
+function titleAddToLibrary(subject) {
+  const meta = titleCatalogMeta(subject);
+  if (!meta.id) return;
+  const entry = addCatalogPlaceholder(meta, { aliases: meta.aliases, externalSource: "HOME" });
+  if (!entry) return;
+  markHomeTitleInLibrary(meta);
+  toast(`${meta.name} added to your Library`);
+  renderTitlePage();
+}
+
+// A Library title without catalog data: find it by name, then show the full page.
+async function titleFindCatalogMatch(series, button) {
+  if (button) { button.disabled = true; setButtonText(button, "Looking…"); }
+  setToolStatus(TITLE_STATUS, `Looking for ${series.title}…`);
+  try {
+    const meta = await resolveCatalogMetaForLibrarySeries(series);
+    // Navigation may have changed while the catalog lookup was in flight.
+    // A late result must not redirect away from a different title or view.
+    if (!viewActive("title") || titleSubject()?.series?.key !== series.key) return;
+    setToolStatus(TITLE_STATUS, "");
+    openTitlePage({ id: meta.id, type: meta.type, key: series.key, meta }, { historyMode: "replace" });
+  } catch (error) {
+    if (!viewActive("title") || titleSubject()?.series?.key !== series.key) return;
+    setToolStatus(TITLE_STATUS, error.message || "Couldn't find this title", true);
+    if (button?.isConnected) { button.disabled = false; setButtonText(button, "Find this title"); }
+  }
+}
+
+// One click handler for the page body: saved sources, words, the saved-chapter list, movie
+// sources; everything else goes to the chapter list (catalog rows).
+function handleTitleMainClick(event) {
+  const target = event.target.closest("button");
+  if (!target || target.disabled || !event.currentTarget.contains(target)) return;
+  if (target.matches(".title-mark-watched")) {
+    markTitleChapterWatched(target.dataset.titleMarkWatched);
+    return;
+  }
+  if (target.matches(".library-play")) {
+    const resumeAtSeconds = Math.max(0, Number(target.dataset.resumeMs) || 0) / 1000;
+    void playLibraryEpisode(target.dataset.libraryId, Number(target.dataset.fileIndex), { resumeAtSeconds });
+  } else if (target.matches(".library-vocab")) {
+    showLibraryVocabulary(target.dataset.libraryId, Number(target.dataset.fileIndex), target.dataset.kind);
+  } else if (target.matches(".lib-season-option")) {
+    libraryDialogView.season = target.dataset.season;
+    renderTitlePage();
+    $(`#title-chapters .lib-season-option[data-season="${CSS.escape(target.dataset.season)}"]`)?.focus();
+  } else if (target.matches(".lib-chapter-more")) {
+    const item = target.closest(".lib-chapter");
+    const key = item?.dataset.chapterKey;
+    if (!key) return;
+    const open = !libraryDialogView.open.has(key);
+    if (open) libraryDialogView.open.add(key); else libraryDialogView.open.delete(key);
+    item.classList.toggle("is-open", open);
+    target.setAttribute("aria-expanded", String(open));
+    const panel = item.querySelector(".lib-chapter-sources");
+    if (panel) panel.hidden = !open;
+    titleRendered.main = "";
+  } else if (target.matches(".catalog-add-best-detail")) {
+    void addBestCatalogMovie(titleCatalogMeta(), target, { seriesKey: titleView.key || null });
+  } else if (target.matches(".catalog-fetch-all-movie, .catalog-movie-all")) {
+    if (!titleMovieView) return;
+    titleMovieView.floorOnly = target.matches(".catalog-fetch-all-movie");
+    renderTitleMovieSources();
+  } else if (target.matches(".catalog-add-stream")) {
+    const stream = titleMovieView?.visible?.[Number(target.closest("[data-stream-index]")?.dataset.streamIndex)];
+    if (stream) {
+      void importCatalogStream(titleCatalogMeta(), stream, { button: target, seriesKey: titleView.key || null })
+        .catch((error) => setToolStatus(TITLE_STATUS, error.message || "Could not add this source", true));
+    }
+  } else handleCatalogChapterClick(event);
+}
+
+async function resolveCatalogMetaForLibrarySeries(series) {
+  if (series.catalogId) {
+    return {
+      id: series.catalogId,
+      type: series.catalogType === "movie" ? "movie" : "series",
+      name: series.title,
+      poster: series.coverUrl || "",
+      releaseInfo: series.releaseInfo || "",
+      aliases: series.aliases || [],
+    };
+  }
+  const queries = [series.title, ...(series.aliases || [])].filter(Boolean).slice(0, 5);
+  const targetYear = Number(String(series.releaseInfo || "").match(/\b(19|20)\d{2}\b/)?.[0] || 0);
+  let best = null;
+  for (const query of queries) {
+    try {
+      const data = await fetchJson(`/api/catalog/search?q=${encodeURIComponent(query)}`);
+      const matches = (data.results || []).filter((item) => item.type === (series.type === "movie" ? "movie" : "series"));
+      matches.sort((a, b) => {
+        const aYear = Number(catalogResultYear(a) || 0);
+        const bYear = Number(catalogResultYear(b) || 0);
+        const aPenalty = targetYear && aYear ? Math.abs(targetYear - aYear) : 0;
+        const bPenalty = targetYear && bYear ? Math.abs(targetYear - bYear) : 0;
+        return aPenalty - bPenalty;
+      });
+      if (matches[0]) { best = matches[0]; break; }
+    } catch {}
+  }
+  if (!best) throw new Error("Could not match this imported title to stream metadata.");
+  updateLibrarySeriesEntries(series.key, (entry) => {
+    entry.catalogId = best.id;
+    entry.catalogType = best.type;
+    entry.coverUrl ||= best.poster || "";
+    entry.releaseInfo ||= best.releaseInfo || "";
+    entry.aliases = [...new Set([...(entry.aliases || []), best.name])];
+    entry.updatedAt = Date.now();
+  });
+  return best;
+}
+
+function updateLibrarySeriesEntries(seriesKey, updater) {
+  let changed = false;
+  state.library.forEach((entry) => {
+    const key = entry.seriesKey || librarySeriesKey(entry.title);
+    if (key !== seriesKey) return;
+    updater(entry);
+    changed = true;
+  });
+  if (changed) saveLibrary();
+  return changed;
+}
+
+function cleanArtworkQuery(title) {
+  return String(title || "")
+    .replace(/\s+\[[^\]]+\]\s*$/g, "")
+    .replace(/\b(?:1080p|720p|2160p|4K|BluRay|BDRip|WEB[- .]?DL|WEBRip|HDTV|HEVC|x26[45]|H\.?26[45])\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Poster messages go to Settings, and also show as a toast when the Library is on screen.
+function artworkNotice(message, error = false) {
+  setToolStatus("#settings-artwork-message", message, error);
+  if (!$("#view-settings")?.classList.contains("is-active")) toast(message, { tone: error ? "error" : "default" });
+}
+
+async function fetchArtworkForSeriesKey(seriesKey, { advance = false, quiet = false, rerender = true } = {}) {
+  if (artworkFetches.has(seriesKey)) return artworkFetches.get(seriesKey);
+  const task = (async () => {
+    const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+    if (!series) return false;
+    if (!advance && (series.artworkPinned || ["CUSTOM", "TVMAZE", "MANUAL"].includes(String(series.artworkSource || "").toUpperCase()))) return false;
+    const query = cleanArtworkQuery(series.title);
+    if (!query) return false;
+    if (!quiet) setToolStatus("#settings-artwork-message", `Looking for a poster for ${query}…`);
+    const data = await fetchJson(`/api/images/search?q=${encodeURIComponent(query)}`);
+    const candidates = Array.isArray(data.results) ? data.results.filter((item) => item?.url) : [];
+    if (!candidates.length) {
+      if (!quiet) artworkNotice(`No poster found for ${query}`, true);
+      return false;
+    }
+    let index = Number.isInteger(series.artworkIndex) ? series.artworkIndex : 0;
+    if (advance && series.coverUrl) index += 1;
+    index = ((index % candidates.length) + candidates.length) % candidates.length;
+    if (advance && candidates.length > 1 && candidates[index]?.url === series.coverUrl) index = (index + 1) % candidates.length;
+    const candidate = candidates[index];
+    updateLibrarySeriesEntries(seriesKey, (entry) => {
+      entry.coverUrl = candidate.url;
+      entry.artworkIndex = index;
+      entry.artworkSource = candidate.source || "WEB";
+      entry.artworkPinned = Boolean(advance);
+      entry.updatedAt = Date.now();
+    });
+    if (rerender && $("#view-library")?.classList.contains("is-active")) renderLibrary();
+    if (!quiet) artworkNotice(`New poster for ${series.title}`);
+    return true;
+  })().catch((error) => {
+    if (!quiet) artworkNotice(error.message || "The poster search failed", true);
+    return false;
+  }).finally(() => artworkFetches.delete(seriesKey));
+  artworkFetches.set(seriesKey, task);
+  return task;
+}
+
+async function fetchMissingLibraryArtwork() {
+  const groups = buildLibrarySeries().filter((series) => !series.coverUrl);
+  if (!groups.length) {
+    setToolStatus("#settings-artwork-message", "Every title already has a poster");
+    return;
+  }
+  let updated = 0;
+  for (let index = 0; index < groups.length; index += 1) {
+    setToolStatus("#settings-artwork-message", `Looking for posters: ${index + 1} of ${groups.length}`);
+    if (await fetchArtworkForSeriesKey(groups[index].key, { quiet: true, rerender: false })) updated += 1;
+  }
+  if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+  setToolStatus("#settings-artwork-message", `Found ${updated} of ${groups.length} poster${groups.length === 1 ? "" : "s"}${updated < groups.length ? "; the others had no match" : ""}`, updated === 0);
+}
+
+// Popup menus (title actions, More): open at the pointer (right-click) or under their button,
+// move with arrow keys, close with Escape, Tab or a click outside, and give focus back.
+let openMenuState = null;
+
+function openPopupMenu(menu, { anchor = null, x = null, y = null, focusFirst = true } = {}) {
+  if (!menu) return;
+  closePopupMenu({ restoreFocus: false });
+  // A modal dialog makes everything outside it inert: open the menu inside the top open dialog.
+  const host = [...document.querySelectorAll("dialog[open]")].pop() || document.body;
+  if (menu.parentElement !== host) host.append(menu);
+  menu.hidden = false;
+  menu.style.visibility = "hidden";
+  menu.style.left = "0px";
+  menu.style.top = "0px";
+  const margin = 8;
+  const width = menu.offsetWidth;
+  const height = menu.offsetHeight;
+  const atPointer = Number.isFinite(x) && Number.isFinite(y);
+  let left = atPointer ? x + 4 : margin;
+  let top = atPointer ? y + 4 : margin;
+  if (atPointer) {
+    // Put right-click menus beside the clicked point, not below a tall
+    // chapter card; flip to stay within the viewport near the screen edge.
+    if (top + height > window.innerHeight - margin) top = y - height - 4;
+    if (left + width > window.innerWidth - margin) left = x - width - 4;
+  } else if (anchor) {
+    const rect = anchor.getBoundingClientRect();
+    left = rect.right - width;
+    top = rect.bottom + 6;
+    if (top + height > window.innerHeight - margin) top = rect.top - height - 6;
+  }
+  const wantLeft = Math.round(Math.max(margin, Math.min(left, window.innerWidth - width - margin)));
+  const wantTop = Math.round(Math.max(margin, Math.min(top, window.innerHeight - height - margin)));
+  menu.style.left = `${wantLeft}px`;
+  menu.style.top = `${wantTop}px`;
+  // Inside a transformed ancestor, "fixed" is relative to that box: correct for it.
+  const actual = menu.getBoundingClientRect();
+  if (Math.abs(actual.left - wantLeft) > 0.5 || Math.abs(actual.top - wantTop) > 0.5) {
+    menu.style.left = `${Math.round(2 * wantLeft - actual.left)}px`;
+    menu.style.top = `${Math.round(2 * wantTop - actual.top)}px`;
+  }
+  menu.style.visibility = "";
+  anchor?.setAttribute("aria-expanded", "true");
+  openMenuState = { menu, anchor };
+  if (focusFirst) menu.querySelector('[role="menuitem"]:not([disabled]):not([hidden])')?.focus({ preventScroll: true });
+}
+
+function closePopupMenu({ restoreFocus = true } = {}) {
+  const current = openMenuState;
+  if (!current) return;
+  openMenuState = null;
+  current.menu.hidden = true;
+  current.anchor?.setAttribute("aria-expanded", "false");
+  if (restoreFocus && current.anchor?.isConnected) current.anchor.focus({ preventScroll: true });
+}
+
+function wirePopupMenu(menu) {
+  menu?.addEventListener("keydown", (event) => {
+    const items = [...menu.querySelectorAll('[role="menuitem"]:not([disabled]):not([hidden])')];
+    const index = items.indexOf(document.activeElement);
+    const go = (next) => {
+      if (!items.length) return;
+      event.preventDefault();
+      items[(next + items.length) % items.length]?.focus();
+    };
+    if (event.key === "ArrowDown") go(index + 1);
+    else if (event.key === "ArrowUp") go(index - 1);
+    else if (event.key === "Home") go(0);
+    else if (event.key === "End") go(items.length - 1);
+    else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closePopupMenu(); }
+    else if (event.key === "Tab") closePopupMenu({ restoreFocus: false });
+  });
+}
+
+function openLibraryContextMenu(event, seriesKey, { anchor = null } = {}) {
+  event?.preventDefault?.();
+  libraryContextSeriesKey = seriesKey;
+  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  const watchedAction = $("#library-context-menu [data-library-action='mark-watched']");
+  if (watchedAction) watchedAction.textContent = series?.sources.some((entry) => Number(entry.watchedTitleAt) > 0)
+    ? "Mark as not watched" : "Mark as watched";
+  renderLibrarySeasonActions(series);
+  if (series?.type === "series" && /^tt\d{5,12}$/.test(series.catalogId || "")
+    && !catalogChapterLists.get(series.catalogId)?.list) {
+    catalogChapterList(series.catalogId, () => {
+      if (libraryContextSeriesKey === seriesKey && openMenuState?.menu?.id === "library-context-menu") {
+        renderLibrarySeasonActions(buildLibrarySeries().find((item) => item.key === seriesKey));
+      }
+    });
+  }
+  // In Edge a mouse right-click may have detail=0, just like a keyboard
+  // ContextMenu key. Use the mouse button to select pointer positioning.
+  const fromPointer = event?.type === "contextmenu" && event.button === 2;
+  openPopupMenu($("#library-context-menu"), {
+    anchor,
+    x: fromPointer ? event.clientX : null,
+    y: fromPointer ? event.clientY : null,
+    focusFirst: !fromPointer,
+  });
+}
+
+function closeLibraryContextMenu() {
+  if (openMenuState?.menu?.id === "library-context-menu") closePopupMenu({ restoreFocus: false });
+  else if ($("#library-context-menu")) $("#library-context-menu").hidden = true;
+}
+
+function updateLibrarySummary(count = null) {
+  const resolvedCount = Number.isInteger(count)
+    ? count
+    : new Set(state.library.filter((entry) => entry.libraryHidden !== true)
+      .map((entry) => entry.seriesKey || librarySeriesKey(entry.title)).filter(Boolean)).size;
+  if ($("#library-count")) $("#library-count").textContent = resolvedCount;
+}
+
+async function customCoverDataUrl(file) {
+  if (!file?.type?.startsWith("image/")) throw new Error("Choose an image file.");
+  if (file.size > 20 * 1024 * 1024) throw new Error("Image is too large. Maximum is 20 MB.");
+  const bitmap = await createImageBitmap(file);
+  const canvas = document.createElement("canvas");
+  canvas.width = 600;
+  canvas.height = 900;
+  const context = canvas.getContext("2d");
+  const targetRatio = canvas.width / canvas.height;
+  const sourceRatio = bitmap.width / bitmap.height;
+  let sx = 0;
+  let sy = 0;
+  let sw = bitmap.width;
+  let sh = bitmap.height;
+  if (sourceRatio > targetRatio) {
+    sw = bitmap.height * targetRatio;
+    sx = (bitmap.width - sw) / 2;
+  } else {
+    sh = bitmap.width / targetRatio;
+    sy = (bitmap.height - sh) / 2;
+  }
+  context.drawImage(bitmap, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
+  bitmap.close?.();
+  return canvas.toDataURL("image/jpeg", 0.84);
+}
+
+/* ---------------------------------------------------------------- Library page */
+
+const LIBRARY_VIEW_KEY = "blackline-library-view";
+const libraryView = (() => {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem(LIBRARY_VIEW_KEY) || "{}") || {}; } catch {}
+  return {
+    filter: ["all", "series", "movie", "anime"].includes(saved.filter) ? saved.filter : "all",
+    sort: ["recent", "added", "title", "title-desc", "watched", "unfinished", "progress"].includes(saved.sort) ? saved.sort : "recent",
+    status: ["any", ...ANILIST_STATUS_FILTERS, "REPEATING"].includes(saved.status) ? saved.status : "any",
+    query: "",
+  };
+})();
+
+function saveLibraryView() {
+  localStorage.setItem(LIBRARY_VIEW_KEY, JSON.stringify({ filter: libraryView.filter, sort: libraryView.sort, status: libraryView.status }));
+}
+
+// The last episode watched in a series: { entry, episode, progress } or null.
+function seriesResumePoint(series) {
+  let best = null;
+  let unfinished = null;
+  for (const entry of series.sources || []) {
+    for (const episode of entry.episodes || []) {
+      const progress = episode.progress;
+      if (!progress?.updatedAt || !(progress.durationMs > 0)) continue;
+      const item = { entry, episode, progress };
+      if (!best || progress.updatedAt > best.progress.updatedAt) best = item;
+      const unwatched = explicitlyUnwatchedChapter(series, String(episode.code || "").toUpperCase());
+      if ((!progress.finished || unwatched) && (!unfinished || progress.updatedAt > unfinished.progress.updatedAt)) unfinished = item;
+    }
+  }
+  // A more recently *finished* episode must not hide an older paused episode
+  // from the Continue shelf or erase its resume point.
+  return unfinished || best;
+}
+
+// Every saved chapter in watching order (season 0, specials, last), each with its best source.
+function libraryOrderedChapters(series) {
+  const seasons = [...series.seasons.entries()].sort((a, b) => (a[0] === 0) - (b[0] === 0) || a[0] - b[0]);
+  return seasons.flatMap(([, refs]) => groupLibraryChapters(refs).map((chapter) => ({
+    ...chapter,
+    ref: chapter.sources.slice().sort(compareLibrarySourceRefsByPeers)[0],
+  })));
+}
+
+function libraryChapterName(episode) {
+  const match = String(episode?.code || "").match(/^S(\d{2})E(\d{2,4})$/i);
+  return match ? `S${Number(match[1])} E${Number(match[2])}` : "";
+}
+
+/**
+ * What the series' main button does: resume where you stopped, play the next chapter after one
+ * you finished, or start from the first chapter. Returns { label, entry, episode, atMs } or null.
+ */
+function seriesNextUp(series) {
+  const point = seriesResumePoint(series);
+  const chapters = series.type === "movie" ? [] : libraryOrderedChapters(series);
+  const wasExplicitlyUnwatched = point && explicitlyUnwatchedChapter(series, String(point.episode.code || "").toUpperCase());
+  if (point && (!point.progress.finished || wasExplicitlyUnwatched)) {
+    const name = libraryChapterName(point.episode);
+    // Unwatch retains the old resume position for history, but entering at the
+    // ending would leave the episode unwatchable: intentional unwatch cannot
+    // re-arm completion until the viewer replays at or before 80%.
+    const replayFromStart = wasExplicitlyUnwatched
+      && point.progress.durationMs > 0 && point.progress.positionMs > point.progress.durationMs * 0.8;
+    return { label: `${replayFromStart ? "Replay" : "Resume"}${name ? ` ${name}` : ""}`,
+      entry: point.entry, episode: point.episode,
+      atMs: replayFromStart ? 0 : Math.max(0, point.progress.positionMs - 5000) };
+  }
+  if (point && point.progress.finished && chapters.length) {
+    const index = chapters.findIndex((chapter) => chapter.sources.some((ref) => ref.episode === point.episode));
+    const next = index >= 0 ? chapters[index + 1] : null;
+    if (next) return { label: `Play ${libraryChapterName(next.ref.episode) || "next"}`, entry: next.ref.entry, episode: next.ref.episode, atMs: 0 };
+  }
+  if (series.type === "movie") {
+    const ref = [...[...series.seasons.values()].flat(), ...series.extras].sort(compareLibrarySourceRefsByPeers)[0];
+    return ref ? { label: "Play", entry: ref.entry, episode: ref.episode, atMs: 0 } : null;
+  }
+  const first = chapters[0];
+  return first ? { label: `Play ${libraryChapterName(first.ref.episode) || ""}`.trim(), entry: first.ref.entry, episode: first.ref.episode, atMs: 0 } : null;
+}
+
+function seriesActivityAt(series) {
+  return Math.max(0, ...(series.sources || []).map((entry) => Math.max(Number(entry.lastPlayedAt) || 0, Number(entry.updatedAt) || 0, Number(entry.addedAt) || 0)));
+}
+
+function seriesAddedAt(series) {
+  return Math.max(0, ...(series.sources || []).map((entry) => Number(entry.addedAt) || 0));
+}
+
+function libraryWatchedAt(series) {
+  return Math.max(0, ...(series.sources || []).map((entry) => Math.max(Number(entry.lastPlayedAt) || 0,
+    Number(entry.watchedTitleAt) || 0)));
+}
+
+function isLibraryTitleMarkedWatched(series) {
+  return Boolean(series?.sources?.some((entry) => Number(entry.watchedTitleAt) > 0));
+}
+
+function librarySeasonChapterCodes(series) {
+  const seasons = new Map();
+  if (!series || series.type !== "series") return seasons;
+  const add = (season, code) => {
+    const normalized = String(code || "").toUpperCase();
+    if (!Number.isInteger(season) || season < 1 || !/^S\d{2}E\d{2,4}$/.test(normalized)
+      || Number(normalized.slice(1, 3)) !== season) return;
+    if (!seasons.has(season)) seasons.set(season, new Set());
+    seasons.get(season).add(normalized);
+  };
+  const list = catalogChapterLists.get(series.catalogId)?.list;
+  for (const season of list?.seasons || []) {
+    if (!Number.isInteger(season.season) || season.season < 1) continue;
+    for (const chapter of season.episodes || []) {
+      if (Number.isInteger(chapter.episode) && chapter.episode > 0)
+        add(season.season, chapterCode(season.season, chapter.episode));
+    }
+  }
+  for (const [season, refs] of series.seasons || []) {
+    for (const ref of refs) add(season, ref.episode?.code);
+  }
+  return new Map([...seasons].sort((a, b) => a[0] - b[0]));
+}
+
+function librarySeasonAllWatched(series, codes) {
+  return codes.length > 0 && codes.every((code) => !explicitlyUnwatchedChapter(series, code)
+    && (isLibraryTitleMarkedWatched(series) || manuallyWatchedChapter(series, code) || series.sources.some((entry) =>
+      (entry.episodes || []).some((episode) => String(episode.code || "").toUpperCase() === code && episode.progress?.finished))));
+}
+
+function renderLibrarySeasonActions(series) {
+  const node = $("#library-context-menu [data-library-season-actions]");
+  if (!node) return;
+  const seasons = librarySeasonChapterCodes(series);
+  node.hidden = !seasons.size;
+  node.innerHTML = [...seasons].map(([season, codes]) => {
+    const watched = librarySeasonAllWatched(series, [...codes]);
+    return `<button type="button" role="menuitem" class="ui-menu__item" data-library-action="mark-season" data-library-season="${season}" data-library-watched="${watched ? 'false' : 'true'}">Season ${season} - Mark as ${watched ? 'not watched' : 'watched'}</button>`;
+  }).join("");
+}
+
+function setLibrarySeasonWatched(series, season, watched) {
+  const codes = librarySeasonChapterCodes(series).get(season);
+  if (!codes?.size) return false;
+  const entries = state.library.filter((entry) => (entry.seriesKey || librarySeriesKey(entry.title)) === series.key);
+  const anchor = entries.find((entry) => entry.id === state.currentSource?.libraryId) || entries[0];
+  if (!anchor) return false;
+  const now = Date.now();
+  for (const code of codes) explicitUnwatchCompletionArmed.delete(`${series.key}\0${code}`);
+  for (const entry of entries) {
+    const flags = { ...(entry.watchedChapters || {}) };
+    for (const code of codes) delete flags[code];
+    entry.watchedChapters = flags;
+    if (!watched) {
+      entry.watchedTitleAt = 0;
+      for (const episode of entry.episodes || []) {
+        if (!codes.has(String(episode.code || "").toUpperCase()) || !episode.progress) continue;
+        episode.progress = { ...episode.progress, finished: false, updatedAt: now };
+      }
+    }
+    entry.updatedAt = now;
+  }
+  anchor.watchedChapters = { ...anchor.watchedChapters,
+    ...Object.fromEntries([...codes].map((code) => [code, watched ? now : false])) };
+  savePendingAniListUnwatches(pendingAniListUnwatches().filter((row) =>
+    row.seriesKey !== series.key || !codes.has(row.code)));
+  if (!watched) persistAniListQueue(anilistStoredQueue().filter((row) =>
+    row.seriesKey !== series.key || !codes.has(row.code)));
+  saveLibrary();
+  renderLibrary();
+  refreshTitlePage();
+  toast(`Season ${season} marked as ${watched ? "watched" : "not watched"} locally`);
+  return true;
+}
+
+// A title-level watched mark works for catalog-only films (no torrent/chapter).
+// Keep it local: AniList watch progress must follow its independently verified
+// season/movie mapping, never a guessed whole-series completion mutation.
+function setLibraryTitleWatched(series, watched) {
+  if (!series?.key) return false;
+  const at = watched ? Date.now() : 0;
+  const changed = updateLibrarySeriesEntries(series.key, (entry) => {
+    entry.watchedTitleAt = at;
+    entry.updatedAt = Date.now();
+  });
+  if (changed) {
+    renderLibrary();
+    refreshTitlePage();
+    toast(`${series.title} marked as ${watched ? "watched" : "not watched"} locally`);
+  }
+  return changed;
+}
+
+function libraryProgressRatio(series) {
+  if (isLibraryTitleMarkedWatched(series)) return 1;
+  const progress = [...(series.sources || []).flatMap((entry) => entry.episodes || [])
+    .map((episode) => episode.progress).filter((item) => item?.durationMs > 0)];
+  if (!progress.length) return 0;
+  return progress.reduce((sum, item) => sum + (item.finished ? 1 : Math.max(0, Math.min(1, item.positionMs / item.durationMs))), 0) / progress.length;
+}
+
+// The sharpest version of a Library title's cover for a card: catalog posters as a 300–780 px
+// set (the browser picks the size this screen needs), AniList's large cover, IMDb's 780 px; the
+// saved cover is the fallback, and AniList's cover after that.
+function libraryCardImage(series, art = null) {
+  const saved = series.coverUrl || art?.poster || "";
+  const anilistCover = seriesAniList(series)?.cover || "";
+  const selected = preferredPosterArt({ saved, catalog: art?.poster || "", anilist: anilistCover,
+    artworkSource: series.artworkSource, pinned: series.artworkPinned });
+  const catalog = metahubVariant(selected.image, "small");
+  if (catalog) return { image: catalog, imageSrcset: selected.srcset, imageFallback: selected.fallback };
+  const sharper = sharperPoster(selected.image);
+  if (sharper.imageFallback) return { image: sharper.image, imageSrcset: "", imageFallback: sharper.imageFallback };
+  const imdb = largePosterUrl(selected.image);
+  const bounded = boundedPosterUrl(imdb);
+  if (bounded && bounded !== selected.image) return { image: bounded, imageSrcset: "", imageFallback: bounded !== imdb ? imdb : selected.image };
+  return { image: selected.image, imageSrcset: selected.srcset, imageFallback: selected.fallback };
+}
+
+function libraryCardItem(series, category = null) {
+  const chapters = librarySeriesChapterCount(series);
+  const point = seriesResumePoint(series);
+  const art = libraryArtCached(series);
+  const videos = chapters + series.extras.length;
+  const progress = point && !point.progress.finished ? Math.min(1, point.progress.positionMs / point.progress.durationMs) : 0;
+  const anilist = seriesAniList(series);
+  const listStatus = ANILIST_STATUS_LABELS[watchTrackingStatus(series)] || "";
+  // AniList list scores are the user's own rating. Don't mislabel them as the
+  // community average: only show a sourced public percentage when available.
+  const publicAverage = Number(anilist?.averageScore ?? art?.anilistAverageScore);
+  const communityScore = category === "anime" && publicAverage > 0 && publicAverage <= 100
+    ? `★ ${(publicAverage / 10).toFixed(1)}` : "";
+  const seasonEpisodes = (anilist?.seasons || []).map((season) => Number(season.episodes));
+  const knownEpisodes = seasonEpisodes.length && seasonEpisodes.every((value) => Number.isInteger(value) && value > 0)
+    ? seasonEpisodes.reduce((sum, value) => sum + value, 0) : chapters;
+  const count = series.type !== "movie" && knownEpisodes ? `${knownEpisodes} eps` : "";
+  return {
+    key: series.key,
+    title: series.title,
+    ...libraryCardImage(series, art),
+    meta: [
+      category === "anime" ? (series.type === "movie" ? "Anime film" : "Anime") : series.type === "movie" ? "Movie" : "TV",
+      art?.releaseInfo ? String(art.releaseInfo).slice(0, 4) : series.releaseInfo ? String(series.releaseInfo).slice(0, 4) : "",
+      count,
+      communityScore,
+    ],
+    badge: isLibraryTitleMarkedWatched(series) ? "Watched" : videos ? "" : listStatus || "No sources",
+    progress: isLibraryTitleMarkedWatched(series) ? 1 : progress,
+  };
+}
+
+function libraryMoreButton(series) {
+  return iconButtonMarkup({ icon: "more", label: `More for ${series.title}`, variant: "glass", size: "sm", attrs: { "data-ui-action": "menu", "aria-haspopup": "menu", "aria-expanded": "false" } });
+}
+
+function renderLibraryContinue(all) {
+  const section = $("#library-continue");
+  if (!section) return;
+  const items = all
+    .map((series) => {
+      const point = seriesResumePoint(series);
+      const replay = Boolean(point && explicitlyUnwatchedChapter(series, String(point.episode.code || "").toUpperCase())
+        && point.progress.positionMs > point.progress.durationMs * 0.8);
+      return { series, point, replay };
+    })
+    .filter(({ series, point, replay }) => !isLibraryTitleMarkedWatched(series) && point
+      && (!point.progress.finished || replay) && (point.progress.positionMs > 30_000 || replay))
+    .sort((a, b) => b.point.progress.updatedAt - a.point.progress.updatedAt)
+    .slice(0, 16);
+  section.hidden = !items.length;
+  if (!items.length) {
+    section.innerHTML = "";
+    return;
+  }
+  section.innerHTML = shelfMarkup({
+    id: "library-continue-shelf",
+    title: "Continue watching",
+    cards: items.map(({ series, point, replay }) => {
+      const left = Math.max(1, Math.round((point.progress.durationMs - point.progress.positionMs) / 60_000));
+      return cardMarkup({
+        key: series.key,
+        title: series.title,
+        ...libraryCardImage(series, libraryArtCached(series)),
+        meta: [libraryChapterName(point.episode) || (series.type === "movie" ? "Movie" : ""), replay ? "Replay episode" : `${left} min left`],
+        progress: replay ? 0 : point.progress.positionMs / point.progress.durationMs,
+      }, { primaryAction: "resume", bodyAction: "library", actions: false });
+    }),
+  });
+  bindShelves(section);
+  refreshImages(section);
+}
+
+function renderLibrary() {
+  const list = $("#library-list");
+  if (!list) return;
+  const all = buildLibrarySeries();
+  updateLibrarySummary(all.length);
+  renderLibraryRecommendations(all);
+  const animeIds = new Set((state.homeCatalog.anime || []).map((meta) => meta.id).filter(Boolean));
+  const groups = { series: [], movie: [], anime: [] };
+  const categories = new Map();
+  all.forEach((series) => {
+    const category = libraryCategory(series, { animeIds, details: libraryArtCached(series) });
+    categories.set(series.key, category);
+    groups[category].push(series);
+  });
+  const counts = { all: all.length, series: groups.series.length, movie: groups.movie.length, anime: groups.anime.length };
+  document.querySelectorAll("[data-library-count]").forEach((node) => { node.textContent = counts[node.dataset.libraryCount] ? String(counts[node.dataset.libraryCount]) : ""; });
+  setActiveTab($("#library-filter"), libraryView.filter);
+  const sort = $("#library-sort");
+  if (sort && sort.value !== libraryView.sort) sort.value = libraryView.sort;
+  const status = libraryView.status;
+  const query = normalizeText(libraryView.query || "");
+  const filteredByCategoryAndSearch = all
+    .filter((series) => libraryView.filter === "all" || groups[libraryView.filter]?.includes(series))
+    .filter((series) => !query || [series.title, ...(series.aliases || [])].some((name) => normalizeText(name).includes(query)));
+  const libraryStatus = (series) => {
+    const local = (series.sources || []).map((entry) => entry.trackingStatus)
+      .find((value) => Object.hasOwn(ANILIST_STATUS_LABELS, value));
+    if (local) return local;
+    if (isLibraryTitleMarkedWatched(series)) return "COMPLETED";
+    const info = seriesAniList(series);
+    // A fully rewatching show may be grouped as CURRENT by the AniList import.
+    const active = (info?.seasons || []).filter((part) => ["CURRENT", "REPEATING"].includes(part.status));
+    if (active.length && active.every((part) => part.status === "REPEATING")) return "REPEATING";
+    return info?.status || "";
+  };
+  const statuses = { any: filteredByCategoryAndSearch.length, CURRENT: 0, COMPLETED: 0, PLANNING: 0, PAUSED: 0, DROPPED: 0, REPEATING: 0 };
+  for (const series of filteredByCategoryAndSearch) {
+    const key = libraryStatus(series);
+    if (Object.hasOwn(statuses, key)) statuses[key] += 1;
+  }
+  $$("#library-status-filter [data-library-status]").forEach((button) => {
+    const key = button.dataset.libraryStatus;
+    button.setAttribute("aria-pressed", String(key === status));
+    const count = button.querySelector("[data-library-status-count]");
+    if (count) count.textContent = statuses[key] ? String(statuses[key]) : "";
+  });
+  const shown = filteredByCategoryAndSearch
+    .filter((series) => status === "any" || libraryStatus(series) === status)
+    .sort((a, b) => {
+      const alpha = a.title.localeCompare(b.title, undefined, { sensitivity: "base", numeric: true });
+      if (libraryView.sort === "title") return alpha;
+      if (libraryView.sort === "title-desc") return -alpha;
+      if (libraryView.sort === "added") return seriesAddedAt(b) - seriesAddedAt(a) || alpha;
+      if (libraryView.sort === "watched") return libraryWatchedAt(b) - libraryWatchedAt(a) || alpha;
+      if (libraryView.sort === "progress") return libraryProgressRatio(b) - libraryProgressRatio(a) || alpha;
+      if (libraryView.sort === "unfinished") return libraryProgressRatio(a) - libraryProgressRatio(b) || alpha;
+      return seriesActivityAt(b) - seriesActivityAt(a) || alpha;
+    });
+  // The Continue shelf belongs to the current Library view. Do not show
+  // anime resume cards under Movies/Series or ignore the status/search filters.
+  renderLibraryContinue(shown);
+  if (!all.length) {
+    list.classList.remove("is-grouped");
+    list.innerHTML = emptyMarkup({
+      icon: "library",
+      title: "Your Library is empty",
+      text: "Add a movie or series to watch it with subtitles and turn its lines into cards.",
+      action: buttonMarkup({ label: "Add a title", variant: "primary", icon: "plus", attrs: { "data-library-empty": "add" } }),
+    });
+    return;
+  }
+  if (!shown.length) {
+    list.classList.remove("is-grouped");
+    list.innerHTML = emptyMarkup({ compact: true, icon: "search", title: "No matches", text: libraryView.query ? `Nothing in your Library matches "${libraryView.query}".` : status !== "any" ? `No titles match ${ANILIST_STATUS_LABELS[status]?.toLowerCase() || "this status"}.` : "Nothing here yet." });
+    return;
+  }
+  const card = (series) => cardMarkup(libraryCardItem(series, categories.get(series.key)), { primaryAction: "library", actionsMarkup: libraryMoreButton(series) });
+  const grouped = libraryView.filter === "all";
+  list.classList.toggle("is-grouped", grouped);
+  if (grouped) {
+    list.innerHTML = [
+      ["series", "Series"], ["movie", "Movies"], ["anime", "Anime"],
+    ].map(([kind, heading]) => {
+      const items = shown.filter((series) => groups[kind].includes(series));
+      if (!items.length) return "";
+      return `<section class="lib-category" aria-label="${heading}"><header class="lib-category__head"><h2>${heading}</h2><span class="lib-category__count">${items.length}</span></header><div class="ui-grid lib-grid">${items.map(card).join("")}</div></section>`;
+    }).join("");
+  } else {
+    list.innerHTML = shown.map(card).join("");
+  }
+  refreshImages(list);
+}
+
+async function resumeLibrarySeries(seriesKey) {
+  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  const next = series ? seriesNextUp(series) : null;
+  if (!next) {
+    openLibrarySeries(seriesKey);
+    return;
+  }
+  await playLibraryEpisode(next.entry.id, Number(next.episode.fileIndex), { resumeAtSeconds: next.atMs / 1000 });
+}
+
+function handleLibraryCardAction(event) {
+  const trigger = event.target.closest("[data-ui-action], [data-library-empty]");
+  if (!trigger) return;
+  if (trigger.dataset.libraryEmpty === "add") {
+    openCatalogDialog();
+    return;
+  }
+  const holder = trigger.closest("[data-series-key]");
+  if (!holder || (!$("#library-list")?.contains(holder) && !$("#library-continue")?.contains(holder))) return;
+  const key = holder.dataset.seriesKey;
+  const action = trigger.dataset.uiAction;
+  if (action === "menu") openLibraryContextMenu(event, key, { anchor: trigger });
+  else if (action === "resume") void resumeLibrarySeries(key);
+  else openLibrarySeries(key);
+}
+
+function rebuildHomeTitleIndex() {
+  homeTitleIndex = new Map();
+  [state.homeCatalog.series, state.homeCatalog.movies, state.homeCatalog.anime].forEach((list) => {
+    (Array.isArray(list) ? list : []).forEach((meta) => {
+      if (meta?.id && !homeTitleIndex.has(meta.id)) homeTitleIndex.set(meta.id, meta);
+    });
+  });
+}
+
+function homeLibraryMembership(librarySeries = buildLibrarySeries()) {
+  const keys = new Set(librarySeries.map((series) => series.key));
+  const ids = new Set(librarySeries.map((series) => series.catalogId).filter(Boolean));
+  return (meta) => Boolean(meta) && (keys.has(librarySeriesKey(meta.name)) || Boolean(meta.id && ids.has(meta.id)));
+}
+
+function homeLibraryItems(librarySeries) {
+  const animeIds = new Set((state.homeCatalog.anime || []).map((meta) => meta.id).filter(Boolean));
+  return librarySeries.map((series) => {
+    const chapters = librarySeriesChapterCount(series);
+    const unit = series.type === "movie" ? "video" : "episode";
+    return {
+      key: series.key,
+      title: series.title,
+      ...libraryCardImage(series),
+      type: series.type,
+      mediaKind: libraryCategory(series, { animeIds, details: libraryArtCached(series) }),
+      catalogId: series.catalogId || "",
+      meta: [series.type === "movie" ? "Movie" : "Series", chapters ? `${chapters} ${unit}${chapters === 1 ? "" : "s"}` : "No sources yet"],
+    };
+  });
+}
+
+function homeRowMarkup(row, { category, isInLibrary }) {
+  const id = `home-row-${row.id}`;
+  if (row.variant === "library") {
+    return shelfMarkup({
+      id,
+      title: row.title,
+      subtitle: row.subtitle,
+      cards: row.items.map((item) => cardMarkup(item, { actions: false, primaryAction: "library" })),
+    });
+  }
+  return shelfMarkup({
+    id,
+    title: row.title,
+    subtitle: row.subtitle,
+    variant: row.variant,
+    cards: row.items.map((meta, index) => cardMarkup(catalogCardItem(meta, { category, detailed: row.variant === "wide" }), {
+      variant: row.variant,
+      inLibrary: isInLibrary(meta),
+      rank: row.ranked ? index + 1 : 0,
+    })),
+  });
+}
+
+function homeHeroSlides(hero, isInLibrary) {
+  const savedSeries = buildLibrarySeries();
+  return hero.map((meta) => {
+    const match = savedSeries.find((series) => (meta?.id && series.catalogId === meta.id)
+      || series.key === librarySeriesKey(meta.name));
+    return {
+      ...heroSlideItem(meta),
+      actions: [heroLibraryButtonMarkup(isInLibrary(meta), savedTitleBadge(match)?.label), heroDetailsButtonMarkup()],
+    };
+  });
+}
+
+function addHomeTitleToLibrary(meta) {
+  const entry = addCatalogPlaceholder(meta, { aliases: [meta.name], externalSource: "HOME" });
+  if (!entry) return;
+  markHomeTitleInLibrary(meta);
+  toast(`${meta.name} added to your Library`);
+  if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+}
+
+// Flip every card and hero button for this title to the saved state without re-rendering rows.
+function markHomeTitleInLibrary(meta) {
+  if (!meta?.id) return;
+  document.querySelectorAll(`[data-title-id="${CSS.escape(meta.id)}"]`).forEach((holder) => {
+    holder.classList.add("is-in-library");
+    const slot = holder.querySelector('[data-ui-slot="library"]');
+    if (slot) {
+      const hadFocus = slot.contains(document.activeElement);
+      slot.innerHTML = cardLibraryActionMarkup(meta.name, true);
+      if (hadFocus) slot.querySelector("button")?.focus();
+    }
+    const heroButton = holder.querySelector('[data-ui-slot="hero-library"]');
+    if (heroButton) {
+      const hadFocus = heroButton === document.activeElement;
+      heroButton.outerHTML = heroLibraryButtonMarkup(true);
+      if (hadFocus) holder.querySelector('[data-ui-slot="hero-library"]')?.focus();
+    }
+  });
+}
+
+// One delegated handler for Home and "Recommended next": cards, hero buttons and retry.
+function handleCatalogCardAction(event) {
+  const trigger = event.target.closest("[data-ui-action]");
+  if (!trigger || !event.currentTarget.contains(trigger)) return;
+  const action = trigger.dataset.uiAction;
+  if (action === "retry") {
+    void loadHomeCatalog({ force: true });
+    return;
+  }
+  const holder = trigger.closest("[data-title-id], [data-series-key]");
+  if (!holder) return;
+  if (!holder.dataset.titleId) {
+    openLibrarySeries(holder.dataset.seriesKey);
+    return;
+  }
+  const meta = homeTitleIndex.get(holder.dataset.titleId);
+  if (!meta) return;
+  if (action === "add") addHomeTitleToLibrary(meta);
+  else openHomeTitle(meta);
+}
+
+function renderLibraryRecommendations(seriesGroups = buildLibrarySeries()) {
+  const section = $("#library-recommendations");
+  if (!section) return;
+  if (!state.homeLoaded) {
+    section.innerHTML = homeCatalogError
+      ? shelfMarkup({
+        id: "library-recommended",
+        title: "Recommended next",
+        empty: emptyMarkup({ title: "Recommendations unavailable", text: "The catalog could not be loaded. Try again from Home.", compact: true }),
+      })
+      : skeletonShelfMarkup({ count: 8 });
+    return;
+  }
+  const isInLibrary = homeLibraryMembership(seriesGroups);
+  const picks = libraryRecommendations(state.homeCatalog, { seed: state.homeCatalog.seed, isInLibrary });
+  section.innerHTML = shelfMarkup({
+    id: "library-recommended",
+    title: "Recommended next",
+    cards: picks.map((meta) => cardMarkup(catalogCardItem(meta), { inLibrary: false })),
+    empty: emptyMarkup({ title: "No new recommendations", compact: true }),
+  });
+  bindShelves(section);
+  refreshImages(section);
+}
+
+function renderHomeLoading(hero, rows) {
+  homeHeroController?.destroy();
+  homeHeroController = null;
+  homeRenderedCategory = "";
+  hero.hidden = false;
+  hero.innerHTML = skeletonHeroMarkup();
+  rows.setAttribute("aria-busy", "true");
+  rows.innerHTML = `<p class="ui-visually-hidden">Loading the catalog…</p>${skeletonShelfMarkup()}${skeletonShelfMarkup()}${skeletonShelfMarkup()}`;
+}
+
+function renderHomeError(hero, rows, message) {
+  homeHeroController?.destroy();
+  homeHeroController = null;
+  homeRenderedCategory = "";
+  hero.hidden = true;
+  hero.innerHTML = "";
+  rows.removeAttribute("aria-busy");
+  const detail = String(message || "The catalog service did not respond.").trim();
+  rows.innerHTML = emptyMarkup({
+    icon: "alert",
+    title: "Couldn't load the catalog",
+    text: /[.!?]$/.test(detail) ? detail : `${detail}.`,
+    action: buttonMarkup({ label: "Try again", icon: "refresh", attrs: { "data-ui-action": "retry" } }),
+  });
+}
+
+// Re-renders of the same category (background refresh, sources added from search) should not
+// throw the viewer back to the start of every row or to the first hero slide.
+function captureHomePlace(hero, rows) {
+  const saved = homeSavedPlace;
+  homeSavedPlace = null;
+  const place = { tracks: new Map(), heroTitleId: "", focus: null };
+  if (homeRenderedCategory !== homeBrowseCategory) return place;
+  rows.querySelectorAll(".ui-shelf[id] > .ui-shelf__track").forEach((track) => {
+    if (track.scrollLeft > 0) place.tracks.set(track.parentElement.id, track.scrollLeft);
+  });
+  // Hiding the view (display: none) resets row scroll, so use the snapshot taken on leave.
+  if (!place.tracks.size && saved) saved.tracks.forEach((left, id) => place.tracks.set(id, left));
+  place.heroTitleId = hero.querySelector(".ui-hero__slide.is-active")?.dataset.titleId || saved?.heroTitleId || "";
+  const active = document.activeElement;
+  const holder = active?.closest?.("[data-title-id], [data-series-key]");
+  if (holder && (rows.contains(active) || hero.contains(active))) {
+    place.focus = {
+      shelfId: active.closest(".ui-shelf[id]")?.id || "",
+      titleId: holder.dataset.titleId || "",
+      seriesKey: holder.dataset.seriesKey || "",
+      action: active.dataset.uiAction || "",
+    };
+  }
+  return place;
+}
+
+function restoreHomePlace(place, hero, feed) {
+  if (place.heroTitleId && homeHeroController) {
+    const index = feed.hero.findIndex((meta) => meta.id === place.heroTitleId);
+    if (index > 0) homeHeroController.go(index);
+  }
+  place.tracks.forEach((left, id) => {
+    const track = document.getElementById(id)?.querySelector(":scope > .ui-shelf__track");
+    if (track) track.scrollLeft = left;
+  });
+  const focus = place.focus;
+  if (!focus) return;
+  const scope = focus.shelfId ? document.getElementById(focus.shelfId) : hero;
+  const selector = focus.titleId ? `[data-title-id="${CSS.escape(focus.titleId)}"]` : `[data-series-key="${CSS.escape(focus.seriesKey)}"]`;
+  const holder = scope?.querySelector(selector);
+  const target = holder?.querySelector(`[data-ui-action="${CSS.escape(focus.action)}"]`)
+    || holder?.querySelector("[data-ui-action]");
+  target?.focus({ preventScroll: true });
+}
+
+const animeBrowserInitialSeason = ["WINTER", "SPRING", "SUMMER", "FALL"][Math.floor(new Date().getMonth() / 3)];
+const animeBrowser = {
+  filters: { year: String(new Date().getFullYear()), season: animeBrowserInitialSeason, sort: "POPULARITY_DESC", format: "TV", status: "", genre: "", search: "" },
+  items: [], page: 0, hasNextPage: false, loading: false, loaded: false, error: "", requestId: 0, openRequestId: 0,
+};
+const animeBrowserTitleCache = new Map();
+let animeBrowserPrefetchTimer = null;
+
+function animeBrowserExactCatalogMatch(media, candidates = []) {
+  return verifiedAnimeCatalogMatch(media, candidates);
+}
+
+// AniList IDs are not IMDb IDs. Resolve only exact English/romaji aliases, reusing
+// a known local catalog ID first and sharing pending lookups across hover and click.
+function resolveAnimeBrowserCatalog(media) {
+  const key = Number(media.id);
+  const cached = animeBrowserTitleCache.get(key);
+  if (cached && cached.until > Date.now()) return cached.promise;
+  const local = animeBrowserExactCatalogMatch(media, [
+    ...homeTitleIndex.values(),
+    ...buildLibrarySeries().filter((series) => series.catalogId).map((series) => ({
+      id: series.catalogId, name: series.title,
+      type: series.type === "movie" ? "movie" : "series",
+    })),
+  ]);
+  if (local) {
+    const promise = Promise.resolve(local);
+    animeBrowserTitleCache.set(key, { promise, until: Date.now() + 10 * 60_000 });
+    return promise;
+  }
+  const distinctNames = animeCatalogSearchNames(media);
+  if (!distinctNames.length) return Promise.reject(new Error("This title has no searchable name."));
+  // Search aliases concurrently and accept the earliest VERIFIED exact match.
+  // Before this fix, two slow sequential searches took >8 seconds for one card.
+  const searchNames = (names) => Promise.any(names.map(async (title) => {
+    const response = await fetchJson(`/api/catalog/search?q=${encodeURIComponent(title)}`);
+    const match = animeBrowserExactCatalogMatch(media, response.results || []);
+    if (!match) throw new Error("no-exact-match");
+    return match;
+  }));
+  const promise = searchNames(distinctNames).catch(async (originalError) => {
+    const roots = animeCatalogRootSearchNames(media);
+    // Some providers omit the original series from sequel-title searches.
+    // Query the show's root only when both primary aliases failed.
+    if (roots.length) {
+      try { return await searchNames(roots); }
+      catch (rootError) {
+        originalError.errors = [...(originalError.errors || []), ...(rootError.errors || [])];
+      }
+    }
+    if ((originalError?.errors || []).some((item) => item.message !== "no-exact-match")) {
+      throw new Error("Catalog search is temporarily unavailable. Please retry.");
+    }
+    throw new Error("No verified LVL catalog match found for this anime.");
+  });
+  animeBrowserTitleCache.set(key, { promise, until: Date.now() + 10 * 60_000 });
+  promise.catch(() => {
+    if (animeBrowserTitleCache.get(key)?.promise === promise) animeBrowserTitleCache.delete(key);
+  });
+  if (animeBrowserTitleCache.size > 150) animeBrowserTitleCache.delete(animeBrowserTitleCache.keys().next().value);
+  return promise;
+}
+const animeBrowserSelect = (label, name, values) => `<label>${label}<select name="${name}">${values.map(([value, title]) =>
+  `<option value="${escapeHtml(value)}"${String(animeBrowser.filters[name]) === String(value) ? " selected" : ""}>${escapeHtml(title)}</option>`).join("")}</select></label>`;
+function animeBrowserMarkup() {
+  const year = new Date().getFullYear();
+  const years = [["all", "All years"], ...Array.from({ length: year - 1940 + 2 }, (_, index) => [String(year + 1 - index), String(year + 1 - index)])];
+  const seasons = [["", "All seasons"], ...["WINTER", "SPRING", "SUMMER", "FALL"].map((season) => [season, season[0] + season.slice(1).toLowerCase()])];
+  return `<section class="anime-browser" id="anime-browser" aria-label="Anime discovery">
+    <form id="anime-browser-form" class="anime-browser-filters" role="search">
+      <label>Search <input name="search" type="search" placeholder="Anime title" maxlength="90" value="${escapeHtml(animeBrowser.filters.search)}" /></label>
+      ${animeBrowserSelect("Year", "year", years)}
+      ${animeBrowserSelect("Season", "season", seasons)}
+      ${animeBrowserSelect("Rank by", "sort", [["POPULARITY_DESC", "Most popular"], ["SCORE_DESC", "Highest rated"], ["TRENDING_DESC", "Trending"], ["START_DATE_DESC", "Newest"]])}
+      ${animeBrowserSelect("Format", "format", [["", "All formats"], ...["TV", "TV_SHORT", "MOVIE", "OVA", "ONA", "SPECIAL"].map((value) => [value, value.replace("_", " ")])])}
+      ${animeBrowserSelect("Status", "status", [["", "Any status"], ["RELEASING", "Airing"], ["FINISHED", "Finished"], ["NOT_YET_RELEASED", "Upcoming"], ["HIATUS", "Hiatus"]])}
+      ${animeBrowserSelect("Genre", "genre", [["", "Any genre"], ...["Action", "Adventure", "Comedy", "Drama", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music", "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"].map((genre) => [genre, genre])])}
+      <button type="submit" class="ui-btn ui-btn--primary ui-btn--sm">Apply filters</button>
+    </form>
+    <p id="anime-browser-status" class="anime-browser-status" role="status" aria-live="polite"></p>
+    <div id="anime-browser-results" class="anime-browser-grid"></div>
+    <div class="anime-browser-footer"><button id="anime-browser-more" type="button" class="ui-btn ui-btn--secondary" hidden>Load more</button></div>
+  </section>`;
+}
+function renderAnimeBrowserResults() {
+  if (!viewActive("home") || homeBrowseCategory !== "anime") return;
+  const grid = $("#anime-browser-results");
+  const status = $("#anime-browser-status");
+  const more = $("#anime-browser-more");
+  if (!grid || !status || !more) return;
+  status.textContent = animeBrowser.error || (animeBrowser.loading ? "Loading anime from AniList…" : animeBrowser.loaded ? `${animeBrowser.items.length} anime` : "");
+  status.classList.toggle("is-error", Boolean(animeBrowser.error));
+  grid.innerHTML = animeBrowser.items.map((item) => `<button class="anime-browser-card" type="button" data-anime-id="${item.id}">
+    <span class="anime-browser-art"><img src="${escapeHtml(item.cover)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(item.title)}" /></span>
+    <strong>${escapeHtml(item.title)}</strong>
+    <span>${escapeHtml([item.year, item.season && item.season[0] + item.season.slice(1).toLowerCase(), item.format, Number(item.score) > 0 && Number(item.score) <= 100 ? `${(Number(item.score) / 10).toFixed(1)}/10` : ""].filter(Boolean).join(" - "))}</span>
+  </button>`).join("") || (animeBrowser.loaded && !animeBrowser.loading ? '<p class="anime-browser-empty">No anime matched these filters.</p>' : "");
+  more.hidden = !animeBrowser.hasNextPage || Boolean(animeBrowser.error);
+  more.disabled = animeBrowser.loading;
+  more.textContent = animeBrowser.loading ? "Loading…" : "Load more";
+  refreshImages(grid);
+}
+async function loadAnimeBrowser({ append = false } = {}) {
+  const token = ++animeBrowser.requestId;
+  ++animeBrowser.openRequestId;
+  const page = append ? animeBrowser.page + 1 : 1;
+  animeBrowser.loading = true;
+  animeBrowser.error = "";
+  if (!append) { animeBrowser.items = []; animeBrowser.page = 0; animeBrowser.loaded = false; animeBrowser.hasNextPage = false; }
+  renderAnimeBrowserResults();
+  try {
+    const params = new URLSearchParams({ ...animeBrowser.filters, page: String(page) });
+    const data = await fetchJson(`/api/anime/discover?${params}`);
+    if (token !== animeBrowser.requestId) return;
+    animeBrowser.items = append ? [...animeBrowser.items, ...(data.items || []).filter((item) => !animeBrowser.items.some((existing) => existing.id === item.id))] : data.items || [];
+    animeBrowser.page = page;
+    animeBrowser.hasNextPage = Boolean(data.hasNextPage);
+    animeBrowser.loaded = true;
+  } catch (error) {
+    if (token !== animeBrowser.requestId) return;
+    animeBrowser.error = error.message || "Could not load AniList anime";
+  } finally {
+    if (token === animeBrowser.requestId) {
+      animeBrowser.loading = false;
+      renderAnimeBrowserResults();
+    }
+  }
+}
+async function openAnimeBrowserTitle(id) {
+  const media = animeBrowser.items.find((item) => item.id === Number(id));
+  if (!media) return;
+  const token = ++animeBrowser.openRequestId;
+  const status = $("#anime-browser-status");
+  const card = [...($("#anime-browser-results")?.querySelectorAll("[data-anime-id]") || [])]
+    .find((item) => Number(item.dataset.animeId) === media.id);
+  card?.classList.add("is-resolving");
+  card?.setAttribute("aria-busy", "true");
+  if (status) {
+    status.classList.remove("is-error");
+    status.textContent = `Finding ${media.title} in the LVL catalog…`;
+  }
+  try {
+    const match = await resolveAnimeBrowserCatalog(media);
+    if (token !== animeBrowser.openRequestId || !viewActive("home") || homeBrowseCategory !== "anime") return;
+    openTitlePage({ id: match.id, type: match.type, meta: match });
+  } catch (error) {
+    if (token === animeBrowser.openRequestId && status?.isConnected) {
+      status.textContent = error.message || "Could not open anime";
+      status.classList.add("is-error");
+    }
+  } finally {
+    card?.classList.remove("is-resolving");
+    card?.removeAttribute("aria-busy");
+  }
+}
+// Prefetch only after the pointer settles on a card; keyboard focus works too.
+function queueAnimeBrowserPrefetch(event) {
+  if (event.type === "pointerover" && !["mouse", "pen"].includes(event.pointerType)) return;
+  const card = event.target.closest?.("[data-anime-id]");
+  if (!card || !viewActive("home") || homeBrowseCategory !== "anime") return;
+  window.clearTimeout(animeBrowserPrefetchTimer);
+  animeBrowserPrefetchTimer = window.setTimeout(() => {
+    animeBrowserPrefetchTimer = null;
+    const media = animeBrowser.items.find((item) => item.id === Number(card.dataset.animeId));
+    if (media && card.isConnected) void resolveAnimeBrowserCatalog(media).catch(() => {});
+  }, 220);
+}
+$("#home-rows")?.addEventListener("pointerover", queueAnimeBrowserPrefetch);
+$("#home-rows")?.addEventListener("focusin", queueAnimeBrowserPrefetch);
+$("#home-rows")?.addEventListener("pointerout", (event) => {
+  const card = event.target.closest?.("[data-anime-id]");
+  if (card && !card.contains(event.relatedTarget)) {
+    window.clearTimeout(animeBrowserPrefetchTimer);
+    animeBrowserPrefetchTimer = null;
+  }
+});
+$("#home-rows")?.addEventListener("submit", (event) => {
+  if (event.target.id !== "anime-browser-form") return;
+  event.preventDefault();
+  const form = new FormData(event.target);
+  for (const key of Object.keys(animeBrowser.filters)) animeBrowser.filters[key] = String(form.get(key) || "");
+  void loadAnimeBrowser();
+});
+$("#home-rows")?.addEventListener("change", (event) => {
+  const form = event.target.closest("#anime-browser-form");
+  if (form && event.target.name !== "search") form.requestSubmit();
+});
+$("#home-rows")?.addEventListener("click", (event) => {
+  const card = event.target.closest("[data-anime-id]");
+  if (card) void openAnimeBrowserTitle(card.dataset.animeId);
+  else if (event.target.closest("#anime-browser-more") && !animeBrowser.loading) void loadAnimeBrowser({ append: true });
+});
+
+function renderHome() {
+  const hero = $("#home-hero");
+  const rows = $("#home-rows");
+  if (!hero || !rows) return;
+  // Every route back to Home (switchView → loadHomeCatalog) renders it, so skip hidden renders.
+  // They would also lose row scroll positions, which can't be restored on a hidden view.
+  if (!$("#view-home")?.classList.contains("is-active")) return;
+  setActiveTab($("#home-tabs"), homeBrowseCategory);
+  $("#home-panel")?.setAttribute("aria-labelledby", `home-tab-${homeBrowseCategory}`);
+  $("#home-topbar")?.classList.toggle("is-solid", window.scrollY > 24);
+  if (!state.homeLoaded) {
+    if (homeCatalogError) renderHomeError(hero, rows, homeCatalogError);
+    else renderHomeLoading(hero, rows);
+    return;
+  }
+  const place = captureHomePlace(hero, rows);
+  const librarySeries = buildLibrarySeries();
+  const isInLibrary = homeLibraryMembership(librarySeries);
+  const feed = buildHomeFeed(state.homeCatalog, {
+    category: homeBrowseCategory,
+    seed: state.homeCatalog.seed,
+    isInLibrary,
+    library: homeLibraryItems(librarySeries),
+  });
+  homeHeroController?.destroy();
+  hero.innerHTML = heroMarkup(homeHeroSlides(feed.hero, isInLibrary));
+  hero.hidden = feed.hero.length === 0;
+  homeHeroController = feed.hero.length ? bindHero(hero) : null;
+  rows.removeAttribute("aria-busy");
+  const rowMarkup = feed.rows.map((row) => homeRowMarkup(row, { category: feed.category, isInLibrary }));
+  if (feed.category === "anime") {
+    const topIndex = feed.rows.findIndex((row) => row.id === "top-anime");
+    if (topIndex >= 0) rowMarkup[topIndex] = animeBrowserMarkup();
+    else rowMarkup.unshift(animeBrowserMarkup());
+  }
+  rows.innerHTML = feed.rows.length || feed.category === "anime"
+    ? rowMarkup.join("")
+    : emptyMarkup({
+      icon: "film",
+      title: `No ${categoryNoun(feed.category)} to show`,
+      text: "The catalog came back empty. Try again in a moment.",
+      action: buttonMarkup({ label: "Try again", icon: "refresh", attrs: { "data-ui-action": "retry" } }),
+    });
+  bindShelves(rows);
+  refreshImages(hero);
+  refreshImages(rows);
+  restoreHomePlace(place, hero, feed);
+  homeRenderedCategory = feed.category;
+  if (feed.category === "anime") {
+    renderAnimeBrowserResults();
+    if (!animeBrowser.loaded && !animeBrowser.loading) void loadAnimeBrowser();
+  }
+}
+
+async function loadHomeCatalog({ force = false, rotate = false } = {}) {
+  if (state.homeLoaded && rotate) {
+    state.homeCatalog.seed = (Number(state.homeCatalog.seed) || 0) + 1;
+    renderHome();
+    if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
+    toast("Fresh picks shuffled in");
+    return;
+  }
+  const fresh = state.homeLoaded && Date.now() - state.homeCatalogUpdatedAt < HOME_CATALOG_REFRESH_MS;
+  if (fresh && !force) {
+    renderHome();
+    if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
+    return;
+  }
+  if (homeCatalogLoadPromise) {
+    if (!state.homeLoaded) renderHome();
+    return homeCatalogLoadPromise;
+  }
+  if (!state.homeLoaded) {
+    homeCatalogError = "";
+    renderHome();
+  }
+  homeCatalogLoadPromise = (async () => {
+    try {
+      const data = await fetchJson("/api/catalog/home");
+      state.homeCatalog = {
+        movies: data.movies || [],
+        series: data.series || [],
+        anime: data.anime || [],
+        seed: Number(data.seed) || Math.floor(Date.now() / HOME_CATALOG_REFRESH_MS),
+        stale: Boolean(data.stale),
+        partial: Boolean(data.partial),
+        generatedAt: Number(data.generatedAt) || 0,
+      };
+      rebuildHomeTitleIndex();
+      homeCatalogError = "";
+      state.homeLoaded = true;
+      state.homeCatalogUpdatedAt = Date.now();
+      renderHome();
+      if ($("#view-watch")?.classList.contains("is-active")) renderWatchChapters();
+      if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+    } catch (error) {
+      if (state.homeLoaded) {
+        toast(error.message || "Could not refresh the Home catalog", { tone: "error" });
+      } else {
+        homeCatalogError = error.message || "Could not load the Home catalog.";
+        renderHome();
+        if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
+      }
+    }
+  })().finally(() => {
+    homeCatalogLoadPromise = null;
+  });
+  return homeCatalogLoadPromise;
+}
+
+function exportLibraryDatabase() {
+  if (!persistentAppStateReady) {
+    toast("Library backup is unavailable until saved data finishes loading. Try again after it reconnects.", { tone: "error" });
+    return;
+  }
+  const payload = {
+    schema: "blackline-library",
+    version: 5,
+    exportedAt: new Date().toISOString(),
+    library: state.library,
+    cards: state.cards,
+    known: [...state.known],
+    discardedAutoCardKeys: [...discardedAutoCardKeys].slice(-20_000),
+    learningExposure: state.learningExposure,
+    testResults: state.testResults,
+    preferences: { baseLanguage: state.baseLanguage, targetLanguage: state.targetLanguage },
+  };
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = `lvl-library-${new Date().toISOString().slice(0, 10)}.json`;
+  anchor.click();
+  URL.revokeObjectURL(url);
+}
+
+function mergeImportedLibrary(payload) {
+  const incoming = Array.isArray(payload) ? payload : payload?.library;
+  if (!Array.isArray(incoming)) throw new Error("This JSON file does not contain a valid Library array.");
+  if (incoming.length > 5000) throw new Error("Import is too large. Maximum is 5000 Library records.");
+  const byId = new Map(state.library.map((entry) => [String(entry.id), entry]));
+  let added = 0;
+  incoming.forEach((raw) => {
+    if (!raw || typeof raw !== "object") return;
+    const id = String(raw.id || "").slice(0, 400);
+    const title = String(raw.displayTitle || raw.title || "").slice(0, 500);
+    if (!id || !title) return;
+    const safe = {
+      ...raw,
+      id,
+      title: String(raw.title || title).slice(0, 500),
+      displayTitle: title,
+      magnet: typeof raw.magnet === "string" && raw.magnet.startsWith("magnet:?") ? raw.magnet.slice(0, 12000) : "",
+      coverUrl: typeof raw.coverUrl === "string" ? raw.coverUrl.slice(0, 4_000_000) : "",
+      episodes: Array.isArray(raw.episodes) ? raw.episodes.slice(0, 256) : [],
+      aliases: Array.isArray(raw.aliases) ? raw.aliases.map(String).slice(0, 20) : [],
+      addedAt: Number(raw.addedAt) || Date.now(),
+      updatedAt: Number(raw.updatedAt) || Date.now(),
+    };
+    const current = byId.get(id);
+    // Import is additive: an older backup must never silently roll back
+    // watched overrides, captions, local clips, mappings or newer progress.
+    byId.set(id, current ? { ...safe, ...current } : safe);
+    if (!current) added += 1;
+  });
+  state.library = [...byId.values()];
+  if (Array.isArray(payload?.cards)) {
+    const cards = new Map(payload.cards.slice(0, 20_000).filter((card) => card && card.id).map((card) => [String(card.id), card]));
+    for (const card of state.cards) if (card && card.id) cards.set(String(card.id), card);
+    state.cards = [...cards.values()].slice(-20_000);
+  }
+  if (Array.isArray(payload?.known)) state.known = new Set([...state.known, ...payload.known.map(String)].slice(-100_000));
+  const importedDiscarded = Array.isArray(payload?.discardedAutoCardKeys)
+    ? payload.discardedAutoCardKeys
+    : Array.isArray(payload?.preferences?.discardedAutoCardKeys)
+      ? payload.preferences.discardedAutoCardKeys
+      : [];
+  if (importedDiscarded.length) {
+    discardedAutoCardKeys = new Set([
+      ...discardedAutoCardKeys,
+      ...importedDiscarded.map(String).filter(Boolean),
+    ].slice(-20_000));
+    persistDiscardedAutoCardKeys({ immediate: true });
+  }
+  if (payload?.learningExposure && typeof payload.learningExposure === "object" && !Array.isArray(payload.learningExposure)) {
+    const importedExposure = Object.fromEntries(Object.entries(payload.learningExposure).slice(0, 10000).map(([key, value]) => [String(key).slice(0, 500), {
+      encounters: Math.max(0, Number(value?.encounters) || 0),
+      media: Math.max(0, Number(value?.media) || 0),
+      lastMedia: String(value?.lastMedia || "").slice(0, 1000),
+      lastSeenAt: Math.max(0, Number(value?.lastSeenAt) || 0),
+    }]));
+    state.learningExposure = { ...importedExposure, ...state.learningExposure };
+    saveLearningExposure({ immediate: true });
+  }
+  if (Array.isArray(payload?.testResults)) {
+    const importedResults = payload.testResults.slice(-500).map((result) => ({
+      id: String(result?.id || crypto.randomUUID()).slice(0, 200),
+      mode: result?.mode === "listening" ? "listening" : "recall",
+      targetLanguage: String(result?.targetLanguage || state.targetLanguage).slice(0, 12),
+      score: Math.max(0, Math.min(100, Math.round(Number(result?.score) || 0))),
+      correct: Math.max(0, Math.round(Number(result?.correct) || 0)),
+      total: Math.max(1, Math.round(Number(result?.total) || 1)),
+      startedAt: Math.max(0, Number(result?.startedAt) || 0),
+      completedAt: Math.max(0, Number(result?.completedAt) || 0),
+    }));
+    const results = new Map(importedResults.map((result) => [result.id, result]));
+    for (const result of state.testResults) if (result?.id) results.set(result.id, result);
+    state.testResults = [...results.values()].slice(-500);
+    saveTestResults();
+  }
+  migrateLearningState();
+  backfillPersistedChapterAutoCards();
+  saveLibrary();
+  saveState();
+  if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+  else updateLibrarySummary();
+  renderStats();
+  if ($("#view-study")?.classList.contains("is-active")) renderStudy();
+  if ($("#view-review")?.classList.contains("is-active")) renderReview();
+  if ($("#view-test")?.classList.contains("is-active")) renderTest();
+  if (state.homeLoaded && $("#view-home")?.classList.contains("is-active")) renderHome();
+  return added;
+}
+
+// Your AniList list in the Library: a title per show (its seasons inside) and per movie, on its
+// catalog page when one was found. Titles you added yourself only get your AniList status.
+const ANILIST_LIBRARY_KEY = "blackline-anilist-library-synced";
+let anilistLibraryRun = null;
+let communityScoreBackfillStarted = false;
+function backfillAniListCommunityScores() {
+  if (communityScoreBackfillStarted || !persistentAppStateReady
+    || !state.library.some((entry) => entry.anilist?.showId && !(Number(entry.anilist.averageScore) > 0))) return;
+  communityScoreBackfillStarted = true;
+  // Existing server-side AniList metadata already has public scores. Refresh
+  // missing values once per app session, without another AniList request or
+  // re-importing titles, statuses, ratings or playing sources.
+  void fetchJson("/api/recs/anilist/library").then((data) => {
+    if (!Array.isArray(data?.shows)) return;
+    if (!fillMissingAniListAverages(state.library, data.shows)) return;
+    saveLibrary();
+    if (viewActive("library")) renderLibrary();
+  }).catch(() => {});
+}
+const ANILIST_SCORE_SYNC_KEY = "lvl-anilist-score-sync-v1";
+const anilistScoreRuns = new Map();
+function anilistScoreSyncEnabled() {
+  const account = readAniListAccount(localStorage);
+  if (!account) return false;
+  try {
+    const prefs = JSON.parse(localStorage.getItem(ANILIST_SCORE_SYNC_KEY) || "{}");
+    return prefs?.userId === account.userId && prefs.enabled === true;
+  } catch { return false; }
+}
+
+// A title editor can outlive an account change, Library import, or manual
+// season re-link. Re-read the currently saved title by exact Library identity;
+// never use the legacy display-only association as write authorization.
+function authenticatedTitleAniList(subject, account) {
+  if (!Number.isSafeInteger(account?.userId) || account.userId <= 0) return null;
+  const key = subject?.seriesKey || subject?.key;
+  const catalogId = subject?.catalogId || subject?.id || "";
+  if (!key) return null;
+  const series = buildLibrarySeries().find((item) => item.key === key && (!catalogId || item.catalogId === catalogId));
+  return series ? seriesAniList(series, account.userId) : null;
+}
+
+async function saveUserAniListScore(subject, season, score) {
+  if (!anilistScoreSyncEnabled() || !["anime", "anime-movie"].includes(subject?.kind)) return "";
+  if (anilistAutoDevTestRun) throw new Error("The AniList diagnostics test is running. Your score was saved locally; retry after it finishes.");
+  const account = readAniListAccount(localStorage);
+  const linked = authenticatedTitleAniList(subject, account);
+  const part = resolveAniListScorePart(linked, season);
+  const rendered = resolveAniListScorePart(subject?.anilist, season);
+  if (!part || rendered?.anilistId !== part.anilistId)
+    throw new Error("LVL saved your rating locally, but could not safely identify this AniList anime/season for the current account and Library mapping. Nothing was changed on AniList.");
+  // Sometimes one AniList MediaList entry spans two LVL catalog seasons.
+  // Those two local scores cannot be written as distinct AniList scores:
+  // a second write would overwrite the first on the same remote entry.
+  if (linked?.seasons?.some((entry) => entry.season !== season && entry.anilistId === part.anilistId))
+    throw new Error("LVL saved the season rating locally. This AniList entry covers multiple LVL seasons, so separate season scores cannot be synced to it.");
+  // Persist the *explicit* unsent edit before any network request. A failed
+  // request or an external score conflict must not visually erase that edit.
+  // Neither this pending record nor any request to the local server has a token.
+  stageUnconfirmedAniListScore(localStorage, account.userId, part.anilistId, score);
+  const key = `${account.userId}:${part.anilistId}`;
+  // Avoid two rapid local edits racing each other on AniList's same list ID.
+  const previous = anilistScoreRuns.get(key) || Promise.resolve();
+  const current = previous.catch(() => {}).then(async () => {
+    const expectedRaw = Number.isFinite(part.score) && part.score > 0 ? Math.round(part.score * 10) : 0;
+    const result = await saveAniListScore({
+      account, mediaId: part.anilistId, score, expectedRaw, graphql: anilistGraphql,
+      stillConnected: () => {
+        // Revalidate throughout the asynchronous prewrite/mutation/readback,
+        // not just before staging: a manual relink or Library refresh while
+        // GraphQL is pending must never write the previous season/media ID.
+        const latest = readAniListAccount(localStorage);
+        return Boolean(anilistScoreSyncEnabled()) && latest?.token === account.token
+          && latest?.userId === account.userId
+          && resolveAniListScorePart(authenticatedTitleAniList(subject, latest), season)?.anilistId === part.anilistId
+          && !authenticatedTitleAniList(subject, latest)?.seasons?.some((entry) => entry.season !== season && entry.anilistId === part.anilistId);
+      },
+    });
+    if (readAniListAccount(localStorage)?.token !== account.token) return "AniList account changed.";
+    part.score = result.scoreRaw ? result.scoreRaw / 10 : null;
+    // Only acknowledge this exact edit. A newer queued edit on the same anime
+    // must remain visible until its own round trip succeeds.
+    acknowledgeUnconfirmedAniListScore(localStorage, account.userId, part.anilistId, score);
+    // Persist the confirmed score locally before an optional full import;
+    // if title metadata refresh is offline, the UI still shows the new value.
+    saveLibrary();
+    recsUi.invalidateRatings();
+    // Fixed raw 100-point units permit one decimal in a 0–10 UI.
+    await syncAniListLibrary({ quiet: true }).catch((error) => {
+      console.warn("AniList score saved; Library refresh deferred:", error?.message);
+    });
+    const message = result.unchanged ? "Already up to date on AniList" : `Saved to AniList (${(result.scoreRaw / 10).toFixed(1)}/10)`;
+    showAniListAutoStatus(message);
+    toast(message);
+    return message;
+  });
+  anilistScoreRuns.set(key, current);
+  void current.finally(() => { if (anilistScoreRuns.get(key) === current) anilistScoreRuns.delete(key); }).catch(() => {});
+  return current;
+}
+
+// Authenticated AniList is deliberately separate from the existing *public*
+// AniList profile reader. GraphQL calls are made by this browser directly to
+// AniList; LVL's localhost server never receives or stores OAuth credentials.
+function showAniListAutoStatus(message, error = false) {
+  anilistAutoStatusMessage = message || "";
+  const node = $("#anilist-auto-status");
+  if (node) {
+    node.textContent = message;
+    node.dataset.error = error ? "true" : "false";
+  }
+}
+
+function renderAniListAutoSettings() {
+  const options = readAniListPreference(localStorage);
+  const account = readAniListAccount(localStorage);
+  const storedAccount = readStorageObject(ANILIST_OAUTH_STORAGE);
+  const redirect = $("#anilist-auto-redirect-url");
+  if (redirect) redirect.textContent = window.location.origin + ANILIST_CALLBACK_PATH;
+  const enabled = $("#anilist-auto-enabled");
+  const scoreEnabled = $("#anilist-score-sync-enabled");
+  if (scoreEnabled && document.activeElement !== scoreEnabled) scoreEnabled.checked = anilistScoreSyncEnabled();
+  if (scoreEnabled) scoreEnabled.disabled = !account;
+  const threshold = $("#anilist-auto-threshold");
+  const client = $("#anilist-auto-client-id");
+  if (enabled && document.activeElement !== enabled) enabled.checked = options.enabled;
+  if (threshold && document.activeElement !== threshold) threshold.value = String(options.threshold);
+  if (client && document.activeElement !== client) client.value = options.clientId;
+  const stateNode = $("#anilist-auto-state");
+  if (stateNode) stateNode.textContent = account ? `Authorized: ${account.username}`
+    : storedAccount.token ? "Reconnect required" : "Not authorized";
+  const connect = $("#anilist-auto-connect");
+  const disconnect = $("#anilist-auto-disconnect");
+  const sync = $("#anilist-auto-sync");
+  // Always allow reauthorization. A revoked/expired token may have an old
+  // reconciliation request in flight; blocking Connect until it finishes
+  // can make the action appear inert, even though recovery requires login.
+  if (connect) connect.disabled = false;
+  if (connect) {
+    connect.textContent = account ? "Reconnect AniList" : "Authorize account sync";
+    connect.title = account ? `Already connected as ${account.username}. Reauthorize only if needed.` : "Connect an AniList account";
+  }
+  // An expired token is still sensitive local data. Keep Disconnect available
+  // to remove it, including while an in-flight sync is being cancelled.
+  if (disconnect) disconnect.disabled = !storedAccount.token;
+  if (sync) sync.disabled = !account || Boolean(anilistAutoRun) || anilistAutoDevTestRun;
+  const importConnected = $("#anilist-import-connected");
+  if (importConnected) importConnected.hidden = !account;
+  const diagnostics = $("#anilist-auto-dev-diagnostics");
+  if (diagnostics) diagnostics.hidden = window.location.port !== "4187" || !account;
+  if (account && !anilistAutoStatusMessage) {
+    const last = Math.max(options.lastPull, options.lastPush);
+    showAniListAutoStatus(options.enabled
+      ? `Automatic progress syncing is on.${last ? ` Last synced ${new Date(last).toLocaleString()}.` : " Waiting for the first sync."}`
+      : "Connected. Automatic writes are paused; use Sync now to update.");
+  } else if (!account && !anilistAutoStatusMessage) {
+    showAniListAutoStatus(storedAccount.token
+      ? "Your previous AniList authorization has expired. Reconnect, or use Disconnect to erase the stored token."
+      : "Connect your account to enable authorized syncing. Nothing is sent before you approve.");
+  }
+}
+
+function anilistStoredQueue() {
+  return readStorageArray(ANILIST_SYNC_QUEUE).slice(-5000);
+}
+function persistAniListQueue(queue) {
+  localStorage.setItem(ANILIST_SYNC_QUEUE, JSON.stringify((queue || []).slice(-5000)));
+}
+
+const anilistAutoLinkAttempts = new Map();
+
+/** Try exact metadata links for watched anime before building the write queue.
+ * This never writes to AniList; the normal authenticated preflight still runs
+ * before ANY watched-progress update. Unverifiable titles stay manual-only.
+ */
+async function autoLinkAniListWatchedSeries(account) {
+  const threshold = readAniListPreference(localStorage).threshold / 100;
+  const eligible = buildLibrarySeries().filter((series) => {
+    if (series.type !== "series" || series.mediaKind !== "anime"
+      || !/^tt\d{5,12}$/.test(series.catalogId || "")
+      || seriesAniList(series, account.userId)?.seasons?.length) return false;
+    if (series.sources.some((entry) => (entry.anilistManualLinks || []).some((link) => link.userId === account.userId)
+      || (entry.anilistAutoLinks || []).some((link) => link.userId === account.userId))) return false;
+    return series.sources.some((entry) => Object.values(entry.watchedChapters || {}).some(Boolean)
+      || (entry.episodes || []).some((episode) => episode.progress?.finished
+        || Number(episode.progress?.durationMs) > 0
+          && Number(episode.progress.positionMs) / Number(episode.progress.durationMs) >= threshold));
+  }).slice(0, 3);
+  let linked = 0;
+  for (const series of eligible) {
+    const attemptKey = `${account.userId}:${series.catalogId}`;
+    if (Date.now() - (anilistAutoLinkAttempts.get(attemptKey) || 0) < 30 * 60_000) continue;
+    anilistAutoLinkAttempts.set(attemptKey, Date.now());
+    try {
+      const response = await fetchJson(`/api/catalog/meta?type=series&id=${encodeURIComponent(series.catalogId)}`);
+      const meta = response?.meta;
+      if (meta?.id !== series.catalogId || !Array.isArray(meta.seasons)) continue;
+      const year = Number(String(meta.releaseInfo || "").match(/\d{4}/)?.[0]);
+      const seasons = meta.seasons.filter((season) => season.season > 0 && Number(season.count) > 0);
+      if (!Number.isInteger(year) || !seasons.length) continue;
+      const media = await fetchPublicAniListTitle(meta.name);
+      const match = matchPublicAniListSeasons({ media, title: meta.name, year, seasons });
+      const links = verifiedPublicAniListLinks(match, { userId: account.userId, year, catalogId: series.catalogId });
+      if (!links.length || readAniListAccount(localStorage)?.token !== account.token) continue;
+      const current = buildLibrarySeries().find((item) => item.key === series.key && item.catalogId === series.catalogId);
+      if (!current || seriesAniList(current, account.userId)?.seasons?.length
+        || current.sources.some((entry) => (entry.anilistManualLinks || []).some((link) => link.userId === account.userId)
+          || (entry.anilistAutoLinks || []).some((link) => link.userId === account.userId))) continue;
+      updateLibrarySeriesEntries(current.key, (entry) => {
+        if (entry !== current.sources[0]) return;
+        entry.anilistAutoLinks = links.map((link) => ({ ...link, verifiedAt: Date.now() }));
+      });
+      linked++;
+    } catch (error) {
+      // Public metadata or network failures cannot authorize guessed links.
+      console.warn("Automatic AniList identification deferred:", error?.message);
+    }
+  }
+  return linked;
+}
+
+const newlyAddedAniListMatches = new Set();
+
+/** Resolve a just-saved anime's AniList identity immediately, not after watching.
+ * Identity requires the complete strict season/cour chain; failures remain
+ * manually selectable and never create an AniList list entry or remote write.
+ */
+async function autoLinkNewlyAddedAnime({ catalogId, seriesKey, entryId, account }) {
+  if (!account?.token || !Number.isSafeInteger(account.userId) || account.userId < 1
+    || !/^tt\d{5,12}$/.test(String(catalogId || ""))) return false;
+  const identity = `${account.userId}:${catalogId}`;
+  if (newlyAddedAniListMatches.has(identity)) return false;
+  newlyAddedAniListMatches.add(identity);
+  try {
+    const sameAccount = () => {
+      const now = readAniListAccount(localStorage);
+      return now?.userId === account.userId && now?.token === account.token;
+    };
+    const currentSeries = () => buildLibrarySeries().find((item) => item.key === seriesKey
+      && item.catalogId === catalogId && item.sources.some((entry) => entry.id === entryId));
+    const needsLink = (series) => series && !seriesAniList(series, account.userId)?.seasons?.length
+      && !series.sources.some((entry) => (entry.anilistManualLinks || []).some((link) => link.userId === account.userId)
+        || (entry.anilistAutoLinks || []).some((link) => link.userId === account.userId));
+    if (!sameAccount() || !needsLink(currentSeries())) return false;
+    const response = await fetchJson(`/api/catalog/meta?type=series&id=${encodeURIComponent(catalogId)}`);
+    const meta = response?.meta;
+    if (!sameAccount() || meta?.id !== catalogId || !Array.isArray(meta.seasons)
+      || !eligibleForPublicAnimeRating({ mediaKind: currentSeries()?.mediaKind, genres: meta.genres,
+        country: meta.country })) return false;
+    const links = await resolveVerifiedAniListLibraryLinks({ catalogId, meta, userId: account.userId,
+      fetchTitle: fetchPublicAniListTitle, fetchSequels: fetchPublicAniListSequels });
+    if (!links.length || !sameAccount()) return false;
+    const current = currentSeries();
+    if (!needsLink(current)) return false;
+    // Retain all other account associations, any explicit links, and video data.
+    updateLibrarySeriesEntries(current.key, (entry) => {
+      if (entry.id !== entryId) return;
+      entry.anilistAutoLinks = [...(entry.anilistAutoLinks || []).filter((link) => link.userId !== account.userId),
+        ...links.map((link) => ({ ...link, verifiedAt: Date.now() }))];
+    });
+    if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+    return true;
+  } finally {
+    newlyAddedAniListMatches.delete(identity);
+  }
+}
+
+function gatherAniListWatchedQueue() {
+  const threshold = readAniListPreference(localStorage).threshold / 100;
+  const stored = anilistStoredQueue();
+  const found = [];
+  const blocked = [];
+  const mappedSeries = new Set();
+  let unmapped = 0;
+  const accountId = readAniListAccount(localStorage)?.userId;
+  for (const series of buildLibrarySeries()) {
+    if (series.type !== "series") continue;
+    const info = seriesAniList(series, accountId);
+    if (!info?.seasons?.length) {
+      // Unlisted anime like JoJo may already have completed local episodes,
+      // but without a confirmed AniList media ID they must not be guessed or
+      // silently counted as zero queued. Surface the mapping gap in status.
+      if (series.mediaKind === "anime") {
+        const codes = new Set(series.sources.flatMap((entry) => [
+          ...Object.keys(entry.watchedChapters || {}).filter((code) => entry.watchedChapters[code]),
+          ...(entry.episodes || []).filter((episode) => episode.progress?.finished === true
+            || Number(episode.progress?.durationMs) > 0 && Number(episode.progress.positionMs) / Number(episode.progress.durationMs) >= threshold)
+            .map((episode) => episode.code || chapterCode(episode.season, episode.episode)),
+        ]));
+        unmapped += codes.size;
+      }
+      continue;
+    }
+    mappedSeries.add(series.key);
+    const watchedChapters = Object.assign({}, ...series.sources.map((item) => item.watchedChapters || {}));
+    const unwatched = new Set(Object.entries(watchedChapters)
+      .filter(([, value]) => value === false).map(([code]) => code));
+    for (const entry of series.sources) {
+      for (const [code, value] of Object.entries(entry.watchedChapters || {}))
+        if (value === false) unwatched.add(code);
+    }
+    for (const code of unwatched) watchedChapters[code] = false;
+    const episodes = series.sources.flatMap((entry) => (entry.episodes || []).map((episode) => {
+      const finished = !unwatched.has(String(episode.code || "").toUpperCase()) && (
+        episode.progress?.finished === true || (Number(episode.progress?.durationMs) > 0
+          && Number(episode.progress?.positionMs) / Number(episode.progress.durationMs) >= threshold));
+      // The pure planner also looks at progress.finished, so mask BOTH fields
+      // without changing any saved playback positions or completion records.
+      return { ...episode, progress: { ...episode.progress, finished }, finished };
+    }));
+    const plan = planAniListWatchSync({
+      seasons: info.seasons, type: series.type, seriesKey: series.key,
+      ranges: info.ranges || [],
+      episodes, watchedChapters, queue: stored.filter((row) => row.seriesKey === series.key && !unwatched.has(row.code)),
+    });
+    const rejects = new Set(plan.blockedQueue);
+    found.push(...plan.queue.filter((row) => !rejects.has(row)));
+    blocked.push(...plan.blockedQueue);
+    unmapped += plan.unmapped.length;
+  }
+  // Keep orphaned/ambiguous queued rows locally for review, but never send
+  // them under a different title or an AniList ID that has since changed.
+  blocked.push(...stored.filter((row) => !mappedSeries.has(row.seriesKey)));
+  const planned = reconcileAniListProgressQueue({ completed: found });
+  persistAniListQueue([...planned.queue, ...blocked]);
+  return { queue: planned.queue, blocked, unmapped: unmapped + blocked.length };
+}
+
+function blockedAniListForwardMedia(accountId) {
+  // AniList stores a contiguous prefix. A local negative marker for episode
+  // 2 must block an auto-upload of episodes 6/7 on that same remote season:
+  // otherwise the monotonic planner would undo the user's explicit removal.
+  const blocked = new Set();
+  for (const series of buildLibrarySeries()) {
+    if (series.type !== "series") continue;
+    const codes = new Set(series.sources.flatMap((entry) => Object.entries(entry.watchedChapters || {})
+      .filter(([, value]) => value === false).map(([code]) => code)));
+    if (!codes.size) continue;
+    const info = seriesAniList(series, accountId);
+    if (!info?.seasons?.length) continue;
+    for (const code of codes) {
+      const mapped = resolveAniListEpisode({ seasons: info.seasons, ranges: info.ranges || [],
+        episodeCode: code, type: series.type });
+      if (mapped) blocked.add(mapped.mediaId);
+      else for (const part of info.seasons) if (Number.isSafeInteger(Number(part.anilistId)))
+        blocked.add(Number(part.anilistId)); // Unknown episode identity: block conservatively.
+    }
+  }
+  return blocked;
+}
+
+function verifiedAniListCreationKeys(userId) {
+  const allowed = new Set();
+  if (!Number.isSafeInteger(userId) || userId < 1) return allowed;
+  for (const series of buildLibrarySeries()) {
+    if (series.type !== "series") continue;
+    for (const entry of series.sources) {
+      for (const link of entry.anilistManualLinks || []) {
+        if (link.userId === userId && canLinkAniListTv({ id: link.anilistId,
+          format: link.format, episodes: link.episodes })) allowed.add(`${series.key}\0${link.anilistId}`);
+      }
+      for (const link of entry.anilistAutoLinks || []) {
+        if (link.userId === userId && link.catalogId === series.catalogId
+          && Number.isSafeInteger(link.anilistId) && link.anilistId > 0
+          && Number.isSafeInteger(link.episodes) && link.episodes > 0
+          && Number.isSafeInteger(link.start) && link.start > 0
+          && link.end === link.start + link.episodes - 1)
+          allowed.add(`${series.key}\0${link.anilistId}`);
+      }
+    }
+  }
+  return allowed;
+}
+
+function applyAniListRemoteWatchHistory(remote, accountId = readAniListAccount(localStorage)?.userId) {
+  let changed = false;
+  // AniList stores a count (rather than individual episode IDs). Mark the
+  // corresponding preceding episodes locally only for unambiguous season
+  // mappings. Never overwrite a saved playback position or source file.
+  for (const series of buildLibrarySeries()) {
+    // The authenticated list may not yet include an anime explicitly linked
+    // from LVL. Use only mappings owned by this authenticated account.
+    const info = seriesAniList(series, accountId);
+    if (!info?.seasons?.length || series.type !== "series") continue;
+    const anchor = series.sources.find((entry) => state.library.includes(entry));
+    if (!anchor) continue;
+    const watched = { ...(anchor.watchedChapters || {}) };
+    const uniqueSeasons = new Map();
+    for (const item of info.seasons) uniqueSeasons.set(item.season, (uniqueSeasons.get(item.season) || 0) + 1);
+    for (const part of info.seasons) {
+      if (!Number.isInteger(part.season) || part.season <= 0) continue;
+      const multiple = uniqueSeasons.get(part.season) !== 1;
+      const offset = multiple ? (info.ranges || []).find((range) => range.season === part.season
+        && range.anilistId === part.anilistId && range.end - range.start + 1 === part.episodes) : null;
+      if (multiple && !offset) continue;
+      const remoteEntry = remote.get(Number(part.anilistId));
+      if (!remoteEntry || remoteEntry.progressKnown === false || !Number.isInteger(remoteEntry.progress)) continue;
+      const progress = Math.min(part.episodes, 500, Math.max(0, remoteEntry.progress));
+      for (let episode = 1; episode <= progress; episode++) {
+        const number = episode + (offset?.start || 1) - 1;
+        const code = `S${String(part.season).padStart(2, "0")}E${String(number).padStart(2, "0")}`;
+        const mapped = resolveAniListEpisode({ seasons: info.seasons, ranges: info.ranges || [], episodeCode: code, type: series.type });
+        if (!mapped || mapped.mediaId !== Number(part.anilistId) || Object.hasOwn(watched, code)
+          || explicitlyUnwatchedChapter(series, code)) continue;
+        watched[code] = Date.now();
+        changed = true;
+      }
+    }
+    if (Object.keys(watched).length) anchor.watchedChapters = watched;
+    // Imported list status should stay in sync even if changed outside LVL.
+    for (const entry of series.sources) {
+      if (!entry.anilist?.seasons || entry.anilist.accountUserId !== accountId) continue;
+      for (const part of entry.anilist.seasons) {
+        const latest = remote.get(Number(part.anilistId));
+        if (!latest || latest.progressKnown === false || !Number.isInteger(latest.progress)) continue;
+        if (part.progress !== latest.progress || (latest.status && part.status !== latest.status)) changed = true;
+        part.progress = latest.progress;
+        if (latest.status) part.status = latest.status;
+      }
+    }
+  }
+  if (changed) {
+    saveLibrary();
+    if ($("#view-watch")?.classList.contains("is-active")) renderWatchChapters();
+    if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+  }
+  return changed;
+}
+
+async function syncAniListAuto({ manual = false } = {}) {
+  if (anilistAutoDevTestRun) return;
+  if (anilistAutoRun) return anilistAutoRun;
+  // Explicit user-approved decreases take priority over an automatic
+  // monotonic push. The reverse path already waits for any earlier auto run.
+  if (explicitAniListUnwatchRun) await explicitAniListUnwatchRun;
+  if (anilistAutoRun) return anilistAutoRun;
+  if (!persistentAppStateReady) return;
+  const account = readAniListAccount(localStorage);
+  const options = readAniListPreference(localStorage);
+  if (!account || (!manual && !options.enabled)) return;
+  if (!manual && Date.now() < anilistAutoRetryAfter) return;
+  anilistAutoRun = (async () => {
+    // Unlisted shows can obtain exact, account-scoped season identities via
+    // public metadata before the normal authenticated list reconciliation.
+    await autoLinkAniListWatchedSeries(account);
+    if (readAniListAccount(localStorage)?.token !== account.token) return;
+    if (!manual && !readAniListPreference(localStorage).enabled) return;
+    // Ordinary Library saves happen periodically while watching. Re-read
+    // AniList after new completed episodes or for hourly reconciliation.
+    const before = gatherAniListWatchedQueue();
+    const snapshot = JSON.stringify(before.queue);
+    if (!manual && anilistAutoLastQueueSnapshot === snapshot
+      && Date.now() - options.lastPull < 60 * 60_000) return;
+    showAniListAutoStatus("Checking AniList and reconciling watched episodes…");
+    renderAniListAutoSettings();
+    const data = await anilistGraphql(account.token, ANILIST_LIST_QUERY, { id: account.userId });
+    if (readAniListAccount(localStorage)?.token !== account.token) return; // disconnected or reauthorized
+    if (!manual && !readAniListPreference(localStorage).enabled) return;
+    if (Number(data?.Viewer?.id) !== account.userId
+      || (data.MediaListCollection !== null && !Array.isArray(data?.MediaListCollection?.lists)))
+      throw new Error("AniList did not return a complete watch list; no changes were sent.");
+    const remote = remoteAniListEntries(data);
+    const initiallyListedMedia = new Set(remote.keys());
+    applyAniListRemoteWatchHistory(remote, account.userId);
+    const watched = gatherAniListWatchedQueue();
+    // A missing entry is an explicitly verified empty AniList list entry, not
+    // an offline failure. Never fabricate a zero progress before fetching.
+    const allowedNewEntries = verifiedAniListCreationKeys(account.userId);
+    for (const item of watched.queue) {
+      // A public/old-account AniList import is fine for DISPLAY, but it does
+      // not authorize creating a brand-new remote list entry for this Viewer.
+      // Missing remote IDs require explicit/manual or complete verified public
+      // association owned by the current account (as JoJo now has).
+      if (!remote.has(item.mediaId) && !allowedNewEntries.has(`${item.seriesKey}\0${item.mediaId}`)) continue;
+      if (!remote.has(item.mediaId)) remote.set(item.mediaId, {
+        mediaId: item.mediaId, progress: 0, status: "PLANNING", episodes: null,
+      });
+    }
+    let planned = reconcileAniListProgressQueue({
+      queue: watched.queue,
+      remote: [...remote.values()].map((entry) => ({ ...entry, anilistId: entry.mediaId })),
+      allowStatusUpdates: true,
+    });
+    persistAniListQueue([...planned.queue, ...watched.blocked]);
+    writeAniListPreference(localStorage, { lastPull: Date.now() });
+    let sent = 0;
+    const outgoing = planned.updates.slice(0, 15);
+    for (const [index, update] of outgoing.entries()) {
+      if (readAniListAccount(localStorage)?.token !== account.token) break;
+      if (!manual && !readAniListPreference(localStorage).enabled) break;
+      if (blockedAniListForwardMedia(account.userId).has(update.mediaId)) continue;
+      // Read this exact user/media again immediately before each write. Other
+      // AniList clients may have advanced progress since the initial list pull.
+      // AniList has no conditional/max-progress mutation, so this narrows (but
+      // cannot eliminate) the external read-to-write race.
+      const freshData = await anilistGraphql(account.token, ANILIST_SINGLE_PROGRESS_QUERY,
+        { id: account.userId, mediaId: update.mediaId });
+      if (readAniListAccount(localStorage)?.token !== account.token) return;
+      if (!manual && !readAniListPreference(localStorage).enabled) return;
+      if (!Object.hasOwn(freshData, "MediaList")) throw new Error("AniList returned an incomplete episode status; no update was sent.");
+      if (freshData.MediaList === null) {
+        // If an existing entry vanished since the initial pull, treat the
+        // removal as intentional, rather than recreating it behind the user.
+        if (initiallyListedMedia.has(update.mediaId)) continue;
+        remote.set(update.mediaId, { mediaId: update.mediaId, progress: 0,
+          status: "PLANNING", episodes: null, existing: false });
+      } else {
+        const latest = remoteAniListEntries({ MediaListCollection: { lists: [{ entries: [freshData.MediaList] }] } }).get(update.mediaId);
+        if (!latest || latest.progressKnown === false) throw new Error("AniList returned unknown episode progress; no update was sent.");
+        remote.set(update.mediaId, { ...latest, existing: true });
+      }
+      // The user may have marked an episode unwatched while the remote
+      // preflight was in flight. Never resurrect an old queued completion or
+      // send an update from an obsolete local watched snapshot.
+      const currentWatched = gatherAniListWatchedQueue();
+      planned = reconcileAniListProgressQueue({ queue: currentWatched.queue,
+        remote: [...remote.values()].map((entry) => ({ ...entry, anilistId: entry.mediaId })),
+        allowStatusUpdates: true });
+      const freshUpdate = planned.updates.find((item) => item.mediaId === update.mediaId);
+      if (!freshUpdate) {
+        persistAniListQueue([...planned.queue, ...currentWatched.blocked]);
+        continue;
+      }
+      if (readAniListAccount(localStorage)?.token !== account.token) return;
+      if (!manual && !readAniListPreference(localStorage).enabled) return;
+      if (blockedAniListForwardMedia(account.userId).has(freshUpdate.mediaId)) continue;
+      const actual = await anilistGraphql(account.token, ANILIST_SAVE_PROGRESS, freshUpdate);
+      // A disconnect or reauthorization may have happened while AniList was
+      // processing this request. Never restore a previous session's queue.
+      if (readAniListAccount(localStorage)?.token !== account.token) return;
+      const confirmed = actual?.SaveMediaListEntry;
+      if (Number(confirmed?.mediaId) !== freshUpdate.mediaId || Number(confirmed?.progress) < freshUpdate.progress)
+        throw new Error("AniList did not confirm the episode progress update.");
+      remote.set(update.mediaId, { ...remote.get(update.mediaId),
+        progress: Number(confirmed.progress), status: confirmed.status || remote.get(update.mediaId)?.status });
+      planned = reconcileAniListProgressQueue({ queue: planned.queue,
+        remote: [...remote.values()].map((entry) => ({ ...entry, anilistId: entry.mediaId })) });
+      persistAniListQueue([...planned.queue, ...currentWatched.blocked]);
+      writeAniListPreference(localStorage, { lastPush: Date.now() });
+      sent++;
+      // Each update now performs a fresh read plus a mutation (two requests).
+      // Keep under AniList's degraded 30-request/minute limit.
+      if (index < outgoing.length - 1) await new Promise((resolve) => setTimeout(resolve, 4500));
+    }
+    if (readAniListAccount(localStorage)?.token !== account.token) return;
+    if (Date.now() - (Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) || 0) >= 60 * 60_000) {
+      try { await syncAniListLibrary({ quiet: true }); }
+      catch (error) {
+        anilistAutoImportWarning = "Authenticated Library refresh will retry later.";
+        console.warn("AniList Library refresh deferred:", error?.message);
+      }
+    }
+    const pending = planned.queue.length + watched.blocked.length;
+    // Compare against the *local* completion set, not only outstanding remote
+    // writes: previously confirmed episodes remain watched in the Library.
+    anilistAutoLastQueueSnapshot = snapshot;
+    anilistAutoRetryAfter = 0;
+    showAniListAutoStatus(`Synced ${account.username}: ${sent} update${sent === 1 ? "" : "s"} sent; ${pending} episode${pending === 1 ? "" : "s"} queued.${watched.unmapped ? ` ${watched.unmapped} episode(s) skipped: no safe AniList season match.` : ""}${anilistAutoImportWarning ? ` ${anilistAutoImportWarning}` : ""}`);
+    if (manual) toast(`AniList sync complete: ${sent} update${sent === 1 ? "" : "s"}`);
+    return { ok: true, sent, pending };
+  })().catch((error) => {
+    if (readAniListAccount(localStorage)?.token !== account.token) return;
+    anilistAutoRetryAfter = Date.now() + (Number(error?.retryAfter) || 2 * 60_000);
+    showAniListAutoStatus(error?.message || "AniList sync failed; local progress is preserved.", true);
+    if (manual) toast(error?.message || "AniList sync failed", { tone: "error" });
+    // Don't turn a failed progress preflight into a misleading success when
+    // the Settings Sync now button refreshes the optional score metadata.
+    return { ok: false };
+  }).finally(() => {
+    anilistAutoRun = null;
+    renderAniListAutoSettings();
+  });
+  return anilistAutoRun;
+}
+
+function scheduleAniListAutoSync(delay = 3500) {
+  if (anilistAutoDevTestRun || !persistentAppStateReady || !readAniListAccount(localStorage)
+    || !readAniListPreference(localStorage).enabled) return;
+  clearTimeout(anilistAutoTimer);
+  anilistAutoTimer = window.setTimeout(() => {
+    anilistAutoTimer = 0;
+    void Promise.resolve(syncAniListAuto()).then(() => flushAniListUnwatches({ interactive: false }));
+  }, delay);
+}
+
+async function connectVerifiedAniListAccount(auth, generation) {
+    const data = await anilistGraphql(auth.token, ANILIST_VIEWER_QUERY);
+    if (generation !== anilistAutoAuthGeneration) return;
+    const viewer = data?.Viewer;
+    if (!Number.isInteger(viewer?.id) || !viewer?.name) throw new Error("AniList could not verify the logged-in account.");
+    // Keep accounts isolated even when the old bearer token has expired. The
+    // queue can be rebuilt from the Library's completed episodes for this
+    // account; never carry a previous account's pending writes across login.
+    const priorStored = readStorageObject(ANILIST_OAUTH_STORAGE);
+    const oldUserId = Number(priorStored.userId) || null;
+    const switchedAccount = oldUserId !== null && oldUserId !== viewer.id;
+    // Preserve unsent watches on a same-account reauthorization; some may
+    // outlive their original local video source and exist only in the queue.
+    if (oldUserId !== viewer.id) localStorage.removeItem(ANILIST_SYNC_QUEUE);
+    invalidateAniListUnwatchApprovals();
+    localStorage.setItem(ANILIST_OAUTH_STORAGE, JSON.stringify({
+      ...auth, userId: viewer.id, username: viewer.name,
+    }));
+    writeAniListPreference(localStorage, {
+      enabled: !switchedAccount,
+      lastPull: 0, lastPush: 0,
+    });
+    anilistAutoLastQueueSnapshot = null;
+    anilistAutoImportWarning = "";
+    showAniListAutoStatus(switchedAccount
+      ? `Connected as ${viewer.name}. Different AniList account detected; automatic writes are paused until you review your Library and enable syncing.`
+      : `Connected as ${viewer.name}. Loading your AniList watch history…`);
+    renderAniListAutoSettings();
+    // Reuse the existing public list importer to attach AniList IDs to LVL
+    // titles. Authorization and progress writes never go through this API.
+    try {
+      localStorage.removeItem(ANILIST_LIBRARY_KEY);
+      const imported = await syncAniListLibrary({ quiet: true });
+      if (generation !== anilistAutoAuthGeneration) return;
+      showAniListAutoStatus(`Connected as ${viewer.name}. ${imported.total} AniList title${imported.total === 1 ? "" : "s"} ready in your Library.`);
+      void recsUi.load({ force: true }).catch(() => {});
+    } catch (error) {
+      console.warn("AniList public title import could not complete:", error?.message);
+      if (generation === anilistAutoAuthGeneration) {
+        anilistAutoImportWarning = "Library import failed; retry with Library → Import → Import connected AniList. Unmatched anime will not be written.";
+        showAniListAutoStatus(`Connected as ${viewer.name}. ${anilistAutoImportWarning}`, true);
+      }
+    }
+    if (generation === anilistAutoAuthGeneration && readAniListPreference(localStorage).enabled) scheduleAniListAutoSync(500);
+}
+
+async function completeAniListAuthorization() {
+  if (!anilistOAuthResponse) return;
+  const generation = ++anilistAutoAuthGeneration;
+  try {
+    // AniList's live implicit redirect omits state. Only the new local flow
+    // accepts that response, and ONLY after a same-tab pending authorization
+    // with a matching JWT audience/issuance time. Legacy callbacks still
+    // require strict state validation.
+    const pending = JSON.parse(sessionStorage.getItem(ANILIST_OAUTH_PENDING) || "null");
+    const args = { hash: anilistOAuthResponse.hash, sessionStorage, origin: window.location.origin };
+    const auth = pending?.mode === "local-implicit"
+      ? consumeAniListLocalCallback(args)
+      : consumeAniListCallback(args);
+    await connectVerifiedAniListAccount(auth, generation);
+  } catch (error) {
+    if (generation === anilistAutoAuthGeneration) showAniListAutoStatus(error?.message || "Could not finish AniList login.", true);
+  }
+}
+
+function wireAniListAutoSettings() {
+  $("#anilist-score-sync-enabled")?.addEventListener("change", (event) => {
+    const account = readAniListAccount(localStorage);
+    if (!account) { event.target.checked = false; return; }
+    localStorage.setItem(ANILIST_SCORE_SYNC_KEY, JSON.stringify({ userId: account.userId, enabled: event.target.checked }));
+    recsUi.invalidateRatings();
+    if (event.target.checked) {
+      showAniListAutoStatus("Two-way anime score syncing enabled. Loading AniList scores…");
+      void syncAniListLibrary({ quiet: true }).then(() => showAniListAutoStatus("AniList scores refreshed. Edit a uniquely matched anime rating on its title page to save to AniList.")).catch((error) => showAniListAutoStatus(error.message, true));
+    } else showAniListAutoStatus("Anime score syncing disabled. Local ratings and AniList scores are preserved.");
+  });
+  $("#anilist-auto-dev-test")?.addEventListener("click", async (event) => {
+    const account = readAniListAccount(localStorage);
+    const status = $("#anilist-auto-dev-test-status");
+    if (window.location.port !== "4187" || !account || anilistAutoDevTestRun || anilistAutoRun) {
+      if (status) status.textContent = "Connect AniList and wait for any ongoing sync to finish first.";
+      return;
+    }
+    anilistAutoDevTestRun = true;
+    clearTimeout(anilistAutoTimer);
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const result = await runAniListReversibleSmoke({
+        account,
+        stillConnected: () => readAniListAccount(localStorage)?.token === account.token,
+        onStep: (message) => { if (status) status.textContent = message; },
+      });
+      if (status) status.textContent = `Passed: ${result.name}, episodes 1 → 2 → 3, temporary entry deleted. No local watched data was modified.`;
+    } catch (error) {
+      if (status) status.textContent = `Test stopped: ${error.message}`;
+    } finally {
+      anilistAutoDevTestRun = false;
+      button.disabled = false;
+      scheduleAniListAutoSync(5000);
+    }
+  });
+  $("#anilist-auto-client-id")?.addEventListener("change", (event) => {
+    const clientId = String(event.target.value || "").trim();
+    writeAniListPreference(localStorage, { clientId });
+    renderAniListAutoSettings();
+  });
+  $("#anilist-auto-enabled")?.addEventListener("change", (event) => {
+    writeAniListPreference(localStorage, { enabled: Boolean(event.target.checked) });
+    showAniListAutoStatus(event.target.checked ? "Automatic AniList sync enabled." : "Automatic AniList sync paused.");
+    if (event.target.checked) scheduleAniListAutoSync(500);
+    renderAniListAutoSettings();
+  });
+  $("#anilist-auto-threshold")?.addEventListener("change", (event) => {
+    writeAniListPreference(localStorage, { threshold: Math.max(1, Math.min(100, Math.round(Number(event.target.value) || 80))) });
+    renderAniListAutoSettings();
+    scheduleAniListAutoSync(500);
+  });
+  // The primary Connect button is wired by an independent early module in
+  // index.html. Do not register a second handler/navigation here.
+  $("#anilist-auto-pin-form")?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (anilistAutoAuthPending) return;
+    const generation = ++anilistAutoAuthGeneration;
+    anilistAutoAuthPending = true;
+    const field = $("#anilist-auto-pin");
+    const pasted = field?.value || "";
+    if (field) field.value = ""; // clear the sensitive input immediately
+    const button = $("#anilist-auto-pin-submit");
+    if (button) button.disabled = true;
+    try {
+      const auth = parseAniListPinToken(pasted);
+      showAniListAutoStatus("Verifying your AniList token directly with AniList…");
+      await connectVerifiedAniListAccount(auth, generation);
+    } catch (error) {
+      if (generation === anilistAutoAuthGeneration) showAniListAutoStatus(error?.message || "Could not connect AniList.", true);
+    } finally {
+      anilistAutoAuthPending = false;
+      if (button) button.disabled = false;
+      renderAniListAutoSettings();
+    }
+  });
+    $("#anilist-auto-disconnect")?.addEventListener("click", () => {
+    ++anilistAutoAuthGeneration; // invalidate pending Viewer verification
+    localStorage.removeItem(ANILIST_OAUTH_STORAGE);
+    localStorage.removeItem(ANILIST_SCORE_SYNC_KEY);
+    localStorage.removeItem(ANILIST_SYNC_QUEUE);
+    invalidateAniListUnwatchApprovals();
+    clearTimeout(anilistAutoTimer);
+    anilistAutoLastQueueSnapshot = null;
+    writeAniListPreference(localStorage, { enabled: false });
+    showAniListAutoStatus("AniList disconnected. Existing local and imported watch history was preserved.");
+    renderAniListAutoSettings();
+  });
+  $("#anilist-auto-sync")?.addEventListener("click", () => {
+    void syncAniListAuto({ manual: true }).then((result) => result?.ok && anilistScoreSyncEnabled()
+      ? syncAniListLibrary({ quiet: true }).then(async () => {
+        const account = readAniListAccount(localStorage);
+        if (!account) return;
+        const scores = await syncMissingLocalAniListScores(account);
+        if (scores.sent) await syncAniListLibrary({ quiet: true });
+        showAniListAutoStatus(`Episode progress checked; AniList ratings refreshed.${scores.sent ? ` ${scores.sent} previously local-only score${scores.sent === 1 ? "" : "s"} copied to AniList.` : ""}${scores.skipped ? ` ${scores.skipped} score candidate${scores.skipped === 1 ? " was" : "s were"} left unchanged (unverified, already scored, or conflicting).` : ""}`);
+      })
+      : null).catch((error) => showAniListAutoStatus(error.message, true));
+  });
+  renderAniListAutoSettings();
+}
+
+async function syncAniListAuthenticatedRatings(account) {
+  if (!account?.token) throw new Error("Connect AniList before refreshing your authenticated list.");
+  const data = await anilistGraphql(account.token, ANILIST_AUTH_LIBRARY_QUERY, { id: account.userId });
+  if (readAniListAccount(localStorage)?.token !== account.token)
+    throw new Error("AniList account changed during Library import; retry with the connected account.");
+  if (Number(data?.Viewer?.id) !== account.userId
+      || (data.MediaListCollection !== null && !Array.isArray(data?.MediaListCollection?.lists))
+      || (data.MediaListCollection?.user && Number(data.MediaListCollection.user.id) !== account.userId))
+    throw new Error("AniList did not return a complete list for this account. Existing Library data was preserved.");
+  // This POST contains list metadata only. Never forward account.token or any
+  // Authorization header to LVL's local server.
+  const response = await postJson("/api/recs/anilist/authenticated", { ...data, scoreSyncEnabled: anilistScoreSyncEnabled() });
+  recsUi.invalidateRatings();
+  return response;
+}
+
+// A manual Sync now can fill *missing* AniList scores from explicitly saved app
+// ratings, but only after two-way score sync was enabled. Every mutation has an
+// exact account-owned list entry, unique season/media mapping, fresh scoreRaw=0
+// preflight, and read-back verification through saveAniListScore. Never create
+// entries, guess mappings, overwrite remote scores, or send credentials to Node.
+async function syncMissingLocalAniListScores(account) {
+  if (!account?.token || !anilistScoreSyncEnabled()) return { sent: 0, skipped: 0 };
+  let sent = 0;
+  let skipped = 0;
+  const candidates = [];
+  for (const series of buildLibrarySeries().filter((item) => item.mediaKind === "anime").slice(0, 250)) {
+    if (!anilistScoreSyncEnabled() || readAniListAccount(localStorage)?.token !== account.token) break;
+    const info = seriesAniList(series, account.userId);
+    if (!info?.seasons?.length) continue;
+    const params = new URLSearchParams({ catalogId: series.catalogId || "", seriesKey: series.key });
+    let ratings;
+    try { ({ ratings } = await fetchJson(`/api/ratings?${params}`)); }
+    catch (error) { console.warn("Local score reconciliation deferred:", error?.message); skipped++; continue; }
+    for (const rating of (ratings || []).filter((row) => row.source === "app" && Number.isFinite(row.score) && row.score >= 1 && row.score <= 10)) {
+      const season = Number.isInteger(rating.season) ? rating.season : null;
+      const part = resolveAniListScorePart(info, season);
+      candidates.push({ seriesKey: series.key, season, score: rating.score, part });
+    }
+  }
+  // Plan the *whole* batch first. First-wins writes could otherwise send a
+  // conflicting local score when different titles/seasons share one media ID.
+  const plan = planMissingAniListScores(candidates, { limit: 25 });
+  skipped += plan.skipped.length;
+  for (const update of plan.updates) {
+    if (!anilistScoreSyncEnabled() || readAniListAccount(localStorage)?.token !== account.token) break;
+    try {
+      await saveAniListScore({ account, mediaId: update.mediaId, score: update.score,
+        expectedRaw: update.expectedRaw, graphql: anilistGraphql,
+        stillConnected: () => {
+          const series = buildLibrarySeries().find((item) => item.key === update.seriesKey);
+          const part = series && resolveAniListScorePart(seriesAniList(series, account.userId), update.season);
+          return Boolean(anilistScoreSyncEnabled()
+            && readAniListAccount(localStorage)?.token === account.token
+            && part?.anilistId === update.mediaId);
+        },
+      });
+      sent++;
+    } catch (error) {
+      skipped++;
+      console.warn("Local AniList score preserved; remote score not overwritten:", error?.message);
+    }
+  }
+  return { sent, skipped };
+}
+
+function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = false } = {}) {
+  if (anilistLibraryRun) return anilistLibraryRun;
+  if (status) setToolStatus(status, "Adding your AniList list to the Library. The first time takes up to half a minute.");
+  else if (!quiet) toast("Adding your AniList list to the Library");
+  const account = readAniListAccount(localStorage);
+  anilistLibraryRun = Promise.resolve()
+    .then(() => account && !skipAuthPull ? syncAniListAuthenticatedRatings(account) : null)
+    .then(() => {
+      if (account && readAniListAccount(localStorage)?.token !== account.token)
+        throw new Error("AniList account changed during import; Library was not modified.");
+      return fetchJson("/api/recs/anilist/library");
+    })
+    .then((data) => {
+      if (account && readAniListAccount(localStorage)?.token !== account.token)
+        throw new Error("AniList account changed during import; Library was not modified.");
+      const result = applyAniListLibrary(Array.isArray(data.shows) ? data.shows : []);
+      recsUi.invalidateRatings();
+      localStorage.setItem(ANILIST_LIBRARY_KEY, String(Number(data.syncedAt) || Date.now()));
+      const text = result.added
+        ? `Added ${result.added} title${result.added === 1 ? "" : "s"} from AniList to your Library`
+        : `Your Library has ${result.total} AniList title${result.total === 1 ? "" : "s"}`;
+      if (status) setToolStatus(status, text);
+      if (!status && (result.added || !quiet)) toast(text);
+      return result;
+    })
+    .catch((error) => {
+      if (status) setToolStatus(status, error.message || "Couldn't add your AniList list", true);
+      else if (!quiet) toast(error.message || "Couldn't add your AniList list", { tone: "error" });
+      throw error;
+    })
+    .finally(() => { anilistLibraryRun = null; });
+  return anilistLibraryRun;
+}
+
+// Once per AniList sync: a linked list that the Library doesn't have yet is added on its own.
+// It waits for the saved Library (the picks can arrive before it), so it never works on an
+// empty or half-loaded Library.
+function maybeSyncAniListLibrary(overview) {
+  const syncedAt = Number(overview?.settings?.anilist?.syncedAt) || 0;
+  if (!syncedAt || anilistLibraryRun) return;
+  if (Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) >= syncedAt) return;
+  if (!persistentAppStateReady) {
+    window.setTimeout(() => maybeSyncAniListLibrary(overview), 1000);
+    return;
+  }
+  void syncAniListLibrary({ quiet: true }).catch(() => {});
+}
+
+function applyAniListLibrary(shows) {
+  const plan = planAniListLibrary({ series: buildLibrarySeries(), shows, keyOf: librarySeriesKey });
+  for (const { series, info } of plan.annotate) {
+    series.sources.forEach((entry) => {
+      entry.anilist = info;
+      if (!entry.anilistId) entry.anilistId = info.anilistId;
+    });
+  }
+  let added = 0;
+  for (const { show, info } of plan.add) {
+    const isNew = !libraryEntryById(importedEntryId(show));
+    const entry = addCatalogPlaceholder({
+      id: show.imdbId || "",
+      type: show.type === "movie" ? "movie" : "series",
+      name: show.title,
+      // The catalog poster when the show has a page there (sharper), else AniList's cover.
+      poster: show.cover || (show.imdbId ? `https://images.metahub.space/poster/medium/${show.imdbId}/img` : ""),
+      releaseInfo: show.year ? String(show.year) : "",
+    }, { aliases: [show.title, show.titleAlt].filter(Boolean), externalSource: "ANILIST", externalId: String(show.anilistId), render: false });
+    if (!entry) continue;
+    // Imported titles sort by when you last changed them on AniList, so your own stay on top.
+    const at = Number(show.updatedAt) || entry.addedAt;
+    Object.assign(entry, { anilistImported: true, anilistId: show.anilistId, anilist: info, updatedAt: at });
+    // Previous imports preferred a catalog proxy that can return broken art.
+    // Upgrade their automatic artwork to the AniList cover, preserving pins.
+    if (show.cover && !entry.artworkPinned && (isNew || entry.artworkSource === "ANILIST"
+      || entry.coverUrl?.startsWith("https://images.metahub.space/poster/medium/"))) {
+      entry.coverUrl = show.cover;
+      entry.artworkSource = "ANILIST";
+    }
+    if (isNew) {
+      entry.addedAt = at;
+      added += 1;
+    }
+  }
+  const gone = new Set(plan.remove);
+  if (gone.size) state.library = state.library.filter((entry) => !gone.has(entry.id));
+  plan.clear.forEach((id) => { const entry = libraryEntryById(id); if (entry) delete entry.anilist; });
+  saveLibrary();
+  if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+  else updateLibrarySummary();
+  if (viewActive("calendar")) calendarUi.refresh();
+  if (viewActive("title")) refreshTitlePage();
+  return { added, marked: plan.annotate.length, removed: gone.size, total: shows.length };
+}
+
+// Unlinking AniList: its titles leave the Library (unless they have videos now), and your own
+// titles lose their AniList status.
+function removeAniListLibrary() {
+  localStorage.removeItem(ANILIST_LIBRARY_KEY);
+  return applyAniListLibrary([]);
+}
+
+function catalogSeriesKey(meta) {
+  return librarySeriesKey(meta?.name || meta?.id || "untitled");
+}
+
+function catalogResultYear(meta) {
+  const match = String(meta?.releaseInfo || "").match(/\b(19|20)\d{2}\b/);
+  return match?.[0] || "";
+}
+
+function streamProviderBadges(stream) {
+  const providers = (stream.providers || [stream.provider]).filter(Boolean);
+  return providers.length ? `<span class="catalog-provider">${escapeHtml(providers.join(" and "))}</span>` : "";
+}
+
+// Buttons drawn by buttonMarkup keep their label in a <span> next to the icon.
+function buttonText(button) {
+  return (button?.querySelector(":scope > span") || button)?.textContent || "";
+}
+
+function setButtonText(button, text) {
+  const label = button?.querySelector(":scope > span") || button;
+  if (label) label.textContent = text;
+}
+
+// "EPISODES 01–12" → "Episodes 1–12", "SEASON PACK" → "Season pack".
+function catalogKindText(label) {
+  const text = String(label || "").toLowerCase().replace(/\b0+(\d)/g, "$1");
+  return text ? text[0].toUpperCase() + text.slice(1) : "";
+}
+
+function compareStreamsByPeers(a, b) {
+  return (Number(b?.peers) || 0) - (Number(a?.peers) || 0)
+    || (Number(b?.score) || 0) - (Number(a?.score) || 0);
+}
+
+function compareLibrarySourceRefsByPeers(a, b) {
+  const aMeta = normalizeLibrarySourceMeta(a?.entry?.sourceMeta);
+  const bMeta = normalizeLibrarySourceMeta(b?.entry?.sourceMeta);
+  return (Number(bMeta.peers) || 0) - (Number(aMeta.peers) || 0)
+    || (Number(bMeta.score) || 0) - (Number(aMeta.score) || 0);
+}
+
+function librarySourceMetaFromStream(stream) {
+  return normalizeLibrarySourceMeta({
+    provider: stream.provider,
+    providers: stream.providers || [stream.provider],
+    releaseName: String(stream.title || "").split("\n")[0],
+    quality: stream.quality,
+    codec: stream.codec,
+    peers: stream.peers,
+    sizeBytes: stream.sizeBytes,
+    audioLanguages: stream.audioLanguages || [],
+    filename: stream.filename || "",
+    score: stream.score,
+    sourceKind: stream.sourceKind || ((stream.episodes || []).length > 1 ? "multi-episode-pack" : "episode"),
+    coverage: Number(stream.coverage) || (Array.isArray(stream.episodes) ? stream.episodes.length : 1),
+    totalSeasonEpisodes: Number(stream.totalSeasonEpisodes) || 0,
+    coveredEpisodes: Array.isArray(stream.episodes) ? stream.episodes : [],
+  });
+}
+
+function renderCatalogResults(results) {
+  const container = $("#catalog-results");
+  if (!results.length) {
+    container.innerHTML = emptyMarkup({ compact: true, icon: "search", title: "No titles found", text: "Try another title, or its original name." });
+    return;
+  }
+  const savedSeries = buildLibrarySeries();
+  const ranked = rankCatalogSearchResults(results, $("#catalog-search-input")?.value || "");
+  container.innerHTML = ranked.map((meta) => {
+    const item = catalogCardItem(meta, { category: meta.type === "movie" ? "movie" : "tv" });
+    const match = savedSeries.find((series) => (meta.id && series.catalogId === meta.id)
+      || series.key === librarySeriesKey(meta.name));
+    const details = item.meta.filter(Boolean).map(escapeHtml).join(" - ");
+    const saved = match ? savedTitleBadge(match)?.label : "";
+    return `<button class="catalog-search-result" type="button" data-title-id="${escapeHtml(meta.id)}" aria-label="Open ${escapeHtml(item.title)} in Library">
+      <span class="catalog-search-result__art">${item.image ? `<img src="${escapeHtml(item.image)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(item.title)}">` : `<span aria-hidden="true">${escapeHtml(item.title.slice(0, 1))}</span>`}</span>
+      <span class="catalog-search-result__info"><strong>${escapeHtml(item.title)}</strong><span>${details}</span></span>
+      ${saved ? `<span class="catalog-search-result__saved">${escapeHtml(saved)}</span>` : ""}
+      <svg class="ui-icon catalog-search-result__arrow" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg>
+    </button>`;
+  }).join("");
+  refreshImages(container);
+}
+
+function openCatalogResult(id) {
+  const meta = state.catalogResults.find((item) => item.id === id);
+  if (!meta) return;
+  closeCatalogSearch();
+  // The title page is the Library's per-show section, even for a title not yet saved.
+  openHomeTitle(meta);
+}
+
+let catalogSearchTimer = null;
+let catalogSearchRequest = null;
+let catalogSearchVersion = 0;
+const catalogSearchCache = new Map();
+
+function rememberCatalogSearch(query, results) {
+  const key = query.toLocaleLowerCase();
+  catalogSearchCache.delete(key);
+  catalogSearchCache.set(key, { results, savedAt: Date.now() });
+  if (catalogSearchCache.size > 16) catalogSearchCache.delete(catalogSearchCache.keys().next().value);
+}
+
+function catalogLocalMatches(query) {
+  const needle = query.toLocaleLowerCase();
+  const found = new Map();
+  for (const meta of homeTitleIndex.values()) {
+    if (meta?.id && String(meta.name || "").toLocaleLowerCase().includes(needle)) found.set(meta.id, meta);
+  }
+  for (const series of buildLibrarySeries()) {
+    const id = series.catalogId;
+    if (!/^tt\d{5,12}$/.test(String(id || "")) || found.has(id) || !String(series.title || "").toLocaleLowerCase().includes(needle)) continue;
+    found.set(id, { id, name: series.title, type: series.type === "movie" ? "movie" : "series", poster: series.coverUrl || "" });
+  }
+  return [...found.values()].sort((a, b) =>
+    Number(!String(a.name || "").toLocaleLowerCase().startsWith(needle)) - Number(!String(b.name || "").toLocaleLowerCase().startsWith(needle)))
+    .slice(0, 12);
+}
+
+function cancelCatalogSearch() {
+  window.clearTimeout(catalogSearchTimer);
+  catalogSearchTimer = null;
+  catalogSearchRequest?.abort();
+  catalogSearchRequest = null;
+  catalogSearchVersion += 1;
+}
+
+function catalogSearchIsOpen() {
+  return !$("#catalog-search-shell").hidden;
+}
+
+function closeCatalogSearch({ restoreFocus = false } = {}) {
+  if (!catalogSearchIsOpen()) return;
+  const shell = $("#catalog-search-shell");
+  const host = shell.parentElement?.id;
+  shell.hidden = true;
+  $("#catalog-search-panel").hidden = true;
+  $("#catalog-search-input")?.setAttribute("aria-expanded", "false");
+  $("#home-search-title").hidden = false;
+  $("#section-search-title").hidden = false;
+  $("#home-search-title")?.setAttribute("aria-expanded", "false");
+  $("#section-search-title")?.setAttribute("aria-expanded", "false");
+  cancelCatalogSearch();
+  state.catalogResults = [];
+  if (restoreFocus) $(({ "topbar-catalog-search-host": "#home-search-title", "section-catalog-search-host": "#section-search-title" })[host] || "#section-search-title")?.focus();
+}
+
+function openCatalogSearch(source = "topbar") {
+  const shell = $("#catalog-search-shell");
+  const host = $(({ library: "#library-catalog-search-host", section: "#section-catalog-search-host" })[source] || "#topbar-catalog-search-host");
+  if (!host || !shell) return;
+  if (!shell.hidden && shell.parentElement === host) {
+    $("#catalog-search-input")?.focus();
+    return;
+  }
+  cancelCatalogSearch();
+  state.catalogResults = [];
+  host.appendChild(shell);
+  shell.hidden = false;
+  $("#catalog-search-panel").hidden = true;
+  $("#catalog-search-input")?.setAttribute("aria-expanded", "false");
+  $("#home-search-title").hidden = source === "topbar";
+  $("#section-search-title").hidden = source === "section";
+  $("#catalog-search-input").value = "";
+  $("#catalog-results").innerHTML = "";
+  setToolStatus("#catalog-status", "");
+  $("#home-search-title")?.setAttribute("aria-expanded", source === "topbar" ? "true" : "false");
+  $("#section-search-title")?.setAttribute("aria-expanded", source === "section" ? "true" : "false");
+  $("#catalog-search-input")?.focus();
+}
+
+async function performCatalogSearch(query) {
+  if (!catalogSearchIsOpen()) return;
+  cancelCatalogSearch();
+  const requestVersion = catalogSearchVersion;
+  const controller = new AbortController();
+  catalogSearchRequest = controller;
+  if (!state.catalogResults.length) setToolStatus("#catalog-status", "Searching…");
+  try {
+    const data = await fetchJson(`/api/catalog/search?q=${encodeURIComponent(query)}`, { signal: controller.signal });
+    if (requestVersion !== catalogSearchVersion || !catalogSearchIsOpen() || $("#catalog-search-input").value.trim() !== query) return;
+    state.catalogResults = Array.isArray(data.results) ? data.results : [];
+    rememberCatalogSearch(query, state.catalogResults);
+    setToolStatus("#catalog-status", state.catalogResults.length ? `${state.catalogResults.length} titles found` : `Nothing found for "${query}"`);
+    renderCatalogResults(state.catalogResults);
+  } catch (error) {
+    if (requestVersion !== catalogSearchVersion || controller.signal.aborted) return;
+    const message = error.message || "Title search failed";
+    setToolStatus("#catalog-status", message, true);
+    $("#catalog-results").innerHTML = emptyMarkup({ compact: true, icon: "alert", title: "Couldn't search titles", text: `${message}. Check your connection and try Search again.` });
+  } finally {
+    if (catalogSearchRequest === controller) catalogSearchRequest = null;
+  }
+}
+
+function searchCatalogTitles(event) {
+  event.preventDefault();
+  const first = $("#catalog-results .catalog-search-result");
+  if (first) openCatalogResult(first.dataset.titleId);
+  else {
+    const query = $("#catalog-search-input").value.trim();
+    if (query.length >= 2) void performCatalogSearch(query);
+  }
+}
+
+function queueCatalogSearch() {
+  cancelCatalogSearch();
+  const query = $("#catalog-search-input").value.trim();
+  state.catalogResults = [];
+  $("#catalog-results").innerHTML = "";
+  const panel = $("#catalog-search-panel");
+  panel.hidden = !query;
+  $("#catalog-search-input")?.setAttribute("aria-expanded", query ? "true" : "false");
+  setToolStatus("#catalog-status", "");
+  if (!query) return;
+  const cached = catalogSearchCache.get(query.toLocaleLowerCase());
+  if (cached && cached.savedAt > Date.now() - 5 * 60_000) {
+    state.catalogResults = cached.results;
+    renderCatalogResults(cached.results);
+    setToolStatus("#catalog-status", cached.results.length ? `${cached.results.length} titles found` : "No titles found");
+    return;
+  }
+  // Use titles already present in Home and Library immediately, then replace
+  // them with full catalog matches. No additional network calls are needed.
+  const local = catalogLocalMatches(query);
+  if (local.length) {
+    state.catalogResults = local;
+    renderCatalogResults(local);
+  } else setToolStatus("#catalog-status", query.length < 2 ? "Keep typing…" : "Searching…");
+  if (query.length < 2) return;
+  // Shorter than the old 350 ms delay, while avoiding a request for every keystroke.
+  catalogSearchTimer = window.setTimeout(() => void performCatalogSearch(query), 220);
+}
+
+async function addBestCatalogMovie(meta, button, { seriesKey = null } = {}) {
+  const label = button?.querySelector("span") || button;
+  const oldText = label?.textContent || "Add the best source";
+  if (button) { button.disabled = true; label.textContent = "Finding…"; }
+  setToolStatus(TITLE_STATUS, `Finding the best source for ${meta.name}…`);
+  try {
+    const data = await fetchJson(`/api/streams?type=movie&id=${encodeURIComponent(meta.id)}`);
+    const candidates = (data.streams || []).slice().sort(compareStreamsByPeers).slice(0, 8);
+    if (!candidates.length) throw new Error("No sources found.");
+    let added = null;
+    let lastError = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const stream = candidates[index];
+      setToolStatus(TITLE_STATUS, `Trying source ${index + 1} of ${candidates.length}: ${stream.quality && stream.quality !== "UNKNOWN" ? stream.quality : "torrent"} from ${streamProviderBadgesText(stream)}`);
+      try {
+        added = await importCatalogStream(meta, stream, { quiet: true, seriesKey });
+        if (added) break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!added) throw lastError || new Error("No source passed the torrent check.");
+    if (button?.isConnected) label.textContent = "Added";
+    setToolStatus(TITLE_STATUS, `${meta.name} added to your Library`);
+  } catch (error) {
+    setToolStatus(TITLE_STATUS, error.message || "Could not add this title", true);
+    if (button?.isConnected) { button.disabled = false; label.textContent = oldText; }
+  }
+}
+
+/* ---------------------------------------------------------------- Series details: chapter list */
+
+// Series details list every chapter of the selected season. Sources are looked up per chapter,
+// only when asked (Play or Sources): single-episode files first; from a pack only the chapter's
+// own file is streamed, and the Library keeps just the picked chapters.
+const CHAPTER_PAGE = 60;
+const SEASON_PACKS_SHOWN = 6;
+let catalogSeriesView = null;
+let catalogSeriesToken = 0;
+
+function catalogSeasonLabel(season) {
+  return Number(season) === 0 ? "Specials" : `Season ${season}`;
+}
+
+function formatChapterDate(value) {
+  const match = String(value || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return "";
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])));
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleDateString("en-US", { year: "numeric", month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+function chapterUpcoming(episode) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(String(episode?.released || "")) && Date.parse(`${episode.released}T00:00:00Z`) > Date.now();
+}
+
+// Library key for a catalog series: the saved series with this catalog id, then the Library title
+// the page is about, then a key from the title.
+function librarySeriesKeyForCatalog(meta) {
+  const groups = buildLibrarySeries();
+  return groups.find((item) => meta?.id && item.catalogId === meta.id)?.key
+    || (titleView.key && meta?.id === titleView.id && groups.some((item) => item.key === titleView.key) ? titleView.key : "")
+    || catalogSeriesKey(meta);
+}
+
+// Saved chapters of a catalog series: chapter code (S01E05) → its sources (best first), the one
+// last watched and its progress.
+function savedCatalogChapterGroups(meta) {
+  const key = librarySeriesKeyForCatalog(meta);
+  const series = buildLibrarySeries().find((item) => item.key === key);
+  const groups = new Map();
+  if (!series || series.type === "movie") return groups;
+  [...series.seasons.values()].forEach((refs) => groupLibraryChapters(refs).forEach((chapter) => {
+    const code = String(chapter.code || "").toUpperCase();
+    if (!/^S\d{2}E\d{2,4}$/.test(code) || groups.has(code)) return;
+    const sorted = chapter.sources.slice().sort(compareLibrarySourceRefsByPeers);
+    if (!sorted.length) return;
+    const resume = chapter.sources
+      .filter(({ episode }) => episode.progress?.durationMs > 0)
+      .sort((a, b) => (b.episode.progress.updatedAt || 0) - (a.episode.progress.updatedAt || 0))[0] || null;
+    groups.set(code, { best: sorted[0], refs: sorted, resume, progress: resume?.episode.progress || null });
+  }));
+  return groups;
+}
+
+function savedCatalogChapters(meta) {
+  return new Map([...savedCatalogChapterGroups(meta)].map(([code, group]) => [code, group.best]));
+}
+
+function chapterResumeMs(progress, series = null, code = "") {
+  // Unwatch retains the historical position, but near-end resumes would never
+  // re-arm watched completion. Replay from the beginning in that case.
+  if (progress?.durationMs > 0 && progress.positionMs > progress.durationMs * 0.8
+    && explicitlyUnwatchedChapter(series, String(code).toUpperCase())) return 0;
+  return progress && !progress.finished && progress.durationMs > 0 ? Math.max(0, progress.positionMs - 5000) : 0;
+}
+
+// The page's chapter list for a catalog series. Kept per title, so open source panels and the
+// chosen season survive re-renders; starts on the season of the next chapter to watch.
+function titleSeriesView(subject, meta) {
+  if (catalogSeriesView?.routeKey === titleView.routeKey && catalogSeriesView.meta.id === meta.id) {
+    catalogSeriesView.meta = { ...titleCatalogMeta(subject), runtime: meta.runtime || "" };
+    return catalogSeriesView;
+  }
+  const listed = (meta.seasons || []).filter((item) => Array.isArray(item.episodes) && item.episodes.length);
+  const seasons = [...listed.filter((item) => item.season > 0), ...listed.filter((item) => item.season === 0)];
+  if (!seasons.length) return null;
+  const nextCode = String((subject.series ? seriesNextUp(subject.series) : null)?.episode?.code || "").toUpperCase();
+  const initial = seasons.find((item) => nextCode.startsWith(`S${String(item.season).padStart(2, "0")}E`)) || seasons[0];
+  const nextIndex = initial.episodes.findIndex((episode) => chapterCode(initial.season, episode.episode) === nextCode);
+  catalogSeriesView = {
+    routeKey: titleView.routeKey,
+    meta: { ...titleCatalogMeta(subject), runtime: meta.runtime || "" },
+    seasons,
+    season: initial.season,
+    shown: Math.max(CHAPTER_PAGE, nextIndex + 12),
+    sources: new Map(),
+    seasonPacks: new Map(),
+    packsActive: false,
+    busy: false,
+  };
+  return catalogSeriesView;
+}
+
+function renderTitleChapters({ focusSelector = "" } = {}) {
+  const view = catalogSeriesView;
+  const container = $("#title-chapters");
+  if (!view || !container) return;
+  const { meta, seasons } = view;
+  const current = seasons.find((item) => item.season === view.season) || seasons[0];
+  const groups = savedCatalogChapterGroups(meta);
+  const codeOf = (episode) => chapterCode(current.season, episode.episode);
+  const seriesForMarks = { key: librarySeriesKeyForCatalog(meta) };
+  const savedHere = current.episodes.filter((episode) => groups.has(codeOf(episode))).length;
+  const watchedHere = current.episodes.filter((episode) => groups.get(codeOf(episode))?.progress?.finished
+    || manuallyWatchedChapter(seriesForMarks, codeOf(episode))).length;
+  const count = Number(current.count) || current.episodes.length;
+  const chapters = current.episodes.slice(0, view.shown);
+  const remaining = current.episodes.length - chapters.length;
+  const packState = view.seasonPacks.get(current.season);
+  const packOpen = Boolean(view.packsActive);
+  const packPanelId = `catalog-season-packs-${current.season}`;
+  const packButton = `<button class="ui-chip catalog-season-pack-toggle" type="button" aria-pressed="${packOpen}" aria-controls="${packPanelId}">${icon("library")}<span>Packs</span>${packState?.status === "ready" ? `<span class="ui-chip__count">${packState.rows.length}</span>` : ""}</button>`;
+  const markup = `<div class="title-section__head">
+      <h2 class="title-section__title" id="title-chapters-heading">${packOpen ? "Packs" : "Chapters"}</h2>
+      ${packOpen ? "" : `<p class="catalog-chapters-note">${count} chapter${count === 1 ? "" : "s"}${savedHere ? `<span>${savedHere} in your Library</span>` : ""}${watchedHere ? `<span>${watchedHere} watched</span>` : ""}</p>`}
+      ${packOpen ? "" : `<button class="ui-btn ui-btn--secondary ui-btn--sm catalog-fetch-all" type="button"${view.fetchAll?.running ? " disabled" : ""}><span>${escapeHtml(catalogFetchAllLabel(view, chapters.length))}</span></button>`}
+    </div>
+    <div class="ui-chip-row catalog-season-switch" role="group" aria-label="Season and pack sources">
+      ${seasons.map((item) => `<button class="ui-chip catalog-season-option" type="button" data-season="${item.season}" aria-pressed="${!packOpen && item.season === current.season}">${escapeHtml(catalogSeasonLabel(item.season))}<span class="ui-chip__count">${Number(item.count) || item.episodes.length}</span></button>`).join("")}
+      ${packButton}
+    </div>
+    ${packOpen
+      ? `<div class="catalog-season-pack-panel" id="${packPanelId}">${catalogSeasonPacksMarkup(packState)}</div>`
+      : `<ol class="catalog-chapter-list" aria-label="${escapeHtml(`${meta.name}, ${catalogSeasonLabel(current.season)}`)}">${chapters.map((episode) => catalogChapterMarkup(view, current.season, episode, groups)).join("")}</ol>
+         ${remaining > 0 ? `<button class="ui-btn ui-btn--ghost catalog-chapters-more" type="button"><span>Show ${Math.min(CHAPTER_PAGE, remaining)} more</span></button>` : ""}`}`;
+  if (titleRendered.chapters !== markup) {
+    titleRendered.chapters = markup;
+    container.innerHTML = markup;
+    refreshImages(container);
+  }
+  if (focusSelector) container.querySelector(focusSelector)?.focus();
+}
+
+function catalogChapterTarget(view, chapter) {
+  return {
+    season: chapter.season,
+    episode: chapter.episode,
+    absoluteEpisode: absoluteEpisodeNumber(view.seasons, chapter.season, chapter.episode),
+  };
+}
+
+function catalogChapterFromNode(view, node) {
+  const item = node?.closest?.(".catalog-chapter");
+  if (!item || !view) return null;
+  const season = view.seasons.find((entry) => entry.season === Number(item.dataset.season));
+  const episode = season?.episodes.find((entry) => entry.id === item.dataset.videoId);
+  return episode ? { ...episode, season: season.season, item } : null;
+}
+
+function catalogChapterMarkup(view, season, episode, saved) {
+  const code = chapterCode(season, episode.episode);
+  const group = saved.get(code) || null;
+  const sources = view.sources.get(episode.id);
+  const open = Boolean(sources?.open);
+  const panelId = `catalog-chapter-sources-${String(episode.id).replace(/[^a-z0-9]+/gi, "-")}`;
+  const date = formatChapterDate(episode.released);
+  const upcoming = chapterUpcoming(episode);
+  const seriesName = view.meta.name;
+  const progress = group?.progress || null;
+  const markSeries = { key: librarySeriesKeyForCatalog(view.meta) };
+  const watched = !explicitlyUnwatchedChapter(markSeries, code)
+    && (Boolean(progress?.finished) || manuallyWatchedChapter(markSeries, code));
+  const inLibrary = Boolean(titleSubject().series);
+  const ratio = progress && !watched && progress.durationMs > 0 ? Math.min(1, progress.positionMs / progress.durationMs) : 0;
+  const details = group ? librarySourceDetails(group.best.entry, group.best.episode) : null;
+  const thumb = episode.thumbnail
+    ? `<img src="${escapeHtml(episode.thumbnail)}" alt="" loading="lazy" decoding="async" data-fallback="wide" data-fallback-title="${escapeHtml(seriesName)}" />`
+    : `<img src="${escapeHtml(artworkFallback(seriesName, { ratio: "wide", label: season ? `S${season} E${episode.episode}` : `Special ${episode.episode}` }))}" alt="" />`;
+  const facts = metaMarkup([
+    season ? `Chapter ${episode.episode}` : `Special ${episode.episode}`,
+    date,
+    view.meta.runtime || "",
+    details && details.quality !== "UNKNOWN" ? details.quality : "",
+    watched ? "Watched" : ratio ? `${Math.max(1, Math.round((progress.durationMs - progress.positionMs) / 60_000))} min left` : "",
+  ], { rating: episode.rating || "" });
+  const badges = [upcoming ? badgeMarkup("Upcoming") : "", group ? badgeMarkup("Source saved", { variant: "solid" }) : ""].join("");
+  const analysis = (group?.resume || group?.best)?.episode.analysis || {};
+  const ref = group?.resume || group?.best;
+  const vocab = (kind, count) => `<button class="lib-chapter-link library-vocab" type="button" data-kind="${kind}" data-library-id="${escapeHtml(ref.entry.id)}" data-file-index="${ref.episode.fileIndex}">${count.toLocaleString()} ${kind}</button>`;
+  const stats = group ? [
+    analysis.words?.length ? vocab("words", analysis.words.length) : "",
+    analysis.phrases?.length ? vocab("phrases", analysis.phrases.length) : "",
+    Number(analysis.autoCardCount) ? `<span>${Number(analysis.autoCardCount).toLocaleString()} cards</span>` : "",
+  ].filter(Boolean).join("") : "";
+  const action = ratio ? "Resume" : "Play";
+  const playLabel = `${action} chapter ${episode.episode}: ${episode.name}${group ? "" : " (finds the best source first)"}`;
+  return `<li class="catalog-chapter${group ? " is-saved" : ""}${open ? " is-open" : ""}${watched ? " is-watched" : ""}" data-video-id="${escapeHtml(episode.id)}" data-season="${season}" data-episode="${episode.episode}"${inLibrary ? ` data-chapter-code="${escapeHtml(code)}" tabindex="0" aria-keyshortcuts="Shift+F10"` : ""}>
+    <div class="catalog-chapter-row">
+      <span class="catalog-chapter-thumb">${thumb}${ratio ? `<span class="lib-chapter-progress" aria-hidden="true"><span style="width:${Math.round(ratio * 100)}%"></span></span>` : ""}${watched ? `<span class="lib-chapter-watched" aria-hidden="true">${icon("check")}</span>` : ""}</span>
+      <div class="catalog-chapter-copy">
+        <span class="catalog-chapter-code">${facts}${badges}</span>
+        <strong>${escapeHtml(episode.name)}</strong>
+        ${episode.overview ? `<p>${escapeHtml(episode.overview)}</p>` : ""}
+        ${stats ? `<span class="lib-chapter-stats">${stats}</span>` : ""}
+      </div>
+      <div class="catalog-chapter-actions">
+        <button class="ui-btn ui-btn--primary ui-btn--sm catalog-chapter-play" type="button" aria-label="${escapeHtml(playLabel)}"${upcoming && !group ? " disabled" : ""}>${icon("play")}<span>${action}</span></button>
+        ${inLibrary ? `<button class="ui-btn ui-btn--ghost ui-btn--sm title-mark-watched" type="button" data-title-mark-watched="${escapeHtml(code)}">${watched ? "Mark as not watched" : "Mark as watched"}</button>` : ""}
+        <button class="ui-btn ui-btn--ghost ui-btn--sm catalog-chapter-toggle" type="button" aria-expanded="${open}" aria-controls="${panelId}" aria-label="${escapeHtml(`Sources for chapter ${episode.episode}`)}"><span>Sources</span>${icon("chevron-down")}</button>
+      </div>
+    </div>
+    <div class="catalog-chapter-sources" id="${panelId}"${open ? "" : " hidden"}>${open ? catalogChapterPanelMarkup(view, code, sources) : ""}</div>
+  </li>`;
+}
+
+// A chapter's panel: the sources saved in the Library (Play each), then torrents found for it
+// (right away for an unsaved chapter, on request for a saved one).
+function catalogChapterPanelMarkup(view, code, sources) {
+  const group = savedCatalogChapterGroups(view.meta).get(code);
+  if (!group) return catalogChapterSourcesMarkup(sources);
+  const repeated = repeatedLibrarySourceIndexes(group.refs);
+  const saved = `<section class="catalog-source-group">
+      <div class="catalog-sources-head catalog-sources-head--group"><h4>Saved</h4><span class="ui-chip__count">${group.refs.length}</span></div>
+      <div class="title-saved-sources">${group.refs.map(({ entry, episode }, index) => {
+        const item = librarySourceDetails(entry, episode);
+        const origin = libraryOriginText(item);
+        const resumeAt = chapterResumeMs(episode.progress, { key: librarySeriesKeyForCatalog(view.meta) }, code);
+        return `<div class="lib-source"><div><span class="lib-source-title"><strong title="${escapeHtml(item.releaseName)}">${escapeHtml(origin.release)}</strong>${repeatedLibrarySourceTag(repeated.has(index))}</span>${metaMarkup([origin.pack ? "From a pack" : "", item.providers, item.quality !== "UNKNOWN" ? item.quality : "", libraryCodecLabel(item.codec), item.peers ? `${item.peers} peers` : "", episode.length ? formatBytes(episode.length) : ""])}</div>${buttonMarkup({ label: resumeAt ? "Resume" : "Play", variant: "secondary", size: "sm", icon: "play", className: "library-play", attrs: { "data-library-id": entry.id, "data-file-index": episode.fileIndex, "data-resume-ms": resumeAt } })}</div>`;
+      }).join("")}</div>
+    </section>`;
+  const lookup = sources?.status && sources.status !== "idle"
+    ? catalogChapterSourcesMarkup(sources)
+    : `<div class="title-source-actions">${buttonMarkup({ label: "Find more sources", variant: "ghost", size: "sm", icon: "search", className: "catalog-source-find" })}</div>`;
+  return saved + lookup;
+}
+
+function catalogSourceKindPresentation(stream) {
+  if (stream.contentType === "movie") return { label: "Movie", action: "Add" };
+  const sourceKind = stream.sourceKind === "season-pack" ? "season-pack"
+    : stream.sourceKind === "multi-episode-pack" ? "multi-episode-pack"
+      : "episode";
+  const coverage = Number(stream.coverage) || (Array.isArray(stream.episodes) ? stream.episodes.length : 1);
+  const total = Number(stream.totalSeasonEpisodes) || 0;
+  const covers = total ? `${coverage} of ${total} chapters` : `${coverage} chapters`;
+  if (sourceKind === "season-pack") return { label: `Season pack, ${covers}`, action: "Add pack" };
+  if (sourceKind === "multi-episode-pack") return { label: `Pack, ${covers}`, action: "Add pack" };
+  return { label: "Episode file", action: "Add" };
+}
+
+// Source facts; unknown values are left out. Drawn as a facts row (thin rules, no dots).
+function streamMetaParts(stream, sizeDetail = "") {
+  const known = (value) => value && !/^unknown$/i.test(String(value));
+  return [
+    known(stream.quality) ? stream.quality : "",
+    known(stream.codec) ? libraryCodecLabel(stream.codec) : "",
+    stream.audioLanguages?.length ? stream.audioLanguages.join(", ") : "",
+    stream.peers ? `${stream.peers} peer${stream.peers === 1 ? "" : "s"}` : "",
+    sizeDetail,
+  ].filter(Boolean);
+}
+
+function catalogStreamRowMarkup(stream, index, { seriesKey = null, compact = false, contentType = null } = {}) {
+  const releaseName = String(stream.title || "Torrent source").split("\n")[0];
+  const kind = catalogSourceKindPresentation({ ...stream, contentType: contentType || stream.contentType });
+  const isMovie = (contentType || stream.contentType) === "movie";
+  const size = stream.sizeBytes ? formatBytes(stream.sizeBytes) : "";
+  return `<article class="catalog-stream-row${compact ? " compact" : ""}" data-stream-index="${index}" ${seriesKey ? `data-series-key="${escapeHtml(seriesKey)}"` : ""}>
+    <span class="catalog-stream-rank">${index + 1}</span>
+    <div class="catalog-stream-copy">
+      <strong title="${escapeHtml(releaseName)}">${escapeHtml(releaseName)}</strong>
+      ${metaMarkup([isMovie ? "" : kind.label, ...streamMetaParts(stream, size)])}
+      ${streamProviderBadges(stream)}
+    </div>
+    ${isMovie && sourceInLibrary(stream)
+      ? buttonMarkup({ label: "Added", variant: "ghost", size: "sm", icon: "check", className: "catalog-add-stream", attrs: { disabled: true } })
+      : buttonMarkup({ label: kind.action, variant: index === 0 ? "primary" : "secondary", size: "sm", icon: "plus", className: "catalog-add-stream" })}
+  </article>`;
+}
+
+function catalogChapterSourcesMarkup(sources) {
+  if (sources?.status === "error") {
+    return `<p class="catalog-chapter-sources-status is-error" role="alert">${escapeHtml(sources.error || "The source lookup failed")}</p>`
+      + buttonMarkup({ label: "Try again", variant: "secondary", size: "sm", icon: "refresh", className: "catalog-source-retry" });
+  }
+  if (!sources || sources.status !== "ready" || !sources.groups) return '<p class="catalog-chapter-sources-status" role="status">Finding sources…</p>';
+  const { episodeFiles, others, unplayable, nonmatching } = sources.groups;
+  if (sources.floorOnly) {
+    // Bulk episode lookup must not put season-wide torrents under every chapter.
+    const listed = [...episodeFiles, ...others]
+      .map((stream) => ({ stream, rowIndex: sources.rows.indexOf(stream) }))
+      .filter(({ stream }) => meetsSourceFloor(stream))
+      .sort((a, b) => (Number(b.stream.height) || heightFromQualityLabel(b.stream.quality) || 0) - (Number(a.stream.height) || heightFromQualityLabel(a.stream.quality) || 0)
+        || (Number(b.stream.peers) || 0) - (Number(a.stream.peers) || 0));
+    const hidden = episodeFiles.length + others.length - listed.length;
+    return `<section class="catalog-source-group">
+      <div class="catalog-sources-head catalog-sources-head--group"><h4>${listed.length} episode magnet${listed.length === 1 ? "" : "s"}</h4><span class="catalog-sources-note">720p or better, 2+ peers</span>${hidden ? buttonMarkup({ label: `Show all ${episodeFiles.length + others.length}`, variant: "ghost", size: "sm", className: "catalog-source-all" }) : ""}</div>
+      ${listed.length ? `<div class="catalog-stream-list">${listed.map(({ stream, rowIndex }, position) => catalogChapterSourceRowMarkup(stream, rowIndex, position)).join("")}</div>` : '<p class="catalog-chapter-sources-status">No single-episode sources meet the quality and peer requirements.</p>'}
+    </section>`;
+  }
+  if (!episodeFiles.length && !others.length) {
+    return emptyMarkup({ compact: true, title: "No single-episode sources found", text: [nonmatching ? `${nonmatching} different-episode result${nonmatching === 1 ? "" : "s"} omitted.` : "", unplayable ? `${unplayable} archive${unplayable === 1 ? "" : "s"} skipped.` : ""].filter(Boolean).join(" ") });
+  }
+  const rows = (list, offset) => list.map((stream, index) => catalogChapterSourceRowMarkup(stream, sources.rows.indexOf(stream), offset + index)).join("");
+  const group = (title, list, offset) => `<section class="catalog-source-group">
+      <div class="catalog-sources-head catalog-sources-head--group"><h4>${title}</h4><span class="ui-chip__count">${list.length}</span></div>
+      <div class="catalog-stream-list">${rows(list, offset)}</div>
+    </section>`;
+  return [
+    episodeFiles.length ? group("Episode files", episodeFiles, 0) : "",
+    others.length ? group("Other single-file matches", others, episodeFiles.length) : "",
+  ].join("");
+}
+
+function catalogSeasonPacksMarkup(state) {
+  if (!state || state.status === "loading") return '<p class="catalog-chapter-sources-status" role="status">Finding packs…</p>';
+  if (state.status === "error") return `<p class="catalog-chapter-sources-status is-error" role="alert">${escapeHtml(state.error || "Pack lookup failed")}</p>`
+    + buttonMarkup({ label: "Try again", variant: "secondary", size: "sm", icon: "refresh", className: "catalog-season-pack-retry" });
+  const rows = state.rows || [];
+  const visible = state.showAll ? rows : rows.slice(0, SEASON_PACKS_SHOWN);
+  return `<section class="catalog-source-group" aria-label="Packs">
+    ${visible.length ? `<div class="catalog-stream-list">${visible.map((stream, index) => catalogChapterSourceRowMarkup(stream, index)).join("")}</div>` : emptyMarkup({ compact: true, title: "No packs found", text: "Try a different season or an individual chapter." })}
+    ${rows.length > visible.length ? buttonMarkup({ label: `Show all ${rows.length} packs`, variant: "ghost", size: "sm", className: "catalog-season-pack-more" }) : ""}
+  </section>`;
+}
+
+function catalogChapterSourceRowMarkup(stream, rowIndex, position = rowIndex) {
+  const info = stream.chapterSource;
+  const releaseName = String(stream.title || "Torrent source").split("\n")[0];
+  const size = stream.sizeBytes ? formatBytes(stream.sizeBytes) : "";
+  // Providers may report either a torrent total or one file's size. Do not
+  // present the unverified provider figure as a measured chapter/pack total.
+  const fileDetail = size ? (info.kind === "pack" ? `${size} reported size` : size) : "";
+  const added = sourceInLibrary(stream);
+  return `<article class="catalog-stream-row compact" data-row-index="${rowIndex}">
+    <span class="catalog-stream-rank">${position + 1}</span>
+    <div class="catalog-stream-copy">
+      <strong title="${escapeHtml(releaseName)}">${escapeHtml(releaseName)}</strong>
+      ${metaMarkup([catalogKindText(info.label), ...streamMetaParts(stream, fileDetail)])}
+      ${streamProviderBadges(stream)}
+    </div>
+    <div class="catalog-stream-actions">
+      ${buttonMarkup({ label: "Play", variant: "primary", size: "sm", icon: "play", className: "catalog-source-play" })}
+      ${added
+        ? buttonMarkup({ label: "Added", variant: "ghost", size: "sm", icon: "check", className: "catalog-source-add", attrs: { disabled: true } })
+        : buttonMarkup({ label: info.kind === "pack" ? "Add pack" : "Add", variant: "secondary", size: "sm", icon: "plus", className: "catalog-source-add" })}
+    </div>
+  </article>`;
+}
+
+// This torrent is in the Library already (with the provider's file for this chapter, if it named one).
+function sourceInLibrary(stream) {
+  const entry = libraryEntryById(String(stream?.infoHash || "").toLowerCase());
+  if (!entry) return false;
+  const fileIndex = Number.isInteger(stream.fileIdx) ? stream.fileIdx : null;
+  return fileIndex === null || (entry.episodes || []).some((episode) => Number(episode.fileIndex) === fileIndex);
+}
+
+function renderCatalogChapterPanel(item, sources) {
+  const panel = item?.querySelector(".catalog-chapter-sources");
+  if (!panel || !catalogSeriesView) return;
+  const open = Boolean(sources?.open);
+  item.classList.toggle("is-open", open);
+  item.querySelector(".catalog-chapter-toggle")?.setAttribute("aria-expanded", String(open));
+  panel.hidden = !open;
+  panel.innerHTML = open ? catalogChapterPanelMarkup(catalogSeriesView, chapterCode(Number(item.dataset.season), Number(item.dataset.episode)), sources) : "";
+  // The list's markup no longer matches what was last rendered in full.
+  titleRendered.chapters = "";
+}
+
+function catalogChapterItem(videoId) {
+  return [...document.querySelectorAll("#title-chapters .catalog-chapter")].find((node) => node.dataset.videoId === videoId) || null;
+}
+
+async function loadCatalogChapterSources(view, chapter, { force = false } = {}) {
+  const current = view.sources.get(chapter.id);
+  if (current?.status === "ready" && !force) return current;
+  if (current?.promise && !force) return current.promise;
+  const sources = { open: Boolean(current?.open), floorOnly: Boolean(current?.floorOnly), status: "loading" };
+  view.sources.set(chapter.id, sources);
+  renderCatalogChapterPanel(catalogChapterItem(chapter.id), sources);
+  sources.promise = (async () => {
+    try {
+      const data = await fetchJson(`/api/streams?type=series&id=${encodeURIComponent(chapter.id)}`);
+      sources.groups = groupChapterSources(data.streams || [], catalogChapterTarget(view, chapter));
+      sources.rows = [...sources.groups.episodeFiles, ...sources.groups.packs, ...sources.groups.others];
+      sources.status = "ready";
+    } catch (error) {
+      sources.status = "error";
+      sources.error = error.message || "Source lookup failed";
+    } finally {
+      delete sources.promise;
+    }
+    if (catalogSeriesView === view) renderCatalogChapterPanel(catalogChapterItem(chapter.id), sources);
+    return sources;
+  })();
+  return sources.promise;
+}
+
+// Providers accept episode IDs, not season IDs. Reuse the selected season's first released
+// episode lookup, but display its packs in a mutually exclusive season-source tab.
+async function loadCatalogSeasonPacks(view, seasonNumber, { force = false } = {}) {
+  const season = view.seasons.find((item) => item.season === seasonNumber);
+  const first = season?.episodes.find((episode) => !chapterUpcoming(episode));
+  if (!first) {
+    const empty = { status: "ready", rows: [], showAll: false, chapter: null };
+    view.seasonPacks.set(seasonNumber, empty);
+    if (catalogSeriesView === view && view.season === seasonNumber && view.packsActive) renderTitleChapters();
+    return empty;
+  }
+  const current = view.seasonPacks.get(seasonNumber);
+  if (current?.status === "ready" && !force) return current;
+  if (current?.promise && !force) return current.promise;
+  const state = { status: "loading", rows: [], showAll: Boolean(current?.showAll), chapter: { ...first, season: seasonNumber } };
+  view.seasonPacks.set(seasonNumber, state);
+  if (catalogSeriesView === view && view.season === seasonNumber) renderTitleChapters();
+  state.promise = (async () => {
+    try {
+      const sources = await loadCatalogChapterSources(view, state.chapter, { force });
+      if (sources.status !== "ready") throw new Error(sources.error || "Pack lookup failed");
+      state.rows = sources.groups.packs;
+      state.status = "ready";
+    } catch (error) {
+      state.status = "error";
+      state.error = error.message || "Pack lookup failed";
+    } finally {
+      delete state.promise;
+    }
+    if (catalogSeriesView === view && view.season === seasonNumber && view.seasonPacks.get(seasonNumber) === state) renderTitleChapters();
+    return state;
+  })();
+  return state.promise;
+}
+
+function chapterSourceMeta(stream, chapter) {
+  const info = stream.chapterSource || {};
+  return normalizeLibrarySourceMeta({
+    provider: stream.provider,
+    providers: stream.providers || [stream.provider],
+    releaseName: String(stream.title || "").split("\n")[0],
+    quality: stream.quality,
+    codec: stream.codec,
+    peers: stream.peers,
+    sizeBytes: stream.sizeBytes,
+    audioLanguages: stream.audioLanguages || [],
+    filename: stream.filename || "",
+    score: stream.score,
+    sourceKind: info.kind === "pack" ? "pack-file" : "episode",
+    packLabel: info.kind === "pack" ? info.label : "",
+    coverage: 1,
+    coveredEpisodes: [Number(chapter.episode)],
+  });
+}
+
+let manualCatalogPlaybackId = 0;
+
+// Saves one chapter from one source: resolves torrent metadata, finds the chapter's file, and adds
+// a Library entry that holds only that file (packs included). With play, starts it right away.
+async function addCatalogChapterSource(view, chapter, stream, { play = false, button = null, quiet = false, stillCurrent = null, onPlaybackStart = null } = {}) {
+  if (!stream?.magnet) throw new Error("This source did not provide a usable torrent hash.");
+  // Direct catalog clicks must claim playback before waiting for torrent metadata.
+  // Automatic Up Next passes its own ownership predicate instead.
+  const manualIntent = play && !stillCurrent ? ++manualCatalogPlaybackId : 0;
+  const originView = manualIntent ? (viewActive("watch") ? "watch" : viewActive("title") ? "title" : "") : "";
+  const canContinue = () => (!manualIntent || (manualIntent === manualCatalogPlaybackId
+    && (!originView || viewActive(originView)))) && (!stillCurrent || stillCurrent());
+  const { meta } = view;
+  const code = chapterCode(chapter.season, chapter.episode);
+  const providerIndex = Number.isInteger(stream.fileIdx) && stream.fileIdx >= 0 ? stream.fileIdx : null;
+  const oldText = buttonText(button);
+  if (button) { button.disabled = true; setButtonText(button, "Opening…"); }
+  let session = null;
+  let keepSession = false;
+  try {
+    session = await resolveTorrentMagnet(stream.magnet, (current, elapsed) => {
+      if (!quiet) setToolStatus(TITLE_STATUS, `Opening ${libraryChapterName({ code }) || code}… ${elapsed} s${current.numPeers ? `, ${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}` : ""}`);
+    }, { timeoutMs: 25_000, preferredFileIndex: providerIndex });
+    if (!canContinue()) throw new DOMException("Playback selection changed", "AbortError");
+    const fileIndex = providerIndex ?? chapterFileIndex(session.files, catalogChapterTarget(view, chapter));
+    const file = (session.files || []).find((item) => Number(item.index) === Number(fileIndex));
+    if (fileIndex === null || !file?.video) throw new Error(`Couldn't find ${code}'s file in that source. Choose another one.`);
+    // A pack brings all of its chapters into the Library (nothing is downloaded until one plays).
+    const fileIndexes = [file.index];
+    const chapterLabels = { [String(file.index)]: { code, title: chapter.name } };
+    if (stream.chapterSource?.kind === "pack") {
+      const episodesBySeason = new Map(view.seasons.map((item) => [item.season, new Map(item.episodes.map((episode) => [Number(episode.episode), episode]))]));
+      for (const [index, placed] of packChapterMap(session.files, view.seasons)) {
+        if (Number(index) === Number(file.index)) continue;
+        const listed = episodesBySeason.get(placed.season)?.get(placed.episode);
+        fileIndexes.push(index);
+        chapterLabels[String(index)] = { code: chapterCode(placed.season, placed.episode), title: listed?.name || "" };
+      }
+    }
+    const entry = upsertLibrarySession(session, stream.magnet, {
+      seriesKeyOverride: librarySeriesKeyForCatalog(meta),
+      displayTitleOverride: meta.name,
+      coverUrlOverride: meta.poster || "",
+      catalogId: meta.id,
+      catalogType: "series",
+      mediaKind: catalogMediaKind(meta),
+      sourceMeta: chapterSourceMeta(stream, chapter),
+      aliases: meta.aliases || [meta.name],
+      fileIndexes,
+      chapterLabels,
+      render: false,
+    });
+    if (!entry) throw new Error("That source has no supported video file for this chapter.");
+    if (play) {
+      if (!canContinue()) throw new DOMException("Playback selection changed", "AbortError");
+      const expectedLoadId = playbackLoadRequestId + 1;
+      onPlaybackStart?.(expectedLoadId);
+      const started = await playLibraryEpisode(entry.id, Number(file.index));
+      if (!started && playbackLoadRequestId !== expectedLoadId)
+        throw new DOMException("Playback selection changed", "AbortError");
+      if (!started) throw new Error(`Couldn't start ${code} from that source.`);
+      keepSession = true; // Keep it only after playback accepted this source.
+      return entry;
+    }
+    if (button) { setButtonText(button, "Added"); button.dataset.done = "1"; }
+    const packChapters = fileIndexes.length;
+    if (!quiet) setToolStatus(TITLE_STATUS, packChapters > 1
+      ? `${packChapters} chapters from this pack added to your Library`
+      : `${libraryChapterName({ code }) || code} added to your Library`);
+    if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
+    else updateLibrarySummary();
+    if (catalogSeriesView === view) {
+      renderTitlePage();
+      catalogChapterItem(chapter.id)?.querySelector(".catalog-chapter-toggle")?.focus({ preventScroll: true });
+    }
+    return entry;
+  } finally {
+    if (session?.id && !keepSession) await releaseTorrentSession(session.id);
+    if (button && button.dataset.done !== "1") { button.disabled = false; setButtonText(button, oldText); }
+  }
+}
+
+function catalogFetchAllLabel(view, shownCount) {
+  const run = view.fetchAll;
+  if (run?.running && run.season === view.season) return `Fetching ${run.done} of ${run.total}…`;
+  if (run?.season === view.season && run.done) return "Fetch again";
+  return shownCount > 1 ? "Fetch episode torrents" : "Fetch episode torrent";
+}
+
+// Looks up every shown chapter of the season (three at a time) and opens chapter-specific
+// torrents at 720p or better with 2+ peers. Pack lists are requested separately.
+async function fetchAllCatalogChapterSources(view) {
+  const season = view.seasons.find((item) => item.season === view.season);
+  if (!season || view.fetchAll?.running) return;
+  const chapters = season.episodes.slice(0, view.shown).filter((episode) => !chapterUpcoming(episode)).map((episode) => ({ ...episode, season: season.season }));
+  if (!chapters.length) return;
+  const force = view.fetchAll?.season === season.season && view.fetchAll.done > 0;
+  view.fetchAll = { season: season.season, running: true, done: 0, total: chapters.length };
+  chapters.forEach((chapter) => {
+    const sources = view.sources.get(chapter.id) || { status: "idle" };
+    sources.open = true;
+    sources.floorOnly = true;
+    view.sources.set(chapter.id, sources);
+  });
+  renderTitleChapters();
+  const label = () => {
+    const button = $("#title-chapters .catalog-fetch-all");
+    if (button) setButtonText(button, catalogFetchAllLabel(view, chapters.length));
+  };
+  let next = 0;
+  const worker = async () => {
+    while (next < chapters.length && catalogSeriesView === view && view.season === season.season) {
+      const chapter = chapters[next];
+      next += 1;
+      await loadCatalogChapterSources(view, chapter, { force });
+      view.fetchAll.done += 1;
+      label();
+    }
+  };
+  await Promise.all([worker(), worker(), worker()]);
+  view.fetchAll.running = false;
+  if (catalogSeriesView !== view) return;
+  const found = chapters.reduce((sum, chapter) => sum + (view.sources.get(chapter.id)?.groups?.episodeFiles || []).filter((stream) => meetsSourceFloor(stream)).length, 0);
+  setToolStatus(TITLE_STATUS, `${found} episode magnet${found === 1 ? "" : "s"} at 720p or better with 2+ peers, across ${chapters.length} chapter${chapters.length === 1 ? "" : "s"}`);
+  const button = $("#title-chapters .catalog-fetch-all");
+  if (button) {
+    button.disabled = false;
+    label();
+  }
+  titleRendered.chapters = "";
+}
+
+async function playCatalogChapter(view, chapter, button) {
+  const code = chapterCode(chapter.season, chapter.episode);
+  const group = savedCatalogChapterGroups(view.meta).get(code);
+  if (group) {
+    // Play the copy you were watching, from where you stopped (unless you finished it).
+    const ref = group.resume && !group.progress?.finished ? group.resume : group.best;
+    void playLibraryEpisode(ref.entry.id, Number(ref.episode.fileIndex), { resumeAtSeconds:
+      chapterResumeMs(ref.episode.progress, { key: librarySeriesKeyForCatalog(view.meta) }, code) / 1000 });
+    return;
+  }
+  if (view.busy) return;
+  view.busy = true;
+  const oldText = buttonText(button) || "Play";
+  if (button) { button.disabled = true; setButtonText(button, "Finding…"); }
+  try {
+    setToolStatus(TITLE_STATUS, `Finding a source for ${libraryChapterName({ code }) || code}…`);
+    const sources = await loadCatalogChapterSources(view, chapter);
+    if (sources.status !== "ready") throw new Error(sources.error || "Source lookup failed.");
+    const candidates = chapterPlayOrder(sources.groups);
+    if (!candidates.length) throw new Error(`No playable source was found for ${code}.`);
+    let lastError = null;
+    for (let index = 0; index < candidates.length; index += 1) {
+      const stream = candidates[index];
+      setToolStatus(TITLE_STATUS, `Trying source ${index + 1} of ${candidates.length}: ${catalogKindText(stream.chapterSource.label).toLowerCase()}${stream.quality && stream.quality !== "UNKNOWN" ? `, ${stream.quality}` : ""}, ${stream.peers || 0} peer${stream.peers === 1 ? "" : "s"}`);
+      try {
+        await addCatalogChapterSource(view, chapter, stream, { play: true, quiet: true });
+        setToolStatus(TITLE_STATUS, "");
+        return;
+      } catch (error) {
+        if (error?.name === "AbortError") return;
+        lastError = error;
+      }
+    }
+    throw lastError || new Error(`No source for ${code} passed torrent validation.`);
+  } catch (error) {
+    setToolStatus(TITLE_STATUS, error.message || "Could not play this chapter", true);
+  } finally {
+    view.busy = false;
+    if (button?.isConnected) { button.disabled = false; setButtonText(button, oldText); }
+  }
+}
+
+function handleCatalogChapterClick(event) {
+  const view = catalogSeriesView;
+  const target = event.target.closest("button");
+  if (!view || !target || !event.currentTarget.contains(target)) return;
+  if (target.matches(".catalog-season-option")) {
+    const season = Number(target.dataset.season);
+    if (season === view.season && !view.packsActive) return;
+    view.season = season;
+    view.packsActive = false;
+    view.shown = CHAPTER_PAGE;
+    renderTitleChapters({ focusSelector: `.catalog-season-option[data-season="${season}"]` });
+    return;
+  }
+  if (target.matches(".catalog-season-pack-toggle")) {
+    const season = view.season;
+    if (view.packsActive) return;
+    const state = view.seasonPacks.get(season);
+    view.packsActive = true;
+    renderTitleChapters({ focusSelector: ".catalog-season-pack-toggle" });
+    if (state?.status !== "ready" && state?.status !== "loading") void loadCatalogSeasonPacks(view, season);
+    return;
+  }
+  const packPanel = target.closest(".catalog-season-pack-panel");
+  if (packPanel) {
+    const state = view.seasonPacks.get(view.season);
+    if (!state) return;
+    if (target.matches(".catalog-season-pack-retry")) {
+      void loadCatalogSeasonPacks(view, view.season, { force: true });
+      return;
+    }
+    if (target.matches(".catalog-season-pack-more")) {
+      state.showAll = true;
+      renderTitleChapters();
+      return;
+    }
+    const row = target.closest("[data-row-index]");
+    const stream = row && state.rows?.[Number(row.dataset.rowIndex)];
+    if (!stream || !target.matches(".catalog-source-play, .catalog-source-add") || view.busy) return;
+    view.busy = true;
+    void addCatalogChapterSource(view, state.chapter, stream, { play: target.matches(".catalog-source-play"), button: target })
+      .catch((error) => setToolStatus(TITLE_STATUS, error.message || "Could not use this pack", true))
+      .finally(() => { view.busy = false; });
+    return;
+  }
+  if (target.matches(".catalog-chapters-more")) {
+    const first = view.shown;
+    view.shown += CHAPTER_PAGE;
+    renderTitleChapters({ focusSelector: `.catalog-chapter:nth-child(${first + 1}) .catalog-chapter-play` });
+    return;
+  }
+  if (target.matches(".catalog-fetch-all")) {
+    target.disabled = true;
+    void fetchAllCatalogChapterSources(view);
+    return;
+  }
+  const chapter = catalogChapterFromNode(view, target);
+  if (!chapter) return;
+  if (target.matches(".catalog-chapter-play")) {
+    void playCatalogChapter(view, chapter, target);
+    return;
+  }
+  if (target.matches(".catalog-chapter-toggle")) {
+    const sources = view.sources.get(chapter.id) || { status: "idle" };
+    sources.open = !sources.open;
+    view.sources.set(chapter.id, sources);
+    // A saved chapter shows its saved sources first; torrents are looked up when asked.
+    const saved = savedCatalogChapters(view.meta).has(chapterCode(chapter.season, chapter.episode));
+    if (sources.open && !saved && sources.status !== "ready" && sources.status !== "loading") void loadCatalogChapterSources(view, chapter);
+    else renderCatalogChapterPanel(chapter.item, sources);
+    return;
+  }
+  const sources = view.sources.get(chapter.id);
+  if (target.matches(".catalog-source-find")) {
+    void loadCatalogChapterSources(view, chapter);
+    return;
+  }
+  if (target.matches(".catalog-source-retry")) {
+    void loadCatalogChapterSources(view, chapter, { force: true });
+    return;
+  }
+  if (target.matches(".catalog-source-all") && sources) {
+    sources.floorOnly = false;
+    renderCatalogChapterPanel(chapter.item, sources);
+    return;
+  }
+  const row = target.closest("[data-row-index]");
+  const stream = sources?.rows?.[Number(row?.dataset.rowIndex)];
+  if (!stream || !target.matches(".catalog-source-play, .catalog-source-add")) return;
+  if (view.busy) return;
+  view.busy = true;
+  void addCatalogChapterSource(view, chapter, stream, { play: target.matches(".catalog-source-play"), button: target })
+    .catch((error) => setToolStatus(TITLE_STATUS, error.message || "Could not use this source", true))
+    .finally(() => { view.busy = false; });
+}
+
+async function releaseTorrentSession(sessionId) {
+  // Adding a chapter can resolve the torrent that is already playing (same pack): keep that one.
+  if (!sessionId || sessionId === state.currentSource?.sessionId) return;
+  try {
+    await fetch(`/api/torrents/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
+  } catch {}
+}
+
+async function importCatalogStream(meta, stream, { button = null, seriesKey = null, quiet = false, rerenderLibrary = true } = {}) {
+  if (!stream?.magnet) throw new Error("Selected source did not provide a usable torrent hash.");
+  const oldText = buttonText(button) || "Add";
+  if (button) { button.disabled = true; setButtonText(button, "Opening…"); }
+  if (!quiet) setToolStatus(TITLE_STATUS, "Checking the source…");
+  let session;
+  try {
+    session = await resolveTorrentMagnet(stream.magnet, (current, elapsed) => {
+      if (!quiet) setToolStatus(TITLE_STATUS, `Opening the torrent… ${elapsed} s${current.numPeers ? `, ${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}` : ""}`);
+    }, { timeoutMs: 25_000, preferredFileIndex: Number.isInteger(stream.fileIdx) ? stream.fileIdx : null });
+    const entry = upsertLibrarySession(session, stream.magnet, {
+      seriesKeyOverride: seriesKey || catalogSeriesKey(meta),
+      displayTitleOverride: meta.name,
+      coverUrlOverride: meta.poster || "",
+      catalogId: meta.id,
+      catalogType: meta.type,
+      mediaKind: catalogMediaKind(meta),
+      sourceMeta: librarySourceMetaFromStream(stream),
+      aliases: meta.aliases || [],
+      render: false,
+    });
+    if (!entry) throw new Error("That torrent has no supported video file.");
+    if (button) { setButtonText(button, "Added"); button.dataset.done = "1"; }
+    if (!quiet) setToolStatus(TITLE_STATUS, `${meta.name} added to your Library`);
+    if (rerenderLibrary && $("#view-library")?.classList.contains("is-active")) renderLibrary();
+    else updateLibrarySummary();
+    if (rerenderLibrary && state.homeLoaded && $("#view-home")?.classList.contains("is-active")) renderHome();
+    return entry;
+  } finally {
+    if (session?.id) await releaseTorrentSession(session.id);
+    if (button && button.dataset.done !== "1") { button.disabled = false; setButtonText(button, oldText); }
+  }
+}
+
+function streamProviderBadgesText(stream) {
+  return (stream.providers || [stream.provider]).filter(Boolean).join(" + ") || "STREAM SOURCE";
+}
+
+function showLibraryVocabulary(libraryId, fileIndex, kind) {
+  const entry = libraryEntryById(libraryId);
+  const episode = entry?.episodes?.find((item) => Number(item.fileIndex) === Number(fileIndex));
+  if (!entry || !episode) return;
+  const items = episode.analysis?.[kind] || [];
+  const noun = kind === "phrases" ? "phrase" : "word";
+  $("#library-words-title").textContent = `${items.length.toLocaleString()} ${noun}${items.length === 1 ? "" : "s"}`;
+  $("#library-words-source").textContent = [entry.displayTitle || entry.title, libraryChapterName(episode) || episode.episodeTitle].filter(Boolean).join(", ");
+  $("#library-words-content").innerHTML = items.length
+    ? `<ol class="ui-list library-words-list">${items.slice(0, 500).map((item, index) => {
+      const known = isKnownItem(item, noun);
+      const learning = cardKeySet().has(learningItemKeyFor({ ...item, language: item.language || state.targetLanguage }, noun));
+      return `<li class="ui-row"><span class="ui-row__lead">${index + 1}</span><span><span class="ui-row__title" lang="${escapeHtml(String(item.language || state.targetLanguage).toLowerCase())}">${escapeHtml(item.value)}</span>${item.romanized && item.romanized !== item.value ? `<span class="ui-row__sub">${escapeHtml(item.romanized)}</span>` : ""}</span><span class="ui-row__trail">${known ? '<span class="ui-learn ui-learn--known">Mastered</span>' : learning ? '<span class="ui-learn ui-learn--review">Learning</span>' : ""}<span>${Number(item.count) || 0}×</span></span></li>`;
+    }).join("")}</ol>`
+    : emptyMarkup({ compact: true, title: `No ${noun}s saved`, text: `Play this chapter with ${state.targetLanguage} subtitles to find them.` });
+  $("#library-words-dialog").showModal();
+}
+
+function torrentFileRow(file) {
+  const ext = file.name.split(".").pop()?.toUpperCase() || "";
+  const episode = episodeIdentity(file.name);
+  const chapter = libraryChapterName({ code: episode.code }) || episode.code;
+  const hasTitle = episode.title && episode.title.toUpperCase() !== episode.code;
+  const displayName = episode.code === "VIDEO" ? cleanMediaTitle(file.name) : hasTitle ? `${chapter}: ${episode.title}` : chapter;
+  const facts = [ext, formatBytes(file.length), file.needsTranscode ? "Converted while it plays" : "Plays directly"];
+  return `<div class="magnet-file">
+    <div class="magnet-file__copy"><strong title="${escapeHtml(file.name)}">${escapeHtml(displayName)}</strong>${metaMarkup(facts)}</div>
+    <button class="ui-btn ui-btn--secondary ui-btn--sm torrent-file-play" type="button" data-file-index="${file.index}">${icon("play")}<span>Play</span></button>
+  </div>`;
+}
+
+function renderMagnetFiles(session) {
+  const container = $("#magnet-files");
+  const videoFiles = sortedVideoFiles(session.files || []);
+  if (!videoFiles.length) {
+    container.innerHTML = emptyMarkup({ compact: true, title: "No video files in this torrent" });
+    return;
+  }
+  const { primary, extras } = partitionTorrentVideos(session.files || []);
+  const looksLikeEpisodePack = extras.length > 0 && primary.every((file) => episodeSortKey(file.name) !== null);
+  const headline = looksLikeEpisodePack
+    ? `${primary.length} episode${primary.length === 1 ? "" : "s"}`
+    : `${videoFiles.length} video${videoFiles.length === 1 ? "" : "s"}`;
+  const extrasMarkup = extras.length
+    ? `<details class="magnet-extras"><summary>${extras.length} extra${extras.length === 1 ? "" : "s"} and other files ${icon("chevron-down")}</summary><div class="magnet-file-list">${extras.map(torrentFileRow).join("")}</div></details>`
+    : "";
+  container.innerHTML = `<h3 class="magnet-files__head">${headline}</h3><div class="magnet-file-list">${primary.map(torrentFileRow).join("")}</div>${extrasMarkup}`;
+  container.querySelectorAll(".torrent-file-play").forEach((button) => button.addEventListener("click", () => {
+    const file = session.files.find((item) => item.index === Number(button.dataset.fileIndex));
+    if (file) void playTorrentFile(session, file);
+  }));
+}
+
+// Chapters saved from series details carry their catalog code and title (pack files can be
+// numbered 1…148 across seasons), so those win over what the file name suggests.
+function torrentFileIdentity(entry, file, collectionTitle) {
+  const label = entry?.chapterLabels?.[String(file?.index)];
+  if (label?.code) return { episode: { code: label.code, title: label.title || label.code }, sourceTag: `${collectionTitle} · ${label.code}` };
+  return { episode: episodeIdentity(file?.name || ""), sourceTag: sourceTagFor(file, collectionTitle) };
+}
+
+function setCurrentTorrentSource(session, file) {
+  // Theater is a temporary viewing choice, not the default for a new chapter.
+  setWatchTheaterMode(false);
+  watchPendingSelection = null;
+  state.loadingProgress = 0;
+  for (const importJob of embeddedSubtitleImports.values()) importJob.abort("source changed");
+  const libraryId = String(session.infoHash || "").toLowerCase();
+  const entry = libraryEntryById(libraryId) || upsertLibrarySession(session);
+  setPlayerLoadingTitle(entry, session.name);
+  const collectionTitle = entry?.displayTitle || entry?.title || normalizeCollectionTitle(session.name, file.name);
+  const { episode, sourceTag } = torrentFileIdentity(entry, file, collectionTitle);
+  state.currentSource = {
+    kind: "torrent",
+    title: collectionTitle,
+    sourceTag,
+    libraryId: entry?.id || libraryId,
+    fileIndex: file.index,
+    fileName: file.name,
+    episode,
+    aliases: Array.isArray(entry?.aliases) ? entry.aliases : [],
+    sessionId: session.id,
+    catalogId: entry?.catalogId || "",
+    catalogType: entry?.catalogType || "",
+  };
+  rememberWatchSelection(state.currentSource.libraryId, file.index);
+  playbackRecovery = changePlaybackRecoverySource(playbackRecovery, currentRecoveryKey());
+  applyLanguagePreferencesToTracks();
+  resetAudioSync();
+  updatePlayerIdentity(collectionTitle, episode);
+  startTransferStats(session.id);
+}
+
+let playbackLoadRequestId = 0;
+let libraryPlaybackResolveController = null;
+let libraryPlaybackPendingMagnet = "";
+
+async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = null } = {}) {
+  // A direct torrent selection supersedes a pending Library resolution too.
+  // Do not abort the Library request that just handed us this same load ID.
+  if (requestId === null) {
+    libraryPlaybackResolveController?.abort("another source selected");
+    libraryPlaybackResolveController = null;
+    libraryPlaybackPendingMagnet = "";
+  }
+  const loadId = requestId ?? ++playbackLoadRequestId;
+  const storageLimit = await playerStorageLimit();
+  if (loadId !== playbackLoadRequestId) return false;
+  if (storageLimit && Number(file?.length) > storageLimit) {
+    const message = `This video is ${(Number(file.length) / 1024 ** 3).toFixed(1)} GB, more than the ${Math.round(storageLimit / 1024 ** 3)} GB set for player storage. Raise it in Settings, Storage.`;
+    if (!$("#video-loading")?.hidden) setPlayerLoading(100, "Not enough player storage", message, { error: true });
+    toast(message, { tone: "error", timeout: 8000 });
+    return false;
+  }
+  const previousSessionId = state.currentSource?.kind === "torrent" ? state.currentSource.sessionId : null;
+  beginSourceTransition();
+  setCurrentTorrentSource(session, file);
+  $("#magnet-dialog")?.close();
+  switchView("watch");
+  renderWatchChapters();
+  frame.classList.add("has-video");
+  setPlayerLoading(Math.max(62, state.loadingProgress), "Preparing video");
+  state.currentMediaProbe = null;
+  state.selectedAudioTrack = 0;
+  const currentEntry = state.currentSource?.libraryId ? libraryEntryById(state.currentSource.libraryId) : null;
+  const audioReleaseHint = [
+    file.name,
+    session?.name,
+    currentEntry?.rawName,
+    currentEntry?.sourceMeta?.releaseName,
+    currentEntry?.sourceMeta?.filename,
+  ].filter(Boolean).join(" ");
+  const filenameNeedsAudioTranscode = releaseNeedsAudioTranscode(audioReleaseHint);
+  let probedMedia = null;
+  setPlayerLoading(Math.max(68, state.loadingProgress), "Reading media");
+  try {
+    probedMedia = await fetchJson(file.metadataUrl || `/api/torrents/${encodeURIComponent(session.id)}/files/${file.index}/metadata`);
+    if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return false;
+    state.currentMediaProbe = probedMedia;
+    state.selectedAudioTrack = preferredAudioTrackIndex(probedMedia);
+    // Resume/next-chapter playback can begin late inside a 180s bucket.
+    // Extract near that actual playhead instead of scanning unavailable old pieces.
+    enableDefaultEmbeddedSubtitles(probedMedia, startAtSeconds, { urgent: startAtSeconds >= 12 });
+    renderSubtitleStyleControls();
+    const resolvedDurationMs = Number(probedMedia.durationMs) || Math.round(Number(probedMedia.durationSeconds || 0) * 1000);
+    if (resolvedDurationMs) {
+      file.durationMs = resolvedDurationMs;
+      file.durationSeconds = resolvedDurationMs / 1000;
+      state.mediaDurationMs = resolvedDurationMs;
+      refreshSubtitleTimelineFits();
+      updateCompatControls();
+    }
+    setPlayerLoading(Math.max(78, state.loadingProgress), "Starting playback");
+  } catch (error) {
+    console.warn("Could not read media metadata before playback startup:", error);
+  }
+  const playbackDecision = await selectBrowserPlaybackWithCapabilities({
+    file, media: probedMedia, canPlayType: (mime) => video.canPlayType(mime),
+    audioTrackOrder: state.selectedAudioTrack, audioMode: audioOutputMode,
+    decodingInfo: window.navigator?.mediaCapabilities?.decodingInfo?.bind(window.navigator.mediaCapabilities),
+  });
+  if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return false;
+  // The fallback conversion exists for HEVC/HDR files when the OS lacks the
+  // decoder; native play is preferable when Edge advertises compatible support.
+  const needsTranscode = !playbackDecision.direct || (filenameNeedsAudioTranscode && !probedMedia);
+  const action = needsTranscode ? "transcode" : "stream";
+  const baseUrl = `/api/torrents/${encodeURIComponent(session.id)}/files/${file.index}/${action}`;
+  state.transcodeContext = needsTranscode ? { baseUrl, sessionId: session.id, fileIndex: file.index, audioIndex: state.selectedAudioTrack, copyVideo: playbackDecision.mode === "remux" } : null;
+  const episode = torrentFileIdentity(currentEntry, file, state.currentSource.title).episode;
+  let durationMs = Number(file.durationMs) || state.mediaDurationMs || 0;
+  state.transcodeBaseOffsetSeconds = needsTranscode ? Math.max(0, Number(startAtSeconds) || 0) : 0;
+  setPlayerLoading(needsTranscode ? 84 : 76, needsTranscode
+    ? (filenameNeedsAudioTranscode && !file.needsTranscode ? "Converting audio" : "Starting stream")
+    : "Buffering");
+  const sourceOptions = {
+    title: state.currentSource.title,
+    status: needsTranscode ? (playbackDecision.mode === "remux" ? "TORRENT - REMUXING" : filenameNeedsAudioTranscode && !file.needsTranscode ? "TORRENT - AUDIO → AAC" : "TORRENT - TRANSCODING") : "TORRENT STREAM",
+    mode: needsTranscode ? "transcode" : "torrent-direct",
+    durationMs,
+    startAtSeconds,
+  };
+  if (needsTranscode) {
+    const opened = await openTranscodeAt(startAtSeconds, { wasPlaying: true, initialize: sourceOptions });
+    if (!opened || loadId !== playbackLoadRequestId) return false;
+  } else {
+    setMediaSource({ ...sourceOptions, src: baseUrl });
+  }
+  updatePlayerIdentity(state.currentSource.title, episode);
+  // The player no longer reads the previous torrent: free its slot (the server allows 4 sessions).
+  if (previousSessionId && previousSessionId !== session.id) void releaseTorrentSession(previousSessionId);
+  if (!needsTranscode) video.play().catch(() => {});
+  window.setTimeout(async () => {
+    try {
+      const media = probedMedia || await fetchJson(file.metadataUrl || `/api/torrents/${encodeURIComponent(session.id)}/files/${file.index}/metadata`);
+      if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return;
+      state.currentMediaProbe = media;
+      enableDefaultEmbeddedSubtitles(media, startAtSeconds, { urgent: startAtSeconds >= 12 });
+      if (!probedMedia && state.selectedAudioTrack === 0) {
+        const wantedIndex = preferredAudioTrackIndex(media);
+        if (wantedIndex > 0) await switchAudioTrack(wantedIndex);
+      }
+      renderSubtitleStyleControls();
+      const resolvedDurationMs = Number(media.durationMs) || Math.round(Number(media.durationSeconds || 0) * 1000);
+      if (resolvedDurationMs) {
+        file.durationMs = resolvedDurationMs;
+        file.durationSeconds = resolvedDurationMs / 1000;
+        state.mediaDurationMs = resolvedDurationMs;
+        refreshSubtitleTimelineFits();
+      }
+      renderPlayerAudioMenu();
+      if (!probedMedia && video.dataset.mode === "transcode" && state.transcodeContext && !state.transcodeContext.copyVideo && !state.transcodeContext.forceH264) {
+        const refined = await selectBrowserPlaybackWithCapabilities({
+          file, media, canPlayType: (mime) => video.canPlayType(mime),
+          audioTrackOrder: state.selectedAudioTrack, audioMode: audioOutputMode,
+          decodingInfo: window.navigator?.mediaCapabilities?.decodingInfo?.bind(window.navigator.mediaCapabilities),
+        });
+        if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return;
+        if (refined.mode === "remux") {
+          // Metadata arrived after initial playback began: restore the full
+          // HEVC/HDR bitstream rather than continuing an avoidable conversion.
+          state.transcodeContext.copyVideo = true;
+          await restartTranscodeAt(absolutePlaybackSeconds(), { wasPlaying: !video.paused });
+        }
+      }
+      if (video.dataset.mode === "torrent-direct") {
+        const refined = await selectBrowserPlaybackWithCapabilities({
+          file, media, canPlayType: (mime) => video.canPlayType(mime),
+          audioTrackOrder: state.selectedAudioTrack, audioMode: audioOutputMode,
+          decodingInfo: window.navigator?.mediaCapabilities?.decodingInfo?.bind(window.navigator.mediaCapabilities),
+        });
+        if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return;
+        if (!refined.direct) await switchAudioTrack(state.selectedAudioTrack, { force: true });
+      }
+      updateCompatControls();
+    } catch (error) {
+      console.warn("Could not read media metadata after playback startup:", error);
+    }
+  }, probedMedia ? 0 : 450);
+  return true;
+}
+
+function preparePlayerForLibraryLoad(entry, episode, { resumeAtSeconds = 0 } = {}) {
+  cancelTranscodeStart();
+  setWatchTheaterMode(false);
+  watchPendingSelection = { libraryId: entry.id, fileIndex: episode?.fileIndex ?? null, episode };
+  if (episode) rememberWatchSelection(entry.id, episode.fileIndex);
+  state.loadingProgress = 0;
+  beginSourceTransition();
+  video.pause();
+  state.transcodeBaseOffsetSeconds = 0;
+  state.transcodeRequestedStartSeconds = 0;
+  state.transcodeContext = null;
+  state.currentMediaProbe = null;
+  state.mediaDurationMs = 0;
+  state.currentMs = Math.max(0, Number(resumeAtSeconds) || 0) * 1000;
+  frame.classList.add("has-video");
+  $("#compat-controls").hidden = false;
+  revealPlayerControls();
+  updatePlayerIdentity(entry.displayTitle || entry.title || "Library source", episode ? { code: episode.code, title: episode.episodeTitle || episode.code } : null);
+  setPlayerLoadingTitle(entry);
+  $("#media-status").textContent = "LIBRARY - RESOLVING SOURCE";
+  setPlayerLoading(4, "Connecting");
+  switchView("watch");
+  renderWatchChapters();
+}
+
+async function resolveTorrentMagnet(magnet, onProgress, { timeoutMs = 0, preferredFileIndex = null, signal, releaseOnFailure = true, onSession } = {}) {
+  signal?.throwIfAborted();
+  let session = await postJson("/api/torrents", {
+    magnet,
+    ...(Number.isInteger(preferredFileIndex) && preferredFileIndex >= 0 ? { preferredFileIndex } : {}),
+  }, { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15_000)]) : undefined });
+  // Poll payloads don't preserve `reused`; remember whether this caller owns
+  // the newly created session before considering cleanup on timeout/error.
+  const ownedSession = session.reused === false;
+  onSession?.(session);
+  signal?.throwIfAborted();
+  const startedAt = Date.now();
+  while (session.state !== "ready" && session.state !== "error") {
+    onProgress?.(session, Math.floor((Date.now() - startedAt) / 1000));
+    if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
+      if (releaseOnFailure && ownedSession) await releaseTorrentSession(session.id);
+      throw new Error("Torrent metadata timed out. Trying another source may work.");
+    }
+    await new Promise((resolve, reject) => {
+      const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+      const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, 1500);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (signal?.aborted) onAbort();
+    });
+    session = await fetchJson(`/api/torrents/${encodeURIComponent(session.id)}`, { signal });
+  }
+  if (session.state === "error") {
+    // Free the slot now; an errored session would otherwise count against the limit until it expires.
+    if (releaseOnFailure && ownedSession) await releaseTorrentSession(session.id);
+    throw new Error(session.error || "Torrent metadata could not be resolved.");
+  }
+  return session;
+}
+
+async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds = 0 } = {}) {
+  const entry = libraryEntryById(libraryId);
+  if (!entry?.magnet) return false;
+  libraryPlaybackResolveController?.abort("another library episode selected");
+  const controller = new AbortController();
+  libraryPlaybackResolveController = controller;
+  libraryPlaybackPendingMagnet = entry.magnet;
+  let reservedSession = null;
+  const loadId = ++playbackLoadRequestId;
+  const buttonSource = entry.episodes?.find((episode) => Number(episode.fileIndex) === Number(fileIndex));
+  preparePlayerForLibraryLoad(entry, buttonSource, { resumeAtSeconds });
+  try {
+    $("#media-status").textContent = `LIBRARY - RESOLVING ${buttonSource?.code || "VIDEO"}`;
+    const session = await resolveTorrentMagnet(entry.magnet, (current, elapsed) => {
+      if (loadId !== playbackLoadRequestId) return;
+      const peerBoost = current.numPeers ? 16 : 0;
+      const slowPenalty = current.state === "resolving-slow" ? 4 : 0;
+      const percent = Math.min(58, 10 + peerBoost + Math.min(32, elapsed * 4) - slowPenalty);
+      setPlayerLoading(percent, current.numPeers ? "Reading source" : "Finding peers", current.numPeers
+        ? `${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}`
+        : "");
+    }, { preferredFileIndex: Number.isInteger(fileIndex) ? fileIndex : null, timeoutMs: recoveryBusy ? 25_000 : 60_000,
+      signal: controller.signal, onSession: (session) => { reservedSession = session; controller.sessionId = session.id; } });
+    if (loadId !== playbackLoadRequestId) return false;
+    setPlayerLoading(62, "Source ready");
+    upsertLibrarySession(session, entry.magnet, {
+      seriesKeyOverride: entry.seriesKey,
+      displayTitleOverride: entry.displayTitle || entry.title,
+      coverUrlOverride: entry.coverUrl || "",
+      catalogId: entry.catalogId || "",
+      catalogType: entry.catalogType || "",
+      sourceMeta: entry.sourceMeta || null,
+      aliases: entry.aliases || [],
+    });
+    const file = session.files.find((item) => Number(item.index) === Number(fileIndex))
+      || session.files.find((item) => item.name === buttonSource?.name);
+    if (!file) throw new Error("That file is no longer present in this torrent.");
+    return (await playTorrentFile(session, file, { startAtSeconds: resumeAtSeconds, requestId: loadId })) !== false;
+  } catch (error) {
+    if (loadId !== playbackLoadRequestId || controller.signal.aborted) return false;
+    $("#media-status").textContent = "Couldn't open this source";
+    setPlayerLoading(100, "Couldn't open this source", error.message || "", { error: true });
+    console.error(error);
+    return false;
+  } finally {
+    if (libraryPlaybackResolveController === controller) {
+      libraryPlaybackResolveController = null;
+      libraryPlaybackPendingMagnet = "";
+    }
+    // Release only a newly owned abandoned torrent, not a reused session, an
+    // active player session, or one the replacement request may still reuse.
+    if (controller.signal.aborted && reservedSession?.reused === false
+      && libraryPlaybackPendingMagnet !== entry.magnet) await releaseTorrentSession(reservedSession.id);
+  }
+}
+
+async function resolveMagnet(event) {
+  event.preventDefault();
+  const magnet = $("#magnet-input").value.trim();
+  if (!magnet) return;
+  setToolStatus("#magnet-status", "Reading the torrent…");
+  $("#magnet-files").innerHTML = "";
+  try {
+    const session = await resolveTorrentMagnet(magnet, (current, elapsed) => {
+      const peerCopy = current.numPeers ? `, ${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}` : "";
+      setToolStatus("#magnet-status", `${current.state === "resolving-slow" ? "Still reading the torrent" : "Reading the torrent"}… ${elapsed} s${peerCopy}`);
+    });
+    const targetSeriesKey = state.pendingMagnetSeriesKey;
+    const entry = upsertLibrarySession(session, magnet, { seriesKeyOverride: targetSeriesKey });
+    state.pendingMagnetSeriesKey = null;
+    const videoCount = (session.files || []).filter((file) => file.video).length;
+    const normalizedTitle = normalizeCollectionTitle(session.name, session.files?.find((file) => file.video)?.name);
+    const where = targetSeriesKey && entry ? `, added to ${entry.displayTitle || entry.title}` : ", added to your Library";
+    setToolStatus("#magnet-status", `${normalizedTitle}: ${videoCount} video${videoCount === 1 ? "" : "s"}${where}`);
+    renderMagnetFiles(session);
+  } catch (error) {
+    setToolStatus("#magnet-status", error.message, true);
+  }
+}
+
+function openMagnetDialog({ seriesKey = null } = {}) {
+  state.pendingMagnetSeriesKey = seriesKey;
+  $("#magnet-input").value = "";
+  $("#magnet-files").innerHTML = "";
+  const series = seriesKey ? buildLibrarySeries().find((item) => item.key === seriesKey) : null;
+  $("#magnet-title").textContent = series ? `Add a magnet to ${series.title}` : "Open a magnet link";
+  setToolStatus("#magnet-status", "");
+  $("#magnet-dialog").showModal();
+  queueMicrotask(() => $("#magnet-input")?.focus());
+}
+
+function renderWebSubtitleResults(results) {
+  const container = $("#subtitle-web-results");
+  if (!results.length) {
+    container.innerHTML = empty("No subtitles found", "");
+    return;
+  }
+  container.innerHTML = results.map((result, index) => {
+    const details = subtitleResultPresentation(result, index);
+    return `<div class="tool-result subtitle-result">
+    <div class="tool-result-copy subtitle-result-copy">
+      <strong>${escapeHtml(details.anime)}${details.season && details.episode ? ` S${details.season} E${details.episode}` : ""}</strong>
+      <div class="subtitle-result-facts">
+        <span><b>SOURCE</b>${escapeHtml(details.source)}</span>
+        <span><b>SEASON</b>${escapeHtml(details.season || "—")}</span>
+        <span><b>EPISODE</b>${escapeHtml(details.episode || "—")}</span>
+        <span><b>LANGUAGE</b>${escapeHtml(details.language)}</span>
+      </div>
+    </div>
+    <button class="button subtitle-web-import" data-result-index="${index}">ADD</button>
+  </div>`; }).join("");
+  container.querySelectorAll(".subtitle-web-import").forEach((button) => button.addEventListener("click", () => importWebSubtitle(Number(button.dataset.resultIndex), button)));
+}
+
+function subtitleResultPresentation(result, index = 0) {
+  const raw = [result?.label, result?.release, result?.matchedRelease, result?.matchedQuery].filter(Boolean).join(" ");
+  const episodeMatch = raw.match(/\bS(\d{1,2})E(\d{1,3})\b/i) || raw.match(/\b(\d{1,2})x(\d{1,3})\b/i);
+  const current = currentSubtitleSearchDefaults();
+  const seasonNumber = Number(result?.season) || Number(episodeMatch?.[1]) || Number($("#subtitle-season")?.value) || Number(current.season) || 0;
+  const episodeNumber = Number(result?.episode) || Number(episodeMatch?.[2]) || Number($("#subtitle-episode")?.value) || Number(current.episode) || 0;
+  const anime = String(result?.title || $("#subtitle-query")?.value || current.query || state.currentSource?.title || `Subtitle ${index + 1}`).trim();
+  const sourceTokens = [];
+  const releaseTokenPattern = /\b(?:WEB[- .]?DL|WEBRIP|BDRIP|BLU[- .]?RAY|NF|NETFLIX|AMZN|AMAZON|CRUNCHYROLL|CR|HULU|DSNP|DISNEY\+?|HMAX|MAX|ATVP)\b/ig;
+  for (const match of raw.matchAll(releaseTokenPattern)) {
+    const value = String(match[0]).replace(/[ ._-]+/g, "").toUpperCase();
+    if (value && !sourceTokens.includes(value)) sourceTokens.push(value);
+  }
+  const provider = String(result?.provider || "SUBTITLE").trim();
+  const source = [provider, ...sourceTokens.slice(0, 3)].filter(Boolean).join(", ");
+  return {
+    anime,
+    source,
+    season: seasonNumber ? String(seasonNumber).padStart(2, "0") : "",
+    episode: episodeNumber ? String(episodeNumber).padStart(2, "0") : "",
+    language: String(result?.language || "—").toUpperCase(),
+  };
+}
+
+function currentSubtitleSearchDefaults() {
+  const source = state.currentSource || {};
+  const episode = source.episode || episodeIdentity($("#media-title")?.textContent || "");
+  const query = source.kind === "idle" ? "" : String(source.title || $("#media-title")?.textContent || "")
+    .replace(/\s+\[[^\]]+\]\s*$/g, "")
+    .replace(/\s+·\s+S\d{1,2}E\d{1,3}.*$/i, "")
+    .trim();
+  const codeMatch = episode?.code?.match(/^S(\d{2})E(\d{2,3})$/i);
+  return {
+    query,
+    type: codeMatch ? "tv" : "movie",
+    season: codeMatch ? Number(codeMatch[1]) : undefined,
+    episode: codeMatch ? Number(codeMatch[2]) : undefined,
+    aliases: Array.isArray(source.aliases) ? source.aliases : [],
+    catalogId: source.catalogId || "",
+  };
+}
+
+function subtitleFallbackQueries(primaryQuery) {
+  const source = state.currentSource || {};
+  const release = String(source.fileName || "")
+    .replace(/\.[^.]+$/, "")
+    .replace(/^\[[^\]]+\]\s*/, "")
+    .replace(/\bS\d{1,2}E\d{1,3}\b.*$/i, "")
+    .replace(/\s+-\s+\d{1,3}(?:v\d+)?\b.*$/i, "")
+    .replace(/\[[^\]]+\]/g, " ")
+    .replace(/[._]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  return [...new Set([
+    ...(Array.isArray(source.aliases) ? source.aliases : []),
+    release,
+  ].map((value) => String(value || "").trim()).filter((value) => value && value.toLowerCase() !== String(primaryQuery || "").toLowerCase()))].slice(0, 5);
+}
+
+function populateSubtitleSearchFromCurrentSource() {
+  const defaults = currentSubtitleSearchDefaults();
+  $("#subtitle-language").value = subtitleFinderLanguages();
+  syncSubtitleFinderLanguageChips();
+  $("#subtitle-query").value = defaults.query;
+  $("#subtitle-type").value = defaults.type;
+  $("#subtitle-season").value = defaults.season || "";
+  $("#subtitle-episode").value = defaults.episode || "";
+  return defaults;
+}
+
+function subtitleReleaseScore(result, sourceName) {
+  const normalizedSource = normalizeCollectionTitle(sourceName || "").toLowerCase();
+  const sourceTokens = new Set(normalizedSource
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((token) => token.length > 2));
+  const candidate = `${result.release || ""} ${result.matchedRelease || ""} ${result.label || ""}`.toLowerCase();
+  const candidateTokens = candidate.split(/[^a-z0-9]+/).filter((token) => token.length > 2);
+  let score = candidateTokens.filter((token) => sourceTokens.has(token)).length;
+  const compactSource = normalizedSource.replace(/[^a-z0-9]+/g, "");
+  const compactCandidate = candidate.replace(/[^a-z0-9]+/g, "");
+  if (compactSource.length >= 12 && (compactCandidate.includes(compactSource) || compactSource.includes(compactCandidate))) score += 14;
+  if (result.matchedRelease || /filename|release/i.test(String(result.matchMode || ""))) score += 8;
+  if (/bdrip/i.test(sourceName || "") && /bdrip/i.test(candidate)) score += 4;
+  if (/bluray|blu-ray/i.test(sourceName || "") && /bluray|blu-ray/i.test(candidate)) score += 4;
+  if (/web[- .]?dl|webrip/i.test(sourceName || "") && /web[- .]?dl|webrip/i.test(candidate)) score += 4;
+  if (/1080p/i.test(sourceName || "") && /1080p/i.test(candidate)) score += 2;
+  if (/720p/i.test(sourceName || "") && /720p/i.test(candidate)) score += 2;
+  if (/\b(?:nf|netflix)\b/i.test(sourceName || "") && /\b(?:nf|netflix)\b/i.test(candidate)) score += 3;
+  if (/\b(?:amzn|amazon)\b/i.test(sourceName || "") && /\b(?:amzn|amazon)\b/i.test(candidate)) score += 3;
+  if (result.hearingImpaired) score -= 0.5;
+  score += Math.min(2, Math.log10(Math.max(1, Number(result.downloads) || 1)) / 2);
+  return score;
+}
+
+function bestSubtitleIndexesByLanguage(results, languageList) {
+  const requested = languageList.split(",").map((value) => value.trim().toUpperCase()).filter(Boolean).slice(0, 4);
+  const sourceName = state.currentSource?.fileName || state.currentSource?.title || "";
+  return requested.map((languageCode) => {
+    const candidates = results
+      .map((result, index) => ({ result, index }))
+      .filter(({ result }) => String(result.language || "").toUpperCase() === languageCode)
+      .sort((a, b) => subtitleReleaseScore(b.result, sourceName) - subtitleReleaseScore(a.result, sourceName));
+    return candidates[0]?.index;
+  }).filter((index) => Number.isInteger(index));
+}
+
+async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {}) {
+  const apiKey = state.subdlKey;
+  const query = $("#subtitle-query").value.trim();
+  const selected = parseSubtitleFinderLanguages($("#subtitle-language").value);
+  if (!selected) {
+    setToolStatus("#subtitle-web-status", "Select 1–4 languages using two-letter codes (for example ES,EN).", true);
+    $("#subtitle-language").focus();
+    return;
+  }
+  const language = selected.join(",");
+  if (!auto) {
+    localStorage.setItem("lvl-subtitle-finder-languages", language);
+    $("#subtitle-language").value = language;
+    syncSubtitleFinderLanguageChips();
+  }
+  const type = $("#subtitle-type").value;
+  const season = Number($("#subtitle-season").value) || undefined;
+  const episode = Number($("#subtitle-episode").value) || undefined;
+  const catalogId = state.currentSource?.catalogId || "";
+  setToolStatus("#subtitle-web-status", "Searching for subtitles…");
+  $("#subtitle-web-results").innerHTML = "";
+  try {
+    const aliases = subtitleFallbackQueries(query);
+    const data = await postJson("/api/subtitles/search", {
+      apiKey,
+      wyzieKey: state.wyzieKey,
+      subsourceKey: state.subsourceKey,
+      query,
+      aliases,
+      releaseQuery: state.currentSource?.fileName || "",
+      language,
+      type,
+      season,
+      episode,
+      catalogId,
+      animeFallback: type === "tv" && Boolean(aliases.length),
+      forceBroad,
+    });
+    const sourceName = state.currentSource?.fileName || state.currentSource?.title || "";
+    state.webSubtitleResults = (data.results || []).slice().sort((a, b) => subtitleReleaseScore(b, sourceName) - subtitleReleaseScore(a, sourceName));
+    const count = state.webSubtitleResults.length;
+    setToolStatus("#subtitle-web-status", count ? "" : "No subtitles found");
+    renderWebSubtitleResults(state.webSubtitleResults);
+    if (auto && !state.webSubtitleResults.length) setToolStatus("#subtitle-web-status", `No ${languageName(language)} subtitles found for this video`, true);
+    if (auto && state.webSubtitleResults.length) {
+      const indexes = bestSubtitleIndexesByLanguage(state.webSubtitleResults, language);
+      const added = [];
+      for (const index of indexes) {
+        const result = state.webSubtitleResults[index];
+        if (currentSourceTracks().some((track) => track.language === String(result.language || "").toUpperCase())) continue;
+        const imported = await importWebSubtitle(index, null, { quiet: true });
+        if (imported) added.push(String(result.language || "").toUpperCase());
+      }
+      if (added.length && currentSourceTracks().filter((track) => track.cues?.length).length > 1) await alignCurrentSubtitleSet();
+      if (added.length) setToolStatus("#subtitle-web-status", `Added ${added.map(languageName).join(" and ")} subtitles`);
+    }
+  } catch (error) {
+    setToolStatus("#subtitle-web-status", error.message, true);
+  }
+}
+
+async function searchWebSubtitles(event) {
+  event.preventDefault();
+  await performWebSubtitleSearch();
+}
+
+async function openSubtitleSearch({ auto = false } = {}) {
+  const defaults = populateSubtitleSearchFromCurrentSource();
+  $("#subtitle-web-dialog").showModal();
+  if (!auto) {
+    setToolStatus("#subtitle-web-status", "");
+    return;
+  }
+  if (!state.subdlKey && !defaults.query) return;
+  await performWebSubtitleSearch({ auto: true });
+}
+
+async function importWebSubtitle(index, button = null, { quiet = false } = {}) {
+  const result = state.webSubtitleResults[index];
+  if (!result) return false;
+  const apiKey = state.subdlKey;
+  const previous = button?.textContent || "Add";
+  if (button) {
+    button.disabled = true;
+    button.textContent = "Loading…";
+  }
+  try {
+    const data = await postJson("/api/subtitles/download", { apiKey, url: result.url, label: result.label });
+    const label = (data.filename || result.label || "Web subtitle").replace(/\.(srt|vtt)$/i, "");
+    const added = addSubtitleText(data.text, label, data.language || result.language, {
+      origin: "web",
+      provider: result.provider || data.provider || "Web",
+      release: result.release || result.matchedRelease || result.label || "",
+      matchScore: subtitleReleaseScore(result, state.currentSource?.fileName || state.currentSource?.title || ""),
+    });
+    renderSubtitleWorkspace();
+    if (!added.added) {
+      if (button) button.textContent = "Already added";
+      if (!quiet) setToolStatus("#subtitle-web-status", "Subtitle already added");
+      return false;
+    }
+    if (button) button.textContent = "Added";
+    if (!quiet) setToolStatus("#subtitle-web-status", "Subtitle added");
+    return true;
+  } catch (error) {
+    if (button) {
+      button.disabled = false;
+      button.textContent = previous;
+    }
+    if (!quiet) setToolStatus("#subtitle-web-status", error.message, true);
+    return false;
+  }
+}
+
+function empty(title, copy) {
+  return `<div class="empty-state"><strong>${escapeHtml(title)}</strong>${escapeHtml(copy)}</div>`;
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
+}
+
+$("#video-input").addEventListener("change", (event) => {
+  const file = event.target.files?.[0];
+  if (!file) return;
+  setWatchTheaterMode(false);
+  watchPendingSelection = null;
+  event.target.value = "";
+  const url = URL.createObjectURL(file);
+  const title = normalizeCollectionTitle(file.name);
+  setPlayerLoadingTitle(null, title);
+  state.currentSource = { kind: "local", title, sourceTag: title, libraryId: null, fileIndex: null };
+  stopTransferStats();
+  updateTransferStats();
+  applyLanguagePreferencesToTracks();
+  updatePlayerIdentity(title, { code: "VIDEO", title });
+  setMediaSource({ src: url, title, status: "LOCAL MEDIA", objectUrl: url });
+  // "Play a video file" is in the Library's More menu: go to the player.
+  switchView("watch");
+  renderWatchChapters();
+});
+
+$("#subtitle-input").addEventListener("change", (event) => handleSubtitleFiles([...event.target.files]));
+$("#magnet-form").addEventListener("submit", resolveMagnet);
+// Both entry points reuse the same non-modal live search panel and results.
+$("#catalog-search-form").addEventListener("submit", searchCatalogTitles);
+$("#catalog-search-input").addEventListener("input", queueCatalogSearch);
+$("#home-search-title")?.addEventListener("click", () => openCatalogSearch("topbar"));
+$("#section-search-title")?.addEventListener("click", () => openCatalogSearch("section"));
+$("#catalog-search-shell")?.addEventListener("keydown", (event) => {
+  const results = [...$("#catalog-results").querySelectorAll(".catalog-search-result")];
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeCatalogSearch({ restoreFocus: true });
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (!results.length) return;
+    event.preventDefault();
+    const index = results.indexOf(document.activeElement);
+    const next = event.key === "ArrowDown" ? (index + 1) % results.length : (index <= 0 ? results.length - 1 : index - 1);
+    results[next].focus();
+  }
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!catalogSearchIsOpen()) return;
+  if (event.target.closest("#catalog-search-shell, #home-search-title, #section-search-title")) return;
+  closeCatalogSearch();
+});
+$("#home-open-library")?.addEventListener("click", () => switchView("library"));
+$("#section-open-library")?.addEventListener("click", () => switchView("library"));
+$("#sidebar-brand-link")?.addEventListener("click", () => {
+  if (viewActive("home")) window.scrollTo({ top: 0, behavior: "instant" });
+  switchView("home");
+});
+let previousRandomRecommendationId = "";
+let randomRecommendationBusy = false;
+let previousRandomAnimeId = 0;
+let randomTitleScope = { id: "", category: "all" };
+const RANDOM_SOURCE_KEY = "lvl-random-source";
+let randomSource = localStorage.getItem(RANDOM_SOURCE_KEY) === "anything" ? "anything" : "recommended";
+const randomSourceSetting = $("#settings-random-source");
+if (randomSourceSetting) {
+  randomSourceSetting.value = randomSource;
+  randomSourceSetting.addEventListener("change", () => {
+    randomSource = randomSourceSetting.value === "anything" ? "anything" : "recommended";
+    localStorage.setItem(RANDOM_SOURCE_KEY, randomSource);
+  });
+}
+const randomPickPopover = $("#random-pick-popover");
+const randomPickTriggers = ["#home-refresh-picks", "#section-random-pick"];
+function isCurrentRandomEntry() {
+  if (!lastRandomEntry || !viewActive("title")) return false;
+  const route = titleRoute();
+  return Boolean((route.id && route.id === lastRandomEntry.id)
+    || (!route.id && route.key && route.key === lastRandomEntry.key));
+}
+function refreshRandomPickIndicator() {
+  const active = isCurrentRandomEntry();
+  randomPickTriggers.forEach((selector) => {
+    const button = $(selector);
+    if (!button) return;
+    button.classList.toggle("is-random-entry", active);
+    button.setAttribute("aria-label", active && lastRandomEntry?.markup
+      ? "Show why this title was recommended" : active ? "Randomly chosen title" : "Open a random title");
+    if (active) button.removeAttribute("data-ui-tooltip");
+    else button.setAttribute("data-ui-tooltip", "Random title");
+  });
+  if (!active) closeRandomPickPopover();
+}
+function rememberRandomEntry({ mode, markup = "" } = {}) {
+  const route = titleRoute();
+  lastRandomEntry = { id: route.id, key: route.key, mode, markup };
+  refreshRandomPickIndicator();
+}
+function previewLastRandomReason() {
+  if (!isCurrentRandomEntry() || !lastRandomEntry?.markup || !randomPickPopover?.hidden) return;
+  showRandomPickPopover(lastRandomEntry.markup);
+}
+function randomActiveCategory() {
+  if (viewActive("home")) return homeBrowseCategory;
+  if (viewActive("library")) return libraryView.filter === "series" ? "tv" : libraryView.filter;
+  if (viewActive("title")) {
+    if (titleRoute().id && titleRoute().id === randomTitleScope.id) return randomTitleScope.category;
+    const subject = titleSubject();
+    if (subject.series) {
+      const category = libraryCategory(subject.series, {
+        animeIds: new Set((state.homeCatalog.anime || []).map((meta) => meta.id)),
+        details: libraryArtCached(subject.series),
+      });
+      return category === "series" ? "tv" : category;
+    }
+    if (subject.id && (state.homeCatalog.anime || []).some((meta) => meta.id === subject.id)) return "anime";
+    return subject.type === "movie" ? "movie" : "tv";
+  }
+  if (viewActive("watch")) {
+    const active = state.currentSource?.libraryId ? libraryEntryById(state.currentSource.libraryId) : null;
+    const series = active && buildLibrarySeries().find((item) => item.key === (active.seriesKey || librarySeriesKey(active.title)));
+    if (series) {
+      const category = libraryCategory(series, { animeIds: new Set((state.homeCatalog.anime || []).map((meta) => meta.id)) });
+      return category === "series" ? "tv" : category;
+    }
+  }
+  return "all";
+}
+function randomSeen(series) {
+  return randomSeriesAlreadySeen(series, { activeLibraryId: state.currentSource?.libraryId || "" });
+}
+function visibleRandomPickTrigger() {
+  return $(viewActive("home") ? randomPickTriggers[0] : randomPickTriggers[1]);
+}
+function positionRandomPickPopover() {
+  if (!randomPickPopover || randomPickPopover.hidden) return;
+  const anchor = visibleRandomPickTrigger();
+  if (!anchor) return;
+  const rect = anchor.getBoundingClientRect();
+  const width = randomPickPopover.getBoundingClientRect().width;
+  const left = Math.max(8, Math.min(window.innerWidth - width - 8, rect.right - width));
+  randomPickPopover.style.left = `${left}px`;
+  randomPickPopover.style.top = `${Math.max(8, Math.min(window.innerHeight - randomPickPopover.offsetHeight - 8, rect.bottom + 10))}px`;
+  const above = rect.top - randomPickPopover.offsetHeight - 10;
+  if (randomPickPopover.getBoundingClientRect().bottom > window.innerHeight - 8 && above >= 8)
+    randomPickPopover.style.top = `${above}px`;
+}
+function showRandomPickPopover(markup) {
+  if (!randomPickPopover) return;
+  randomPickPopover.innerHTML = markup;
+  randomPickPopover.hidden = false;
+  randomPickTriggers.forEach((selector) => $(selector)?.setAttribute("aria-expanded", "true"));
+  positionRandomPickPopover();
+}
+function closeRandomPickPopover({ restoreFocus = false } = {}) {
+  if (!randomPickPopover || randomPickPopover.hidden) return;
+  randomPickPopover.hidden = true;
+  randomPickTriggers.forEach((selector) => $(selector)?.setAttribute("aria-expanded", "false"));
+  if (restoreFocus) {
+    suppressRandomFocusPreview = true;
+    visibleRandomPickTrigger()?.focus({ preventScroll: true });
+  }
+}
+function showRandomPickMessage(title, message, { reasons = [] } = {}) {
+  const details = reasons.length ? reasons : [message];
+  showRandomPickPopover(`<p class="random-pick-title">${escapeHtml(title)}</p>
+    <ul class="random-pick-reasons">${details.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
+    <button class="random-pick-dismiss" type="button" data-random-mode="close">Dismiss</button>`);
+}
+function showRandomPickReason(pick) {
+  const groups = reasonGroups(pick);
+  if (!groups.matches.length && pick.summary) groups.matches.push(pick.summary);
+  const section = (heading, lines, name) => lines.length
+    ? `<section class="random-pick-evidence random-pick-evidence--${name}">
+        <h3>${escapeHtml(heading)}</h3>
+        <ul class="random-pick-reasons">${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
+      </section>`
+    : "";
+  requestAnimationFrame(() => {
+    const markup = `${section("Why it matches your taste", groups.matches, "matches")}
+      ${!groups.matches.length ? '<p class="random-pick-evidence-empty">This saved pick has no documented personal match reason. Refresh recommendations to recalculate its evidence.</p>' : ""}
+      ${section("Counter-signals", groups.cautions, "cautions")}
+      <button class="random-pick-dismiss" type="button" data-random-mode="close">Dismiss</button>`;
+    rememberRandomEntry({ mode: "recommended", markup });
+    showRandomPickPopover(markup);
+    randomPickPopover?.focus({ preventScroll: true });
+  });
+}
+async function openRandomRecommendedPick(pick, saved, category = "all") {
+  const series = findSavedRandomTitle(saved, {
+    imdbId: pick.imdbId, title: pick.title, titleAlt: pick.titleAlt,
+    anilistId: pick.source === "anilist" ? Number(String(pick.url || "").match(/\/anime\/(\d+)/)?.[1]) : 0,
+  });
+  if (randomSeen(series)) return false;
+  if (/^tt\d{5,12}$/.test(String(pick.imdbId || ""))) {
+    randomTitleScope = { id: pick.imdbId, category };
+    openHomeTitle({
+      id: pick.imdbId, type: pick.type, name: pick.title, poster: pick.cover || "",
+      description: pick.description || "", genres: pick.genres || [],
+      releaseInfo: pick.year ? String(pick.year) : "",
+    });
+    return true;
+  }
+  if (series?.catalogId) {
+    randomTitleScope = { id: series.catalogId, category };
+    openLibrarySeries(series.key);
+    return true;
+  }
+  if (pick.source === "anilist" && /^https:\/\/anilist\.co\/anime\/\d+/.test(pick.url || "")) {
+    const id = Number(pick.url.match(/\/anime\/(\d+)/)?.[1]);
+    try {
+      const match = await resolveAnimeBrowserCatalog({
+        id, title: pick.title, titleAlt: pick.titleAlt || "",
+        format: pick.type === "movie" ? "MOVIE" : "TV", year: pick.year,
+      });
+      if (randomSeen(findSavedRandomTitle(saved, { imdbId: match.id, title: pick.title, titleAlt: pick.titleAlt, anilistId: id }))) return false;
+      randomTitleScope = { id: match.id, category };
+      openTitlePage({ id: match.id, type: match.type, meta: match });
+      return true;
+    } catch {
+      // Do not fall back to an external tab: Random must open an LVL title.
+      return false;
+    }
+  }
+  if (pick.source === "tmdb" && pick.title && !pick.imdbId) {
+    // TMDB picks can lack an IMDb identifier. Open a local LVL title only
+    // when the catalog independently confirms a unique title/year/type match.
+    const params = new URLSearchParams({ q: pick.title });
+    try {
+      const searched = await fetchJson(`/api/catalog/search?${params}`);
+      const match = verifiedRandomCatalogMatch(pick, searched?.results);
+      if (!match || randomSeen(findSavedRandomTitle(saved, {
+        imdbId: match.id, title: pick.title, titleAlt: pick.titleAlt,
+      }))) return false;
+      randomTitleScope = { id: match.id, category };
+      openHomeTitle(match);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+async function openRandomRecommendation({ category = randomActiveCategory() } = {}) {
+  if (randomRecommendationBusy) return;
+  closeRandomPickPopover();
+  randomRecommendationBusy = true;
+  randomPickTriggers.forEach((selector) => { const trigger = $(selector); if (trigger) trigger.disabled = true; });
+  try {
+    let result = await recsUi.load();
+    // On first use, an imported AniList profile may already contain scores
+    // while personalized picks have never been generated. A Random click is
+    // explicit user intent to create/open a recommendation, so bootstrap that
+    // first run rather than treating an empty cache as an empty preference.
+    const hasRatingSeeds = Number(result?.settings?.anilist?.scored || 0) > 0
+      || Object.values(result?.stats?.ratings || {}).some((group) => Number(group?.scored) > 0);
+    const noGeneratedPicks = !result?.picks?.length;
+    const running = Boolean(result?.status?.running);
+    const lastRun = result?.status?.lastRun;
+    // The backend records a 'running' lastRun as soon as a refresh begins.
+    // Don't misinterpret that as a finished empty recommendations list.
+    const needsInitialRun = !lastRun || lastRun.status === "failed" || Boolean(result?.status?.ratingsChanged);
+    if (noGeneratedPicks && (running || (needsInitialRun && hasRatingSeeds))) {
+      if (!running) {
+        toast("Preparing your personalized recommendations…");
+        await postJson("/api/recs/refresh", {});
+      }
+      // The backend generates recommendations asynchronously. Wait briefly
+      // for its initial result; never hang Random indefinitely on a provider.
+      for (let attempt = 0; attempt < 12; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+        result = await recsUi.load({ force: true });
+        if (result?.picks?.length || !result?.status?.running) break;
+      }
+      if (!result?.picks?.length && result?.status?.running) {
+        toast("Your recommendations are still being generated. Try Random again once they finish.");
+        return;
+      }
+    }
+    const saved = buildLibrarySeries();
+    const candidates = (result?.picks || []).filter((pick) => ["movie", "series"].includes(String(pick.type || "").toLowerCase())
+      && randomPickMatchesCategory(pick, category)
+      && (/^tt\d{5,12}$/.test(String(pick.imdbId || ""))
+        || (pick.source === "anilist" && /^https:\/\/anilist\.co\/anime\/\d+/.test(pick.url || ""))
+        || (pick.source === "tmdb" && Boolean(pick.title))))
+      .filter((pick) => !randomSeen(findSavedRandomTitle(saved, {
+        imdbId: pick.imdbId, title: pick.title, titleAlt: pick.titleAlt,
+        anilistId: pick.source === "anilist" ? Number(String(pick.url || "").match(/\/anime\/(\d+)/)?.[1]) : 0,
+      })));
+    const unique = [...new Map(candidates.map((pick) => [randomPickIdentity(pick), pick])).values()];
+    if (!unique.length) {
+      const categoryName = category === "tv" ? "TV" : category;
+      const message = !(result?.picks || []).length
+        ? "Your recommendations have no eligible picks yet. Try refreshing them in Tracking."
+        : `No unseen ${category === "all" ? "" : categoryName + " "}recommendations in your picks. Try another category or choose Anything in Settings → Random titles.`;
+      toast(message);
+      return;
+    }
+    const alternatives = unique.length > 1 ? unique.filter((pick) => randomPickIdentity(pick) !== previousRandomRecommendationId) : unique;
+    const available = alternatives.length ? alternatives : unique;
+    const offset = Math.floor(Math.random() * available.length);
+    const ordered = [...available.slice(offset), ...available.slice(0, offset)];
+    for (const pick of ordered) {
+      if (!await openRandomRecommendedPick(pick, saved, category)) continue;
+      previousRandomRecommendationId = randomPickIdentity(pick);
+      showRandomPickReason(pick);
+      return;
+    }
+    toast("None of these recommendations has an available, verified LVL title page yet.");
+  } catch (error) {
+    toast(error.message || "Couldn't open a recommendation", { tone: "error" });
+  } finally {
+    randomRecommendationBusy = false;
+    randomPickTriggers.forEach((selector) => { const trigger = $(selector); if (trigger) trigger.disabled = false; });
+  }
+}
+let previousRandomCatalogId = "";
+async function openRandomAnimeAnything({ category = randomActiveCategory() } = {}) {
+  if (randomRecommendationBusy) return;
+  closeRandomPickPopover();
+  randomRecommendationBusy = true;
+  randomPickTriggers.forEach((selector) => { const trigger = $(selector); if (trigger) trigger.disabled = true; });
+  try {
+    const saved = buildLibrarySeries();
+    if (category === "anime") {
+      // Use AniList discovery rather than the personalized recommendation list.
+      const year = 1940 + Math.floor(Math.random() * (new Date().getFullYear() - 1939));
+      const sort = ["POPULARITY_DESC", "SCORE_DESC", "TRENDING_DESC", "START_DATE_DESC"][Math.floor(Math.random() * 4)];
+      const pages = [{ year: String(year), page: String(1 + Math.floor(Math.random() * 2)), sort },
+        { year: "all", page: String(1 + Math.floor(Math.random() * 12)), sort }];
+      const pools = [];
+      for (const params of pages) {
+        const response = await fetchJson(`/api/anime/discover?${new URLSearchParams(params)}`);
+        pools.push(...(response.items || []));
+        if (pools.length >= 8) break;
+      }
+      const eligible = [...new Map(pools.filter((media) => media.id && media.status !== "NOT_YET_RELEASED")
+        .filter((media) => !randomSeen(findSavedRandomTitle(saved, {
+          anilistId: media.id, title: media.title, titleAlt: media.titleAlt,
+        }))).map((media) => [media.id, media])).values()];
+      for (let i = eligible.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [eligible[i], eligible[j]] = [eligible[j], eligible[i]];
+      }
+      if (eligible.length > 1) eligible.sort((a, b) => Number(a.id === previousRandomAnimeId) - Number(b.id === previousRandomAnimeId));
+      for (const media of eligible) {
+        try {
+          const match = await resolveAnimeBrowserCatalog(media);
+          if (randomSeen(findSavedRandomTitle(saved, {
+            imdbId: match.id, anilistId: media.id, title: media.title, titleAlt: media.titleAlt,
+          }))) continue;
+          previousRandomAnimeId = media.id;
+          randomTitleScope = { id: match.id, category };
+          openTitlePage({ id: match.id, type: match.type, meta: match });
+          rememberRandomEntry({ mode: "anything" });
+          return;
+        } catch (error) {
+          // An unverified name match cannot be opened as the wrong title.
+          if (/temporarily unavailable/.test(error.message || "")) throw error;
+        }
+      }
+      toast("No unseen anime could be matched to an LVL title in this sample. Try Random again.");
+      return;
+    }
+    // For Movies / TV / All, select from the general catalog feed, not from
+    // personalized picks. This also supports random access outside Home.
+    const catalog = state.homeLoaded ? state.homeCatalog : await fetchJson("/api/catalog/home");
+    const animeIds = new Set((catalog.anime || []).map((meta) => meta.id));
+    const list = category === "movie" ? (catalog.movies || []).filter((meta) => !animeIds.has(meta.id))
+      : category === "tv" ? (catalog.series || []).filter((meta) => !animeIds.has(meta.id))
+        : [...(catalog.movies || []), ...(catalog.series || []), ...(catalog.anime || [])];
+    const eligible = [...new Map(list.filter((meta) => /^tt\d{5,12}$/.test(String(meta.id || ""))
+      && !randomSeen(findSavedRandomTitle(saved, { imdbId: meta.id, title: meta.name || meta.title })))
+      .map((meta) => [meta.id, meta])).values()];
+    if (!eligible.length) {
+      toast("No unseen titles available in the current catalog sample.");
+      return;
+    }
+    const alternatives = eligible.length > 1 ? eligible.filter((meta) => meta.id !== previousRandomCatalogId) : eligible;
+    const pool = alternatives.length ? alternatives : eligible;
+    const chosen = pool[Math.floor(Math.random() * pool.length)];
+    previousRandomCatalogId = chosen.id;
+    randomTitleScope = { id: chosen.id, category };
+    openHomeTitle(chosen);
+    rememberRandomEntry({ mode: "anything" });
+  } catch (error) {
+    toast(error.message || "Could not find a random title", { tone: "error" });
+  } finally {
+    randomRecommendationBusy = false;
+    randomPickTriggers.forEach((selector) => { const trigger = $(selector); if (trigger) trigger.disabled = false; });
+  }
+}
+randomPickTriggers.forEach((selector) => $(selector)?.addEventListener("click", () => {
+  if (randomRecommendationBusy) return;
+  closeRandomPickPopover();
+  const category = randomActiveCategory();
+  if (randomSource === "anything") void openRandomAnimeAnything({ category });
+  else void openRandomRecommendation({ category });
+}));
+randomPickTriggers.forEach((selector) => {
+  $(selector)?.addEventListener("pointerenter", previewLastRandomReason);
+  $(selector)?.addEventListener("focus", () => {
+    if (suppressRandomFocusPreview) { suppressRandomFocusPreview = false; return; }
+    previewLastRandomReason();
+  });
+});
+randomPickPopover?.addEventListener("click", (event) => {
+  const action = event.target.closest("[data-random-mode]")?.dataset.randomMode;
+  if (!action) return;
+  if (action === "close") { closeRandomPickPopover({ restoreFocus: true }); return; }
+});
+document.addEventListener("pointerdown", (event) => {
+  if (!randomPickPopover?.hidden && !event.target.closest("#random-pick-popover, .random-pick-trigger")) closeRandomPickPopover();
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !randomPickPopover?.hidden) { event.preventDefault(); closeRandomPickPopover({ restoreFocus: true }); }
+});
+window.addEventListener("resize", positionRandomPickPopover);
+window.addEventListener("scroll", positionRandomPickPopover, { passive: true });
+$("#view-home")?.addEventListener("click", handleCatalogCardAction);
+$("#library-recommendations")?.addEventListener("click", handleCatalogCardAction);
+recsUi.wire();
+wireAniListAutoSettings();
+bindTabs($("#home-tabs"), {
+  onChange: (value) => {
+    ++animeBrowser.openRequestId;
+    window.clearTimeout(animeBrowserPrefetchTimer);
+    homeBrowseCategory = normalizeHomeCategory(value);
+    localStorage.setItem("blackline-home-filter", homeBrowseCategory);
+    if (!viewActive("home")) switchView("home");
+    else if (window.scrollY > ($("#home-hero")?.offsetHeight || 0) * 0.5) window.scrollTo({ top: 0 });
+    renderHome();
+  },
+});
+setActiveTab($("#home-tabs"), homeBrowseCategory);
+installImageFallbacks();
+installTips();
+watchMediaStatus();
+let homeTopbarFrame = 0;
+window.addEventListener("scroll", () => {
+  if (homeTopbarFrame) return;
+  homeTopbarFrame = requestAnimationFrame(() => {
+    homeTopbarFrame = 0;
+    $("#home-topbar")?.classList.toggle("is-solid", window.scrollY > 24);
+    $("#section-topbar")?.classList.toggle("is-solid", window.scrollY > 24);
+  });
+}, { passive: true });
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "/" || event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+  // Every view now has a Search control in its own topbar, so '/' works across
+  // Calendar, Settings, learning tools and title pages as well as Home/Watch.
+  if (!document.querySelector(".view.is-active") || document.querySelector("dialog[open]")) return;
+  const target = event.target;
+  if (target?.isContentEditable || ["input", "textarea", "select"].includes(target?.tagName?.toLowerCase())) return;
+  event.preventDefault();
+  openCatalogSearch(viewActive("home") ? "topbar" : "section");
+});
+$("#library-export")?.addEventListener("click", exportLibraryDatabase);
+$("#library-import")?.addEventListener("click", () => {
+  setToolStatus("#library-import-status", "");
+  const button = $("#anilist-import-connected");
+  if (button) button.hidden = !readAniListAccount(localStorage);
+  $("#library-import-dialog")?.showModal();
+});
+$("#anilist-import-connected")?.addEventListener("click", async (event) => {
+  const button = event.currentTarget;
+  if (!readAniListAccount(localStorage)) {
+    setToolStatus("#library-import-status", "Connect AniList under Settings → Tracking first.", true);
+    return;
+  }
+  button.disabled = true;
+  try {
+    await syncAniListLibrary({ status: "#library-import-status" });
+    void recsUi.load({ force: true }).catch(() => {});
+  } catch (error) {
+    setToolStatus("#library-import-status", error?.message || "AniList import failed", true);
+  } finally { button.disabled = false; }
+});
+$("#library-db-file")?.addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  event.target.value = "";
+  if (!file) return;
+  try {
+    if (!persistentAppStateReady) throw new Error("Your saved Library has not finished loading. Import after it reconnects.");
+    if (file.size > 100 * 1024 * 1024) throw new Error("Library JSON is too large. Maximum is 100 MB.");
+    const payload = JSON.parse(await file.text());
+    const entries = Array.isArray(payload) ? payload : payload?.library;
+    if (!Array.isArray(entries) || entries.length > 5000) throw new Error("Invalid or oversized Library backup.");
+    const existing = new Set(state.library.map((entry) => String(entry.id)));
+    const conflicts = entries.filter((entry) => entry?.id && existing.has(String(entry.id))).length;
+    if (!window.confirm(`Import ${entries.length} title records? ${conflicts} already exist and will keep their current data. Existing cards, progress, learning history and AniList links will not be replaced. The backup does not include clip video files.`)) {
+      setToolStatus("#library-import-status", "Import cancelled. Your Library is unchanged.");
+      return;
+    }
+    const count = mergeImportedLibrary(payload);
+    setToolStatus("#library-import-status", `Added ${count} title${count === 1 ? "" : "s"}; existing titles preserved`);
+  } catch (error) {
+    setToolStatus("#library-import-status", error.message || "Could not import that JSON file", true);
+  }
+});
+$("#anilist-import-form")?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const username = $("#anilist-username")?.value.trim();
+  if (!username) return;
+  const button = event.currentTarget.querySelector("button[type='submit']");
+  const oldText = button?.textContent || "Import list";
+  if (button) { button.disabled = true; button.textContent = "Importing…"; }
+  try {
+    // The same link as Settings › Recommendations: your scores also shape your Top picks.
+    setToolStatus("#library-import-status", `Reading ${username}'s list on AniList…`);
+    await postJson("/api/recs/anilist/link", { username });
+    localStorage.removeItem(ANILIST_LIBRARY_KEY);
+    await syncAniListLibrary({ status: "#library-import-status" });
+    void recsUi.load({ force: true }).catch(() => {});
+  } catch (error) {
+    setToolStatus("#library-import-status", error.message || "AniList import failed", true);
+  } finally {
+    if (button) { button.disabled = false; button.textContent = oldText; }
+  }
+});
+$("#catalog-results")?.addEventListener("click", (event) => {
+  const holder = event.target.closest(".catalog-search-result[data-title-id]");
+  if (holder) openCatalogResult(holder.dataset.titleId);
+});
+$("#review-import-anki")?.addEventListener("click", () => $("#review-import-file")?.click());
+$("#review-import-file")?.addEventListener("change", (event) => { void importAnkiFile(event.target.files?.[0]); });
+$("#review-export-anki")?.addEventListener("click", () => { void exportCardsToAnki("apkg"); });
+$("#review-export-text")?.addEventListener("click", () => { void exportCardsToAnki("txt"); });
+$("#view-title")?.addEventListener("click", handleTitleAction);
+$("#view-title")?.addEventListener("click", (event) => {
+  const trailer = event.target.closest("a.title-trailer[data-trailer-id]");
+  if (trailer && openTitleTrailer(trailer.dataset.trailerId, trailer.href)) event.preventDefault();
+});
+for (const eventName of ["pointerover", "focusin", "click"]) {
+  $("#title-hero")?.addEventListener(eventName, (event) => {
+    const wrap = event.target.closest?.(".title-rating-wrap");
+    if (wrap) positionTitleRatingBreakdown(wrap);
+  });
+}
+// Native details stay open after a click elsewhere; treat the score badges as
+// one dismissible group. Pointerdown runs before an input blur saves its score.
+document.addEventListener("pointerdown", (event) => {
+  const scores = $("#title-hero .title-hero__scores");
+  if (!scores || scores.contains(event.target)) return;
+  scores.querySelectorAll(".title-rating-wrap[open]").forEach((wrap) => { wrap.open = false; });
+});
+$("#title-hero")?.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  const opened = event.currentTarget.querySelectorAll(".title-rating-wrap[open]");
+  if (!opened.length) return;
+  opened.forEach((wrap) => { wrap.open = false; });
+  event.preventDefault();
+});
+$("#title-hero")?.addEventListener("toggle", (event) => {
+  const wrap = event.target;
+  if (!wrap.matches?.(".title-rating-wrap") || !wrap.open) return;
+  keepTitleRatingExclusive(wrap);
+  positionTitleRatingBreakdown(wrap);
+}, true);
+window.addEventListener("resize", () => {
+  $("#title-hero")?.querySelectorAll(".title-rating-wrap[open]").forEach(positionTitleRatingBreakdown);
+});
+$("#title-progress")?.addEventListener("click", (event) => { void handleTitleAniListLink(event); });
+$("#title-main")?.addEventListener("click", handleTitleMainClick);
+$("#library-add-magnet").addEventListener("click", () => {
+  openMagnetDialog();
+});
+async function navigateWatchToLibrary(openDestination) {
+  // Keep the originating click active for desktop PiP if the user selected it.
+  openDestination();
+}
+
+$("#settings-float-auto")?.addEventListener("change", (event) => {
+  floatingPrefs.auto = event.target.checked;
+  localStorage.setItem(FLOAT_AUTO_KEY, floatingPrefs.auto ? "1" : "0");
+});
+$("#settings-float-scope")?.addEventListener("change", (event) => {
+  floatingPrefs.scope = event.target.value === "desktop" ? "desktop" : "site";
+  localStorage.setItem(FLOAT_SCOPE_KEY, floatingPrefs.scope);
+  if (floatingDesktopWindow || $("#view-watch")?.classList.contains("is-floating")) {
+    floatingManual = true;
+    updateFloatingPlayback(viewActive("watch") ? "watch" : "library");
+  }
+});
+$("#settings-float-auto").checked = floatingPrefs.auto;
+$("#settings-float-scope").value = floatingPrefs.scope;
+
+$("#player-float")?.addEventListener("click", () => {
+  if (!floatMayDisplay()) return;
+  floatingManual = true;
+  // The explicit pop-out button is a request for a window above other apps.
+  // Remember that choice for automatic pop-outs too. The in-app mode remains
+  // selectable in Settings if a user prefers it for future navigation.
+  floatingPrefs.scope = "desktop";
+  localStorage.setItem(FLOAT_SCOPE_KEY, "desktop");
+  const scope = $("#settings-float-scope");
+  if (scope) scope.value = "desktop";
+  void openDesktopFloating();
+});
+$("#floating-player-return")?.addEventListener("click", () => {
+  floatingManual = false;
+  closeDesktopFloating();
+  switchView("watch");
+});
+$("#floating-player-placeholder-return")?.addEventListener("click", () => {
+  floatingManual = false;
+  closeDesktopFloating();
+  switchView("watch");
+});
+$("#floating-player-pause")?.addEventListener("click", () => {
+  togglePlayback();
+  updateFloatingControls();
+});
+$("#floating-player-back")?.addEventListener("click", () => seekTo(Math.max(0, absolutePlaybackSeconds() - 10) * 1000));
+$("#floating-player-forward")?.addEventListener("click", () => seekTo((absolutePlaybackSeconds() + 10) * 1000));
+$("#floating-player-mute")?.addEventListener("click", () => {
+  setPlayerMutePreference(!playerWantsMuted());
+  updateCompatControls();
+  updateFloatingControls();
+});
+$("#floating-player-volume")?.addEventListener("input", (event) => {
+  video.volume = Math.max(0, Math.min(1, Number(event.target.value) || 0));
+  setPlayerMutePreference(video.volume === 0);
+  updateCompatControls();
+  updateFloatingControls();
+});
+const floatingProgress = $("#floating-player-progress");
+floatingProgress?.addEventListener("pointerdown", () => { floatingSeekScrubbing = true; });
+floatingProgress?.addEventListener("input", () => {
+  floatingSeekScrubbing = true;
+  updateFloatingControls();
+});
+floatingProgress?.addEventListener("change", (event) => {
+  const seconds = Number(event.target.value);
+  floatingSeekScrubbing = false;
+  if (Number.isFinite(seconds)) seekTo(Math.max(0, seconds) * 1000);
+  updateFloatingControls();
+});
+floatingProgress?.addEventListener("pointercancel", () => { floatingSeekScrubbing = false; updateFloatingControls(); });
+$("#floating-player-close")?.addEventListener("click", () => {
+  floatingManual = false;
+  video.pause();
+  closeDesktopFloating();
+  showSiteFloating(false);
+});
+video.addEventListener("ended", () => {
+  floatingManual = false;
+  closeDesktopFloating();
+  showSiteFloating(false);
+});
+video.addEventListener("play", updateFloatingControls);
+video.addEventListener("pause", updateFloatingControls);
+video.addEventListener("volumechange", updateFloatingControls);
+video.addEventListener("timeupdate", updateFloatingControls);
+video.addEventListener("durationchange", updateFloatingControls);
+
+// The in-app window moves from any non-control interior point, and resizes from
+// each edge/corner. Keep its 16:9 shape and the opposite edge anchored.
+// Native desktop PiP uses the browser's own window movement and resizing.
+function siteFloatEdge(rect, x, y) {
+  const border = 12;
+  const vertical = y - rect.top <= border ? "n" : rect.bottom - y <= border ? "s" : "";
+  const horizontal = x - rect.left <= border ? "w" : rect.right - x <= border ? "e" : "";
+  return vertical + horizontal;
+}
+
+function resizedSiteFloatBounds(original, edge, dx, dy) {
+  const ratio = 16 / 9;
+  const horizontal = edge.includes("e") ? dx : edge.includes("w") ? -dx : 0;
+  const vertical = edge.includes("s") ? dy * ratio : edge.includes("n") ? -dy * ratio : 0;
+  const delta = !horizontal ? vertical : !vertical ? horizontal
+    : Math.abs(horizontal) >= Math.abs(vertical) ? horizontal : vertical;
+  const height = original.width / ratio;
+  const right = original.x + original.width;
+  const bottom = original.y + height;
+  const maxHorizontal = edge.includes("w") ? right - 8 : window.innerWidth - original.x - 8;
+  const maxVertical = (edge.includes("n") ? bottom - 8 : window.innerHeight - original.y - 8) * ratio;
+  const maxWidth = Math.max(180, Math.min(window.innerWidth - 16, (window.innerHeight - 16) * ratio, maxHorizontal, maxVertical));
+  const width = Math.max(Math.min(260, maxWidth), Math.min(maxWidth, original.width + delta));
+  return {
+    width,
+    x: edge.includes("w") ? right - width : original.x,
+    y: edge.includes("n") ? bottom - width / ratio : original.y,
+  };
+}
+
+let suppressFloatingClick = false;
+let activeSiteFloatGesture = false;
+function beginSiteFloatGesture(event) {
+  if (event.button !== 0 || activeSiteFloatGesture || !$("#view-watch")?.classList.contains("is-floating")) return;
+  // Player buttons and sliders must win over the resize band, even near a corner.
+  if (event.target.closest?.("button,input,select,textarea,a,label,[role='button'],[contenteditable],.player-popover")) return;
+  const handle = event.currentTarget;
+  const edge = siteFloatEdge(handle.getBoundingClientRect(), event.clientX, event.clientY);
+  if (!floatingSiteBounds) positionSiteFloating();
+  const original = { ...floatingSiteBounds };
+  const startX = event.clientX;
+  const startY = event.clientY;
+  let moved = false;
+  activeSiteFloatGesture = true;
+  const move = (pointer) => {
+    if (pointer.pointerId !== event.pointerId) return;
+    // Edge can lose capture while the window is being resized. A move with no
+    // held mouse button must never continue resizing after release.
+    if (pointer.buttons === 0) { stop(pointer); return; }
+    const dx = pointer.clientX - startX;
+    const dy = pointer.clientY - startY;
+    if (!moved && Math.hypot(dx, dy) < 4) return;
+    moved = true;
+    suppressFloatingClick = true;
+    if (!edge) {
+      floatingSiteBounds = { ...original, x: original.x + dx, y: original.y + dy };
+    } else {
+      floatingSiteBounds = resizedSiteFloatBounds(original, edge, dx, dy);
+    }
+    positionSiteFloating();
+  };
+  const stop = (pointer) => {
+    if (pointer.type !== "blur" && pointer.pointerId !== event.pointerId) return;
+    if (!activeSiteFloatGesture) return;
+    activeSiteFloatGesture = false;
+    handle.removeEventListener("pointermove", move);
+    handle.removeEventListener("pointerup", stop);
+    handle.removeEventListener("pointercancel", stop);
+    handle.removeEventListener("lostpointercapture", stop);
+    window.removeEventListener("pointerup", stop);
+    window.removeEventListener("pointercancel", stop);
+    window.removeEventListener("blur", stop);
+    if (pointer.type !== "lostpointercapture") {
+      try { handle.releasePointerCapture?.(event.pointerId); } catch {}
+    }
+    if (moved) window.setTimeout(() => { suppressFloatingClick = false; }, 0);
+  };
+  handle.addEventListener("pointermove", move);
+  handle.addEventListener("pointerup", stop);
+  handle.addEventListener("pointercancel", stop);
+  handle.addEventListener("lostpointercapture", stop);
+  window.addEventListener("pointerup", stop);
+  window.addEventListener("pointercancel", stop);
+  window.addEventListener("blur", stop);
+  // Capture from mouse-down, not after the 4px threshold. Otherwise releasing
+  // outside a corner may never dispatch pointerup to the resizing frame.
+  try { handle.setPointerCapture?.(event.pointerId); } catch {}
+  if (edge) event.preventDefault();
+}
+frame.addEventListener("pointerenter", revealFloatingControls);
+frame.addEventListener("pointermove", revealFloatingControls);
+frame.addEventListener("pointerdown", (event) => {
+  if ($("#floating-player-actions")?.hidden) return;
+  floatingControlHeld = Boolean(event.target.closest?.(".floating-player-bottom"));
+  revealFloatingControls();
+});
+window.addEventListener("pointerup", () => { floatingControlHeld = false; });
+window.addEventListener("pointercancel", () => { floatingControlHeld = false; });
+frame.addEventListener("keydown", revealFloatingControls);
+frame.addEventListener("focusin", revealFloatingControls);
+frame.addEventListener("pointerdown", beginSiteFloatGesture);
+frame.addEventListener("pointermove", (event) => {
+  if (!$("#view-watch")?.classList.contains("is-floating") || event.buttons) return;
+  const edge = siteFloatEdge(frame.getBoundingClientRect(), event.clientX, event.clientY);
+  frame.style.cursor = edge === "n" || edge === "s" ? "ns-resize"
+    : edge === "e" || edge === "w" ? "ew-resize"
+    : edge === "nw" || edge === "se" ? "nwse-resize"
+    : edge ? "nesw-resize" : "grab";
+});
+frame.addEventListener("click", (event) => {
+  if (!suppressFloatingClick) return;
+  suppressFloatingClick = false;
+  event.preventDefault();
+  event.stopImmediatePropagation();
+}, true);
+frame.addEventListener("pointerleave", () => {
+  if ($("#view-watch")?.classList.contains("is-floating")) frame.style.cursor = "grab";
+});
+window.addEventListener("resize", () => {
+  if ($("#view-watch")?.classList.contains("is-floating")) positionSiteFloating();
+});
+
+$("#watch-title-info")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-watch-title-details]");
+  if (!button) return;
+  const entry = state.currentSource?.libraryId ? libraryEntryById(state.currentSource.libraryId) : null;
+  const key = button.dataset.watchSeriesKey || entry?.seriesKey || (entry ? librarySeriesKey(entry.title) : "");
+  const catalogId = button.dataset.watchCatalogId || "";
+  if (key || catalogId) void navigateWatchToLibrary(() => {
+    if (key && buildLibrarySeries().some((series) => series.key === key)) openLibrarySeries(key);
+    else if (catalogId) openTitlePage({ id: catalogId, type: button.dataset.watchCatalogType || "series" });
+  });
+});
+$("#watch-title-info")?.addEventListener("change", (event) => {
+  const select = event.target.closest("[data-watch-tracking-status]");
+  if (!select) return;
+  const entry = state.currentSource?.libraryId ? libraryEntryById(state.currentSource.libraryId) : null;
+  if (!entry) return;
+  setWatchTrackingStatus(entry.seriesKey || librarySeriesKey(entry.title), select.value);
+});
+$("#watch-side-rail")?.addEventListener("click", (event) => {
+  const seasonButton = event.target.closest("[data-watch-season]");
+  if (seasonButton) {
+    watchSelectedSeason = String(seasonButton.dataset.watchSeason);
+    $("#watch-chapters-body").scrollTop = 0;
+    renderWatchChapters();
+    return;
+  }
+  const item = event.target.closest("[data-watch-title-id]");
+  if (!item) return;
+  const meta = homeTitleIndex.get(item.dataset.watchTitleId);
+  if (meta) openHomeTitle(meta);
+});
+// Episodes scroll independently from the Watch page even when the pointer is
+// over a card, play icon or the heading. Never trap wheel input when the list
+// fits or has reached its edge. Native touch and focused keyboard scrolling
+// continue to use the same overflow-y:auto element.
+function scrollWatchEpisodesOnWheel(event, body) {
+  if (!body || !Number.isFinite(event.deltaY) || event.deltaY === 0) return;
+  const limit = Math.max(0, body.scrollHeight - body.clientHeight);
+  if (limit <= 1) return;
+  const pixels = event.deltaY * (event.deltaMode === 1 ? 18 : event.deltaMode === 2 ? body.clientHeight : 1);
+  const target = Math.max(0, Math.min(limit, body.scrollTop + pixels));
+  if (Math.abs(target - body.scrollTop) < .01) return;
+  event.preventDefault();
+  body.scrollTop = target;
+}
+// Capture before buttons/cards can consume the event. The episode panel is a
+// permanent non-collapsible surface; only consume wheel deltas while the list
+// really has further episodes to scroll in the requested direction.
+$("#watch-chapters")?.addEventListener("wheel", (event) => {
+  scrollWatchEpisodesOnWheel(event, $("#watch-chapters-body"));
+}, { passive: false, capture: true });
+let watchEpisodeContextCode = "";
+let titleEpisodeContextCode = "";
+let episodeContextSurface = "watch";
+function watchEpisodeContextMenu() {
+  let menu = $("#watch-episode-context-menu");
+  if (menu) return menu;
+  menu = document.createElement("div");
+  menu.id = "watch-episode-context-menu";
+  menu.className = "ui-menu watch-episode-context-menu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Episode actions");
+  menu.hidden = true;
+  menu.innerHTML = '<button type="button" class="ui-menu__item" role="menuitem" data-watch-mark-watched>Mark as watched</button>'
+    + '<button type="button" class="ui-menu__item" role="menuitem" data-watch-retry-anilist title="Retry updating AniList after marking this episode as not watched" hidden>Retry AniList update</button>';
+  document.body.append(menu);
+  wirePopupMenu(menu);
+  menu.addEventListener("click", (event) => {
+    if (event.target.closest("[data-watch-retry-anilist]")) {
+      const surface = episodeContextSurface;
+      const code = surface === "title" ? titleEpisodeContextCode : watchEpisodeContextCode;
+      const series = surface === "title" ? titleSubject().series : watchChapterActions.get(code)?.series;
+      const accountId = readAniListAccount(localStorage)?.userId;
+      closePopupMenu();
+      if (series && accountId) void flushAniListUnwatches({ interactive: true,
+        only: { accountId, seriesKey: series.key, code } });
+      return;
+    }
+    if (!event.target.closest("[data-watch-mark-watched]")) return;
+    const surface = episodeContextSurface;
+    const code = surface === "title" ? titleEpisodeContextCode : watchEpisodeContextCode;
+    const action = surface === "watch" ? watchChapterActions.get(code) : null;
+    closePopupMenu();
+    if (surface === "title") { markTitleChapterWatched(code); return; }
+    const result = action && toggleEpisodeWatched(action.series, code, action.saved);
+    if (!result) return;
+    renderWatchChapters();
+    $("#watch-chapters-body")?.querySelectorAll(".watch-episode[data-watch-episode-code]").forEach((item) => {
+      if (item.dataset.watchEpisodeCode === code) item.focus({ preventScroll: true });
+    });
+    toast(result === "unwatched" ? "Episode marked as not watched" : "Episode marked as watched");
+  });
+  return menu;
+}
+function setEpisodeContextActions(menu, series, code, watched) {
+  menu.querySelector("[data-watch-mark-watched]").textContent = watched
+    ? "Mark as not watched" : "Mark as watched";
+  const retry = menu.querySelector("[data-watch-retry-anilist]");
+  const accountId = readAniListAccount(localStorage)?.userId;
+  retry.hidden = !accountId || !pendingAniListUnwatches().some((row) =>
+    row.accountId === accountId && row.seriesKey === series.key && row.code === code);
+}
+function openWatchEpisodeContextMenu(event, item, { keyboard = false } = {}) {
+  const code = item?.dataset.watchEpisodeCode;
+  if (!code || !watchChapterActions.has(code)) return;
+  event.preventDefault();
+  watchEpisodeContextCode = code;
+  episodeContextSurface = "watch";
+  const menu = watchEpisodeContextMenu();
+  const action = watchChapterActions.get(code);
+  setEpisodeContextActions(menu, action.series, code,
+    watchEpisodeStatus(action.series, { code, stored: action.saved }).watched);
+  openPopupMenu(menu, {
+    anchor: item,
+    x: keyboard ? null : event.clientX,
+    y: keyboard ? null : event.clientY,
+  });
+}
+function openTitleEpisodeContextMenu(event, item, { keyboard = false } = {}) {
+  const series = titleSubject().series;
+  if (!series || series.type !== "series" || !item) return;
+  const code = item.dataset.chapterCode || (item.matches(".catalog-chapter")
+    ? chapterCode(Number(item.dataset.season), Number(item.dataset.episode)) : "");
+  if (!/^S\d{2}E\d{2,4}$/.test(String(code || ""))) return;
+  event.preventDefault();
+  titleEpisodeContextCode = code;
+  episodeContextSurface = "title";
+  const menu = watchEpisodeContextMenu();
+  const chapter = libraryOrderedChapters(series).find((item) => item.code === code);
+  setEpisodeContextActions(menu, series, code,
+    watchEpisodeStatus(series, { code, stored: chapter ? { sources: chapter.sources } : null }).watched);
+  openPopupMenu(menu, {
+    anchor: item,
+    x: keyboard ? null : event.clientX,
+    y: keyboard ? null : event.clientY,
+  });
+}
+$("#title-main")?.addEventListener("contextmenu", (event) => {
+  const item = event.target.closest(".lib-chapter[data-chapter-code], .catalog-chapter[data-chapter-code]");
+  // Edge's mouse contextmenu frequently reports detail=0. That value is NOT
+  // proof of keyboard activation; a right mouse button is still a pointer.
+  if (item) openTitleEpisodeContextMenu(event, item, { keyboard: event.button !== 2 && event.detail === 0 });
+});
+$("#title-main")?.addEventListener("keydown", (event) => {
+  if (!(event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) return;
+  const item = event.target.closest(".lib-chapter[data-chapter-code], .catalog-chapter[data-chapter-code]");
+  if (item) openTitleEpisodeContextMenu(event, item, { keyboard: true });
+});
+$("#watch-chapters-body")?.addEventListener("contextmenu", (event) => {
+  const item = event.target.closest(".watch-episode[data-watch-episode-code]");
+  // Edge may report detail=0 for mouse right-clicks. button=2 remains a
+  // pointer interaction and must place the menu at the clicked coordinates.
+  if (item) openWatchEpisodeContextMenu(event, item, { keyboard: event.button !== 2 && event.detail === 0 });
+});
+$("#watch-chapters-body")?.addEventListener("keydown", (event) => {
+  if (!(event.key === "ContextMenu" || (event.key === "F10" && event.shiftKey))) return;
+  const item = event.target.closest(".watch-episode[data-watch-episode-code]");
+  if (item) openWatchEpisodeContextMenu(event, item, { keyboard: true });
+});
+$("#watch-chapters-body")?.addEventListener("click", (event) => {
+  if (event.target.closest("[data-watch-retry-chapters]")) {
+    const source = state.currentSource;
+    const entry = source?.libraryId ? libraryEntryById(source.libraryId) : null;
+    const series = buildLibrarySeries().find((item) => item.key === (entry?.seriesKey || librarySeriesKey(entry?.title)));
+    const catalogId = series ? watchCatalogIdFor(series) : entry?.catalogId;
+    if (catalogId && !catalogChapterLists.get(catalogId)?.pending) {
+      catalogChapterLists.delete(catalogId);
+      catalogChapterList(catalogId, refreshWatchCatalogDetails);
+      renderWatchChapters();
+    } else if (series) {
+      watchCatalogMatches.delete(`${series.type}:${series.key}`);
+      renderWatchChapters();
+    }
+    return;
+  }
+  const sourceButton = event.target.closest("[data-watch-episode-source-index]");
+  if (sourceButton) {
+    const action = watchChapterActions.get(sourceButton.dataset.watchEpisodeSourceCode);
+    const chosen = action?.candidates?.[Number(sourceButton.dataset.watchEpisodeSourceIndex)];
+    if (!chosen) return;
+    watchEpisodeSourcesOpen = "";
+    if (chosen.kind === "saved") {
+      const source = chosen.ref;
+      const resume = chapterWatchStatus(action.catalog?.stored?.sources || [source]).resume;
+      const resumeAtSeconds = resume ? Math.max(0, (resume.positionMs - 5000) / 1000) : 0;
+      void playLibraryEpisode(source.entry.id, Number(source.episode.fileIndex), { resumeAtSeconds });
+    } else if (action.catalog && action.list) {
+      const view = {
+        meta: { id: watchCatalogIdFor(action.series) || action.entry.catalogId, type: "series",
+          name: action.entry.displayTitle || action.entry.title, poster: action.entry.coverUrl || "", aliases: action.entry.aliases || [] },
+        seasons: action.list.seasons,
+      };
+      void addCatalogChapterSource(view, action.catalog, chosen.stream, { play: true, quiet: true })
+        .catch((error) => toast(error.message || "Could not play this episode source", { tone: "error" }));
+    }
+    renderWatchChapters();
+    return;
+  }
+  const retry = event.target.closest("[data-watch-episode-sources-retry]");
+  if (retry) {
+    const action = watchChapterActions.get(retry.dataset.watchEpisodeSourcesRetry);
+    if (action) void findWatchEpisodeSources(action, { force: true });
+    return;
+  }
+  const selector = event.target.closest("[data-watch-episode-sources]");
+  if (selector) {
+    const code = selector.dataset.watchEpisodeSources;
+    watchEpisodeSourcesOpen = watchEpisodeSourcesOpen === code ? "" : code;
+    renderWatchChapters();
+    if (watchEpisodeSourcesOpen) {
+      const action = watchChapterActions.get(code);
+      if (action) void findWatchEpisodeSources(action);
+    }
+    return;
+  }
+  const button = event.target.closest("[data-watch-episode]");
+  if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return;
+  const action = watchChapterActions.get(button.dataset.watchEpisode);
+  if (!action) return;
+  if (action.current) {
+    switchView("watch");
+    if (video.paused) resumePlayback();
+    return;
+  }
+  if (action.best) {
+    const resume = chapterWatchStatus(action.catalog?.stored?.sources || [action.best]).resume;
+    const resumeAtSeconds = resume ? Math.max(0, (resume.positionMs - 5000) / 1000) : 0;
+    void playLibraryEpisode(action.best.entry.id, Number(action.best.episode.fileIndex), { resumeAtSeconds });
+  } else if (action.catalog && action.list) {
+    void playCatalogNeighbor({ entry: action.entry, list: action.list }, action.catalog);
+  }
+});
+$$("[data-study-category]").forEach((button) => button.addEventListener("click", () => {
+  state.studySource = button.dataset.studyCategory === "preset" ? "preset" : "chapter";
+  state.studyPage = 0;
+  localStorage.setItem("blackline-study-source", state.studySource);
+  persistPreferences();
+  if (state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
+  renderStudy();
+}));
+$$('[data-study-source]').forEach((button) => button.addEventListener("click", () => {
+  state.studySource = button.dataset.studySource === "preset" ? "preset" : "chapter";
+  state.studyType = button.dataset.studyType === "phrase" ? "phrase" : "word";
+  const tier = Number(button.dataset.studyTier || 0);
+  if (state.studySource === "preset" && tier) {
+    if (state.studyType === "phrase") state.studyPhraseTier = [100, 1000].includes(tier) ? tier : state.studyPhraseTier;
+    else state.studyWordTier = [100, 1000, 5000].includes(tier) ? tier : state.studyWordTier;
+  }
+  state.studyPage = 0;
+  localStorage.setItem("blackline-study-source", state.studySource);
+  localStorage.setItem("blackline-study-type", state.studyType);
+  localStorage.setItem("blackline-study-word-tier", String(state.studyWordTier));
+  localStorage.setItem("blackline-study-phrase-tier", String(state.studyPhraseTier));
+  persistPreferences();
+  if (state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
+  renderStudy();
+}));
+$("#study-chapter-select")?.addEventListener("change", (event) => {
+  state.studySource = "chapter";
+  state.studyChapterId = String(event.target.value || "");
+  state.studyPage = 0;
+  localStorage.setItem("blackline-study-source", state.studySource);
+  localStorage.setItem("blackline-study-chapter-id", state.studyChapterId);
+  persistPreferences();
+  renderStudy();
+});
+$("#study-filter")?.addEventListener("change", (event) => {
+  state.studyFilter = ["all", "unknown", "known", "review"].includes(event.target.value) ? event.target.value : "all";
+  state.studyPage = 0;
+  localStorage.setItem("blackline-study-filter", state.studyFilter);
+  persistPreferences();
+  renderStudy();
+});
+$("#study-color-subs")?.addEventListener("change", (event) => {
+  state.wordColoring = Boolean(event.target.checked);
+  localStorage.setItem("blackline-word-coloring", state.wordColoring ? "1" : "0");
+  persistPreferences();
+  subtitleRenderMemo.key = "";
+  if (state.wordColoring) void ensureLearningPreset(state.targetLanguage);
+  renderSubtitles();
+});
+$("#study-page-prev")?.addEventListener("click", () => {
+  state.studyPage = Math.max(0, state.studyPage - 1);
+  renderStudy();
+});
+$("#study-page-next")?.addEventListener("click", () => {
+  state.studyPage += 1;
+  renderStudy();
+});
+$$('[data-review-tab]').forEach((button) => button.addEventListener("click", () => {
+  setReviewTab(button.dataset.reviewTab);
+}));
+$("#review-target-language")?.addEventListener("change", (event) => {
+  changeReviewTargetLanguage(event.target.value);
+});
+wireLearningViews();
+wireStorageSettings();
+[
+  "#subtitle-style-font",
+  "#subtitle-style-weight",
+  "#subtitle-style-size",
+  "#subtitle-style-shadow",
+  "#subtitle-style-background",
+  "#subtitle-style-position",
+  "#subtitle-style-color",
+  "#subtitle-style-romanization",
+].forEach((selector) => {
+  $(selector)?.addEventListener("input", readSubtitleStyleControls);
+  $(selector)?.addEventListener("change", readSubtitleStyleControls);
+});
+$("#subtitle-style-reset").addEventListener("click", () => {
+  state.subtitleStyle = { ...subtitleStyleDefaults };
+  applySubtitleStyle({ save: true });
+});
+$("#subtitle-preview-rotate")?.addEventListener("click", () => {
+  const preview = $("#subtitle-style-preview");
+  if (!preview) return;
+  preview.dataset.previewBackground = String((Number(preview.dataset.previewBackground || 0) + 1) % 5);
+});
+(() => {
+  const page = $("#view-library");
+  page?.addEventListener("click", handleLibraryCardAction);
+  page?.addEventListener("contextmenu", (event) => {
+    const target = event.target instanceof Element ? event.target : event.target?.parentElement;
+    const holder = target?.closest("#library-list [data-series-key], #library-continue [data-series-key]");
+    if (holder) openLibraryContextMenu(event, holder.dataset.seriesKey, { anchor: holder });
+  });
+  bindTabs($("#library-filter"), {
+    onChange: (value) => {
+      libraryView.filter = ["series", "movie", "anime"].includes(value) ? value : "all";
+      saveLibraryView();
+      renderLibrary();
+    },
+  });
+  $("#library-show-anilist")?.addEventListener("click", () => {
+    // A saved Series/Movie/status filter can hide every newly imported Anime
+    // title despite a successful sync. Make them discoverable in one click.
+    libraryView.filter = "anime";
+    libraryView.status = "any";
+    libraryView.query = "";
+    const search = $("#library-search");
+    if (search) search.value = "";
+    saveLibraryView();
+    renderLibrary();
+  });
+  let searchTimer = 0;
+  $("#library-search")?.addEventListener("input", (event) => {
+    window.clearTimeout(searchTimer);
+    searchTimer = window.setTimeout(() => {
+      libraryView.query = event.target.value.trim();
+      renderLibrary();
+    }, 120);
+  });
+  $("#library-sort")?.addEventListener("change", (event) => {
+    libraryView.sort = ["recent", "added", "title", "title-desc", "watched", "unfinished", "progress"].includes(event.target.value) ? event.target.value : "recent";
+    saveLibraryView();
+    renderLibrary();
+  });
+  $("#library-status-filter")?.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-library-status]");
+    if (!button || !["any", ...ANILIST_STATUS_FILTERS, "REPEATING"].includes(button.dataset.libraryStatus)) return;
+    libraryView.status = button.dataset.libraryStatus;
+    saveLibraryView();
+    renderLibrary();
+  });
+  const moreButton = $("#library-more");
+  const moreMenu = $("#library-more-menu");
+  wirePopupMenu(moreMenu);
+  wirePopupMenu($("#library-context-menu"));
+  moreButton?.addEventListener("click", () => {
+    if (openMenuState?.menu === moreMenu) closePopupMenu();
+    else openPopupMenu(moreMenu, { anchor: moreButton });
+  });
+  moreMenu?.addEventListener("click", (event) => {
+    if (event.target.closest('[role="menuitem"]')) closePopupMenu({ restoreFocus: false });
+  });
+  $("#library-open-file")?.addEventListener("click", () => $("#video-input")?.click());
+})();
+$("#settings-browser-coach-check")?.addEventListener("click", connectBrowserCoach);
+$("#settings-browser-coach-open")?.addEventListener("click", () => { void openBrowserCoachExtensionFolder(); });
+$("#settings-ai-provider")?.addEventListener("change", (event) => setCoachProvider(event.target.value));
+$("#settings-auto-artwork").addEventListener("change", (event) => {
+  state.autoArtwork = event.target.checked;
+  localStorage.setItem("blackline-auto-artwork", state.autoArtwork ? "1" : "0");
+  persistPreferences();
+  renderSettings();
+  setToolStatus("#settings-artwork-message", state.autoArtwork ? "Posters will be fetched automatically" : "Automatic posters off");
+});
+$("#settings-fetch-artwork").addEventListener("click", () => { void fetchMissingLibraryArtwork(); });
+$("#settings-subdl-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const key = $("#settings-subdl-key").value.trim();
+  const wyzieKey = $("#settings-wyzie-key")?.value.trim() || "";
+  const subsourceKey = $("#settings-subsource-key")?.value.trim() || "";
+  const baseLanguage = $("#settings-base-language").value;
+  const targetLanguage = $("#settings-target-language").value;
+  if (baseLanguage === targetLanguage) {
+    setToolStatus("#settings-subdl-message", t("Base and target languages must be different."), true);
+    return;
+  }
+  saveSubtitlePreferences(key, baseLanguage, targetLanguage, { wyzieKey, subsourceKey,
+    baseLocale: $("#settings-base-locale").value, targetLocale: $("#settings-learning-locale").value,
+    interfaceLanguage: $("#settings-interface-language").value });
+  $("#subtitle-language").value = subtitleFinderLanguages();
+  const providerCount = 1 + [state.subdlKey, state.wyzieKey, state.subsourceKey].filter(Boolean).length;
+  setToolStatus("#settings-subdl-message", t("Saved: {count} subtitle sources", { count: providerCount }));
+  renderSubtitleWorkspace();
+});
+$("#settings-subdl-clear").addEventListener("click", () => {
+  saveSubtitlePreferences("", state.baseLanguage, state.targetLanguage, { wyzieKey: "", subsourceKey: "" });
+  $("#settings-subdl-key").value = "";
+  if ($("#settings-wyzie-key")) $("#settings-wyzie-key").value = "";
+  if ($("#settings-subsource-key")) $("#settings-subsource-key").value = "";
+  setToolStatus("#settings-subdl-message", t("Keys cleared. OpenSubtitles stays on."));
+});
+$("#find-subtitles-web").addEventListener("click", () => { void openSubtitleSearch({ auto: true }); });
+$("#sync-subtitles")?.addEventListener("click", async () => {
+  const tracks = currentSourceTracks().filter((track) => track.cues?.length);
+  if (!tracks.length) {
+    $("#media-status").textContent = "Add subtitles first";
+    return;
+  }
+  if (audioSyncSource() && audioSyncTracks().length) {
+    // Measure again from the audio; the current timing stays until a better match is found.
+    audioSyncTracks().forEach((item) => { item.audioSync = { status: "syncing", windows: 0 }; });
+    resetAudioSync();
+    scheduleAudioSync(100);
+    renderTracks();
+    $("#media-status").textContent = "Syncing subtitles to the audio…";
+    return;
+  }
+  if (tracks.length < 2) {
+    $("#media-status").textContent = "Add another track to line them up";
+    return;
+  }
+  $("#media-status").textContent = "Lining up tracks…";
+  const { reference } = await alignCurrentSubtitleSet();
+  $("#media-status").textContent = `Tracks lined up with ${reference?.label || "the best-timed track"}`;
+  renderSubtitleWorkspace({ includeLearning: false });
+});
+$("#subtitle-add-file")?.addEventListener("click", () => $("#subtitle-input")?.click());
+$("#subtitle-dock-style")?.addEventListener("click", () => openSubtitleStyleDialog());
+(() => {
+  const dock = $(".subtitle-dock");
+  if (!dock) return;
+  const hasFiles = (event) => [...(event.dataTransfer?.types || [])].includes("Files");
+  dock.addEventListener("dragover", (event) => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    dock.classList.add("is-drop-target");
+  });
+  dock.addEventListener("dragleave", (event) => {
+    if (!dock.contains(event.relatedTarget)) dock.classList.remove("is-drop-target");
+  });
+  dock.addEventListener("drop", (event) => {
+    if (!hasFiles(event)) return;
+    event.preventDefault();
+    dock.classList.remove("is-drop-target");
+    const files = [...(event.dataTransfer?.files || [])].filter((file) => /\.(?:srt|vtt)$/i.test(file.name));
+    if (!files.length) {
+      $("#media-status").textContent = "Drop .srt or .vtt files";
+      return;
+    }
+    handleSubtitleFiles(files).catch((error) => { $("#media-status").textContent = error.message || "Couldn't read that subtitle file"; });
+  });
+})();
+$("#subtitle-web-form").addEventListener("submit", searchWebSubtitles);
+$("#subtitle-language")?.addEventListener("input", syncSubtitleFinderLanguageChips);
+$("#subtitle-web-dialog")?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-subtitle-lang-toggle]");
+  if (!button) return;
+  const selected = parseSubtitleFinderLanguages($("#subtitle-language").value) || [];
+  const code = button.dataset.subtitleLangToggle;
+  const next = selected.includes(code) ? selected.filter((value) => value !== code) : [...selected, code].slice(0, 4);
+  $("#subtitle-language").value = next.join(",");
+  syncSubtitleFinderLanguageChips();
+});
+$$('[data-close-dialog]').forEach((button) => button.addEventListener("click", () => $(`#${button.dataset.closeDialog}`).close()));
+
+// The in-page action distinguishes removing a Library listing from removing
+// its chapter/source records. A retained entry is hidden from Library cards,
+// but its saved episodes, mappings and progress remain available on re-add.
+let pendingLibraryRemoval = null;
+function openLibraryRemoveDialog(series) {
+  const dialog = $("#library-remove-dialog");
+  if (!series || !dialog) return;
+  pendingLibraryRemoval = { key: series.key, title: series.title };
+  if (!dialog.open) dialog.showModal();
+  $("#library-remove-cancel")?.focus();
+}
+function closeLibraryRemoveDialog() {
+  $("#library-remove-dialog")?.close();
+  pendingLibraryRemoval = null;
+}
+$("#library-remove-cancel")?.addEventListener("click", closeLibraryRemoveDialog);
+$("#library-remove-dialog")?.addEventListener("close", () => { pendingLibraryRemoval = null; });
+function confirmLibraryRemoval({ removeChapters = false } = {}) {
+  const removing = pendingLibraryRemoval;
+  if (!removing) return;
+  closeLibraryRemoveDialog();
+  // Recheck the saved key at confirmation; a stale dialog cannot affect a
+  // different series. Only the explicitly destructive option drops chapters.
+  const matches = (entry) => (entry.seriesKey || librarySeriesKey(entry.title)) === removing.key;
+  if (!state.library.some((entry) => matches(entry) && entry.libraryHidden !== true)) return;
+  if (removeChapters) state.library = state.library.filter((entry) => !matches(entry));
+  else for (const entry of state.library) if (matches(entry)) entry.libraryHidden = true;
+  saveLibrary();
+  $("#library-words-dialog")?.close();
+  // Never navigate away from Title/Watch/Library after either choice.
+  renderLibrary();
+  if (viewActive("title")) refreshTitlePage();
+  toast(removeChapters ? `${removing.title} and saved chapters removed from your Library`
+    : `${removing.title} removed from your Library; chapters retained`);
+}
+$("#library-remove-entry")?.addEventListener("click", () => confirmLibraryRemoval());
+$("#library-remove-chapters")?.addEventListener("click", () => confirmLibraryRemoval({ removeChapters: true }));
+
+$("#library-context-menu").addEventListener("click", (event) => {
+  const button = event.target.closest("[data-library-action]");
+  if (!button || !libraryContextSeriesKey) return;
+  const seriesKey = libraryContextSeriesKey;
+  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  closeLibraryContextMenu();
+  if (!series) return;
+  if (button.dataset.libraryAction === "mark-watched") {
+    setLibraryTitleWatched(series, !isLibraryTitleMarkedWatched(series));
+    return;
+  }
+  if (button.dataset.libraryAction === "mark-season") {
+    setLibrarySeasonWatched(series, Number(button.dataset.librarySeason), button.dataset.libraryWatched === "true");
+    return;
+  }
+  if (button.dataset.libraryAction === "custom-image") {
+    $("#library-custom-image-input").click();
+    return;
+  }
+  if (button.dataset.libraryAction === "rename") {
+    const nextTitle = window.prompt("Rename", series.title)?.trim();
+    if (!nextTitle || nextTitle === series.title) return;
+    updateLibrarySeriesEntries(seriesKey, (entry) => {
+      entry.displayTitle = nextTitle;
+      entry.updatedAt = Date.now();
+    });
+    renderLibrary();
+    refreshTitlePage();
+    return;
+  }
+  if (button.dataset.libraryAction === "fetch-image") {
+    void fetchArtworkForSeriesKey(seriesKey, { advance: true }).then((changed) => { if (changed) refreshTitlePage(); });
+    return;
+  }
+  if (button.dataset.libraryAction === "delete") {
+    openLibraryRemoveDialog(series);
+  }
+});
+
+$("#library-custom-image-input").addEventListener("change", async (event) => {
+  const file = event.target.files?.[0];
+  const seriesKey = libraryContextSeriesKey;
+  event.target.value = "";
+  if (!file || !seriesKey) return;
+  try {
+    const coverUrl = await customCoverDataUrl(file);
+    updateLibrarySeriesEntries(seriesKey, (entry) => {
+      entry.coverUrl = coverUrl;
+      entry.artworkSource = "CUSTOM";
+      entry.artworkPinned = true;
+      entry.artworkIndex = 0;
+      entry.updatedAt = Date.now();
+    });
+    renderLibrary();
+    refreshTitlePage();
+    artworkNotice("Poster saved");
+  } catch (error) {
+    artworkNotice(error.message || "Could not use that image", true);
+  }
+});
+
+document.addEventListener("click", (event) => {
+  // The click that opened a menu (on its button) reaches here too: keep that menu open.
+  if (openMenuState && !openMenuState.menu.contains(event.target) && !openMenuState.anchor?.contains(event.target)) closePopupMenu({ restoreFocus: false });
+  if (!event.target.closest(".player-popover, .player-speed, #player-source-switcher, #player-audio-switcher, #player-toggle-subs, #floating-player-captions")) closePlayerPopovers();
+});
+window.addEventListener("scroll", (event) => {
+  if (openMenuState && !openMenuState.menu.contains(event.target)) closePopupMenu({ restoreFocus: false });
+}, { passive: true, capture: true });
+window.addEventListener("resize", () => closePopupMenu({ restoreFocus: false }));
+window.addEventListener("resize", () => { if (viewActive("title")) fitTitleBackdrop(); }, { passive: true });
+
+function setSidebarExpanded(expanded, { persist = false } = {}) {
+  const allowExpand = window.innerWidth > 680;
+  const next = Boolean(expanded && allowExpand);
+  // The popover belongs to the expanded sidebar. Its fixed positioning would
+  // otherwise leave an orphaned menu visible after the drawer is collapsed.
+  if (!next) closeUpdateNotificationPopover();
+  $(".app-shell").classList.toggle("sidebar-expanded", next);
+  const label = next ? "Collapse navigation" : "Expand navigation";
+  // Keep the translation annotations and the live label in sync. Otherwise
+  // changing language can announce "Expand" while the drawer is already open.
+  for (const toggle of [$("#sidebar-toggle"), $("#app-sidebar-toggle"), $("#section-sidebar-toggle")]) {
+    if (!toggle) continue;
+    toggle.setAttribute("aria-expanded", String(next));
+    toggle.setAttribute("data-i18n-aria-label", label);
+    toggle.setAttribute("data-i18n-title", label);
+    toggle.setAttribute("aria-label", t(label));
+    toggle.title = t(label);
+  }
+  // Drawer expansion is intentionally session-only. Persisting it in either
+  // localStorage or SQLite made a refresh reopen the drawer over the player.
+  // Keep the option for existing callers, but never write UI visibility.
+  void persist;
+}
+
+function activeSidebarLauncher() {
+  return $("#view-home")?.classList?.contains("is-active") === false
+    ? ($("#section-sidebar-toggle") || $("#app-sidebar-toggle")) : $("#app-sidebar-toggle");
+}
+
+$("#sidebar-toggle").addEventListener("click", (event) => {
+  event.preventDefault();
+  const expand = !$(".app-shell").classList.contains("sidebar-expanded");
+  setSidebarExpanded(expand);
+  if (!expand) activeSidebarLauncher()?.focus();
+});
+
+for (const launcher of [$("#app-sidebar-toggle"), $("#section-sidebar-toggle")]) launcher?.addEventListener("click", (event) => {
+  event.preventDefault();
+  setSidebarExpanded(true);
+  // Focus moves to the drawer's own collapse control, because the external
+  // launcher is no longer displayed while the drawer is open.
+  $("#sidebar-toggle")?.focus();
+});
+
+$("#section-home-button")?.addEventListener("click", () => switchView("home"));
+
+$(".app-sidebar").addEventListener("click", (event) => {
+  if (event.target.closest("button, input, #sidebar-toggle")) return;
+  setSidebarExpanded(!$(".app-shell").classList.contains("sidebar-expanded"));
+});
+
+// The drawer overlays every desktop page. Clicking the scrim dismisses it,
+// without activating controls behind the overlay (including the player).
+$(".app-shell").addEventListener("click", (event) => {
+  if (window.innerWidth <= 680
+    || !$(".app-shell").classList.contains("sidebar-expanded")
+    || event.target.closest(".app-sidebar, #app-sidebar-toggle")
+    || event.target.closest("#section-sidebar-toggle")) return;
+  setSidebarExpanded(false);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape"
+    || !$(".app-shell").classList.contains("sidebar-expanded")) return;
+  setSidebarExpanded(false);
+  activeSidebarLauncher()?.focus();
+});
+
+window.addEventListener("resize", () => {
+  if (window.innerWidth <= 680) setSidebarExpanded(false, { persist: false });
+});
+
+frame.addEventListener("pointerenter", revealPlayerControls);
+frame.addEventListener("pointermove", revealPlayerControls);
+frame.addEventListener("pointerleave", hidePlayerControls);
+frame.addEventListener("click", (event) => {
+  if (event.target === video) {
+    togglePlayback();
+    hidePlayerControls();
+    return;
+  }
+  if (event.target.closest("#compat-controls")) schedulePlayerControlsHide();
+});
+
+video.addEventListener("timeupdate", () => {
+  state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
+  if (state.pendingSeek?.priming) {
+    updateCompatControls();
+    return;
+  }
+  refreshEpisodeSkipOptions();
+  markPlaybackMotion();
+  prefetchUpcomingChapter();
+  // Embedded caption windows must keep loading in ordinary playback mode too.
+  loadMoreEmbeddedSubtitles();
+  renderSubtitles();
+  if (learningEnabled && state.loopLine && !video.paused) {
+    const track = activeTrack();
+    const cues = allPrimaryCues();
+    const index = currentCueIndex();
+    const cue = cues[index];
+    const cueEnd = cue ? cuePlaybackBounds(cue, track).endMs : 0;
+    if (cue && state.currentMs >= cueEnd - 80 && state.currentMs <= cueEnd + 1200) {
+      seekPlayerTo(cuePlaybackMs(cue, track) / 1000);
+      resumePlayback();
+    }
+  }
+  updateCompatControls();
+  checkAudioSyncCoverage();
+  recordWatchProgress();
+});
+video.addEventListener("ended", () => {
+  if (state.pendingSeek?.priming) {
+    if (!state.pendingSeek.streamInstalled) return;
+    cancelTranscodeStart();
+    video.pause();
+    setPlayerLoading(100, "Video synchronization unavailable",
+      "The converted stream ended before the requested frame.", { error: true });
+    return;
+  }
+  // A queued seek still displays the outgoing stream for its debounce period.
+  // Its terminal event must not recover or auto-advance the episode.
+  if (state.pendingSeek) return;
+  // Transcoded streams represent a window beginning at an offset, so a premature
+  // stream EOF is not the end of the actual movie.
+  const duration = state.mediaDurationMs / 1000;
+  if (duration > 0 && absolutePlaybackSeconds() < duration - Math.max(3, duration * 0.002)) {
+    void recoverPlayback("early-eof");
+    return;
+  }
+  stopRecoveryWatch();
+  recordWatchProgress({ force: true });
+  startAutoNext();
+});
+video.addEventListener("seeking", () => {
+  invalidateSubtitleFrameClock();
+  // Native seeking while paused can dispatch no timeupdate. The subtitle
+  // timeline must jump to the new playhead immediately.
+  state.currentMs = absolutePlaybackSeconds() * 1000;
+  if (!state.pendingSeek?.priming) loadMoreEmbeddedSubtitles({ seeked: true });
+  clearAutoNext();
+  recoveryWaitingSince = null;
+  if (isPlayerTimeBuffered(video.currentTime)) {
+    clearBufferingTimer();
+    hideLoadingForBufferedSeek();
+  } else if (video.dataset.mode !== "transcode" && frame.classList.contains("has-video") && $("#video-loading")?.hidden) {
+    setPlayerLoading(18, "Seeking", formatTime(video.currentTime * 1000));
+  }
+  renderSubtitles();
+  // Check the new playhead promptly, even if playback remains paused. Already
+  // matched subtitle anchors stay valid; only missing local speech coverage is sought.
+  if (audioSync.key) scheduleAudioSync(400);
+});
+video.addEventListener("loadedmetadata", updateCompatControls);
+video.addEventListener("loadstart", invalidateSubtitleFrameClock);
+video.addEventListener("seeked", schedulePresentedSubtitleFrame);
+video.addEventListener("loadedmetadata", refreshEpisodeSkipOptions);
+video.addEventListener("durationchange", updateCompatControls);
+video.addEventListener("durationchange", refreshEpisodeSkipOptions);
+video.addEventListener("progress", updateCompatControls);
+video.addEventListener("canplay", () => {
+  schedulePresentedSubtitleFrame();
+  markPlaybackMotion();
+  clearBufferingTimer();
+  if (!state.pendingSeek) finishPlayerLoading();
+  updateCompatControls();
+});
+video.addEventListener("playing", () => {
+  schedulePresentedSubtitleFrame();
+  if (linePreview.active || linePreview.pending || linePreview.preventBackgroundPlayback) { video.pause(); if (state.pendingSeek) state.pendingSeek.wasPlaying = false; return; }
+  if (autoNextInterval !== null) clearAutoNext();
+  if (currentRecoveryKey() && recoveryWatchTimer === null) beginRecoveryWatch();
+  clearBufferingTimer();
+  markPlaybackMotion();
+  recoveryWaitingSince = null;
+  if (!state.pendingSeek) finishPlayerLoading();
+  if (video.dataset.mode === "transcode") $("#media-status").textContent = "TORRENT - TRANSCODE PLAYING";
+  updateCompatControls();
+  scheduleAudioSync(1500);
+  if (learningEnabled) scheduleClipStep(5000);
+});
+video.addEventListener("play", () => {
+  recoveryPauseSerial += 1;
+  recoveryPlaybackRequested = true;
+  // Also cover browser media-key or native play calls bypassing resumePlayback.
+  // restartTranscodeAt clears the snapshot before starting the replacement,
+  // preventing recursive reloads.
+  // An explicit Play after a previous exhausted failure is a fresh attempt.
+  // Replace the stale red error panel with the normal branded loader instead
+  // of carrying the old recovery incident into pause/resume.
+  if (recoveryDisplayPhase === "failed" && !state.pendingSeek) {
+    resetRecoveryDisplay();
+    setPlayerLoading(28, "Resuming playback");
+  }
+  resyncTranscodeAfterLongPause();
+});
+video.addEventListener("pause", () => {
+  if (state.pendingSeek?.priming && transcodeStartAttempt?.mutedForPreroll
+    && !video.error && !linePreview.active && !linePreview.pending) {
+    // Browser/media-key Pause during silent preroll changes desired playback
+    // intent. Continue only the hidden/muted preroll, then remain paused at
+    // the requested frame instead of stranding the seek.
+    state.pendingSeek.wasPlaying = false;
+    void video.play().catch(() => {});
+    updateCompatControls();
+    return;
+  }
+  // Browser media failures can emit pause BEFORE populating video.error. Our
+  // own Pause controls clear intent immediately; native/media-key pauses clear
+  // it after a short grace period for the matching error event to arrive.
+  const pauseSerial = ++recoveryPauseSerial;
+  if (!video.error && recoveryPlaybackRequested) window.setTimeout(() => {
+    if (pauseSerial === recoveryPauseSerial && video.paused && !video.error) recoveryPlaybackRequested = false;
+  }, 1000);
+  noteTranscodePause();
+  clearBufferingTimer();
+  recoveryWaitingSince = null;
+  if (recoveryDisplayPhase === "recovering" && !state.pendingSeek && state.loadingProgress >= 100) resetRecoveryDisplay();
+  // The old stream pauses while a merged seek waits: keep "Seeking" up until the new one plays.
+  if (!state.pendingSeek && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA && $("#video-loading")) $("#video-loading").hidden = true;
+  if (!state.pendingSeek) recordWatchProgress({ force: true });
+  updateCompatControls();
+});
+video.addEventListener("waiting", () => {
+  if (currentRecoveryKey() && recoveryWaitingSince === null) recoveryWaitingSince = Date.now();
+  if (video.dataset.mode === "transcode" || video.dataset.mode === "torrent-direct") scheduleBufferingIndicator();
+});
+video.addEventListener("stalled", () => {
+  if (currentRecoveryKey() && recoveryWaitingSince === null) recoveryWaitingSince = Date.now();
+  scheduleBufferingIndicator();
+});
+video.addEventListener("error", () => {
+  if (state.pendingSeek?.priming) {
+    if (!state.pendingSeek.streamInstalled) return;
+    if (transcodeStartAttempt?.retryTransient?.(video.error || new Error("The media window closed"))) return;
+    cancelTranscodeStart();
+    video.pause();
+    setPlayerLoading(100, "Video synchronization unavailable",
+      "The converted stream failed before the requested frame.", { error: true });
+    return;
+  }
+  if (video.paused && state.loadingProgress >= 100 && !state.pendingSeek && !recoveryPlaybackRequested) return;
+  if (currentRecoveryKey() && !recoveryBusy) {
+    void recoverPlayback("error");
+    return;
+  }
+  frame.classList.remove("source-transition");
+  $("#video-loading").hidden = true;
+  if (video.dataset.mode === "torrent-direct") $("#media-status").textContent = "This video's format can't play directly. Try another source.";
+  if (video.dataset.mode === "transcode") $("#media-status").textContent = "Converting this video failed. Try another source.";
+});
+$("#compat-play").addEventListener("click", () => {
+  togglePlayback();
+});
+const compatProgress = $("#compat-progress");
+function progressTimeAt(clientX) {
+  const rect = compatProgress.getBoundingClientRect();
+  const ratio = rect.width ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0;
+  return ratio * (Number(compatProgress.max) || 0);
+}
+function showScrubTime(seconds) {
+  const bubble = $("#player-scrub-time");
+  const max = Number(compatProgress.max) || 0;
+  if (!bubble || !max) return;
+  bubble.hidden = false;
+  const segment = episodeTimelineRanges().find((range) => seconds >= range.start && seconds < range.end);
+  bubble.textContent = `${formatTime(seconds * 1000)}${segment ? ` - ${segment.label}` : ""}`;
+  const ratio = Math.max(0, Math.min(1, seconds / max));
+  const width = compatProgress.getBoundingClientRect().width;
+  // Longer chapter labels must not be clipped at either rounded video edge.
+  const margin = bubble.offsetWidth / 2 + 6;
+  bubble.style.left = width
+    ? `${Math.max(Math.min(margin, width / 2), Math.min(width - Math.min(margin, width / 2), ratio * width))}px`
+    : `${ratio * 100}%`;
+}
+function endScrub() {
+  if (!state.scrubbing) return;
+  state.scrubbing = false;
+  $("#player-scrub-time").hidden = true;
+  updateCompatControls();
+}
+compatProgress.addEventListener("pointerdown", () => { state.scrubbing = true; });
+compatProgress.addEventListener("pointermove", (event) => showScrubTime(state.scrubbing ? Number(compatProgress.value) : progressTimeAt(event.clientX)));
+compatProgress.addEventListener("pointerleave", () => { if (!state.scrubbing) $("#player-scrub-time").hidden = true; });
+compatProgress.addEventListener("input", () => {
+  state.scrubbing = true;
+  showScrubTime(Number(compatProgress.value));
+  updateCompatControls();
+});
+compatProgress.addEventListener("change", (event) => {
+  const target = Number(event.target.value) || 0;
+  state.scrubbing = false;
+  $("#player-scrub-time").hidden = true;
+  seekPlayerTo(target);
+});
+// A press without a move fires no change event; release the thumb anyway.
+window.addEventListener("pointerup", () => window.setTimeout(endScrub, 60));
+window.addEventListener("pointercancel", endScrub);
+compatProgress.addEventListener("blur", endScrub);
+$("#player-seek-back").addEventListener("click", () => seekPlayerBy(-10));
+$("#player-seek-forward").addEventListener("click", () => seekPlayerBy(10));
+$("#player-prev-chapter").addEventListener("click", () => { void playAdjacentChapter(-1); });
+$("#player-next-chapter").addEventListener("click", () => { void playAdjacentChapter(1); });
+$("#player-up-next-play").addEventListener("click", playAutoNextNow);
+$("#player-up-next-cancel").addEventListener("click", cancelAutoNext);
+$("#watch-skip-intro")?.addEventListener("click", () => setEpisodeAutoSkip("intro", !episodeAutoSkip.intro));
+$("#watch-skip-credits")?.addEventListener("click", () => setEpisodeAutoSkip("outro", !episodeAutoSkip.outro));
+const autoNextToggle = $("#watch-autoplay-next");
+const autoNextInline = $("#watch-autoplay-inline");
+function setAutoplayNextEnabled(enabled) {
+  autoNextEnabled = Boolean(enabled);
+  localStorage.setItem("lvl-autoplay-next", autoNextEnabled ? "1" : "0");
+  if (autoNextToggle) autoNextToggle.checked = autoNextEnabled;
+  if (autoNextInline) autoNextInline.setAttribute("aria-pressed", String(autoNextEnabled));
+  if (!autoNextEnabled) cancelAutoNext();
+}
+if (autoNextToggle) {
+  autoNextToggle.checked = autoNextEnabled;
+  autoNextToggle.addEventListener("change", () => setAutoplayNextEnabled(autoNextToggle.checked));
+}
+if (autoNextInline) {
+  autoNextInline.setAttribute("aria-pressed", String(autoNextEnabled));
+  autoNextInline.addEventListener("click", () => setAutoplayNextEnabled(!autoNextEnabled));
+}
+$("#player-retry-source")?.addEventListener("click", () => {
+  const source = state.currentSource;
+  if (source?.kind !== "torrent") return;
+  const at = absolutePlaybackSeconds();
+  resetRecoveryDisplay();
+  playbackRecovery = createPlaybackRecoveryState();
+  void playLibraryEpisode(source.libraryId, Number(source.fileIndex), { resumeAtSeconds: at });
+});
+$("#player-choose-source")?.addEventListener("click", () => {
+  resetRecoveryDisplay();
+  $("#video-loading").hidden = true;
+  $("#player-source-switcher")?.click();
+});
+$("#player-source-switcher")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const menu = $("#player-source-menu");
+  const willOpen = menu.hidden;
+  closePlayerPopovers(menu);
+  if (willOpen) renderPlayerSourceMenu();
+  menu.hidden = !willOpen;
+});
+$("#player-audio-switcher")?.addEventListener("click", (event) => {
+  event.stopPropagation();
+  const menu = $("#player-audio-menu");
+  const willOpen = menu.hidden;
+  closePlayerPopovers(menu);
+  if (willOpen) renderPlayerAudioMenu();
+  menu.hidden = !willOpen;
+});
+$("#player-mute").addEventListener("click", () => {
+  setPlayerMutePreference(!playerWantsMuted());
+  updateCompatControls();
+});
+$("#player-volume").addEventListener("input", (event) => {
+  video.volume = Math.max(0, Math.min(1, Number(event.target.value) || 0));
+  setPlayerMutePreference(video.volume === 0);
+  updateCompatControls();
+});
+function togglePlayerSubtitleMenu(event) {
+  event.stopPropagation();
+  if (!$("#view-watch")?.classList.contains("is-floating") && !floatingDesktopWindow) revealPlayerControls();
+  const menu = $("#player-subtitle-menu");
+  const opening = menu.hidden;
+  closePlayerPopovers(opening ? menu : null);
+  menu.hidden = !opening;
+  $("#player-toggle-subs").setAttribute("aria-expanded", String(opening));
+  $("#floating-player-captions")?.setAttribute("aria-expanded", String(opening));
+  if (opening) {
+    renderPlayerSubtitleMenu();
+    clearPlayerControlsHideTimer();
+  } else schedulePlayerControlsHide();
+}
+$("#player-toggle-subs").addEventListener("click", togglePlayerSubtitleMenu);
+$("#floating-player-captions")?.addEventListener("click", togglePlayerSubtitleMenu);
+$("#player-subtitle-menu")?.addEventListener("click", (event) => {
+  const button = event.target.closest("button");
+  if (!button) return;
+  if (button.hasAttribute("data-caption-customize")) { openPlayerSubtitleManager(); return; }
+  if (button.hasAttribute("data-caption-off")) {
+    state.subtitlesVisible = false;
+  } else if (button.hasAttribute("data-caption-track")) {
+    const track = preferredSourceTracks().find((item) => item.id === button.dataset.captionTrack);
+    if (!track) return;
+    const enabled = state.subtitlesVisible && track.visible;
+    if (!state.subtitlesVisible) currentSourceTracks().forEach((item) => { item.visible = false; });
+    track.visible = !enabled;
+    state.subtitlesVisible = true;
+  } else if (button.hasAttribute("data-caption-embedded")) {
+    const stream = Number(button.dataset.captionEmbedded);
+    const embedded = (state.currentMediaProbe?.subtitleTracks || []).find((item) =>
+      Number(item.streamIndex) === stream && item.textBased);
+    if (!embedded) return;
+    const imported = currentSourceTracks().find((item) => Number(item.embeddedStreamIndex) === stream);
+    if (imported?.cues?.length && !imported.embeddedImportPartial) {
+      const enabled = state.subtitlesVisible && imported.visible;
+      if (!state.subtitlesVisible) currentSourceTracks().forEach((item) => { item.visible = false; });
+      imported.visible = !enabled;
+      state.subtitlesVisible = true;
+    } else void importEmbeddedSubtitleTrack(embedded);
+  } else return;
+  subtitleRenderMemo.key = "";
+  renderSubtitleWorkspace({ includeLearning: false });
+  renderPlayerSubtitleMenu();
+  clearPlayerControlsHideTimer();
+});
+$("#subtitle-manager-close")?.addEventListener("click", () => $("#player-subtitle-dialog")?.close());
+$("#player-subtitle-dialog")?.addEventListener("click", (event) => {
+  const dialog = event.currentTarget;
+  // A backdrop click is retargeted to <dialog> in Edge. Do not close when
+  // clicking its actual contents or dragging a scrollbar inside the modal.
+  if (event.target !== dialog) return;
+  const rect = dialog.getBoundingClientRect();
+  if (event.clientX < rect.left || event.clientX > rect.right
+    || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+});
+$("#player-subtitle-dialog")?.addEventListener("close", () => {
+  subtitleRenderMemo.key = "";
+  renderSubtitleWorkspace({ includeLearning: false });
+});
+$("#player-loop-line").addEventListener("click", () => {
+  state.loopLine = !state.loopLine;
+  updatePlayerPreferenceButtons();
+});
+$("#player-swap-languages").addEventListener("click", () => {
+  const oldBase = state.baseLanguage;
+  saveSubtitlePreferences(state.subdlKey, state.targetLanguage, oldBase);
+  $("#subtitle-language").value = subtitleFinderLanguages();
+  renderSubtitleWorkspace();
+});
+function setWatchTheaterMode(enabled) {
+  const theater = Boolean(enabled);
+  const layout = $("#watch-player-layout");
+  const button = $("#player-theater");
+  layout?.classList.toggle("is-theater", theater);
+  if (button) {
+    button.classList.toggle("is-active", theater);
+    button.setAttribute("aria-pressed", String(theater));
+    const label = theater ? "Exit theater mode" : "Theater mode";
+    button.setAttribute("aria-label", label);
+    button.dataset.tooltip = label;
+  }
+}
+// Ignore the old persistent theater preference: every new player starts in
+// the default split layout, even if an earlier version stored theater=1.
+setWatchTheaterMode(false);
+$("#player-theater").addEventListener("click", () => {
+  const entering = !$("#watch-player-layout").classList.contains("is-theater");
+  setWatchTheaterMode(entering);
+  revealPlayerControls();
+  if (entering && typeof requestAnimationFrame === "function") requestAnimationFrame(() => {
+    const target = $("#video-frame");
+    const rect = target?.getBoundingClientRect();
+    const sticky = window.innerWidth <= 680 ? 114 : 72;
+    if (rect && (rect.top < sticky - 4 || rect.bottom > window.innerHeight - 6))
+      target.scrollIntoView({ block: "start", behavior: "instant" });
+  });
+});
+$("#player-fullscreen").addEventListener("click", async () => {
+  try {
+    if (document.fullscreenElement) await document.exitFullscreen();
+    else await frame.requestFullscreen();
+  } catch (error) {
+    console.warn("Fullscreen unavailable:", error);
+  }
+});
+function syncPlayerSpeed() {
+  const rate = Number(video.playbackRate) || 1;
+  const label = `${Number(rate.toFixed(2))}×`;
+  const trigger = $("#speed-select");
+  if (trigger) {
+    trigger.textContent = label;
+    trigger.setAttribute("aria-label", `Playback speed: ${label}`);
+  }
+  $$("#player-speed-menu [data-speed]").forEach((button) => {
+    button.setAttribute("aria-checked", String(Number(button.dataset.speed) === rate));
+  });
+}
+$("#speed-select").addEventListener("click", () => {
+  const menu = $("#player-speed-menu");
+  const opening = menu.hidden;
+  closePlayerPopovers(opening ? menu : null);
+  menu.hidden = !opening;
+  $("#speed-select").setAttribute("aria-expanded", String(opening));
+  if (opening) menu.querySelector('[aria-checked="true"]')?.focus();
+});
+$("#player-speed-menu").addEventListener("click", (event) => {
+  const option = event.target.closest("[data-speed]");
+  if (!option) return;
+  video.playbackRate = Number(option.dataset.speed);
+  syncPlayerSpeed();
+  closePlayerPopovers();
+  $("#speed-select").focus();
+});
+$("#player-speed-menu").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closePlayerPopovers();
+    $("#speed-select").focus();
+  } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    event.preventDefault();
+    const options = [...event.currentTarget.querySelectorAll("[data-speed]")];
+    const index = options.indexOf(document.activeElement);
+    options[(index + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length]?.focus();
+  }
+});
+video.addEventListener("ratechange", syncPlayerSpeed);
+$("#pause-after-cue").addEventListener("change", (event) => { state.pauseAfterCue = event.target.checked; });
+$("#prev-cue").addEventListener("click", () => { const i = currentCueIndex(); const cues = allPrimaryCues(); const track = activeTrack(); if (i >= 0) seekTo(cuePlaybackMs(cues[Math.max(0, i - 1)], track)); });
+$("#next-cue").addEventListener("click", () => { const i = currentCueIndex(); const cues = allPrimaryCues(); const track = activeTrack(); if (i >= 0) seekTo(cuePlaybackMs(cues[Math.min(cues.length - 1, i + 1)], track)); });
+$("#repeat-cue").addEventListener("click", () => { const i = currentCueIndex(); const cues = allPrimaryCues(); const track = activeTrack(); if (i >= 0) seekTo(cuePlaybackMs(cues[i], track)); });
+
+$$('.nav-btn').forEach((button) => button.addEventListener("click", () => {
+  if (["library", "calendar"].includes(button.dataset.view) && viewActive("watch")) {
+    void navigateWatchToLibrary(() => switchView(button.dataset.view));
+  } else switchView(button.dataset.view);
+}));
+if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
+window.addEventListener("popstate", () => switchView(viewFromLocation(), { historyMode: "none", restoreScroll: true }));
+$("#dialog-close").addEventListener("click", () => $("#detail-dialog").close());
+$("#line-preview-dialog").addEventListener("close", () => { if (!$("#line-preview-dialog").open) closeLinePreview(); });
+$("#line-preview-dialog").addEventListener("cancel", closeLinePreview);
+$("#line-preview-replay").addEventListener("click", replayLinePreview);
+$("[data-close-dialog='line-preview-dialog']").addEventListener("click", closeLinePreview);
+$("#settings-base-language").addEventListener("change", (event) => renderLocaleOptions("#settings-base-locale", event.target.value, ""));
+$("#settings-target-language").addEventListener("change", (event) => renderLocaleOptions("#settings-learning-locale", event.target.value, ""));
+
+document.addEventListener("keydown", (event) => {
+  if (document.querySelector("dialog[open]")) return;
+  const tag = event.target?.tagName?.toLowerCase();
+  const typing = ["input", "textarea", "select"].includes(tag) || event.target?.isContentEditable;
+  if (learningEnabled && !typing && handleStudyKey(event)) return;
+  if (learningEnabled && !typing && handleQuizKey(event)) return;
+  if (learningEnabled && handleTestKey(event, typing)) return;
+  if (["input", "textarea", "select", "button"].includes(tag) || event.target?.isContentEditable) return;
+
+  if ($("#view-watch").classList.contains("is-active") && frame.classList.contains("has-video")) {
+    const key = event.key.toLowerCase();
+    if (event.code === "Space") {
+      event.preventDefault();
+      togglePlayback();
+      return;
+    }
+    if (key === "j") { event.preventDefault(); seekPlayerBy(-10); return; }
+    if (key === "l") { event.preventDefault(); seekPlayerBy(10); return; }
+    if (key === "m") { event.preventDefault(); setPlayerMutePreference(!playerWantsMuted()); updateCompatControls(); return; }
+    if (key === "t" && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); $("#player-theater").click(); return; }
+    if (key === "f") { event.preventDefault(); $("#player-fullscreen").click(); return; }
+    if (learningEnabled && key === "r") { event.preventDefault(); $("#repeat-cue").click(); return; }
+    if (learningEnabled && key === "[") { event.preventDefault(); $("#prev-cue").click(); return; }
+    if (learningEnabled && key === "]") { event.preventDefault(); $("#next-cue").click(); return; }
+    if (key === "n") { event.preventDefault(); $("#player-next-chapter").click(); return; }
+    if (key === "b") { event.preventDefault(); $("#player-prev-chapter").click(); return; }
+    if (learningEnabled && key === "g") { event.preventDefault(); nudgeSubtitleTracks(-100); return; }
+    if (learningEnabled && key === "h") { event.preventDefault(); nudgeSubtitleTracks(100); return; }
+  }
+
+  if ($("#view-review").classList.contains("is-active")) return;
+});
+
+window.addEventListener("pagehide", () => {
+  recordWatchProgress({ force: true });
+  saveLearningExposure({ immediate: true });
+  if (voiceUsageActiveSince) stopVoiceUsageClock();
+});
+if ("speechSynthesis" in window) {
+  window.speechSynthesis.addEventListener?.("voiceschanged", () => {
+    if (reviewMode === "voice") renderVoiceChatStage();
+  });
+}
+
+migrateLearningState();
+applyLanguagePreferencesToTracks();
+$("#subtitle-language").value = subtitleFinderLanguages();
+syncSubtitleFinderLanguageChips();
+setSidebarExpanded(false);
+applySubtitleStyle();
+renderAll();
+void refreshCoachProviders();
+void hydratePersistentAppState().then(() => {
+  watchRestoreReady = true;
+  restoreLastWatchOnVisit();
+  backfillAniListCommunityScores();
+  if (viewActive("calendar")) calendarUi.refresh();
+  else calendarUi.scanRecent();
+  // Only run after the SQLite-backed Library has finished hydrating, otherwise
+  // an account sync could mistakenly work from an empty fallback Library.
+  if (anilistOAuthResponse) void completeAniListAuthorization();
+  else if (readAniListAccount(localStorage)) {
+    scheduleAniListAutoSync(1500);
+    if (anilistScoreSyncEnabled()) void syncAniListLibrary({ quiet: true }).catch(() => {});
+  }
+}).catch((error) => {
+  showAniListAutoStatus("Waiting for LVL Library hydration before AniList sync.", true);
+  console.warn("AniList initialization deferred:", error?.message);
+});
+switchView(viewFromLocation(), { historyMode: "replace" });
+window.addEventListener("online", () => scheduleAniListAutoSync(1000));
+window.addEventListener("focus", () => {
+  if (Date.now() - readAniListPreference(localStorage).lastPull >= 60 * 60_000) scheduleAniListAutoSync(1000);
+});
+setInterval(() => {
+  if (Date.now() - readAniListPreference(localStorage).lastPull >= 60 * 60_000) scheduleAniListAutoSync(1000);
+  if (anilistScoreSyncEnabled() && Date.now() - (Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) || 0) >= 60 * 60_000)
+    void syncAniListLibrary({ quiet: true }).catch(() => {});
+}, 10 * 60_000);
+if (learningEnabled && (state.wordColoring || state.studySource === "preset")) void ensureLearningPreset(state.targetLanguage);
+setInterval(() => {
+  if ($("#view-home")?.classList.contains("is-active")
+      && state.homeLoaded
+      && Date.now() - state.homeCatalogUpdatedAt >= HOME_CATALOG_REFRESH_MS) {
+    void loadHomeCatalog({ force: true });
+  }
+}, 60 * 1000);
+setInterval(() => {
+  const settingsOpen = Boolean($("#view-settings")?.classList.contains("is-active"));
+  const voiceOpen = reviewMode === "voice" && Boolean($("#view-review")?.classList.contains("is-active"));
+  const needsBrowserBridge = selectedCoachProvider().id === "chatgpt-browser";
+  if (learningEnabled && (settingsOpen || (voiceOpen && needsBrowserBridge)) && !browserCoachChecking) void refreshBrowserCoachStatus();
+  if (learningEnabled && voiceOpen) void refreshVoiceUsageStatus();
+}, 3000);

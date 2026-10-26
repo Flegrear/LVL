@@ -1,0 +1,51 @@
+node_modules/
+# Keep any future internal documentation out of Git; the source/docs folder
+# was intentionally deleted and no end-user setup must bundle it.
+/docs/
+# Private/local configuration, credentials, database and temporary artifacts.
+# Release snapshots use a reviewed allowlist, never an unrestricted git add.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.sqlite
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-wal
+*.db-shm
+*.bak
+*.tmp
+*.swp
+.DS_Store
+Thumbs.db
+/data/
+/.worktrees/
+/.cos-subagent/
+# Isolated manual alpha server: local SQLite, preferences, logs and scratch output.
+/.alpha-runtime/
+# Generated installer output
+/build/
+/dist/
+# Prototype installer notes are not part of the reviewed alpha release.
+/installer/README.md
+data/*.sqlite3
+data/*.sqlite3-shm
+data/*.sqlite3-wal
+data/backups/
+# Saved lines (audio + frames) and Anki deck media are local data
+data/clips/
+data/anki-media/
+server.stdout.log
+server.stderr.log
+# The tray launcher is built from launcher/ (npm run launcher)
+/Language Video Learner.exe
+/LVL.exe
+
+# Logs and test artifacts
+*.log
+test-results/

@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "LVL Black Window Frame",
+  "version": "0.1.0",
+  "theme": {
+    "colors": {
+      "frame": [0, 0, 0],
+      "frame_inactive": [0, 0, 0],
+      "toolbar": [0, 0, 0],
+      "tab_text": [255, 255, 255],
+      "tab_background_text": [255, 255, 255],
+      "bookmark_text": [255, 255, 255]
+    }
+  }
+}

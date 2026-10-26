@@ -1,0 +1,4133 @@
+# rank	word	lemma	reading	gloss (EN)
+1	de			of; 's
+2	que			than; so that
+3	no			no; not
+4	a			to
+5	la			the; her; it
+6	el			the
+7	y			and
+8	es	ser		be; being; existence
+9	en			in; at; into
+10	lo			that; the
+11	un			a; an
+12	por			for; by
+13	qué			what; what a
+14	me			me
+15	una	uno		one; human; maybe
+16	los			the; them
+17	se			one
+18	te			tee
+19	con			with
+20	para			for
+21	está	estar		be
+22	mi			my; mi
+23	pero			apple; though; apple tree
+24	sí			yes; herself; himself
+25	si			if
+26	bien			well
+27	eso			that
+28	su			your; her; his
+29	las			the; them
+30	yo			I; me; ego
+32	como			as
+33	aquí			here
+34	tu			your
+35	al			a
+36	más			more
+37	le			them
+38	esto			this
+39	todo			all
+40	ya			already
+41	estoy	estar		be
+42	ahora			now; currently
+43	muy			very
+44	ha	haber		have; there is
+45	esta			this
+46	así	asir		grasp
+47	vamos	ir		be going to; let 's
+48	algo			something; anything
+49	hay	haber		have; there is
+50	bueno			fine; okay; skeptical
+51	tengo	tener		be; hold; have
+52	él			he; it; him
+53	cuando			if; though
+54	estás	estar		be
+55	sé	ser		be; being; existence
+56	tú			you; thou
+57	nos			us
+58	nada			nothing; nothingness
+59	cómo			how
+60	este			this; east
+61	o			or
+62	he	haber		have; there is
+63	ser			be; being; existence
+64	tiene	tener		be; hold; have
+65	puedo	poder		may
+66	ella			she; her; it
+67	quiero	querer		love; want; tend
+68	hacer			make
+69	fue	ir		be going to; let 's
+70	gracias			thank you; cheers; thanks
+71	vez			time
+72	era	ser		be; being; existence
+73	soy	ser		be; being; existence
+74	sólo			but
+75	todos	todo		all
+76	porque			because
+77	son	ser		be; being; existence
+78	tienes	tener		be; hold; have
+79	creo	crear		create
+80	voy	ir		be going to; let 's
+81	sabes			do you know
+82	estaba	estar		be
+83	puede	poder		may
+84	eres	ser		be; being; existence
+85	ese			that
+86	usted			you
+87	entonces			then
+88	hola			hello; hi
+89	solo			only; alone
+90	verdad			truth
+91	casa			house; home
+92	tan			as; so much
+93	quién			who
+94	sus	su		your; her; his
+95	tiempo			time; tense; weather
+96	dos			two
+97	esa			that
+98	nunca			never
+99	dónde			where
+100	va	ir		be going to; let 's
+101	oh			O
+102	favor			favor; favour
+103	mucho			a lot of; a lot
+104	mí			me
+105	quieres	querer		love; want; tend
+106	siento	sentar		sit
+107	señor			master; mister; sir
+108	mejor			best
+109	hace	hacer		make
+110	has	haber		have; there is
+111	decir			say
+112	también			too; also
+113	sobre			above; envelope
+114	dios			god; deity; divinity
+115	sin			without; sans
+116	tenemos	tener		be; hold; have
+117	están	estar		be
+118	ti			you
+119	puedes	poder		may
+120	ver			see
+121	hombre			man; husband; bro
+122	vida			life
+123	alguien			anybody
+124	cosas	cosa		thing; matter; affair
+125	siempre			always; ever
+126	hasta			until
+127	ahí			here; there
+128	ir			be going to; let 's
+129	años	año		year
+130	antes			formerly
+131	estar			be
+132	ni			neither
+133	poco			little
+134	día			day; daytime
+135	uno			one; human; maybe
+136	noche			night; nighttime
+137	hecho			fact; done
+138	mis	mi		my; mi
+139	estamos	estar		be
+140	otra	otro		other
+141	acuerdo			agreement
+142	trabajo			work; job
+143	nosotros			we; us
+144	parece	parecer		opinion; appearance; seem
+145	gente			people
+146	sea	ser		be; being; existence
+147	padre			father; dad
+148	mira	mirar		face; eye; look at
+149	mismo			same
+150	dijo	decir		say
+151	nadie			no one
+152	quiere	querer		love; want; tend
+153	podría	poder		may
+154	hablar			speak
+155	vas	ir		be going to; let 's
+156	ellos			they
+158	tal			such
+159	pasa			raisin
+160	fuera			out
+161	después			later; after
+162	han	haber		have; there is
+163	desde			from
+164	dinero			money
+165	mundo			world
+166	claro			light
+167	momento			moment
+168	les			them
+169	tener			be; hold; have
+170	estado			state; condition
+171	otro			other
+172	había	haber		have; there is
+173	mañana			morning; tomorrow; future
+174	tenía	tener		be; hold; have
+175	madre			mother
+176	vale			OK; all right; ticket
+177	lugar			place
+178	haciendo	hacer		make
+179	donde			if; chez
+180	seguro			belaying; secure
+182	podemos	podar		to; prune
+183	tus	tu		your
+184	espera			wait
+185	nuevo			new
+186	sido	ser		be; being; existence
+187	cosa			thing; matter; affair
+188	hijo			son/daughter
+189	allí			there
+190	menos			less
+191	tipo			type
+192	amigo			friend
+193	gran			great
+194	nuestro			our; ours
+195	mujer			woman; wife
+196	mamá			mom; mum
+197	luego			then; later; soon
+198	papá			dad
+199	días	día		day; daytime
+200	dice	decir		say
+201	hoy			today
+202	tres			three
+203	buena	bueno		fine; okay; skeptical
+204	necesito	necesitar		need; require
+205	dije			trinket
+206	oye			hey
+208	quería	querer		love; want; tend
+209	será	ser		be; being; existence
+210	haber			have; there is
+211	parte	partir		depart
+212	todas	todo		all
+213	crees	crear		create
+214	buen	bueno		fine; okay; skeptical
+215	conmigo			me; with
+216	nombre			name; noun
+217	mierda			shit
+218	nuestra	nuestro		our; ours
+219	mal			evil; disease; illness
+220	debe	deber		duty; must; owe
+221	realmente			really
+222	estas	este		this; east
+223	aún			still
+224	mío			dibs
+225	toda	todo		all
+227	cada			each
+228	visto	ver		see
+229	importa	importar		get; matter; import
+230	contigo			you; with
+231	tienen	tener		be; hold; have
+232	hemos	haber		have; there is
+233	razón			reason
+235	tanto			so much
+236	saber			can; know
+237	hizo	hacer		make
+238	veces	vez		time
+239	serio			serious
+240	ven	venir		come
+241	idea			idea
+242	eh			hey
+243	tarde			late; afternoon
+244	problema			problem; trouble; issue
+245	hora			hour
+246	cierto			certain
+247	dicho			saying
+248	quien			who; whom
+249	demasiado			excessively
+250	amor			love; affection
+251	entre			among; between
+252	ve	ir		be going to; let 's
+253	pasado			past
+254	familia			family
+255	estos	este		this; east
+256	policía			police; police officer
+257	debería	deber		duty; must; owe
+258	ustedes			you
+259	chica			adolescent
+260	esos			that one
+262	cuenta	contar		count; tell
+263	haces	hacer		make
+264	todavía			even; yet; even if
+265	salir			go out; exit; turn out
+266	algún			any; at all
+267	vaya	ir		be going to; let 's
+268	unos	uno		one; human; maybe
+269	veo	ver		see
+270	amigos	amigo		friend
+271	hermano			sibling; friar; brother/sister
+272	pensé	pensar		think
+274	cabeza			head; caput
+275	ah			eh
+276	cariño			affection; fondness
+277	digo	decir		say
+278	van			van; minibus
+279	hombres	hombre		man; husband; bro
+280	buenas	bueno		fine; okay; skeptical
+281	somos	ser		be; being; existence
+282	cualquier			any; whichever
+283	forma			form
+284	mientras			while
+285	lado			place; side
+286	debo	deber		duty; must; owe
+287	sería	ser		be; being; existence
+288	caso			case; grammatical case
+289	pueden	poder		may
+290	pasó	pasar		happen
+291	primera	primero		first
+292	genial			great
+293	chico			gal; boy
+294	supuesto	suponer		suppose
+295	hice	hacer		make
+296	pues			well
+297	adiós			goodbye
+298	muchas			many
+299	personas	persona		person
+300	señora			madam; lady
+301	volver			return; turn over
+302	esas			that one
+303	quizá			perhaps; maybe; possibly
+304	contra			against
+305	camino			path; road; route
+306	durante			for; during
+307	hablando	hablar		speak
+308	manera			way
+309	muerto			dead
+310	persona			person
+311	rápido			quick; fast; rapid
+312	cuál			which
+313	ayuda	ayudar		help; assist
+314	historia			history; story
+315	iba	ir		be going to; let 's
+316	supongo	suponer		suppose
+317	nueva	nuevo		new
+318	entiendo	entender		infer
+319	dentro			inside
+320	casi			almost; nearly; quasi
+321	puerta			door; gate
+322	ves	ver		see
+323	pasar			happen
+324	primero			first
+326	semana			week
+327	hacia			to
+328	quizás			perhaps; maybe; possibly
+329	espero	esperar		hope; expect; await
+331	año			year
+332	niños	niño		child; girl; boy
+333	pronto			ready
+334	tío			uncle; bloke; guy
+335	suerte			luck; chance
+336	ciudad			city; town
+337	siquiera			at least
+338	feliz			happy; joyous
+339	venir			come
+340	hija	hijo		son/daughter
+342	minutos	minuto		minute
+343	cuánto			how much
+344	os	o		or
+345	hey			hey
+346	muerte			death
+347	dejar			allow; let; give up/quit
+348	realidad			reality
+349	deja	dejar		allow; let; give up/quit
+350	problemas	problema		problem; trouble; issue
+351	vi	ver		see
+353	importante			important
+354	dijiste	decir		say
+355	corazón			heart
+356	miedo			fear
+357	jefe			boss
+358	agua			water
+359	haré	hacer		make
+360	justo			equitable; slap
+361	horas	hora		hour
+362	poder			may
+363	buenos	bueno		fine; okay; skeptical
+364	esposa			wife; handcuffs
+365	manos	mano		hand
+366	debes	deber		duty; must; owe
+367	viene	venir		come
+368	venga	vengar		revenge; avenge
+369	nuestros	nuestro		our; ours
+370	ojos	ojo		eye
+371	adelante			forward; keep; come in
+372	encontrar			meet; find
+373	mano			hand
+374	cinco			five
+375	niño			child; girl; boy
+376	ninguna			no
+377	otros	otro		other
+378	cara			face
+379	cuidado			attention
+380	bajo			bass
+381	cerca			nearby
+382	viejo			old; old-fashioned; older adult
+384	noches	noche		night; nighttime
+385	bastante			enough
+386	fin			end
+387	tomar			take
+388	único			only; solitary; alone
+389	misma	mismo		same
+390	escucha	escuchar		listen
+391	ningún			neither
+392	suficiente			sufficient
+393	punto			point; dot; period
+394	cuándo			when
+395	sigue	seguir		follow
+396	haya			beech
+397	equipo			team
+398	grande			great; big; large
+399	necesita	necesitar		need; require
+400	llegar			last; come; gather
+401	incluso			even
+402	algunos			some
+403	doctor			doctor
+404	difícil			difficult; hard; tough
+405	aunque			although
+406	hubiera	haber		have; there is
+407	primer			first
+408	coche			car; carriage; automobile
+409	hago	hacer		make
+410	clase			class; sort; make
+411	cuatro			four
+412	mas			but; yet
+413	dices	decir		say
+414	pequeño			little; small; kid
+415	llama			flame; llama
+416	toma			take; seizure
+417	hiciste	hacer		make
+418	allá			there; over there
+419	última	último		last
+420	arriba			above
+421	tierra			earth; land; soil
+422	guerra			war
+423	pensar			think
+424	pueda	poder		may
+425	igual			equal; alike
+426	loco			Chilean abalone
+427	sangre			blood
+428	mujeres	mujer		woman; wife
+429	vuelta	volver		return; turn over
+430	fui	ir		be going to; let 's
+431	trabajar			work
+432	tenido	tener		be; hold; have
+433	juego			game; play
+434	deberías	deber		duty; must; owe
+435	cuerpo			body; field
+436	e			and
+437	algunas			some
+438	entrar			go in
+439	cree	crear		create
+440	podía	poder		may
+441	debemos	deber		duty; must; owe
+442	oportunidad			opportunity
+443	teléfono			telephone; phone
+444	necesitamos	necesitar		need; require
+445	final			end; ending; finale
+446	listo			smart
+447	fiesta			party; feast
+448	muchos			many
+449	estabas	estar		be
+450	quieren	querer		love; want; tend
+452	auto			car
+453	dar			be; hit; deliver
+454	vivir			live; lodge
+455	posible			possible
+457	hermana			sister
+458	número			number; figure
+459	meses	mes		month
+460	exactamente			exactly
+461	culpa			fault; guilt
+462	abajo			down
+463	escuela			school
+464	ido	ir		be going to; let 's
+465	fuerte			strong
+466	diciendo	decir		say
+467	habla			speech
+468	esté	estar		be
+469	ello	él		he; it; him
+470	pregunta			question
+472	eran	ser		be; being; existence
+473	unas	uno		one; human; maybe
+474	pasando	pasar		happen
+475	atrás			back
+476	malo			bad; mean
+477	capitán			captain
+479	bebé			baby
+480	segundo			second; assistant
+482	mayor			elder; major; bigger
+483	comida			food; meal; lunch
+484	morir			die; expire; pass away
+485	conozco	conocer		know; meet
+487	fácil			easy; εύκολος; easy likely
+488	comer			eat; capture; have lunch
+489	vino			wine
+490	lista			list; strip; menu
+491	haga	hacer		make
+492	necesitas	necesitar		need; require
+493	hijos	hijo		son/daughter
+494	probablemente			probably
+495	padres	padre		father; dad
+496	habitación			room
+497	creer			think
+498	pensando	pensar		think
+499	fueron	ir		be going to; let 's
+501	trata	tratar		treat
+502	buscando	buscar		search; seek
+503	tuve	tener		be; hold; have
+504	tampoco			neither
+505	amo			master; owner; keeper
+506	joven			young; youth
+507	podrías	poder		may
+508	sola	solo		only; alone
+509	par			even; pair; equal
+510	única	único		only; solitary; alone
+511	hacen	hacer		make
+512	seguir			follow
+514	simplemente			simply
+515	dicen	decir		say
+516	medio			way; half; channel
+517	puta			whore; bitch
+519	sentido			direction; sensitive
+520	hagas	hacer		make
+521	segura	seguro		belaying; secure
+522	esperar			hope; expect; await
+523	lejos			far
+524	arma			weapon; arm
+525	alto			high; tall
+526	pequeña	pequeño		little; small; kid
+527	dólares	dólar		dollar
+528	seis			six
+529	estaban	estar		be
+530	seguridad			safety; security
+532	estuvo	estar		be
+534	palabra			word
+535	esperando	esperar		hope; expect; await
+536	queda	quedar		stay; remain; become
+537	oficina			office
+538	matar			kill
+539	iré	ir		be going to; let 's
+540	cama			bed
+541	además			besides
+542	último			last
+543	oído			ear; hearing
+544	habría	haber		have; there is
+545	estará	estar		be
+547	recuerdo			memory
+548	siendo	ser		be; being; existence
+549	acerca	acercar		drop; give; approach
+550	tenga	tener		be; hold; have
+551	luz			light
+552	correcto			correct; right
+554	demonios			damn
+555	nuestras	nuestro		our; ours
+557	dormir			sleep; stay night
+558	sitio			place; site; website
+559	ayudar			help; assist
+560	conseguir			acquire; attain; get
+561	di	decir		say
+562	marido			husband
+563	paz			peace
+564	idiota			idiot; idiotic
+565	plan			plan
+566	dado			die; dice
+567	cuanto			how many
+568	peor			worse
+569	murió	morir		die; expire; pass away
+570	pueblo			people; village; town
+571	vivo			alive; living
+572	venido	venir		come
+574	basta	bastar		suffice
+575	paso			step; pace; dried
+576	deberíamos	deber		duty; must; owe
+577	música			music
+578	diga	decir		say
+579	minuto			minute
+580	anoche			last night
+581	llamar			call; knock; ring
+582	piensa	pensar		think
+583	país			country
+584	digas	decir		say
+585	rey			king
+586	perdón			pardon; forgiveness
+588	falta			want; error
+589	pienso	pensar		think
+590	diablos	diablo		devil; crowbar
+591	perdido			lost
+592	niña	niño		child; girl; boy
+593	señorita			miss
+594	diez			ten
+595	lleva	llevar		lead; allow; bring
+596	hospital			hospital
+597	grandes	grande		great; big; large
+598	maldito			damn
+599	otras	otro		other
+600	llamado			call
+601	hacemos	hacer		make
+602	llevar			lead; allow; bring
+603	fuego			fire
+605	tuvo	tener		be; hold; have
+606	poner			put
+607	calle			street; road
+609	prueba			test; evidence
+610	increíble			incredible
+611	real			real, actual, objective, material; real
+612	libro			book; omasum; psalterium
+613	orden			order
+614	semanas	semana		week
+615	especial			special
+617	café			coffee; café; cafe
+618	duro			hard
+619	empezar			begin
+620	afuera			outside
+621	queremos	querer		love; want; tend
+622	perro			dog; hound; aligator clip
+623	cielo			sky; heaven
+625	puesto	poner		put
+626	viaje			travel; voyage; journey
+627	detrás			behind
+628	cuarto			room; quarter; fourth
+629	querida	querer		love; want; tend
+630	haría	hacer		make
+631	preguntas	pregunta		question
+632	piensas	pensar		think
+633	querido			dear; kind; lover
+634	libre			free
+635	buscar			search; seek
+636	cual			as
+637	diré	decir		say
+638	suena	sonar		ring
+639	jugar			mock; copulate; finalize
+640	cambio			change; exchange; exchange rate
+641	película			movie; film
+642	millones	millón		million
+643	habrá	haber		have; there is
+644	llamada	llamar		call; knock; ring
+645	resto			difference; remainder; remains
+646	vemos	ver		see
+647	extraño			stranger; foreigner
+648	mala	malo		bad; mean
+649	presidente			chairman
+652	ropa			clothes; garment; dress
+653	perder			lose
+654	vuelve	volver		return; turn over
+655	agente			agent
+656	palabras	palabra		word
+657	información			information
+658	raro			strange; odd; weird
+659	hará	hacer		make
+660	entiendes	entender		infer
+661	éste	este		this; east
+662	trabajando			on the clock
+663	tratando	tratar		treat
+664	general			general; classroom; blanket
+665	trato			treatment
+666	usar			use; make use
+667	perfecto			perfect
+668	derecho			law; front
+669	modo			fashion
+670	ayer			yesterday
+671	conoces	conocer		know; meet
+672	demás			others
+673	quieras	querer		love; want; tend
+674	podríamos	poder		may
+675	noticias	noticia		news
+676	asesino			murderer
+677	encontrado	encontrar		meet; find
+678	control			control
+679	odio			hatred; hate
+680	frente			front; forehead
+681	sexo			sex; gender
+683	estaré	estar		be
+684	divertido			fun
+685	armas	arma		weapon; arm
+686	recuerdas	recordar		wake
+687	amiga	amigo		friend
+688	grupo			group
+689	asunto			affair; business
+691	mensaje			message
+692	encima			over
+693	atención			attention
+694	diferente			different
+696	cállate			shut up
+697	daño			damage
+698	sucede	suceder		come; happen
+699	cambiar			change; alter; convert
+700	siguiente			next; following
+701	sino			but
+703	seas	ser		be; being; existence
+704	médico			physician; doctor; medical
+705	boca			mouth
+706	dejó	dejar		allow; let; give up/quit
+707	error			error
+708	jamás			never
+709	largo	largar		loosen; to
+710	pena			pain; feather; penalty
+711	voz			voice
+712	futuro			bird; future; simple future
+713	siente	sentar		sit
+714	secreto			secret; mystery
+715	baño			bath; dip; bathroom
+716	mil			hundreds and thousands; grand
+719	pensaba	pensar		think
+720	novia	novio		bridegroom; cranesbill; bride/fiancé
+721	propia	propio		proper
+722	sueño			dream; sleep; snooze
+723	haz			bundle; beam
+724	fuerza			force
+725	deben	deber		duty; must; owe
+726	supone	suponer		suppose
+727	estábamos	estar		be
+728	ambos			both
+729	ay			woe
+730	estuve	estar		be
+731	encontré	encontrar		meet; find
+732	vuelto	volver		return; turn over
+733	dolor			pain; ache; hurt
+735	encanta	encantar		charm; enchant
+736	edad			age
+737	darle			hit
+738	pie			foot; feet
+739	negro			black
+740	ganar			win; earn; conquer
+742	aire			air; appearance; look
+743	lamento			lament
+745	asesinato			murder
+746	vio	ver		see
+747	adónde			where
+750	s	segundo		second; assistant
+751	cita	citar		summon
+752	estaría	estar		be
+753	fuiste	ir		be going to; let 's
+754	sistema			system; establishment
+755	gusto			taste
+756	pobre			poor
+757	negocio			affair; business
+758	mente			mind
+759	tuyo			thine
+760	campo			field; countryside; country
+761	mire	mirar		face; eye; look at
+762	situación			situation
+763	tras			after; behind
+764	hotel			hotel
+765	vosotros			you; ye
+766	funciona	funcionar		function; work
+767	foto			photograph; photo
+768	abogado			lawyer; attorney; barrister
+769	loca	loco		Chilean abalone
+770	propio			proper
+771	alrededor			around; surroundings
+772	próxima	próximo		near; next; following
+773	terminado			completed
+774	hablas	habla		speech
+775	pagar			pay; ante up
+776	mató	matar		kill
+777	llamo	llamar		call; knock; ring
+778	personal			personnel
+779	sientes	sentar		sit
+781	ésta	este		this; east
+782	recuerda	recordar		wake
+783	mitad			half
+784	quiera	querer		love; want; tend
+785	pelo			hair
+786	tenías	tener		be; hold; have
+787	viste	ver		see
+788	oficial			official
+790	compañía			company
+791	relación			relation
+792	conoce	conocer		know; meet
+793	pase	pasar		happen
+794	montón			dung; crowd
+795	mejores	mejorar		improve
+796	creí	creer		think
+797	cena			dinner; supper
+798	sentir			hear; regret; be sorry
+799	través			ribs
+800	accidente			accident
+801	i			i
+802	ellas			they
+803	caja			box; box register
+804	tranquilo			quiet; peaceful
+805	bonito			pretty; tuna
+806	eras	ser		be; being; existence
+808	pudo	poder		may
+809	vive	vivir		live; lodge
+810	vista			view
+811	estúpido			stupid
+812	línea			line; row
+814	haremos	hacer		make
+817	tienda			shop; tent
+818	comprar			buy; purchase; take over
+819	entendido	entender		infer
+820	centro			center; centre
+821	salvo			apart from
+822	mes			month
+824	sol			sun; sunshine
+825	tonto			stupid; foolish; dumb
+826	hambre			hunger
+828	mesa			table; board
+829	respuesta			answer
+830	completamente			completely
+832	carta			letter; map; menu
+833	totalmente			utterly; quite; absolutely
+834	imposible			impossible
+835	pruebas	probar		test; taste; prove
+836	novio			bridegroom; cranesbill; bride/fiancé
+837	normal			normal
+840	pude	poder		may
+842	traje			suit
+843	dirección			direction; address
+844	siete			seven
+845	dijeron	decir		say
+846	placer			pleasure; fun; appeal
+847	sean	ser		be; being; existence
+848	tendrá	tener		be; hold; have
+849	barco			ship; nave
+850	blanco			white; target
+852	profesor			teacher; professor
+853	servicio			service
+854	muchacho			boy
+855	reunión			union; meeting; gathering
+856	dejado	dejar		allow; let; give up/quit
+857	ley			law
+858	quisiera	querer		love; want; tend
+859	hubo	haber		have; there is
+861	programa			program; programme
+862	carrera			race
+863	cumpleaños			birthday
+864	muchachos	muchacho		boy
+865	culo			ass; arse; buttocks
+866	canción			song
+868	universidad			university; college
+869	boda			wedding
+871	cualquiera			any
+872	tengas	tener		be; hold; have
+873	hacía	hacer		make
+874	estés	estar		be
+875	sala			living room
+876	llevo	llevar		lead; allow; bring
+877	decisión			decision
+878	espere	esperar		hope; expect; await
+879	don			gift
+880	necesario			necessary; needed
+881	sal			salt
+882	entra	entrar		go in
+883	prisa			haste; hurry
+884	carajo			fuck
+885	embargo	embargar		seize; grab; foreclose
+886	interesante			interesting
+887	tendrás	tener		be; hold; have
+888	escuchar			listen
+889	abuela	abuelo		pops; grandfather/grandmother; grandfather
+890	hicieron	hacer		make
+891	detective			detective
+892	horrible			horrible
+893	suelo			soil; floor
+894	fotos	foto		photograph; photo
+895	cárcel			jail
+896	acá			here
+899	siéntate			have a seat
+900	decía	decir		say
+901	intentando	intentar		attempt
+903	maldición			curse; bane
+904	silencio			silence
+905	muerta	morir		die; expire; pass away
+906	capaz			able
+907	salió	salir		go out; exit; turn out
+908	club			club; society
+909	terminar			break up
+910	temo	temer		fear; be afraid
+911	broma			joke; gag; jest
+912	gobierno			government; administration
+914	cámara			camera; chamber; bladder
+915	media			mean; average; sock
+916	terrible			agonizing
+917	llamó	llamar		call; knock; ring
+918	regalo			present; gift; donation
+919	amable			kind; amiable; lovable
+920	dulce			sweet; fresh; dulcet
+921	muertos	morir		die; expire; pass away
+922	querías	querer		love; want; tend
+923	ataque			attack; assault
+925	navidad			Christmas; Nativity
+926	negocios	negocio		affair; business
+927	pudiera	poder		may
+928	ocho			eight
+929	avión			house martin; martin; swallow
+930	investigación			research; exploration; investigation
+932	juro			ownership
+933	mantener			keep
+934	ejército			army
+935	papel			paper
+936	partes	partir		depart
+937	ten	tener		be; hold; have
+938	gracioso			funny
+939	diría	decir		say
+940	principio			beginning; principle
+941	delante			in front of
+942	teniente			lieutenant
+943	deseo			desire; wish
+944	vayas	ir		be going to; let 's
+945	nave			ship; nave
+946	sale	salar		salt; salt pan
+947	basura			garbage; trash; trash can
+948	vine	venir		come
+949	contacto			contact
+950	esposo			husband; spouse; mate
+951	tren			train
+952	encontramos	encontrar		meet; find
+953	dale			all right
+954	verdadero			real; true; natural
+955	tuya			thine
+956	alma			soul
+958	disculpa			apology
+959	junto	juntar		collect; connect
+960	anda	andar		walk
+961	tendré	tener		be; hold; have
+962	matrimonio			marriage; matrimony; wedding
+964	locura			madness
+965	oro			gold
+966	permiso			permission
+967	director			director
+968	peligro			danger
+969	libertad			freedom; liberty
+970	alegro			allegro
+971	baja	bajar		lower; download
+972	tendremos	tener		be; hold; have
+973	derecha			right; right-wing
+974	encuentra	encontrar		meet; find
+975	pies	pie		foot; feet
+976	segunda			first mate
+977	maravilloso			lovely; wonderful; marvelous
+978	espacio			space; room
+979	rato			while
+980	abuelo			pops; grandfather/grandmother; grandfather
+981	esperaba	esperar		hope; expect; await
+982	mirando	mirar		face; eye; look at
+983	salud			health
+984	sorpresa			surprise
+985	ninguno			neither
+986	miren	mirar		face; eye; look at
+987	triste			sad
+988	aun			nevertheless/still/however/nonetheless
+989	pensado	pensar		think
+990	maestro			master; teacher; instructor
+991	según			according to
+992	infierno			hell; inferno
+993	podrían	poder		may
+994	tipos	tipo		type
+995	tía			aunt
+996	crimen			crime
+997	conocido			acquaintance; renowned
+998	consejo			advice; council
+999	ante			before
+1000	iglesia			church; kirk
+1001	intento			attempt
+1002	mayoría			majority; bulk
+1005	hicimos	hacer		make
+1006	escena			stage
+1007	piso			flat; floor; stage
+1008	señal			sign
+1009	honor			honor; honour
+1010	llamas	llama		flame; llama
+1011	abre	abrir		open
+1012	cerebro			brain
+1014	viendo	ver		see
+1015	pone	poner		put
+1016	pregunto	preguntar		ask
+1017	cocina			kitchen; cuisine
+1018	vestido			dress; clothes
+1019	inteligente			intelligent; smart
+1020	vieja			babushka
+1021	caballo			horse; knight
+1022	vienen	venir		come
+1023	vidas	vida		life
+1024	bar			bar; pub
+1025	corte			cut; blackout
+1026	sucedió	suceder		come; happen
+1027	adentro			in
+1028	drogas	droga		drug
+1029	enseguida			immediately
+1030	busca			search; pager
+1031	agradable			pleasant; agreeable; nice
+1032	carne			meat; flesh
+1033	parecía	parecer		opinion; appearance; seem
+1034	departamento			department; apartment
+1035	lindo			cute; pretty
+1036	mar			sea
+1037	duda			doubt
+1038	edificio			building
+1039	conocer			know; meet
+1040	cargo			charge; position
+1041	víctima			victim
+1042	luna			moon
+1043	energía			energy
+1044	frío			chilly; cold
+1045	hablo	hablar		speak
+1046	baile			ball; dance
+1048	misión			mission
+1049	listos	listo		smart
+1051	izquierda			left
+1053	beber			drink
+1054	deje	dejar		allow; let; give up/quit
+1055	finalmente			finally
+1056	simple			simple
+1059	puedas	poder		may
+1060	puso	poner		put
+1061	creía	creer		think
+1062	regresar			return
+1064	entender			infer
+1065	mirar			face; eye; look at
+1066	sacar			take
+1067	cambiado	cambiar		change; alter; convert
+1068	trae	traer		bring
+1069	hermoso			beautiful; sweet
+1070	opinión			opinion
+1071	verás	ver		see
+1072	linda	lindo		cute; pretty
+1073	apenas			hardly; scarcely
+1074	segundos	segundo		second; assistant
+1075	cerveza			beer; ale
+1076	harás	hacer		make
+1077	estuviera	estar		be
+1078	creen	crear		create
+1079	oír			hear
+1080	tendría	tener		be; hold; have
+1081	cuántos	cuánto		how much
+1082	hablado	hablar		speak
+1083	hablamos	hablar		speak
+1084	reina			queen
+1085	temprano			early
+1086	tema			subject; topic
+1087	prisión			prison
+1088	porqué			point
+1089	vuelva	volver		return; turn over
+1090	público			public
+1092	veré	ver		see
+1093	salvar			save
+1094	partido	partir		depart
+1095	bonita	bonito		pretty; tuna
+1096	joder			fuck; fuck up; fuck with
+1097	causa			cause; reason
+1098	caliente			hot; warm
+1099	sargento			sergeant; C-clamp
+1100	cenar			dine
+1101	compañero			partner
+1102	llevó	llevar		lead; allow; bring
+1103	banco			bank; bench
+1104	existe	existir		exist
+1106	zona			zone; area
+1107	destino			destination
+1108	base			socket; point guard
+1110	cliente			customer; client
+1111	irse			leave
+1112	perra			bitch; slut
+1114	encuentro			meeting
+1115	encontró	encontrar		meet; find
+1116	pelea			fight
+1117	san	santo		saint
+1118	norte			north
+1119	quise	querer		love; want; tend
+1120	coronel			colonel
+1121	apuesto	apostar		bet
+1122	peligroso			dangerous
+1123	viva			viva
+1125	vienes	venir		come
+1126	necesitan	necesitar		need; require
+1127	té			tea
+1128	excepto			barring
+1129	juicio			sober; judgment
+1130	podamos	podar		to; prune
+1131	llave			key; wrench; valve
+1132	equivocado			in the wrong
+1133	posición			position
+1134	trasero			arse; back
+1136	espalda			back
+1137	excelente			excellent
+1138	éxito			success; achievement
+1139	modos			manner
+1140	ventana			window
+1141	veamos	ver		see
+1142	especie			kind; species; sort
+1143	teníamos	tener		be; hold; have
+1144	diferencia			difference
+1145	formas	forma		form
+1146	pedir			ask for; order
+1147	últimos	último		last
+1149	ejemplo			example; instance
+1150	ése			that
+1151	radio			radio; radius; radium
+1152	lee	leer		read
+1153	calma			calm
+1154	hogar			fireplace; home; hearth
+1155	volveré	volver		return; turn over
+1156	fondo			bottom; ground
+1157	humano			human; humane
+1160	iremos	ir		be going to; let 's
+1162	habían	haber		have; there is
+1164	planeta			planet
+1165	verme			worm; maggot
+1166	respecto			respect
+1167	regreso			return
+1168	debido	deber		duty; must; owe
+1169	seré	ser		be; being; existence
+1170	tenían	tener		be; hold; have
+1171	leer			read
+1172	parar			stop; stand
+1173	lleno			full
+1174	dejé	dejar		allow; let; give up/quit
+1175	respeto			respect
+1176	debajo			under
+1178	escribir			write
+1179	estación			stop; season; station
+1180	pidió	pedir		ask for; order
+1181	alta	alto		high; tall
+1182	pista			track; runway; clue
+1183	estrella			star
+1184	enfermo			ill; sick; unwell
+1185	duele	doler		hurt
+1186	sueños	sueño		dream; sleep; snooze
+1187	veremos	ver		see
+1188	miles	mil		hundreds and thousands; grand
+1190	órdenes	orden		order
+1191	ocupado			busy
+1192	sigues	seguir		follow
+1193	corre	correr		do; drive; walk
+1194	podido	poder		may
+1195	dejes	dejar		allow; let; give up/quit
+1196	nivel			level
+1197	habéis	haber		have; there is
+1198	experiencia			experience
+1200	salida			exit; way out; output
+1202	confiar			trust
+1204	necesitaba	necesitar		need; require
+1205	hermanos	hermano		sibling; friar; brother/sister
+1206	zapatos	zapato		shoe; boot
+1207	color			colour; color
+1208	vistazo			glance
+1209	nena			baby
+1210	tratar			treat
+1211	parecer			opinion; appearance; seem
+1212	juez			judge; referee
+1213	próximo			near; next; following
+1214	paciente			patient
+1215	hayas	haber		have; there is
+1216	bolsa			bag; pocket; purse
+1217	arte			art; skill
+1219	jugando	jugar		mock; copulate; finalize
+1220	llevas	llevar		lead; allow; bring
+1222	bailar			to dance; dance
+1223	diablo			devil; crowbar
+1224	oí	oír		hear
+1226	estarás	estar		be
+1227	sur			south
+1228	banda			bond; stripe; bend
+1229	aprender			learn
+1230	precio			price
+1231	completo			complete
+1232	santo			saint
+1233	culpable			guilty; culpable
+1234	ganas	ganar		win; earn; conquer
+1235	tuvimos	tener		be; hold; have
+1238	volvió	volver		return; turn over
+1239	libros	libro		book; omasum; psalterium
+1240	ojo			eye
+1241	serán	ser		be; being; existence
+1242	cielos			God; gosh; my God
+1243	matado	matar		kill
+1244	azul			blue; azure
+1245	diferentes	diferente		different
+1248	comandante			commander
+1249	acción			share; action
+1250	reglas	regla		period; rule; ruler
+1251	obra			work; labour
+1252	esperanza			mean; hope
+1253	cuestión			question; issue
+1254	molesta	molestar		annoy; disturb; bother
+1255	teniendo	tener		be; hold; have
+1257	informe			advisory
+1259	río			river
+1260	bienvenido			welcome
+1261	abrir			open
+1262	tocar			play; touch
+1264	contar			count; tell
+1265	sigo	seguir		follow
+1266	interior			inner
+1267	apartamento			apartment
+1268	vea	ver		see
+1269	estados	estado		state; condition
+1270	estáis	estar		be
+1272	tomó	tomar		take
+1273	principal			principal
+1277	vayan	ir		be going to; let 's
+1279	llaman	llamar		call; knock; ring
+1280	ojalá			God willing; hopefully
+1281	perdona	perdonar		forgive; pardon
+1282	vuelvo	volver		return; turn over
+1283	golpe			blow; stroke
+1285	llamaré	llamar		call; knock; ring
+1286	acabado			finishing
+1287	estilo			style
+1288	nueve			nine
+1289	definitivamente			definitely
+1290	quedar			stay; remain; become
+1291	cartas	carta		letter; map; menu
+1292	bomba			bomb; pump; gas station
+1293	guardia			guard
+1294	pistola			pistol
+1295	probar			test; taste; prove
+1296	majestad			Majesty
+1297	traer			bring
+1298	marcha			gear
+1299	pareces	parecer		opinion; appearance; seem
+1300	común			common; collective; common gender
+1301	aquel			that; former
+1303	vuelo			flight
+1304	nota			note
+1306	humanos	humano		human; humane
+1307	estaremos	estar		be
+1308	valor			value; prize; worth
+1309	suyo			yours
+1310	objetivo	objetivar		objectify
+1312	debía	deber		duty; must; owe
+1313	rojo			red
+1314	bromeando	bromear		joke; jest
+1315	irá	ir		be going to; let 's
+1316	entrada			ticket; article; entryway
+1317	doble			double
+1318	dejaré	dejar		allow; let; give up/quit
+1319	evitar			avoid; avert
+1320	máquina			machine
+1321	cuello			neck
+1322	conocí	conocer		know; meet
+1323	tiempos	tiempo		time; tense; weather
+1324	tome	tomar		take
+1326	animales	animal		animal
+1328	acaso			perhaps
+1329	tuviera	tener		be; hold; have
+1330	pareja			make; mate; partner
+1331	verano			summer
+1332	escuché	escuchar		listen
+1333	ama			housewife; housekeeper
+1334	serás	ser		be; being; existence
+1335	mentira			bullshit
+1336	tarjeta			card
+1337	hagan	hacer		make
+1338	perdí	perder		lose
+1339	correr			do; drive; walk
+1341	traído	traer		bring
+1343	preparado			poised
+1346	usa	usar		use; make use
+1347	intentar			attempt
+1349	flores	flor		bloom; blossom; flower
+1351	vos			you
+1352	opción			choice
+1353	isla			island; isle
+1354	cierra	cerrar		close; shut
+1355	piel			skin; hide
+1356	enemigo			enemy; foe
+1357	dejo	dejar		allow; let; give up/quit
+1358	exacto			exact
+1359	imbécil			imbecile
+1360	jóvenes	joven		young; youth
+1361	pedido			order; request
+1362	larga	largar		loosen; to
+1363	entiende	entender		infer
+1364	justicia			justice
+1365	nuevos	nuevo		new
+1366	obviamente			obviously
+1367	despierta	despertar		wake
+1368	pido	pedir		ask for; order
+1369	calor			heat; warmth
+1370	luces	lucir		shine; show off
+1371	refiero	referir		refer
+1372	fuimos	ir		be going to; let 's
+1373	batalla			battle
+1375	intenta	intentar		attempt
+1377	fantástico			fabulous
+1378	brazo			arm
+1379	absolutamente			absolutely
+1380	llena	llenar		fill
+1382	salga	salir		go out; exit; turn out
+1383	recordar			wake
+1384	escapar			escape
+1385	bosque			forest; wood
+1386	gay			gay
+1387	señores	señor		master; mister; sir
+1388	quedan	quedar		stay; remain; become
+1390	visita			call; visit
+1391	parís	parir		give birth
+1392	usando	usar		use; make use
+1393	ganado			livestock
+1394	movimiento			movement; motion
+1395	blanca			half note
+1396	rico			rich; wealthy; affluent
+1397	inocente			innocent; naive; gullible
+1398	pesar			weigh
+1399	absoluto			absolute
+1400	vacaciones			holiday; holidays
+1402	mismos	mismo		same
+1403	tomado	tomar		take
+1404	habías	haber		have; there is
+1405	planes	plan		plan
+1406	cine			cinema; pictures
+1407	toca	tocar		play; touch
+1408	brillante			brilliant
+1409	confianza			confidence; trust
+1410	vuestra			your
+1411	nombres	nombrar		name; appoint; assign
+1412	especialmente			especially
+1415	esperen	esperar		hope; expect; await
+1416	pantalones	pantalón		trousers; pants
+1417	defensa			back; defense; bumper
+1419	salido	salir		go out; exit; turn out
+1420	estupendo			amazing
+1422	presión			pressure
+1423	inmediatamente			immediately; directly
+1424	testigo			witness
+1425	deberían	deber		duty; must; owe
+1426	olvidado	olvidar		forget
+1427	soldados	soldado		soldier
+1428	resulta	resultar		turn out
+1430	depende	depender		depend
+1431	motivo			motive
+1432	inglés			English
+1433	suya			his
+1434	estudio			study
+1435	acabar			complete; end up
+1436	sentimientos	sentimiento		sentiment; feeling
+1437	tomando	tomar		take
+1439	parecen	parecer		opinion; appearance; seem
+1440	llaves	llave		key; wrench; valve
+1441	perros	perro		dog; hound; aligator clip
+1442	propósito			purpose
+1443	noticia			news
+1444	partir			depart
+1445	vuestro			your
+1446	metros	metro		subway; underground; tube
+1447	santa	santo		saint
+1448	quedarse			stay; remain
+1449	clientes	cliente		customer; client
+1450	podrá	poder		may
+1451	cuántas	cuánto		how much
+1452	ridículo			reticule
+1453	damas	dama		fallow deer
+1454	estuviste	estar		be
+1455	tranquila	tranquilo		quiet; peaceful
+1456	operación			operation; surgery
+1457	come	comer		eat; capture; have lunch
+1458	empresa			company; firm; business
+1460	laboratorio			laboratory; lab
+1461	elección			election
+1462	menudo			doozy
+1463	beso			kiss
+1464	copa			cup; crown; glass
+1465	conversación			conversation; talk
+1466	brazos	brazo		arm
+1467	espíritu			spirit
+1468	dejas	dejar		allow; let; give up/quit
+1469	cansado	cansar		exhaust; tire
+1471	refieres	referir		refer
+1472	casado			married
+1473	enorme			huge; enormous
+1474	asuntos	asunto		affair; business
+1475	fe			faith
+1476	muestra			sample
+1477	trampa			pitfall; snare; booby-trap
+1478	ray			ride
+1480	memoria			memory
+1482	contrario			contrary
+1483	soldado			soldier
+1484	subir			load; raise; climb
+1485	turno			turn; go
+1486	encantaría	encantar		charm; enchant
+1487	preocupado			concerned
+1488	restaurante			restaurant
+1489	saliendo	salir		go out; exit; turn out
+1490	escrito			written
+1492	bienvenida			welcome
+1493	caer			drop; fall
+1494	llevaré	llevar		lead; allow; bring
+1495	leche			milk
+1496	estrellas	estrella		star
+1498	red			net
+1500	solamente			only; solely; uniquely
+1501	oiga	oír		hear
+1502	estén	estar		be
+1503	cuentas	contar		count; tell
+1504	taxi			cab; taxicab; taxi
+1505	anillo			ring
+1507	preguntar			ask
+1508	victoria			victory; victoria
+1509	quiénes	quién		who
+1510	héroe			hero
+1511	pequeños	pequeño		little; small; kid
+1512	decidido	decidir		decide
+1513	películas	película		movie; film
+1514	responsable			responsible
+1515	trago			gulp
+1516	volverá	volver		return; turn over
+1517	árbol			tree
+1518	ibas	ir		be going to; let 's
+1519	dientes	diente		tooth
+1520	encantado	encantar		charm; enchant
+1521	camión			truck; lorry
+1522	vender			sell; vend
+1523	llame	llamar		call; knock; ring
+1524	detente	detentar		withhold
+1525	luchar			fight
+1526	cabo			line; rope; cape
+1527	ruido			noise
+1528	lucha			fight; struggle; wrestling
+1529	muere	morir		die; expire; pass away
+1530	reloj			clock; watch
+1531	gato			cat; tomcat; jack
+1532	averiguar			find out; inquire
+1533	volar			fly
+1534	vayamos	ir		be going to; let 's
+1536	vendrá	venir		come
+1537	corriendo	correr		do; drive; walk
+1538	yendo	ir		be going to; let 's
+1539	colegio			college
+1540	sonido			sound
+1541	caballero			cavalier; gentleman
+1542	pasada	pasar		happen
+1543	código			code
+1544	hagamos	hacer		make
+1545	imagen			image; picture
+1546	riesgo			risk; hazard; peril
+1548	alguno			one; any
+1549	pan			bread
+1550	millón			million
+1551	malas	malo		bad; mean
+1552	dama			fallow deer
+1553	hielo			ice
+1554	coño			fuck; cunt; pussy
+1555	cayó	caer		drop; fall
+1556	prensa			press
+1557	querer			love; want; tend
+1558	vengan	vengar		revenge; avenge
+1560	caminar			move; walk
+1561	televisión			television; TV
+1562	pasará	pasar		happen
+1563	momentos	momento		moment
+1564	coger			catch; grab; bump
+1565	posibilidad			possibility
+1566	hubiese	haber		have; there is
+1568	asiento			seat
+1569	tuviste	tener		be; hold; have
+1570	herido	herir		hurt; wound
+1571	maría			marijuana; ganja
+1572	seguramente			certainly; likely; probably
+1573	proyecto	proyectar		project
+1574	pared			wall
+1575	sentí	sentir		hear; regret; be sorry
+1576	sospechoso			suspicious; fishy; shady
+1577	naturaleza			nature
+1578	ésa			that
+1579	silla			chair; seat
+1580	perdió	perder		lose
+1582	policías	policía		police; police officer
+1583	arreglar			arrange; fix
+1584	sentado	sentar		sit
+1585	papi			daddy
+1586	ideas	idea		idea
+1587	obtener			obtain
+1588	felices	feliz		happy; joyous
+1589	señoría			lordship; Your Honour
+1590	cantidad			quantity
+1591	bebe			baby
+1594	papa			potato; pope
+1595	llorar			wail
+1596	quedó	quedar		stay; remain; become
+1597	familiar			familiar
+1598	desastre			disaster
+1599	locos	loco		Chilean abalone
+1600	escuche	escuchar		listen
+1602	política			politics; policy
+1603	pedí	pedir		ask for; order
+1604	sois	ser		be; being; existence
+1605	nosotras	nosotros		we; us
+1607	enfermedad			disease; illness; sickness
+1608	encontraron	encontrar		meet; find
+1609	colega			colleague; coworker
+1610	príncipe			prince
+1611	verde			green
+1612	bajar			lower; download
+1613	nervioso			nervous
+1614	vengo	vengar		revenge; avenge
+1615	inspector			conductor
+1616	sirve	servir		serve
+1617	puertas	puerta		door; gate
+1618	fuerzas	forzar		force; rape
+1619	playa			beach; strand
+1620	cantar			sing
+1622	velocidad			speed; pace; gear
+1623	total			total
+1624	cabello			hair
+1625	suficientemente			sufficiently
+1626	huellas	hollar		press; track
+1628	debí	deber		duty; must; owe
+1629	unidad			unit; unity
+1631	cuchillo			knife
+1633	oigan	oír		hear
+1634	quienes	quien		who; whom
+1635	gana	ganar		win; earn; conquer
+1636	tonterías	tontería		foolishness; stupidity
+1637	emergencia			emergency
+1638	perfecta	perfecto		perfect
+1639	hable	hablar		speak
+1641	lugares	lugar		place
+1643	show			show
+1644	robo			theft; robbery
+1645	permite	permitir		allow; permit; let
+1646	parque			park
+1648	roto			broken
+1649	serie			series
+1650	puse	poner		put
+1651	nuevas	nuevo		new
+1652	evidencia			evidence; obviousness
+1654	estúpida	estúpido		stupid
+1656	perdone	perdonar		forgive; pardon
+1657	botella			bottle
+1658	viento			wind
+1659	mando			command
+1660	extraña	extraño		stranger; foreigner
+1661	historias	historia		history; story
+1662	aquella			that
+1663	tenéis	tener		be; hold; have
+1664	solos	solo		only; alone
+1665	apoyo			support
+1666	bala			bullet; shot; bale
+1667	verdadera	verdadero		real; true; natural
+1668	tiro			gunshoot; draft
+1669	época			time; age
+1670	puente			bridge
+1671	olvídalo			forget it
+1672	distancia			distance
+1674	dejarlo			give it a rest
+1675	pelear			fight; brawl
+1676	pierna			leg
+1677	echar			cast; throw; put
+1678	descanso	descansar		to rest console
+1680	área			area
+1681	orgulloso			proud
+1682	datos	dato		data; datum
+1683	espectáculo			show
+1684	sube	subir		load; raise; climb
+1685	dejaste	dejar		allow; let; give up/quit
+1687	verá	ver		see
+1688	magia			magic
+1689	nacional			national
+1690	universo			universe
+1691	llevaba	llevar		lead; allow; bring
+1692	necesitar			need; require
+1693	nariz			nose
+1694	aquellos			those
+1695	clases	clase		class; sort; make
+1697	casas	casa		house; home
+1698	vergüenza			shame; disgrace
+1699	estarán	estar		be
+1700	monstruo			monster
+1701	princesa			princess
+1702	autobús			bus
+1703	cuidar			take care
+1705	huevos	huevo		egg; ball
+1706	pocos	poco		little
+1707	podrás	poder		may
+1708	enferma	enfermar		to get ill; to make ill
+1709	paseo			walk
+1710	detalles	detallar		detail
+1711	llamadas	llamar		call; knock; ring
+1712	belleza			beauty; babe
+1714	abierto			open
+1715	viviendo	vivir		live; lodge
+1716	envió	enviar		dispatch; send
+1717	puntos	punto		point; dot; period
+1718	ministro			minister
+1719	conducir			conduct
+1720	aceptar			accept; agree; approve
+1721	borracho			drunk; drunkard
+1722	animal			animal
+1723	caballos	caballo		horse; knight
+1724	trajo	traer		bring
+1725	contrato			contract
+1726	viernes			Friday
+1730	bienvenidos	bienvenido		welcome
+1731	ex			ex
+1732	hechos	hacer		make
+1733	sociedad			society; company
+1735	tengan	tener		be; hold; have
+1736	quede	quedar		stay; remain; become
+1738	carga			charge; load; burden
+1740	puto			fucking
+1741	lleve	llevar		lead; allow; bring
+1742	presente			gift; present; present tense
+1743	conocía	conocer		know; meet
+1744	uso			use
+1745	dedos	dedo		finger; digit; toe
+1746	oferta			offer
+1747	sentía	sentir		hear; regret; be sorry
+1748	proteger			protect
+1750	date	datar		date
+1751	hiciera	hacer		make
+1752	hablé	hablar		speak
+1753	recibir			receive; get; accept
+1754	agradezco	agradecer		thank
+1755	robar			steal
+1756	enamorado			in love
+1758	oeste			west
+1759	herida			wound; injury
+1760	despacio			slowly
+1761	ayude	ayudar		help; assist
+1763	directamente			directly
+1764	inmediato			immediate
+1765	profesional			professional
+1766	oscuro			dim
+1767	mercado			market; marketplace
+1768	cerdo			pig/sow; pig
+1769	tardes	tardar		take time
+1770	líder			leader
+1771	grave			serious
+1773	jurado			juror
+1774	casos	caso		case; grammatical case
+1777	desaparecido			disappeared
+1778	debió	deber		duty; must; owe
+1779	hubieras	haber		have; there is
+1780	últimamente			recently; lately
+1781	piedra			stone; rock
+1782	éramos	ser		be; being; existence
+1783	habló	hablar		speak
+1784	charles	charlar		chat
+1785	paga			pay
+1786	secretos	secreto		secret; mystery
+1787	digamos	decir		say
+1788	intención			intention
+1789	humor			humor; humour
+1790	dura	durar		last
+1792	seguros	seguro		belaying; secure
+1793	leo	leer		read
+1796	ángeles	ángel		angel
+1797	querría	querer		love; want; tend
+1798	cerrar			close; shut
+1799	conseguido	conseguir		acquire; attain; get
+1800	peso			weight
+1801	víctimas	víctima		victim
+1802	asesinado	asesinar		murder; assassinate
+1803	humana	humano		human; humane
+1804	directo			blunt
+1805	central			central
+1807	compañeros	compañero		partner
+1808	escuchado	escuchar		listen
+1809	contento			content; glad
+1810	llevan	llevar		lead; allow; bring
+1811	podré	poder		may
+1812	oscuridad			darkness; obscurity
+1813	actuar			act
+1814	siga	seguir		follow
+1815	llevado	llevar		lead; allow; bring
+1818	privado			private
+1819	mirada			look
+1820	demonio			the fuck; daemon
+1821	abierta	abrir		open
+1823	m	metro		subway; underground; tube
+1825	siguen	seguir		follow
+1826	romper			breach; break into
+1827	cambia	cambiar		change; alter; convert
+1828	fiscal			prosecutor; fiscal
+1829	jardín			garden
+1830	natural			natural
+1831	gratis			free
+1832	cuesta	costar		cost
+1833	amenaza			threat
+1834	pon	poner		put
+1835	marca			make; brand; marking
+1836	comenzar			commence
+1838	medicina			medicine
+1839	podremos	poder		may
+1840	tomé	tomar		take
+1842	sexual			sexual
+1843	acceso			access
+1844	necesidad			need; necessity
+1845	dueño			owner
+1846	merece	merecer		merit
+1847	rayos	rayo		heck; hell
+1849	mintiendo	mentir		lie
+1850	tantas			so many
+1852	fantasma			ghost; phantom
+1854	llamé	llamar		call; knock; ring
+1855	ponga	poner		put
+1858	pollo			chicken; chick; gob
+1859	varios			miscellaneous
+1860	efecto			effect
+1861	felicidad			joy; happiness
+1862	espada			sword; spade; swordsman
+1863	relaciones	relación		relation
+1864	entró	entrar		go in
+1865	resultado			result
+1866	sombrero			hat
+1867	menor			lesser
+1868	recibido	recibir		receive; get; accept
+1869	negra	negro		black
+1870	to			heads up
+1871	habido	haber		have; there is
+1872	limpio			clean
+1873	china	chino		Chinese
+1874	juegos	juego		game; play
+1875	correo			mail
+1876	confía	confiar		trust
+1877	video			video; videotape
+1878	perfectamente			perfect; perfectly; snugly
+1879	harán	hacer		make
+1880	teatro			theatre; theater
+1881	dormido			asleep
+1882	local			local
+1883	quedado	quedar		stay; remain; become
+1884	lástima			pity
+1885	calles	callar		calm
+1887	responsabilidad			responsibility; accountability
+1888	búsqueda			search
+1889	dedo			finger; digit; toe
+1890	tonta	tonto		stupid; foolish; dumb
+1891	recuerdos	recuerdo		memory
+1892	razones	razón		reason
+1893	escuchando	escuchar		listen
+1895	elegir			choose; elect
+1896	amas	ama		housewife; housekeeper
+1897	huele			left-handed
+1898	almuerzo			snack; lunch
+1899	cien			one hundred; hundred
+1901	tantos			score
+1902	pago	pagar		pay; ante up
+1903	normalmente			normally
+1905	pastel			cake
+1906	bastardo			bastard
+1907	cinta			tape
+1908	pasé	pasar		happen
+1909	dígame			hello
+1911	costa			coast; shore; seashore
+1913	llamando	llamar		call; knock; ring
+1914	cerrado	cerrar		close; shut
+1915	interés			interest
+1916	enfermera	enfermero		nurse; male nurse
+1917	comienzo			start
+1918	olvidé	olvidar		forget
+1919	fuese	ir		be going to; let 's
+1920	militar			serviceman; soldier
+1921	polvo			dust; powder
+1922	bella	bello		fair; beautiful
+1923	quedo	quedar		stay; remain; become
+1925	encontraste	encontrar		meet; find
+1926	voluntad			will
+1928	teoría			theory
+1929	roja	rojo		red
+1930	cuento			story; tale; short story
+1931	escenario			scenario
+1932	diario			daily; newspaper; diary
+1933	propiedad			property; ownership
+1934	agujero			hole
+1935	aspecto			aspect; appearance; look
+1936	campamento			camp
+1937	descansar			to rest console
+1939	metido			nosy
+1940	quiso	querer		love; want; tend
+1941	ángel			angel
+1942	enviar			dispatch; send
+1943	impresionante			impressive
+1944	proceso			process
+1945	intentado	intentar		attempt
+1947	fuente			fountain
+1948	alcalde			provost; mayor/mayoresse
+1950	malos	malo		bad; mean
+1951	carretera			road
+1953	desayuno			breakfast
+1954	débil			weak
+1955	roma	romo		dull; blunt
+1956	sabido			knowing
+1960	miembro			limb; appendage
+1961	perdiendo	perder		lose
+1962	hayan	haber		have; there is
+1963	fueras	ir		be going to; let 's
+1964	resultados	resultado		result
+1966	mata			shrub
+1968	valiente			brave; valiant; valorous
+1969	deber			duty; must; owe
+1970	pecho			chest; breast; bosom
+1972	oyes	oír		hear
+1974	periódico			newspaper
+1975	mami			precious; mommy
+1976	piensan	pensar		think
+1978	tv			TV
+1979	cansada	cansar		exhaust; tire
+1980	limpiar			clean; wipe
+1981	crear			create
+1982	explicar			explain; elucidate; expound
+1983	robado	robar		steal
+1984	resolver			resolve
+1985	maté	matar		kill
+1986	guapo			brave; attractive; beautiful
+1987	continuar			continue; go on; proceed with
+1988	sheriff			sheriff
+1989	funcionar			function; work
+1990	extra			additional
+1991	primo			cousin
+1992	manejar			drive; handle; manage
+1993	primeros	primero		first
+1994	acto			act
+1995	poniendo	poner		put
+1996	números	número		number; figure
+1997	kilómetros	kilómetro		kilometre; kilometer
+1999	llevará	llevar		lead; allow; bring
+2001	niñas	niño		child; girl; boy
+2002	premio			award; prize; premium
+2003	internet			Internet
+2004	harías	hacer		make
+2005	inútil			useless; pointless; handicapped
+2006	domingo			Sabbath
+2007	tomas	toma		take; seizure
+2008	sensación			sensation
+2009	alcohol			alcohol
+2010	tercera			third
+2011	agentes	agente		agent
+2013	antiguo			ancient; old
+2014	guapa	guapo		brave; attractive; beautiful
+2015	asustado			afraid
+2016	puedan	poder		may
+2017	sexy			sexy
+2018	genio			genie
+2019	recuperar			get back
+2020	creemos	crear		create
+2021	lengua			language; tongue
+2022	ladrón			thief
+2023	intenté	intentar		attempt
+2024	examen			exam; examination
+2025	deprisa			quickly
+2026	montaña			mountain
+2027	durmiendo	dormir		sleep; stay night
+2028	disparar			shoot
+2029	entrenador			coach; trainer
+2030	queso			cheese
+2031	entero			entire
+2032	papeles	papel		paper
+2033	pones	poner		put
+2034	modelo			model
+2035	fútbol			football; soccer
+2036	detener			stop; keep; detain
+2037	lados	lado		place; side
+2038	miembros	miembro		limb; appendage
+2039	sábado			Saturday
+2040	pongo	poner		put
+2041	mataron	matar		kill
+2042	vuelvas	volver		return; turn over
+2043	talento			talent
+2044	descubrir			discover; uncover
+2045	gordo			fat
+2046	tribunal			court; forum
+2047	toque			touch
+2049	hables	hablar		speak
+2050	conocemos	conocer		know; meet
+2052	dispuesto			agreeable
+2053	tamaño			size; scale
+2054	dejen	dejar		allow; let; give up/quit
+2055	maravillosa	maravilloso		lovely; wonderful; marvelous
+2056	invitado	invitar		invite
+2057	importantes	importante		important
+2058	derechos	derecho		law; front
+2060	declaración			declaration
+2061	claramente			clearly
+2062	pacientes	paciente		patient
+2063	pérdida			loss
+2065	iban	ir		be going to; let 's
+2066	pudiste	poder		may
+2067	profundo			deep; profound; abstruse
+2068	gas			fume
+2069	aeropuerto			airport
+2070	consigue	conseguir		acquire; attain; get
+2071	olvidar			forget
+2072	gloria			claim to fame
+2073	olvides	olvidar		forget
+2074	volviendo	volver		return; turn over
+2077	llamaba	llamar		call; knock; ring
+2078	pete	petar		fuck; hang; knock
+2079	tendrán	tener		be; hold; have
+2080	instituto			institute; high school
+2081	disparo			shot
+2082	encuentras	encontrar		meet; find
+2083	querían	querer		love; want; tend
+2084	hablemos	hablar		speak
+2086	enviado			envoy; delegate
+2087	pertenece	pertenecer		belong; pertain
+2088	sienta	sentar		sit
+2089	pensó	pensar		think
+2090	cadáver			corpse; cadaver; carcass
+2091	gracia			grace
+2092	doctora	doctor		doctor
+2093	escuchen	escuchar		listen
+2094	amante			loving
+2095	temporada			season
+2097	cuerpos	cuerpo		body; field
+2098	amigas	amigo		friend
+2100	preguntaba	preguntar		ask
+2101	francés			French; Frenchman/Frenchwoman; blowjob
+2102	mataste	matar		kill
+2103	techo			roof; ceiling
+2104	íbamos	ir		be going to; let 's
+2105	protección			protection
+2106	médicos	médico		physician; doctor; medical
+2107	lisa	liso		smooth
+2108	venganza			revenge; vengeance
+2109	pensamos	pensar		think
+2111	contó	contar		count; tell
+2112	discutir			discuss
+2113	comprendo	comprender		understand; comprehend; see
+2114	idiotas	idiota		idiot; idiotic
+2115	enemigos	enemigo		enemy; foe
+2116	camisa			shirt
+2117	superior			superior
+2118	criminal			criminal
+2120	bote			box; boat; flat-bottomed boat
+2121	escribió	escribir		write
+2122	llevamos	llevar		lead; allow; bring
+2123	testigos	testigo		witness
+2124	recoger			pick
+2126	truco			trick
+2128	original			original
+2129	pide	pedir		ask for; order
+2131	rosa			rose; pink
+2132	mama			breast; mamma
+2133	negros	negro		black
+2134	sobrevivir			survive
+2135	rostro			face
+2136	crédito			credit; reputation; credence
+2137	compartir			share
+2138	saca	sacar		take
+2139	irás	ir		be going to; let 's
+2140	pequeñas	pequeño		little; small; kid
+2141	veía	ver		see
+2143	registro			register; catalogue
+2144	continúa	continuar		continue; go on; proceed with
+2145	grandioso			grandiose
+2146	viniste	venir		come
+2147	esquina			edge; corner
+2148	contado	contar		count; tell
+2149	tengamos	tener		be; hold; have
+2151	tormenta			storm; thunderstorm; tempest
+2153	siéntese			have a seat
+2154	chocolate			chocolate
+2156	pedazo			piece
+2157	tomo	tomar		take
+2158	olor			smell; odour; odor
+2159	ciencia			science
+2161	conexión			connection
+2162	vieron	ver		see
+2163	salón			sitting room; drawing room
+2164	sucio			dirty; filthy
+2165	firma			signature
+2166	vimos	ver		see
+2167	pidiendo	pedir		ask for; order
+2168	casarse			get married; marry; wed
+2169	bebida	beber		drink
+2171	propios	propio		proper
+2172	fuertes	fuerte		strong
+2173	lluvia			rain
+2174	recién			just
+2175	tomaré	tomar		take
+2176	complicado	complicar		complicate; implicate
+2178	toques	tocar		play; touch
+2179	cámaras	cámara		camera; chamber; bladder
+2180	visión			vision; sight
+2182	americano			American
+2183	diversión			diversion; entertainment; pastime
+2184	pareció	parecer		opinion; appearance; seem
+2185	libras	librar		save
+2186	curso	cursar		attend
+2187	disco			disk
+2188	probable			probable; likely; provable
+2189	precioso			dear
+2190	tenia			tapeworm
+2191	lago			lake; loch
+2192	leído	leer		read
+2193	consiguió	conseguir		acquire; attain; get
+2194	parecido			similarity; alike
+2195	material			material; data
+2196	discurso			speech
+2199	corta	cortar		cut
+2200	completa	completar		complete; fill in; complement
+2202	lunes			Monday
+2203	efectivo			cash; effective
+2204	cura			curate
+2205	antigua	antiguo		ancient; old
+2206	hablan	hablar		speak
+2207	juntas	junta		board; meeting
+2209	cáncer			cancer
+2210	funeral			funeral
+2211	jodido			damn; fucked; screwed
+2213	artista			artist
+2214	favorito			favorite; favourite
+2216	cae	caer		drop; fall
+2218	entrevista			interview
+2220	pintura			paint; painting
+2221	quieto			quiet
+2222	falso			wrong
+2223	india	indio		Indian; indium
+2224	corto			short
+2225	inteligencia			intelligence
+2226	destruir			destroy
+2227	cargos	cargo		charge; position
+2228	podías	poder		may
+2230	señoras	señor		master; mister; sir
+2231	helado			ice cream
+2232	felicidades	felicidad		joy; happiness
+2233	camioneta			pick-up; pick-up truck
+2234	mueve	mover		move; stir; actuate
+2235	aparte	apartar		saparate
+2236	rock			rock
+2237	tumba			grave; tomb
+2238	seguimos	seguir		follow
+2239	hablaba	hablar		speak
+2241	mapa			map
+2242	tarea			task
+2243	cambió	cambiar		change; alter; convert
+2244	móvil			mobile; motive; cellphone
+2246	responder			answer; reply; respond
+2247	vacío			vacuum; emptiness; flank steak
+2248	felicitaciones	felicitación		congratulation
+2249	computadora			computer
+2250	estudiante			student; scholar; undergraduate
+2251	muriendo	morir		die; expire; pass away
+2252	construir			construct; build; make
+2253	conocen	conocer		know; meet
+2254	clara			white/albumen; albumen
+2255	solución			solution
+2256	mundial			World Cup
+2257	plato			plate; course; dish
+2258	famoso			famous; distinguished; reknowned
+2260	dirá	decir		say
+2261	ambas	ambos		both
+2262	tecnología			technology
+2263	notas	nota		note
+2265	cabrón			bastard
+2266	condiciones	condición		condition; stipulation; term
+2268	robó	robar		steal
+2269	escucho	escuchar		listen
+2271	rápidamente			fast; quickly; apace
+2272	bordo			edge
+2273	nieve			snow
+2274	mensajes	mensaje		message
+2275	fecha			date
+2276	violencia			violence
+2278	sujeto			subject
+2279	acciones	acción		share; action
+2280	fría	freír		fry
+2281	droga			drug
+2282	saldrá	salir		go out; exit; turn out
+2283	suponía	suponer		suppose
+2285	errores	error		error
+2286	grace			grace note
+2287	siglo			century
+2288	molesto	molestar		annoy; disturb; bother
+2291	cortar			cut
+2292	seria	serio		serious
+2293	muevas	mover		move; stir; actuate
+2294	fortuna			fortune
+2296	imaginar			imagine
+2298	presencia			appearance; presence
+2299	familias	familia		family
+2300	ey			hey
+2301	quedas	quedar		stay; remain; become
+2302	solas	solo		only; alone
+2303	oficiales	oficial		official
+2304	aventura			adventure
+2305	gira			tour
+2306	social			social; welfare
+2307	comunidad			community
+2310	cero			zero
+2312	esperamos	esperar		hope; expect; await
+2313	ocupada	ocupar		occupy; attend
+2315	convertido	convertir		convert
+2317	pieza			piece; ordinary; chessman
+2318	estómago			stomach
+2319	disparó	disparar		shoot
+2320	legal			legal
+2321	conseguí	conseguir		acquire; attain; get
+2325	rara			rufous-tailed plantcutter
+2326	estudiantes	estudiante		student; scholar; undergraduate
+2327	reino			kingdom; realm
+2328	alegría			bleak
+2329	barrio			neighborhood; quarter
+2330	granja			farm
+2331	podéis	podar		to; prune
+2332	esfuerzo			effort
+2336	tesoro			treasure
+2337	empleo			job
+2338	compré	comprar		buy; purchase; take over
+2339	cirugía			surgery
+2340	dejamos	dejar		allow; let; give up/quit
+2341	busco	buscar		search; seek
+2343	clave			key
+2344	aparentemente			seemingly
+2345	bravo			brave; fierce
+2348	cerrada	cerrar		close; shut
+2351	controlar			control
+2352	pregunté	preguntar		ask
+2353	mostrar			show; present
+2354	piloto			pilot light
+2355	pocas	poco		little
+2356	tuvieron	tener		be; hold; have
+2358	bolso			bag; handbag; purse
+2361	duerme	dormir		sleep; stay night
+2363	intentó	intentar		attempt
+2364	respirar			breathe; respire
+2365	aparece	aparecer		appear
+2366	campaña			floor; campaign; base
+2367	amistad			friendship
+2368	corriente			current
+2369	viven	vivir		live; lodge
+2370	huesos	hueso		bone; pit
+2371	invitados	invitar		invite
+2372	planta			plant; floor
+2373	ritmo			beat; measure; rate
+2374	respuestas	respuesta		answer
+2375	socio			partner
+2376	esperas	espera		wait
+2377	caído	caer		drop; fall
+2378	motor			engine
+2379	mono			pretty
+2380	llevaron	llevar		lead; allow; bring
+2381	página			page
+2382	poquito			(a) little
+2383	u			or
+2384	habíamos	haber		have; there is
+2385	encontraremos	encontrar		meet; find
+2386	ruego	rogar		beg
+2387	dejan	dejar		allow; let; give up/quit
+2388	aburrido			boring
+2389	paquete			package
+2390	casada	casado		married
+2393	combate			battle; fight
+2394	útil			tool; useful; helpful
+2395	castillo			castle; forecastle; aftcastle
+2396	bola			ball
+2397	canciones	canción		song
+2398	mataré	matar		kill
+2400	asistente			aid
+2402	correcta	correcto		correct; right
+2403	pondré	poner		put
+2405	comido	comer		eat; capture; have lunch
+2406	salgan	salir		go out; exit; turn out
+2408	tirar			drag; fuck
+2409	pasan	pasar		happen
+2410	cierta			certain
+2411	honesto			honest
+2412	carro			car; cart
+2413	limpia	limpiar		clean; wipe
+2414	volví	volver		return; turn over
+2415	confío	confiar		trust
+2416	venta			sale
+2417	huir			flee
+2418	apareció	aparecer		appear
+2419	vais	ir		be going to; let 's
+2420	compromiso			commitment; compromise
+2422	aseguro	asegurar		claim; secure; ensure
+2423	ira			ire
+2424	promesa			promise; commitment
+2426	cuáles	cuál		which
+2427	compras	comprar		buy; purchase; take over
+2428	importancia			importance
+2429	lección			lesson
+2430	hablaré	hablar		speak
+2431	hacerse			go
+2432	personalmente			personally
+2435	bolsillo			pocket
+2436	enojado			angry
+2437	desgracia			disgrace; misfortune
+2438	artículo			article
+2439	labios	labio		lip; labium
+2440	cola			tail; queue; glue
+2441	estemos	estar		be
+2442	whisky			whisky
+2443	taza			cup; mug
+2447	pelota			ball
+2448	caminando	caminar		move; walk
+2449	andar			walk
+2450	crea	crear		create
+2451	chaqueta			jacket
+2452	importaría	importar		get; matter; import
+2455	interesado			interested; keen
+2456	atrapado	atrapar		catch; capture; seize
+2459	árboles	árbol		tree
+2460	obvio			clear
+2461	amaba	amar		love
+2462	hablaremos	hablar		speak
+2463	entrenamiento			training
+2464	pescado			fish
+2465	últimas	último		last
+2466	pobres			have-nots
+2467	dioses	dios		god; deity; divinity
+2468	nerviosa	nervioso		nervous
+2469	vueltas	volver		return; turn over
+2471	autos	auto		car
+2475	abrigo			shelter; coat; refuge
+2476	okay			okay
+2477	estudiar			study
+2479	sonrisa			smile
+2480	cobarde			coward; cowardly
+2481	olvida	olvidar		forget
+2482	secundaria			high school; secondary school; middle school
+2483	descubierto	descubrir		discover; uncover
+2484	convirtió	convertir		convert
+2485	coches	coche		car; carriage; automobile
+2486	venía	venir		come
+2488	charla			chat; talk
+2489	vives	vivir		live; lodge
+2490	bruja			witch
+2491	c			long time no hear
+2492	celular			mobile
+2494	rompió	romper		breach; break into
+2495	andando	andar		walk
+2496	vean	ver		see
+2497	conseguiste	conseguir		acquire; attain; get
+2499	veinte			twenty
+2500	encargo			assignment
+2502	palacio			palace
+2503	convierte	convertir		convert
+2504	ja			ha
+2505	vivos	vivo		alive; living
+2506	pasamos	pasar		happen
+2507	firme			hard; firm
+2509	piense	pensar		think
+2510	oigo	oír		hear
+2512	sorprende	sorprender		surprise
+2513	alemanes	alemán		German; German language
+2514	milagro			miracle; wonder
+2515	soportar			bear
+2516	dejaron	dejar		allow; let; give up/quit
+2519	moda			fashion
+2520	despacho			office
+2521	vecinos	vecino		neighbour; neighbor
+2522	vaso			glass; vessel
+2524	explosión			bang
+2525	poderes	poder		may
+2526	regla			period; rule; ruler
+2528	copia			copy
+2529	siguiendo	seguir		follow
+2530	viajar			travel
+2531	cadena			chain
+2532	fábrica			factory; plant
+2534	meter			coop up
+2536	comiendo	comer		eat; capture; have lunch
+2537	educación			education
+2538	maneras	manera		way
+2539	fumar			smoke
+2540	encantador			charming; alluring; enchanting
+2542	homicidio			homicide
+2543	madera			wood
+2544	mayores	mayor		elder; major; bigger
+2545	grado			step; degree; level
+2546	tratamiento			treatment
+2547	blancos	blanco		white; target
+2548	lord			lord
+2549	anterior			front; former; previous
+2550	comisario			curator
+2551	pizza			pie; pizza pie; pizza
+2552	millas	milla		mile
+2553	tira			strip
+2554	fueran	ir		be going to; let 's
+2555	cumplir			turn; accomplish; fulfil
+2556	plata			silver
+2557	quedará	quedar		stay; remain; become
+2558	quedaré	quedar		stay; remain; become
+2560	decidir			decide
+2561	lío			problem
+2562	preguntó	preguntar		ask
+2563	agencia			agency
+2564	humanidad			humanity; mankind
+2565	usado	usar		use; make use
+2567	parada			stop
+2568	leyes	ley		law
+2569	funcionó	funcionar		function; work
+2570	odia	odiar		hate
+2571	levanta	levantar		lift; raise; lever
+2572	mires	mirar		face; eye; look at
+2573	respira	respirar		breathe; respire
+2574	escaleras	escalera		ladder; staircase; flight of stairs
+2575	decisiones	decisión		decision
+2576	queréis	querer		love; want; tend
+2577	salvaje			savage; wild; ferocious
+2578	preguntando	preguntar		ask
+2579	pasos	paso		step; pace; dried
+2580	ambulancia			ambulance
+2581	traducción			translation
+2582	trabajado			hard-won
+2583	básicamente			basically
+2584	tratado			treatise; convention
+2585	parado			unemployed
+2587	mentiroso			liar
+2588	libres	librar		save
+2589	servicios	servicio		service
+2591	vivía	vivir		live; lodge
+2592	medios	medio		way; half; channel
+2593	compra	comprar		buy; purchase; take over
+2594	conocimiento			knowledge; manifest
+2595	armario			cabinet; cupboard; closet
+2596	lobo			grey wolf
+2597	quedamos	quedar		stay; remain; become
+2598	ciertamente			truly
+2599	permitir			allow; permit; let
+2600	tráfico			traffic
+2601	uniforme			uniform
+2602	estuvimos	estar		be
+2604	suave			soft; gentle
+2605	propias	propio		proper
+2606	balas	bala		bullet; shot; bale
+2607	asqueroso			disgusting; manky
+2608	ciento			hundred
+2609	invierno			winter
+2610	consigo	conseguir		acquire; attain; get
+2611	encuentre	encontrar		meet; find
+2613	conductor			driver; conductor
+2614	equipos	equipo		team
+2615	arena			sand
+2617	licencia			license
+2618	tíos	tío		uncle; bloke; guy
+2620	dijera	decir		say
+2621	espejo			mirror; looking-glass
+2622	marina			navy; navigation; seamanship
+2623	matando	matar		kill
+2624	seres	ser		be; being; existence
+2625	fiestas	fiesta		party; feast
+2626	mover			move; stir; actuate
+2627	coincidencia			coincidence
+2628	análisis			analysis
+2630	azúcar			sugar
+2632	casar			marry; wed
+2633	sótano			cellar; basement
+2634	volvamos	volver		return; turn over
+2637	ocasión			occasion
+2638	cheque			check; cheque
+2639	revisar			review; revise
+2641	suceder			come; happen
+2642	acusado	acusar		accuse
+2644	quedé	quedar		stay; remain; become
+2645	conciencia			consciousness; conscience
+2647	pesadilla			nightmare
+2648	sopa			soup
+2649	saltar			jump
+2650	heridas	herida		wound; injury
+2651	pienses	pensar		think
+2652	suicidio			suicide
+2654	posibilidades	posibilidad		possibility
+2655	elegido	elegir		choose; elect
+2656	divorcio			divorce
+2657	registros	registro		register; catalogue
+2658	recibí	recibir		receive; get; accept
+2660	escuchas	escuchar		listen
+2661	mirad	mirar		face; eye; look at
+2662	pierde	perder		lose
+2663	abogados	abogado		lawyer; attorney; barrister
+2664	trataba	tratar		treat
+2665	americanos	americano		American
+2666	llevando	llevar		lead; allow; bring
+2667	miel			honey
+2670	hermanas	hermano		sibling; friar; brother/sister
+2671	alemán			German; German language
+2672	iría	ir		be going to; let 's
+2674	salí	salir		go out; exit; turn out
+2675	particular			matter
+2676	miras	mirar		face; eye; look at
+2677	frontera			frontier
+2678	ventaja			advantage; good
+2679	alerta			alert
+2680	piscina			swimming pool; pool; fishpond
+2681	regalos	regalo		present; gift; donation
+2682	comportamiento			comportment
+2684	señales	señal		sign
+2685	salimos	salir		go out; exit; turn out
+2686	revista			magazine
+2687	hecha	hacer		make
+2688	imágenes	imagen		image; picture
+2690	rápida	rápido		quick; fast; rapid
+2691	canal			channel; canal
+2692	paciencia			patience
+2693	sacado	sacar		take
+2694	echo	echar		cast; throw; put
+2695	crisis			crisis
+2696	asesinos	asesino		murderer
+2697	oíste	oír		hear
+2698	dejando	dejar		allow; let; give up/quit
+2699	estarías	estar		be
+2700	anteriormente			previously
+2701	vigilancia			vigilance; watchfulness
+2702	desierto			desert
+2704	cuerda			rope; cord
+2707	seguido			straight; following
+2708	seremos	ser		be; being; existence
+2710	pene			penis; cock; dick
+2711	despierto			awake
+2712	gobernador			governor
+2713	sección			section
+2715	trabajos	trabajo		work; job
+2718	murieron	morir		die; expire; pass away
+2719	oso			bear
+2720	curiosidad			curiosity; inquisitiveness
+2723	impresión			impress
+2724	pez			fish
+2725	pasaba	pasar		happen
+2726	escuchaste	escuchar		listen
+2727	torre			tower; rook
+2728	sientas	sentar		sit
+2729	mentir			lie
+2730	pasillo			corridor
+2731	juega	jugar		mock; copulate; finalize
+2733	arresto			arrest; determination; apprehension
+2734	ricos	rico		rich; wealthy; affluent
+2735	sencillo			single; plain; artless
+2736	ruta			road; route
+2737	documentos	documento		document
+2738	enamorada	enamorado		in love
+2739	apuesta	apostar		bet
+2740	perdida			missed call
+2741	vinieron	venir		come
+2743	presento	presentar		present
+2745	leí	leer		read
+2747	virus			virus
+2749	sigan	seguir		follow
+2750	compró	comprar		buy; purchase; take over
+2751	servir			serve
+2752	pongas	poner		put
+2753	alarma			alarm
+2754	identidad			identity; sameness
+2755	iguales	igualar		level
+2756	aviso			advice; noticenotification
+2757	aprendido	aprender		learn
+2758	caza			game; hunt; hunting
+2760	muchacha	muchacho		boy
+2761	permanecer			abide
+2764	responde	responder		answer; reply; respond
+2767	llamaste	llamar		call; knock; ring
+2768	ponerse			put on
+2769	sacó	sacar		take
+2770	orgullo			pride
+2771	reales	real		real, actual, objective, material; real
+2772	esperan	esperar		hope; expect; await
+2773	vuelves	volver		return; turn over
+2777	enfadado	enfadar		to; anger; madden
+2778	ponen	poner		put
+2779	altura			height
+2781	archivo	archivar		archive; crawl
+2783	ayudará	ayudar		help; assist
+2784	fácilmente			easily
+2785	criatura			being
+2786	saco			bag; sack; jacket
+2787	precisamente			precisely
+2788	máximo			maximum
+2789	viniendo	venir		come
+2790	vendría	venir		come
+2792	ilegal			illegal
+2793	refiere	referir		refer
+2794	llamamos	llamar		call; knock; ring
+2795	versión			version
+2796	incendio			fire
+2798	gritar			shout; scream; cry
+2799	recibió	recibir		receive; get; accept
+2800	concierto			concert
+2801	casualidad			coincidence
+2802	excusa			excuse
+2803	rodillas	rodilla		knee
+2804	cruz			cross
+2805	dulces	dulce		sweet; fresh; dulcet
+2806	zorra	zorro		fox
+2807	cómodo			comfortable
+2808	cruel			cruel
+2809	sofá			sofa; couch
+2810	perdiste	perder		lose
+2811	encantadora	encantador		charming; alluring; enchanting
+2812	salgamos	salir		go out; exit; turn out
+2813	sombra			shadow; shade
+2814	ganó	ganar		win; earn; conquer
+2815	encantada	encantar		charm; enchant
+2816	firmar			sign; cosign
+2817	escritorio			desk
+2818	muñeca			doll; wrist
+2819	rastro			rake; trail
+2820	gigante			gargantuan; juggernaut
+2821	pájaro			bird
+2822	ducha			shower
+2823	tomamos	tomar		take
+2825	condición			condition; stipulation; term
+2826	recompensa			reward
+2827	doce			twelve
+2828	actor			actor; actress; claimant
+2829	actitud			attitude
+2830	cuida	cuidar		take care
+2831	salsa			sauce
+2832	hubieran	haber		have; there is
+2834	personaje			character
+2835	dudas	duda		doubt
+2837	cambios	cambio		change; exchange; exchange rate
+2838	votos	voto		vote
+2839	vivido	vivir		live; lodge
+2840	perdimos	perder		lose
+2842	entrega	entregar		turn in
+2843	comercial			commercial; ad; mainstream
+2844	decidí	decidir		decide
+2845	tribu			tribe
+2846	pura	puro		pure; cigar
+2847	volveremos	volver		return; turn over
+2848	voto			vote
+2850	amar			love
+2851	poderoso			almighty; forceful
+2852	traigo	traer		bring
+2853	asesinatos	asesinato		murder
+2854	fresco			fresh
+2855	privada	privar		booze; drink; deprive
+2856	seamos	ser		be; being; existence
+2857	guarda	guardar		keep; save
+2858	orgullosa	orgulloso		proud
+2859	vivimos	vivir		live; lodge
+2860	difíciles	difícil		difficult; hard; tough
+2862	jefa	jefe		boss
+2863	trató	tratar		treat
+2864	senador			senator
+2865	ayudando	ayudar		help; assist
+2866	campeón			champion
+2867	bebiendo	beber		drink
+2868	adorable			adorable
+2869	ayudó	ayudar		help; assist
+2870	ciego			blind; blind person; blind man
+2871	falsa	falso		wrong
+2874	bestia			beast
+2875	alteza			Highness
+2876	deseos	deseo		desire; wish
+2877	episodio			episode
+2878	celda			cell
+2880	aguanta	aguantar		hold; endure; sustain
+2881	vengas	vengar		revenge; avenge
+2882	jueves			Thursday
+2883	montañas	montaña		mountain
+2884	pensamientos	pensamiento		thought; think; intention
+2885	medianoche			midnight
+2887	garganta			throat
+2888	sesión			session
+2889	pensaste	pensar		think
+2891	muera	morir		die; expire; pass away
+2892	coma			comma
+2893	sentimos	sentir		hear; regret; be sorry
+2894	creas	crear		create
+2895	escribe	escribir		write
+2896	identificación			identification
+2897	circunstancias	circunstancia		circumstance
+2898	preguntado	preguntar		ask
+2899	veneno			poison
+2900	primavera			spring; springtime
+2901	súper			super
+2903	queríamos	querer		love; want; tend
+2904	aquello			former
+2905	preocuparse			beat up
+2906	martes			Tuesday
+2907	feo			ugly
+2908	cristo			mess
+2911	virgen			virgin
+2912	distrito			district
+2913	decidió	decidir		decide
+2914	reputación			reputation
+2915	socorro			help; aid; succour
+2916	encontraré	encontrar		meet; find
+2917	castigo			punishment
+2919	límite			limit
+2920	junta			board; meeting
+2922	casados	casado		married
+2923	líneas	línea		line; row
+2924	estudios	estudio		study
+2926	audiencia			audience; crowd
+2928	nació	nacer		sprout; be born; hatch
+2929	mato	matar		kill
+2930	jugador			player
+2931	hmm			hmm
+2932	humo			smoke; fume; fog
+2933	popular			popular
+2934	nación			nation
+2935	conocimos	conocer		know; meet
+2936	tropas			troops
+2937	sucediendo	suceder		come; happen
+2938	explicación			explanation
+2939	salen	salar		salt; salt pan
+2941	presentar			present
+2943	celebrar			celebrate
+2944	competencia			competition
+2945	envía	enviar		dispatch; send
+2948	biblioteca			library; bookcase; bookshelf
+2949	fila			queue
+2951	misterio			mystery
+2952	ganador			winner
+2953	puerto			pace; col; harbor
+2954	vehículo			vehicle; excipient
+2955	escapó	escapar		escape
+2956	traeré	traer		bring
+2957	julio			July; joule
+2958	lograr			accomplish; attain; achieve
+2959	desaparecer			disappear
+2960	muero	morir		die; expire; pass away
+2962	favorita	favorito		favorite; favourite
+2963	patio			patio
+2964	golpeó	golpear		hit; beat; strike
+2965	tontería			foolishness; stupidity
+2967	pecado	pecar		sin
+2968	comité			committee
+2970	comprado	comprar		buy; purchase; take over
+2971	parezca	parecer		opinion; appearance; seem
+2972	emocionante			exciting; touching
+2973	caras	cara		face
+2974	rescate			rescue; ransom; bailout
+2975	título			title; heading
+2978	adivina	adivinar		divine; guess; foretell
+2980	pánico			funk
+2982	quieran	querer		love; want; tend
+2984	exterior			exterior
+2985	pasión			passion
+2987	preparar			prepare
+2988	guau			wow; woof
+2990	tierras	tierra		earth; land; soil
+2991	demostrar			demonstrate; prove
+2992	elegante			elegant; dashing
+2994	visitar			visit
+2997	cabezas	cabeza		head; caput
+2998	abra	abrir		open
+3001	ambiente			circle; atmosphere; environment
+3002	conde			count; earl
+3003	urgente			urgent
+3006	distinto			different
+3007	encantan	encantar		charm; enchant
+3008	ron			rum
+3009	marcas	marca		make; brand; marking
+3011	leyendo	leer		read
+3012	adecuado	adecuar		adapt
+3013	cajas	caja		box; box register
+3014	abandonar			forsake; abandon
+3015	dispara	disparar		shoot
+3016	buscamos	buscar		search; seek
+3017	funcionando	funcionar		function; work
+3018	traté	tratar		treat
+3020	tomen	tomar		take
+3022	intentas	intentar		attempt
+3027	apesta	apestar		stink
+3028	volando			airborne
+3029	periódicos	periódico		newspaper
+3031	detenido	detener		stop; keep; detain
+3032	curioso			curious; inquisitive; quaint
+3033	tetas	teta		breast; tit; nipple
+3034	caro			expensive
+3035	asco			ascus
+3036	usó	usar		use; make use
+3037	buscas	busca		search; pager
+3039	salgo	salir		go out; exit; turn out
+3041	enseñó	enseñar		show; teach
+3045	debiste	deber		duty; must; owe
+3046	océano			ocean
+3047	bolas			balls
+3048	nuevamente			again; anew
+3050	pagado	pagar		pay; ante up
+3051	federal			federal
+3053	escalera			ladder; staircase; flight of stairs
+3054	acepto	aceptar		accept; agree; approve
+3055	km	kilómetro		kilometre; kilometer
+3056	terapia			therapy
+3057	lágrimas	lágrima		tear; teardrop
+3058	terreno			field; pitch
+3059	autoridad			authority
+3060	encuentran	encontrar		meet; find
+3061	roca			rock
+3062	superficie			surface
+3063	cubierta			deck; bedcover
+3065	hierba			grass; herb
+3067	prometido			fiancé
+3068	crecer			grow
+3069	mental			mental
+3070	extranjero			foreign; stranger
+3073	mismas	mismo		same
+3074	existen	existir		exist
+3075	veas	ver		see
+3076	lento			slow
+3077	dirige	dirigir		drive; address
+3079	chino			Chinese
+3080	vuelvan	volver		return; turn over
+3081	meta			goal
+3082	suelta	soltar		loose; release
+3083	despedida	despedir		fire; dismiss
+3084	sucedido	suceder		come; happen
+3085	pasta			paste; pasta; pastry
+3086	cristal			crystal; glass; crank
+3087	vegas	vega		floodplain
+3088	gritando	gritar		shout; scream; cry
+3089	pare			stop; stop sign
+3090	peces	pez		fish
+3092	guardar			keep; save
+3093	podían	poder		may
+3095	literalmente			literally
+3097	aprecio	apreciar		prize; esteem
+3098	fotografía			photography
+3099	patrón			host; boss
+3100	esposas			handcuffs; cuffs
+3102	desafío			challenge
+3103	asombroso			amazing
+3104	pedazos	pedazo		piece
+3106	sales	sal		salt
+3107	clínica			clinic
+3108	atrapar			catch; capture; seize
+3109	experto			expert
+3110	medida			measure; action
+3111	tele			TV; box; telley
+3112	desagradable			displeasing; unpleasant; dislikeable
+3113	custodia	custodiar		guard
+3114	nacido	nacer		sprout; be born; hatch
+3115	anuncio			announcement; notice
+3116	física			physics
+3120	fiebre			fever
+3122	compañera	compañero		partner
+3124	desgraciado			bastard
+3125	organización			organization; organisation
+3126	echa	echar		cast; throw; put
+3127	mina			mine
+3128	honestamente			honestly
+3129	deuda			debt
+3130	digan	decir		say
+3131	transporte			transport
+3132	cocinar			cook
+3133	delicioso			delicious
+3134	podíamos	poder		may
+3136	dirás	decir		say
+3137	habilidades	habilidad		ability
+3138	sentimiento			sentiment; feeling
+3139	pudieras	poder		may
+3140	golpes	golpe		blow; stroke
+3141	nadar			swim
+3142	operaciones	operación		operation; surgery
+3143	admitir			allow; tolerate; admit
+3144	templo			temple
+3146	maravilla			wonder; marvel
+3147	quita	quitar		take away
+3148	mate	matar		kill
+3149	piano			piano
+3150	bombas	bomba		bomb; pump; gas station
+3151	paredes	pared		wall
+3152	pantalla			screen; shade
+3154	pusieron	poner		put
+3156	amén			amen
+3158	civil			civil
+3159	fantasmas	fantasma		ghost; phantom
+3160	gasolina			petrol; gasoline
+3161	sabia	sabio		prudent
+3163	judíos	judío		Jewish; Jew
+3165	tripulación			crew; team
+3166	pagan	pagar		pay; ante up
+3167	arrestado	arrestar		arrest; grab
+3168	extraños	extraño		stranger; foreigner
+3169	canta	cantar		sing
+3171	estando	estar		be
+3172	flor			bloom; blossom; flower
+3174	usan	usar		use; make use
+3175	cruzar			cross
+3176	esperemos	esperar		hope; expect; await
+3177	guía			guide; steering wheel; handlebars
+3179	enseñar			show; teach
+3180	irán	ir		be going to; let 's
+3181	conferencia			conference
+3182	miro	mirar		face; eye; look at
+3183	habitaciones	habitación		room
+3184	galletas	galleta		cookie; biscuit
+3186	delito			crime; offence
+3187	atacar			erode
+3188	objeto			object
+3189	disparos	disparo		shot
+3190	museo			museum
+3191	ruedas	rodar		roll
+3192	recientemente			recently
+3193	huevo			egg; ball
+3194	violación			rape; violation
+3196	sufrir			bear; pay; suffer
+3197	tina			bathroom; bed
+3199	disponible			available
+3200	rica	rico		rich; wealthy; affluent
+3201	habilidad			ability
+3202	práctica			practice; internship
+3204	amado	amar		love
+3206	volvemos	volver		return; turn over
+3207	tendrías	tener		be; hold; have
+3208	maestra	maestro		master; teacher; instructor
+3211	aprendí	aprender		learn
+3212	cable			cable
+3213	nacimiento			birth
+3214	consciente			aware; conscious
+3215	alcance			reach/range/scope
+3216	evento			event
+3217	alquiler			rent; rental
+3218	ordenador			computer
+3219	incidente			disruption
+3221	escribí	escribir		write
+3222	estuvieron	estar		be
+3223	intentaré	intentar		attempt
+3224	pensamiento			thought; think; intention
+3226	maleta			suitcase
+3227	condado			county; countship; earldom
+3228	piezas	pieza		piece; ordinary; chessman
+3229	ladrones	ladrón		thief
+3230	metro			subway; underground; tube
+3231	kilos	kilo		kilo
+3232	recuerde	recordar		wake
+3233	español			Spanish; Spaniard
+3234	motivos	motivo		motive
+3235	explica	explicar		explain; elucidate; expound
+3236	renunciar			renounce
+3237	actuación			performance
+3238	refugio			refuge; shelter
+3239	harto			tired; stuffed
+3240	reacción			reaction
+3241	paliza			beating
+3242	chef			chef
+3245	l	litro		litre; liter
+3246	entrado	entrar		go in
+3247	quitar			take away
+3248	amanecer			sunrise; wake up/awaken
+3250	corazones			hearts
+3251	rumores	rumor		murmur; rumour
+3252	llames	llamar		call; knock; ring
+3253	celoso			jealous
+3254	utilizar			utilise
+3255	territorio			territory
+3256	olvide	olvidar		forget
+3257	prácticamente			practically
+3258	disfrutar			have fun
+3259	intentaba	intentar		attempt
+3260	vecino			neighbour; neighbor
+3261	pública	público		public
+3262	collar			collar
+3263	golf			golf
+3265	marco			frame; march; box
+3266	cercano			close; contiguous
+3267	fondos	fondo		bottom; ground
+3270	montar			ride
+3271	salvado			bran
+3272	grados	grado		step; degree; level
+3274	moto			motorcycle
+3275	instrucciones	instrucción		instruction
+3276	treinta			thirty
+3278	adonde			where; if; whither
+3281	emperador			emperor
+3282	cigarrillo			cigarette
+3284	do			C
+3285	secreta	secreto		secret; mystery
+3289	mortal			mortal
+3290	ronda			round; iteration
+3291	cuídate			take care
+3292	metal			metal
+3293	puro			pure; cigar
+3294	cierre			zipper
+3295	colores	color		colour; color
+3298	botón			button
+3299	hijas	hijo		son/daughter
+3301	tono			pitch; tone; key
+3302	espía	espiar		spy
+3303	empleados	empleado		employee
+3304	conduce	conducir		conduct
+3305	detalle			detail
+3306	estuvieras	estar		be
+3308	rusos	ruso		Russian
+3310	crema			dieresis
+3312	contesta	contestar		answer
+3314	manda	mandar		order; send
+3316	prisioneros	prisionero		prisoner
+3317	echado	echar		cast; throw; put
+3318	trajiste	traer		bring
+3320	flota	flotar		float
+3322	criminales	criminal		criminal
+3324	platos	plato		plate; course; dish
+3325	crímenes	crimen		crime
+3326	cometido			commission
+3327	golpear			hit; beat; strike
+3328	igualmente			likewise; equally
+3329	dispararon	disparar		shoot
+3330	dejará	dejar		allow; let; give up/quit
+3331	tontos	tonto		stupid; foolish; dumb
+3333	abran	abrir		open
+3334	ayudante			assistant
+3335	cultura			cultivation
+3336	revolución			revolution
+3337	hombro			shoulder
+3338	botas	bota		boot
+3340	olvidó	olvidar		forget
+3341	biblia			bible
+3342	saludos	saludo		salutation; shout-out
+3344	deme			give me
+3345	adultos	adulto		adult
+3346	sitios	sitio		place; site; website
+3347	serpiente			snake; serpent
+3350	romántico			romantic
+3351	posiblemente			maybe; possibly
+3352	adivinar			divine; guess; foretell
+3354	buscan	buscar		search; seek
+3355	enfrente	enfrentar		confront
+3356	restos	resto		difference; remainder; remains
+3357	capacidad			capacity
+3358	aliento			breath
+3359	placa			plate
+3360	rata			rat
+3362	entendí	entender		infer
+3364	cuadro			cadre
+3365	afortunado			fortunate; lucky
+3366	puestos	poner		put
+3368	división			division
+3369	subtítulos	subtítulo		caption; subheading
+3370	entradas	entrada		ticket; article; entryway
+3371	bicicleta			bicycle; bike
+3373	pesado			deep; heavy; annoying
+3374	sugiero	sugerir		suggest
+3375	calla	callar		calm
+3376	espacial			spatial
+3378	ventanas	ventana		window
+3379	mejorar			improve
+3380	concurso			contest; competition
+3381	comisaría			police station
+3382	sincero			sincere
+3383	centavos	centavo		cent
+3384	naturalmente			natch
+3386	pasara	pasar		happen
+3388	esperado	esperar		hope; expect; await
+3389	ocurrir			come about
+3390	pondrá	poner		put
+3391	recursos	recurso		resource
+3392	raza			race; breed
+3393	muestras	mostrar		show; present
+3394	personales	personal		personnel
+3396	imaginación			imagination
+3397	volverás	volver		return; turn over
+3398	ceremonia			ceremony
+3399	almacén			store; warehouse; storehouse
+3400	sabor			taste; flavor
+3401	sentarse			sit down
+3403	unión			union
+3405	reserva			reservation
+3407	encanto			charm
+3408	aviones	avión		house martin; martin; swallow
+3409	calidad			quality
+3410	escondido			hidden; hide-and-seek
+3411	citas	citar		summon
+3412	aceite	aceitar		oil
+3413	pusiste	poner		put
+3414	querrá	querer		love; want; tend
+3415	punta			point; tip
+3416	cinturón			belt
+3417	podrán	poder		may
+3418	cuales			which
+3419	chiste			joke; taunt; sharpness
+3420	consecuencias	consecuencia		consequence
+3421	sinceramente			candidly; honestly; sincerely
+3423	hablaste	hablar		speak
+3424	vaca			cow
+3425	investigando	investigar		investigate
+3426	vuelven	volver		return; turn over
+3428	prisionero			prisoner
+3429	investigar			investigate
+3430	apellido			surname; last name; family name
+3431	actual			present; current; ongoing
+3432	despertar			wake
+3433	instante			heartbeat
+3435	ud			oud
+3436	morirá	morir		die; expire; pass away
+3437	sacaste	sacar		take
+3439	traiga	traer		bring
+3440	sentada	sentar		sit
+3441	mueva	mover		move; stir; actuate
+3444	emociones	emoción		emotion
+3445	dormitorio			dormitory
+3446	pulso	pulsar		press; pulsar; pulsate
+3447	atreves	atrever		dare
+3448	frase			sentence
+3449	partida			game; match; departure
+3451	parezco	parecer		opinion; appearance; seem
+3452	excelencia			excellence
+3453	despedido	despedir		fire; dismiss
+3454	moral			moral
+3455	asalto	asaltar		assault; take by surprise
+3456	decente			decent; decente
+3462	poca	poco		little
+3463	pasaría	pasar		happen
+3464	médica	médico		physician; doctor; medical
+3465	combustible			combustible
+3466	discusión			discussion
+3467	verán	ver		see
+3469	pata			leg; paw
+3470	jean			jeans
+3471	antiguos	antiguo		ancient; old
+3472	requiere	requerir		need; require
+3474	comunicación			communication
+3475	manzana			block; apple; Adam's apple
+3476	sed			thirst
+3478	joyas	joya		jewel
+3479	cojones			balls
+3480	noble			noble; lordly
+3483	pediste	pedir		ask for; order
+3485	piedras	piedra		stone; rock
+3486	traidor			traitor
+3487	gané	ganar		win; earn; conquer
+3488	letra			letter; lyrics
+3489	conseguimos	conseguir		acquire; attain; get
+3490	vía			track; road; way
+3491	sacerdote			priest/priestess; priest
+3492	efectos	efecto		effect
+3493	resistencia			resistance; resistor
+3494	arroz			rice
+3495	arreglado	arreglar		arrange; fix
+3496	tarjetas	tarjeta		card
+3497	descubrió	descubrir		discover; uncover
+3498	desconocido			stranger; unknown
+3499	mínimo			minimum
+3500	disparado	disparar		shoot
+3502	entienden	entender		infer
+3503	bandera			flag; banner
+3505	plaza			square; place
+3506	entrando	entrar		go in
+3507	tomará	tomar		take
+3508	visitas	visita		call; visit
+3511	faltan	faltar		miss
+3512	planeado	planear		plan; glide
+3513	imperio			empire
+3514	esperaré	esperar		hope; expect; await
+3515	enfadada	enfadar		to; anger; madden
+3516	levantar			lift; raise; lever
+3517	cartera			wallet
+3519	importar			get; matter; import
+3520	depósito			deposit
+3521	colegas	colega		colleague; coworker
+3522	periodista			journalist
+3523	comprobar			audit; prove
+3524	funcione	funcionar		function; work
+3526	mereces	merecer		merit
+3527	forense			coroner
+3528	tensión			tension
+3529	involucrado	involucrar		involve
+3530	vacía	vaciar		empty
+3531	abandonado	abandonar		forsake; abandon
+3532	vídeo			video
+3533	ruso			Russian
+3534	círculo			circle
+3535	judío			Jewish; Jew
+3537	gritos	grito		cry; scream
+3538	carol			carol
+3540	resultó	resultar		turn out
+3541	campos	campo		field; countryside; country
+3543	escribiendo	escribir		write
+3544	divertida	divertir		entertain; amuse
+3545	pasen	pasar		happen
+3546	pinta			pint
+3548	ascensor			lift; elevator
+3550	matará	matar		kill
+3551	aparecer			appear
+3552	helicóptero			helicopter; chopper; whirlybird
+3555	pasas	pasa		raisin
+3558	entregar			turn in
+3559	escape			escape; exhaust
+3560	indios	indio		Indian; indium
+3561	limpieza			cleanliness
+3563	querrás	querer		love; want; tend
+3564	hueso			bone; pit
+3566	magnífico			magnificent; splendid
+3567	trabajadores			labour
+3568	caída			fall
+3569	temperatura			temperature
+3571	dejaría	dejar		allow; let; give up/quit
+3572	encontrará	encontrar		meet; find
+3573	ejercicio			exercise
+3574	lealtad			loyalty
+3575	alas	ala		brim
+3576	pasaron	pasar		happen
+3577	invitación			invitation; invite
+3578	diamantes	diamante		diamond
+3579	unidades	unidad		unit; unity
+3581	enojada	enojar		annoy
+3582	decimos	decir		say
+3583	leyenda			legend
+3584	gilipollas			arsehole; dick
+3585	tomaste	tomar		take
+3586	paraíso			eden; heaven
+3587	gatos	gato		cat; tomcat; jack
+3588	costumbre			habit; custom; usage
+3590	cabaña			cabin
+3591	secretaria	secretario		secretary
+3592	lentamente			slowly
+3593	ensayo			try; essay; rehearsal
+3594	pagó	pagar		pay; ante up
+3596	gimnasio			gym; gymnasium
+3597	negativo			negative
+3598	lenguaje			language; speech
+3599	pájaros	pájaro		bird
+3600	presenta	presentar		present
+3601	quedes	quedar		stay; remain; become
+3602	garaje			garage
+3603	palo			stick
+3604	león			lion; lion/lioness; cougar
+3605	oídos	oído		ear; hearing
+3607	espaldas	espalda		back
+3608	apuestas	apostar		bet
+3609	científico			scientist; scientific
+3610	incluyendo	incluir		include
+3611	pelotas			balls
+3612	actividad			activity
+3613	dragón			dragon; dragoon
+3614	necesite	necesitar		need; require
+3615	intentamos	intentar		attempt
+3616	aguantar			hold; endure; sustain
+3618	primeras	primero		first
+3619	generación			generation
+3620	sexuales	sexual		sexual
+3622	grupos	grupo		group
+3623	capital			capital
+3624	dejemos	dejar		allow; let; give up/quit
+3625	habrías	haber		have; there is
+3626	máquinas	máquina		machine
+3627	barato			inexpensive; bogus
+3629	sistemas	sistema		system; establishment
+3630	fingir			feign; pretend
+3632	miércoles			shucks
+3633	escritor			writer
+3634	solitario			solitary
+3635	recibo			receipt
+3637	pudimos	poder		may
+3638	convertirse			convert; transform
+3639	almas	alma		soul
+3640	salto			jump; leap
+3641	sonar			ring
+3642	publicidad			publicity
+3644	temporal			temporary; storm
+3645	antecedentes			background
+3646	probado	probar		test; taste; prove
+3649	llamaron	llamar		call; knock; ring
+3650	atractivo			attractive
+3652	barra			slash; hooligans; supporters
+3653	aniversario			anniversary
+3654	intereses	interés		interest
+3655	madres	madre		mother
+3656	deba	deber		duty; must; owe
+3658	niñera			babysitter
+3659	movimientos	movimiento		movement; motion
+3660	quince			fifteen
+3662	muro			wall
+3663	recibe	recibir		receive; get; accept
+3664	luce	lucir		shine; show off
+3665	nací	nacer		sprout; be born; hatch
+3666	prima	primo		cousin
+3667	cubierto	cubrir		cover
+3668	contando	contar		count; tell
+3669	reír			laugh
+3670	producto			product
+3671	daños	daño		damage
+3672	abrazo			hug; embrace
+3673	gafas			eyeglasses
+3675	sobrino			nephew
+3676	man			guy
+3677	demanda			demand; claim
+3678	elecciones	elección		election
+3679	construcción			construction; building
+3680	ayudaré	ayudar		help; assist
+3681	buscado	buscar		search; seek
+3684	internacional			international
+3685	perfil			profile
+3686	trozo			piece; chunk
+3687	actriz			actress
+3689	bendiga	bendecir		bless
+3690	pistas	pista		track; runway; clue
+3692	vecindario			neighbourhood; neighborhood; quartier
+3695	ataques	atacar		erode
+3696	razonable			fair
+3697	vende	vender		sell; vend
+3698	gerente			manager
+3699	sensible			sensitive
+3701	izquierdo			left
+3702	personalidad			personality
+3703	camina	caminar		move; walk
+3704	traes	traer		bring
+3705	tuvieras	tener		be; hold; have
+3707	conté	contar		count; tell
+3709	secretario			secretary
+3710	rueda			wheel; cartwheel
+3711	sorprendido	sorprender		surprise
+3712	profundamente			fast
+3713	conoció	conocer		know; meet
+3714	grano			grain
+3715	pagaré			IOU
+3716	límites	límite		limit
+3717	moneda			coin; currency
+3719	piedad			piety
+3721	seguía	seguir		follow
+3722	tocado			bonkers; crazy
+3723	ciudadanos	ciudadano		citizen
+3724	creado	crear		create
+3725	temas	tema		subject; topic
+3726	acepta	aceptar		accept; agree; approve
+3727	encerrado			enclosed
+3728	opinas	opinar		think; judge
+3729	empiezo			start
+3730	borde			border; boundary; edge
+3732	barcos	barco		ship; nave
+3734	pudieron	poder		may
+3735	tocando	tocar		play; touch
+3737	profesora	profesor		teacher; professor
+3739	expresión			expression
+3740	asesinada	asesinar		murder; assassinate
+3741	escándalo			scandal; bother
+3742	nervios			nerve
+3745	emoción			emotion
+3748	oficialmente			officially
+3749	perdedor			loser; rolling stone
+3751	sienten	sentar		sit
+3752	rumbo			cap; on the way
+3753	valle			dale; dell; vale
+3755	x			4
+3757	buscaba	buscar		search; seek
+3758	científicos	científico		scientist; scientific
+3759	gorda	gordo		fat
+3760	juventud			youth; adolescence
+3761	hayamos	haber		have; there is
+3762	preocupación			worry; care
+3763	desnudo			bald
+3766	envié	enviar		dispatch; send
+3768	carreras	carrera		race
+3769	tratas	tratar		treat
+3770	sucia	sucio		dirty; filthy
+3772	ratas	rata		rat
+3773	mayo			May; mayo; Mayo language
+3774	tirado	tirar		drag; fuck
+3775	heroína			heroin
+3777	contestar			answer
+3778	caos			chaos; disorder; disarray
+3779	alternativa			option
+3780	estupidez			stupidity
+3782	sorprendente			surprising
+3784	principios			front matter
+3785	egoísta			selfish
+3786	mostraré	mostrar		show; present
+3788	verdaderamente			truly
+3789	enhorabuena			congratulation
+3791	peligrosa	peligroso		dangerous
+3792	ánimo			activity; mood
+3793	viajes	viajar		travel
+3794	lujo			luxury
+3796	cantando	cantar		sing
+3797	religión			religion
+3799	risas	risa		laugh; laughter
+3800	despejado	despejar		clear
+3801	miserable			miserable
+3802	hierro	herrar		iron; brand; horseshoe
+3803	corona			crown; krona
+3805	serías	ser		be; being; existence
+3806	dispositivo			device; token; dispositive
+3807	mencionar			mention
+3809	mencionó	mencionar		mention
+3810	inmunidad			immunity
+3811	grabación			recording
+3812	producción			production
+3813	nuclear			nuclear
+3814	clima			climate
+3815	puesta	poner		put
+3817	carácter			character; nature
+3818	prostituta	prostituir		prostitute
+3821	máscara			mask
+3822	alegre			happy
+3823	comprender			understand; comprehend; see
+3824	volviste	volver		return; turn over
+3825	cambiando	cambiar		change; alter; convert
+3826	alianza			alliance; covenant
+3827	encontrarás	encontrar		meet; find
+3828	positivo			positive; plus
+3829	siglos	siglo		century
+3830	serían	ser		be; being; existence
+3831	desafortunadamente			unfortunately
+3832	guitarra			guitar
+3833	hacían	hacer		make
+3834	estrategia			strategy
+3835	entré	entrar		go in
+3836	vinimos	venir		come
+3837	frecuencia			frequency; repetition
+3838	poli			bull
+3842	llevé	llevar		lead; allow; bring
+3844	prohibido			forbidden
+3845	caray			aw shucks
+3846	arruinar			ruin; devastate; bane
+3847	masa			mass; dough
+3848	existencia			existence
+3849	túnel			tunnel
+3850	bromas	broma		joke; gag; jest
+3852	industria			industry
+3853	trasera			rear
+3856	conseguiré	conseguir		acquire; attain; get
+3857	inocentes	inocente		innocent; naive; gullible
+3858	colección			collection; set
+3859	empleado			employee
+3860	fatal			fatal
+3863	intente	intentar		attempt
+3864	expediente			dossier
+3866	putas	puta		whore; bitch
+3868	petición			petition; request
+3869	ayudado	ayudar		help; assist
+3871	presentación			presentation
+3873	vendido	vender		sell; vend
+3874	cerebral			brain
+3875	coraje			courage
+3876	adulto			adult
+3877	rubia			madder
+3878	mandar			order; send
+3879	pierdes	perder		lose
+3880	gano	ganar		win; earn; conquer
+3881	almorzar			have lunch; lunch
+3882	caridad			charity
+3885	llegada			arrival
+3886	capítulo			chapter
+3888	viniera	venir		come
+3889	gastos	gasto		expense; spend
+3890	sentirse			feel
+3891	entren	entrar		go in
+3893	tarta			tart; gateau; torte
+3894	volvería	volver		return; turn over
+3895	jersey			jersey
+3896	mataría	matar		kill
+3897	breve			brief; short
+3898	obras	obra		work; labour
+3899	acero			steel
+3902	suceda	suceder		come; happen
+3903	cigarrillos	cigarrillo		cigarette
+3904	funcionará	funcionar		function; work
+3907	camarada			comrade
+3908	confesión			confession
+3909	dijimos	decir		say
+3910	coartada			alibi
+3911	desnuda	desnudar		undress
+3912	payaso			clown
+3913	rayo			heck; hell
+3914	guay			cool
+3915	naves	nave		ship; nave
+3916	americana	americano		American
+3917	político			politician
+3918	diseño			design
+3919	condenado			convict; condemned
+3920	convencido	convencer		convince
+3923	italiano			Italian
+3924	pedro			harvestman
+3925	mm	milímetro		millimeter; millimetre
+3926	camiseta			T-shirt
+3927	vendrán	venir		come
+3928	extrañas	extraño		stranger; foreigner
+3929	impacto			crash
+3930	equipaje			baggage; luggage
+3932	sufrimiento			grief
+3933	salieron	salir		go out; exit; turn out
+3935	sabiendo			knowingly
+3936	maten	matar		kill
+3937	adolescente			adolescent; teenager
+3938	soltero			single; unmarried
+3939	descubrí	descubrir		discover; uncover
+3940	tranquilos	tranquilo		quiet; peaceful
+3941	influencia			influence
+3942	oxígeno			oxygen
+3943	experimento			experiment
+3944	absurdo			absurd; absurdity
+3946	habrían	haber		have; there is
+3948	empiece			start
+3949	devolver			return
+3950	propuesta	proponer		propose
+3953	abrió	abrir		open
+3954	plantas	planta		plant; floor
+3955	cantante			singer; female
+3956	traición			treason; betrayal
+3957	cementerio			graveyard; cemetery
+3959	pozo			well; pit
+3960	patrulla			patrol
+3962	planeando	planear		plan; glide
+3964	tragedia			tragedy
+3967	autoridades	autoridad		authority
+3968	trate	tratar		treat
+3969	procedimiento			process; course of action
+3970	fantasía			daydream
+3971	billetes	billete		banknote
+3972	ganamos	ganar		win; earn; conquer
+3973	secuestro			kidnapping; hijack; sequestration
+3975	prestado	prestar		borrow; lend; pay
+3976	bodas	boda		wedding
+3977	béisbol			baseball
+3978	ciudades	ciudad		city; town
+3979	conejo			rabbit; bunny
+3981	billete			banknote
+3982	esperanzas	esperanza		mean; hope
+3984	significado			meaning
+3985	mueren	morir		die; expire; pass away
+3987	cincuenta			fifty
+3989	web			website
+3990	apropiado			appropriate
+3991	robot			robot
+3992	considerado	considerar		consider
+3993	alcanzar			attain; catch up
+3994	patatas	patata		potato
+3996	continuación			continuation
+3997	tradición			tradition
+3999	ocultar			hide
+4000	tendríamos	tener		be; hold; have
+4001	electricidad			electricity
+4002	bebidas	beber		drink
+4003	siguió	seguir		follow
+4004	reto			challenge
+4005	aldea			village; hamlet
+4006	robaron	robar		steal
+4007	aguas			waters; beware!
+4008	caminos	camino		path; road; route
+4010	permitido	permitir		allow; permit; let
+4012	cima			summit; top
+4014	risa			laugh; laughter
+4015	cumplido	cumplir		turn; accomplish; fulfil
+4016	objetos	objeto		object
+4017	decide	decidir		decide
+4018	pregunte	preguntar		ask
+4019	once			eleven; elevenses
+4020	matan	matar		kill
+4021	terrorista			terrorist
+4022	tomes	tomar		take
+4023	términos	término		term
+4024	reyes	rey		king
+4025	revés			back; down; reverse
+4026	explotar			explode
+4027	maletas	maleta		suitcase
+4028	nubes	nube		cloud
+4029	circo			circus
+4033	tanque			tank
+4034	uñas	uña		nail; fingernail; toenail
+4036	terroristas	terrorista		terrorist
+4037	estúpidos	estúpido		stupid
+4039	salta	saltar		jump
+4041	agradecido			thankful/grateful
+4043	terror			terror
+4045	sacrificio			sacrifice
+4046	destrucción			destruction
+4048	texto			text
+4049	peleas	pelea		fight
+4050	liga			league; suspender; mistletoe
+4052	ana			ell
+4053	enviaré	enviar		dispatch; send
+4054	teléfonos	teléfono		telephone; phone
+4055	porno			porn
+4057	oscura	oscuro		dim
+4059	olvido			oblivion; forget
+4060	queridos	querer		love; want; tend
+4061	colina			hill; choline
+4062	bromeas	bromear		joke; jest
+4063	sano			healthy; well
+4064	únicos	único		only; solitary; alone
+4065	musical			musical
+4066	pastor			pastor
+4068	naranja			orange
+4069	batería			battery
+4071	reuniones	reunión		union; meeting; gathering
+4073	figura			figure; shape; face
+4075	funcionan	funcionar		function; work
+4076	voces	voz		voice
+4079	caramba			good grief
+4080	callejón			alley
+4081	técnica			technique
+4083	refería	referir		refer
+4084	notado	notar		note
+4085	maquillaje			makeup; make-up
+4086	lanzar			throw
+4087	cadáveres	cadáver		corpse; cadaver; carcass
+4088	atacó	atacar		erode
+4089	vendiendo	vender		sell; vend
+4090	bailando	bailar		to dance; dance
+4092	cubrir			cover
+4095	fase			phase
+4098	importaba	importar		get; matter; import
+4099	armada			fleet; navy
+4100	fea	feo		ugly
+4101	porquería			dirtiness; crap
+4103	superar			get over
+4104	disfruta	disfrutar		have fun
+4105	sueldo			wages
+4106	abiertos	abrir		open
+4108	testimonio			testimony
+4109	incómodo			uncomfortable
+4110	oyó	oír		hear
+4111	costado	costar		cost
+4112	apaga	apagar		turn off
+4113	considerando	considerar		consider
+4114	bolsas	bolsa		bag; pocket; purse
+4115	seguiré	seguir		follow
+4118	diana			target; reveille; bullseye/centre
+4119	pasaporte			passport
+4120	infancia			infancy; childhood
+4121	suele	solar		immovable; plot
+4122	productos	producto		product
+4123	rocas	roca		rock
+4124	reverendo			reverend
+4125	mediodía			noon; midday; noontime
+4126	golpeado	golpear		hit; beat; strike
+4127	destruido	destruir		destroy
+4128	reconozco	reconocer		recognize; identify; acknowledge
+4129	plástico			plastic; credit card
+4131	barba			beard
+4132	mago			wizard; magician
+4133	hojas			leaves
+4135	hallar			find
+4136	mantequilla			butter
+4137	lidiar			deal
+4138	sentencia			sentence
+4139	ideal			ideal
+4141	mandó	mandar		order; send
+4142	residencia			residence
+4143	francamente			frankly; candidly
+4144	guerrero			warrior; warlike; fighter
+4145	ayudo	ayudar		help; assist
+4146	sigamos	seguir		follow
+4148	engañar			deceive; befool; abuse
+4149	baje	bajar		lower; download
+4150	contaré	contar		count; tell
+4151	guantes	guante		glove
+4152	rompe	romper		breach; break into
+4153	conociste	conocer		know; meet
+4154	hoja			leaf; sheet; blade
+4155	decían	decir		say
+4156	recepción			employ; front desk; receipt
+4157	logrado			successful
+4158	odias	odiar		hate
+4159	comisión			commission; committee
+4160	vampiro			vampire; vampire bat
+4161	finales	final		end; ending; finale
+4162	sufrido	sufrir		bear; pay; suffer
+4163	azules	azul		blue; azure
+4165	cometer			commit
+4166	descansa	descansar		to rest console
+4168	docena			dozen
+4169	estaríamos	estar		be
+4170	sera			dosser
+4171	lanza			spear; lance
+4173	lanzamiento			toss
+4174	moverse			move
+4176	falla			fault
+4178	técnicamente			technically
+4179	dejara	dejar		allow; let; give up/quit
+4180	medias	media		mean; average; sock
+4182	físico			physicist; physique
+4184	multitud			crowd; multitude
+4185	potencial			potential
+4186	hacías	hacer		make
+4187	famosa	famoso		famous; distinguished; reknowned
+4188	rutina			routine
+4189	oportunidades	oportunidad		opportunity
+4190	progreso			progress
+4191	fascinante			fascinating
+4192	ensalada			salad
+4193	cómoda			chest of drawers; bureau
+4197	tubo			pipe; tube
+4200	is	i		i
+4201	usas	usar		use; make use
+4202	letras	letra		letter; lyrics
+4205	éstas	este		this; east
+4206	interrumpir			break off
+4208	socios	socio		partner
+4209	pecados	pecar		sin
+4210	novela			novel
+4211	herramientas	herramienta		tool; implement; instrument
+4213	apostar			bet
+4215	septiembre			September
+4216	vestidos	vestido		dress; clothes
+4217	festival			festival
+4218	franceses	francés		French; Frenchman/Frenchwoman; blowjob
+4220	gustar			like; care
+4221	auxilio			assistance; help
+4222	éstos	este		this; east
+4223	fracaso	fracasar		fail
+4224	berlín			Berliner
+4225	cañón			path; way; pipe
+4230	votar			vote
+4231	merezco	merecer		merit
+4232	infantil			childish; infantile
+4233	estacionamiento			parking
+4234	asesina	asesinar		murder; assassinate
+4236	mintió	mentir		lie
+4237	grita	gritar		shout; scream; cry
+4238	ofrecer			offer
+4240	esclavos	esclavo		slave
+4241	academia			academy
+4243	viuda			widow
+4244	reporte			account
+4245	monedas	moneda		coin; currency
+4247	advertencia			warning
+4248	jugo			juice
+4250	pico			beak; bill; spout
+4251	miré	mirar		face; eye; look at
+4252	rota	romper		breach; break into
+4253	sociales	social		social; welfare
+4254	amarillo			yellow
+4255	encargado			clerk
+4256	so			under
+4257	listas	lista		list; strip; menu
+4258	as			as; ace
+4259	poderosa	poderoso		almighty; forceful
+4261	drama			drama; dramatic genre
+4262	confundido	confundir		confuse
+4264	normales	normal		normal
+4265	inconsciente			irresponsible
+4266	asegurar			claim; secure; ensure
+4267	estadounidense			American
+4269	informado			informed
+4270	resuelto	resolver		resolve
+4271	cueva			cave
+4272	conduciendo	conducir		conduct
+4273	perdidos	perder		lose
+4274	escuchó	escuchar		listen
+4275	patético			pathetic
+4276	abril			April
+4277	matemáticas			mathematics; math
+4278	eliminar			cast off
+4279	venid	venir		come
+4280	hicieras	hacer		make
+4281	causar			cause
+4283	vigilando	vigilar		watch; look after; keep watch
+4284	función			function
+4285	solar			immovable; plot
+4288	dólar			dollar
+4289	trucos	truco		trick
+4290	h	hora		hour
+4291	lectura			access; lecture; reading
+4292	camarero			barman; waiter/waitress; waiter
+4293	toman	tomar		take
+4295	tiendas	tienda		shop; tent
+4296	encontremos	encontrar		meet; find
+4298	cabina			cabin; cockpit
+4299	deporte			sport
+4301	fuga			escape; flight; leak
+4303	sospechosos	sospechoso		suspicious; fishy; shady
+4305	ala			brim
+4306	champán			champagne
+4307	quedaba	quedar		stay; remain; become
+4308	viera	ver		see
+4309	formar			form
+4311	detectives	detective		detective
+4313	orejas	oreja		ear
+4314	obligado			obliged
+4315	testamento			will; testament
+4316	extremadamente			extremely
+4317	creyó	creer		think
+4319	materia			matter
+4320	detuvo	detener		stop; keep; detain
+4321	casco			helmet; hoof
+4323	agenda			agenda
+4324	rosas	rosa		rose; pink
+4325	aceptado	aceptar		accept; agree; approve
+4326	bello			fair; beautiful
+4327	fabuloso			fabulous
+4329	arruinado	arruinar		ruin; devastate; bane
+4330	enterado			informed
+4331	junio			June
+4332	baila	bailar		to dance; dance
+4333	artistas	artista		artist
+4334	realizar			carry out; achieve
+4335	hechizo			charm; craft; homemade
+4336	respiración			breathing; respiration; breath
+4337	extremo			extreme
+4338	historial			history
+4339	pongan	poner		put
+4341	próximos	próximo		near; next; following
+4342	extraordinario			extraordinary
+4343	tigre			tiger
+4344	fianza			deposit; security; bail
+4345	consejos	consejo		advice; council
+4347	doctores	doctor		doctor
+4348	auténtico			authentic
+4349	usamos	usar		use; make use
+4350	romance			Romance
+4351	miente	mentir		lie
+4353	importan	importar		get; matter; import
+4354	paren	parar		stop; stand
+4355	indio			Indian; indium
+4356	increíblemente			unbelievably
+4357	pierdo	perder		lose
+4358	llevaremos	llevar		lead; allow; bring
+4360	ofrece	ofrecer		offer
+4361	seco			dry; dried
+4364	sagrado			sacred
+4365	monte			mount
+4367	discos	disco		disk
+4370	juguetes	juguete		toy
+4371	cerdos	cerdo		pig/sow; pig
+4373	escapado	escapar		escape
+4375	casó	casar		marry; wed
+4377	salgas	salir		go out; exit; turn out
+4379	debilidad			weakness
+4380	civiles	civil		civil
+4381	corbata			necktie; tie; farfalle
+4383	necesitaré	necesitar		need; require
+4384	cuartel			quarter; quarters
+4385	cazar			hunt; chase
+4386	robando	robar		steal
+4387	convencer			convince
+4388	rollo			roll
+4389	pescar			fish
+4390	mezcla			mix
+4391	parejas	pareja		make; mate; partner
+4392	condicional			conditional
+4393	giro			turn
+4394	bonitas	bonito		pretty; tuna
+4395	necesites	necesitar		need; require
+4396	molestar			annoy; disturb; bother
+4397	amantes	amante		loving
+4398	gris			gray
+4400	pedimos	pedir		ask for; order
+4401	refuerzos	refuerzo		reinforcement
+4403	colgar			hang
+4404	heridos	herir		hurt; wound
+4405	arreglo			order; period; arrangement
+4406	plazo			deadline; time limit
+4408	salvajes	salvaje		savage; wild; ferocious
+4410	fotografías	fotografía		photography
+4411	sintió	sentir		hear; regret; be sorry
+4414	convertir			convert
+4416	retiro			retreat; pension; retirement
+4418	gravedad			gravity
+4419	importe	importar		get; matter; import
+4420	lata			can
+4421	enseñaré	enseñar		show; teach
+4422	velas	vela		sail; candle
+4423	suyos			his
+4424	símbolo			symbol
+4425	reconocimiento			recognition; acknowledgement
+4426	típico			typical; going rate
+4427	ayudas	ayudar		help; assist
+4429	conducta			conduct
+4433	participar			partake
+4434	lana			wool
+4437	tratan	tratar		treat
+4438	vendedor			seller; salesman; vendor
+4440	pudiéramos	poder		may
+4442	estrés			stress
+4444	soltera	soltero		single; unmarried
+4447	brujas	brujo		warlock
+4448	horario			timetable
+4449	recuerden	recordar		wake
+4450	identificar			identify
+4452	alfombra			carpet; rug
+4454	actores	actor		actor; actress; claimant
+4455	atractiva	atractivo		attractive
+4457	desperté	despertar		wake
+4458	salía	salir		go out; exit; turn out
+4459	recibiendo	recibir		receive; get; accept
+4460	preciso			formal; necessary
+4461	comprendes	comprender		understand; comprehend; see
+4463	altos	alto		high; tall
+4464	fan			fan
+4465	papas	papa		potato; pope
+4466	anciano			old; elderly
+4467	profunda	profundo		deep; profound; abstruse
+4468	petróleo			oil; petrol; petroleum
+4469	intenciones	intención		intention
+4470	francesa	francés		French; Frenchman/Frenchwoman; blowjob
+4473	rango			rank
+4474	sombras	sombra		shadow; shade
+4475	malvado			mean; villain
+4476	defender			defend
+4478	suba	subir		load; raise; climb
+4479	jaula			cage
+4482	comentarios	comentario		comment
+4483	dosis			dose
+4484	cartel			placard; cartel
+4485	disparen	disparar		shoot
+4486	esperad	esperar		hope; expect; await
+4487	cargar			charge; disturb
+4488	enviaron	enviar		dispatch; send
+4489	jodida	joder		fuck; fuck up; fuck with
+4490	seguí	seguir		follow
+4491	aproximadamente			approximately; roughly; loosely
+4492	postre			dessert
+4493	escala			scale
+4494	estudiando	estudiar		study
+4495	pavo			ninny; turkey/turkey hen
+4496	origen			origin
+4497	considerar			consider
+4498	fiel			accurate; believing; truthful
+4500	embajador			ambassador
+4501	tatuaje			tattoo
+4502	población			population
+4504	comes	comer		eat; capture; have lunch
+4505	llamen	llamar		call; knock; ring
+4506	horribles	horrible		horrible
+4507	vampiros	vampiro		vampire; vampire bat
+4508	dormida	dormir		sleep; stay night
+4509	niveles	nivel		level
+4510	largas	largar		loosen; to
+4511	pandilla			gang
+4512	agrada	agradar		please
+4513	traigan	traer		bring
+4514	onda			wave
+4515	atrapados	atrapar		catch; capture; seize
+4516	duque			duke
+4517	bajas	bajar		lower; download
+4518	dejaremos	dejar		allow; let; give up/quit
+4520	trono			throne
+4521	canto			song; singing; chant
+4522	aumento	aumentar		increase; augment
+4523	esconder			hide
+4524	políticos	político		politician
+4525	muertes	muerte		death
+4527	pensabas	pensar		think
+4528	saqué	sacar		take
+4529	taller			shop; workshop
+4531	practicar			practice; practise
+4532	asientos	asiento		seat
+4533	armado			armadillo
+4535	habrán	haber		have; there is
+4536	considera	considerar		consider
+4537	atender			look after; attend
+4538	ponemos	poner		put
+4540	consigues	conseguir		acquire; attain; get
+4541	sentados	sentar		sit
+4542	costó	costar		cost
+4543	soñando	soñar		dream
+4545	creó	crear		create
+4547	juzgado			court
+4550	bebido	beber		drink
+4551	pierdas	perder		lose
+4553	gallina			chicken; hen
+4555	octubre			October
+4557	riesgos	riesgo		risk; hazard; peril
+4559	besar			kiss
+4560	lavar			wash
+4562	cuyo			whose; Guinea pig
+4563	cayendo	caer		drop; fall
+4564	emocional			emotional
+4565	prometida			fiancée
+4566	molestia			fatigue; hassle
+4568	consiga	conseguir		acquire; attain; get
+4569	huella			footprint; trace
+4572	condena			punishment; sentence
+4574	cafetería			coffeehouse; café
+4575	honesta	honesto		honest
+4578	medidas	medida		measure; action
+4579	ofreció	ofrecer		offer
+4582	celosa	celoso		jealous
+4583	instinto			drive; instinct
+4584	bancos	banco		bank; bench
+4586	emocionado	emocionar		move
+4587	juguete			toy
+4588	villa			village; villa
+4589	conocida	conocer		know; meet
+4590	servirá	servir		serve
+4592	centavo			cent
+4595	potencia			power
+4596	unido			attached
+4598	copias	copia		copy
+4599	receta			prescription; receipt
+4600	interesada	interesado		interested; keen
+4601	seguirá	seguir		follow
+4603	normas	norma		norm; magnitude
+4604	cocaína			cocaine; coke
+4606	cambie	cambiar		change; alter; convert
+4607	asesinó	asesinar		murder; assassinate
+4608	huyendo	huir		flee
+4609	marihuana			pot; marijuana; ganja
+4610	entramos	entrar		go in
+4611	congreso			congress
+4612	capa			layer; cape
+4613	tocó	tocar		play; touch
+4614	mágico			magic; magician; fey
+4615	beneficios	beneficio		benefit
+4616	aburrida	aburrir		bore
+4617	invito	invitar		invite
+4618	período			period; term
+4619	corredor			runner; dealer; broker
+4621	ayudaría	ayudar		help; assist
+4622	cortado	cortar		cut
+4623	mentiste	mentir		lie
+4624	olvidaste	olvidar		forget
+4625	nieto			grandchild; grandson
+4626	odiaba	odiar		hate
+4627	fraude			fraud; deceit
+4628	zapato			shoe; boot
+4631	tiró	tirar		drag; fuck
+4632	sector			sector
+4634	furgoneta			delivery van; van
+4635	causado	causar		cause
+4636	beneficio			benefit
+4637	querrías	querer		love; want; tend
+4638	graduación			graduation
+4639	alejado			distant; faraway; remote
+4640	junior			junior
+4641	complejo			complex
+4642	miraba	mirar		face; eye; look at
+4643	patas	pata		leg; paw
+4644	columna			column; pillar
+4646	bienes	bien		well
+4647	quisieras	querer		love; want; tend
+4648	clásico			classic
+4649	saque	sacar		take
+4651	hígado			liver
+4652	robaste	robar		steal
+4653	decías	decir		say
+4655	lleven	llevar		lead; allow; bring
+4657	muebles	mueble		furniture; movable
+4658	actos	acto		act
+4659	células	célula		cell
+4660	presa			prey
+4661	hubiéramos	haber		have; there is
+4664	páginas	página		page
+4666	llenar			fill
+4668	cambian	cambiar		change; alter; convert
+4669	sonríe	sonreír		grin
+4671	ordenó	ordenar		order
+4672	go			go
+4673	motel			motel
+4674	venimos	venir		come
+4675	cuente	contar		count; tell
+4677	preguntes	preguntar		ask
+4678	mentido	mentir		lie
+4679	decidimos	decidir		decide
+4680	house			house music
+4681	alimentos	alimento		food
+4685	presupuesto			budget; presupposition
+4687	ubicación			location
+4688	etapa			stage
+4689	olvidaré	olvidar		forget
+4690	trajes	traje		suit
+4691	santos	santo		saint
+4692	idioma			language
+4693	fruta			fruit
+4694	reconoce	reconocer		recognize; identify; acknowledge
+4696	ganando	ganar		win; earn; conquer
+4697	bendición			blessing
+4699	compasión			compassion; sympathy
+4700	reconocer			recognize; identify; acknowledge
+4701	desarrollo			development
+4703	vomitar			vomit; throw up
+4704	cazador			chaser
+4705	pesca			fishing
+4706	arco			bow; arc; arch
+4709	abandonó	abandonar		forsake; abandon
+4711	abogada	abogado		lawyer; attorney; barrister
+4712	fama			fame
+4713	plano			even; plane; plan
+4714	elige	elegir		choose; elect
+4715	maíz			maize; corn
+4716	remedio			drug; medicine; medicament
+4717	harta	harto		tired; stuffed
+4721	acostumbrado			usual
+4722	green			putting green
+4724	disfraz			costume
+4726	hombros	hombro		shoulder
+4727	química			chemistry
+4728	vela			sail; candle
+4729	muelle			dock
+4730	tiroteo			gunfight
+4731	dirigir			drive; address
+4732	enterrado	enterrar		bury
+4733	acento			accent; stress
+4734	psiquiatra			psychiatrist
+4735	escoger			choose
+4736	estupenda	estupendo		amazing
+4738	indica	indicar		indicate; point
+4739	deudas	deuda		debt
+4740	subiendo	subir		load; raise; climb
+4741	bla			blah
+4742	desayunar			have breakfast; breakfast
+4743	tomaron	tomar		take
+4744	fines	fin		end
+4745	espíritus	espíritu		spirit
+4746	ingeniero			engineer
+4747	cráneo			skull; cranium
+4748	desesperado	desesperar		despair; dishearten
+4750	separados	separar		separate
+4751	queja			complaint
+4752	jugada	jugar		mock; copulate; finalize
+4753	bajando	bajar		lower; download
+4754	signos	signo		sign
+4755	dirías	decir		say
+4757	buscaré	buscar		search; seek
+4758	comen	comer		eat; capture; have lunch
+4760	pediré	pedir		ask for; order
+4761	documento			document
+4762	descripción			description
+4763	tercero			third
+4764	estructura			structure
+4765	rehenes	rehén		hostage
+4767	botellas	botella		bottle
+4768	encuentren	encontrar		meet; find
+4769	bomberos	bombero		firefighter; fireman
+4770	horno			oven; furnace; kiln
+4771	préstamo			loan
+4773	tratamos	tratar		treat
+4774	autopsia			autopsy
+4775	ocupados	ocupar		occupy; attend
+4778	pares	par		even; pair; equal
+4779	propietario			proprietary; owning
+4781	adecuada	adecuar		adapt
+4782	cuarenta			forty
+4783	profesión			occupation; profession
+4784	británico			British
+4785	exámenes	examen		exam; examination
+4789	moleste	molestar		annoy; disturb; bother
+4790	agosto			August
+4791	logró	lograr		accomplish; attain; achieve
+4792	marchar			march
+4794	crecido	crecer		grow
+4795	representante			representative
+4797	tareas	tarea		task
+4799	vodka			vodka
+4800	dí			yes
+4803	infeliz			unhappy; unsuccessful
+4804	enormes	enorme		huge; enormous
+4805	geniales	genial		great
+4806	generoso			generous
+4807	brindis			toast
+4810	hacéis	hacer		make
+4811	actualmente			at present; nowadays
+4812	rifle			rifle
+4813	casino			brothel; cafeteria
+4814	logro	lograr		accomplish; attain; achieve
+4815	trajeron	traer		bring
+4816	celos			jealousy
+4817	artículos	artículo		article
+4818	estable			stable
+4819	escuadrón			squadron; squad
+4820	ciudadano			citizen
+4822	sospecha			suspicion
+4823	violento			violent
+4824	engañado	engañar		deceive; befool; abuse
+4825	relacionado	relacionar		introduce; relate; enumerate
+4826	niega	negar		deny
+4829	vendió	vender		sell; vend
+4831	chaval			child; kid
+4832	macho			male
+4835	constantemente			constantly
+4836	conozca	conocer		know; meet
+4837	directora			director
+4838	borracha	borracho		drunk; drunkard
+4839	ventas	venta		sale
+4840	alivio	aliviar		lighten; allay
+4841	trauma			trauma
+4844	necesidades	necesidad		need; necessity
+4846	exposición			exposure; exposition
+4847	negociar			to
+4850	copas	copa		cup; crown; glass
+4851	golpea	golpear		hit; beat; strike
+4852	edificios	edificio		building
+4853	región			region
+4854	duros	duro		hard
+4855	moviendo	mover		move; stir; actuate
+4857	aman	amar		love
+4861	lógica			logic
+4862	eligió	elegir		choose; elect
+4864	sangrando	sangrar		bleed
+4865	jefes	jefe		boss
+4866	comió	comer		eat; capture; have lunch
+4867	traducido	traducir		translate
+4868	narices	nariz		nose
+4869	deberes	deber		duty; must; owe
+4870	grito			cry; scream
+4871	empresas	empresa		company; firm; business
+4872	contactos	contacto		contact
+4873	engaño			deceit
+4874	acusación			accusation
+4875	cirujano			surgeon
+4876	pagando	pagar		pay; ante up
+4877	cenizas	ceniza		ash; cinder; mildew
+4878	retraso			delay
+4879	asesinar			murder; assassinate
+4880	mentí	mentir		lie
+4884	pechos	pecho		chest; breast; bosom
+4885	solicitud			request; application
+4886	enfermedades	enfermedad		disease; illness; sickness
+4887	soporto	soportar		bear
+4889	mona	mono		pretty
+4890	fresca	fresco		fresh
+4891	prioridad			priority
+4892	mentes	mente		mind
+4893	francos	franco		Frank; Frankish
+4894	rumor			murmur; rumour
+4895	confías	confiar		trust
+4896	dibujo			drawing
+4897	saliste	salir		go out; exit; turn out
+4898	contaste	contar		count; tell
+4901	almirante			admiral
+4902	gastar			spend
+4903	vendrás	venir		come
+4904	use	usar		use; make use
+4907	conjunto			set
+4908	profesionales	profesional		professional
+4910	verdes	verde		green
+4911	invitó	invitar		invite
+4912	alumnos	alumno		pupil; student
+4913	presentó	presentar		present
+4914	informar			apprise
+4915	cortó	cortar		cut
+4916	maya			Mayan
+4917	apagar			turn off
+4919	harían	hacer		make
+4920	nelson			nope
+4921	besos	beso		kiss
+4922	graciosa	gracioso		funny
+4923	chinos	chino		Chinese
+4924	noviembre			November
+4925	invisible			invisible
+4927	economía			economy; economics
+4928	logramos	lograr		accomplish; attain; achieve
+4929	combinación			combination
+4930	enfermos	enfermo		ill; sick; unwell
+4931	conectado	conectar		to connect
+4932	sucederá	suceder		come; happen
+4933	asumir			accept; assume; take
+4934	rusa	ruso		Russian
+4935	habitual			habitual
+4936	id	ir		be going to; let 's
+4937	posesión			possession
+4939	ministerio			ministry
+4940	saludable			healthy
+4941	firmado	firmar		sign; cosign
+4942	oreja			ear
+4943	calientes	calentar		heat
+4944	personajes	personaje		character
+4945	liberar			free; release; liberate
+4947	toro			bull; steer; torus
+4948	pintar			paint
+4949	eternidad			eternity
+4950	similar			similar
+4951	sobrina			niece
+4952	tortura			torture
+4953	máxima	máximo		maximum
+4954	franco			Frank; Frankish
+4956	raras	raro		strange; odd; weird
+4959	nene			baby
+4960	deportes	deportar		deport
+4963	pulmones	pulmón		lung
+4964	cuánta	cuánto		how much
+4965	necesitaremos	necesitar		need; require
+4968	manzanas	manzana		block; apple; Adam's apple
+4969	ratón			mouse
+4970	eléctrica	eléctrico		electric; electrical
+4972	productor			producer
+4974	demuestra	demostrar		demonstrate; prove
+4976	eventos	evento		event
+4977	entendiste	entender		infer
+4979	reciente			recent
+4981	pasaste	pasar		happen
+4982	enfrentar			confront
+4983	dejaba	dejar		allow; let; give up/quit
+4985	apariencia			appearance
+4986	aves	ave		bird
+4987	radiación			radiation
+4988	advierto	advertir		observe; warn
+4989	quemado			burnt
+4990	corea			chorea
+4992	síntomas	síntoma		symptom
+4993	japoneses	japonés		Japanese
+4995	juzgar			judge
+4997	cervezas	cerveza		beer; ale
+4998	quemar			burn; burn warm
+5000	marzo			March

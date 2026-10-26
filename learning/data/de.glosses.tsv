@@ -1,0 +1,3187 @@
+# rank	word	lemma	reading	gloss (EN)
+1	ich			I; me
+2	sie			they; them; she
+3	das	der		who; which; the
+4	ist	sein		be; exist; have
+5	du			you; thou
+6	nicht			not
+7	die			the
+8	es			it
+9	und			and
+10	der			who; which; the
+11	wir			we
+12	was			that; which; what
+13	zu			to; at; too
+14	er			he; it
+15	ein			one; on; a
+16	in			in; into
+17	ja			yes; aye
+18	mir			me
+19	mit			by; with; against
+20	wie			as; like; how
+21	den	der		who; which; the
+22	mich			me
+23	auf			open; in; on
+24	dass			that; so; except
+25	aber			but; however; again
+26	eine	ein		one; on; a
+27	so			as; so; kind of
+28	hat	haben		have; have got; contain
+29	hier			here
+30	haben			have; have got; contain
+31	für			for
+32	sind	sein		be; exist; have
+33	war	sein		be; exist; have
+34	von			of; from; about
+35	wenn			when; as soon as; if
+36	dich			you; yourself
+37	ihr			you; her; their
+38	nein			no; nope; nay
+39	habe	haben		have; have got; contain
+40	an			to; on
+41	bin	sein		be; exist; have
+42	noch			still; yet; more
+43	nur			just; only
+44	da			that; when; then
+45	dir			you; thee; thou
+46	sich			each other; one another; herself
+47	einen			unite
+48	uns			us
+49	hast	haben		have; have got; contain
+50	dem	der		who; which; the
+51	kann	können		can; be able to; may
+52	gut			good; nice; well
+53	auch			also; too; as well
+54	schon			already; admittedly; indeed
+55	als			as; when; than
+56	sein			be; exist; have
+57	mal			just; simply; once
+58	jetzt			now; right now; nowadays
+59	ihn			him
+60	dann			then
+61	aus			of; over; from
+62	meine	mein		my; mine
+63	um			round; by; to
+64	im			in the
+65	wird	werden		be; will; must
+66	mein			my; mine
+67	bist	sein		be; exist; have
+68	doch			yes; but; though
+69	alles	alle		all gone; used up
+70	weiß			white; Caucasian
+71	keine	kein		no; none
+72	oder			or; either; else
+73	nach			to; after; for
+74	s			long s; descending s; medial s
+75	nichts			nothing
+76	man			one; you; we
+78	werden			be; will; must
+79	will	wollen		want; wish; woollen
+80	ihnen			them
+81	geht	gehen		work; operable; go
+82	wo			where; if
+83	etwas			some; something; anything
+84	oh			oh
+85	mehr			more; rather; longer
+86	bei			by; near; with
+87	also			therefore; so; thus
+88	bitte			please; you're welcome; you are welcome
+89	immer			always; ever; every time
+91	warum			why; wherefore; how come
+92	vor			for; due to; out of
+93	los			loose; come on; go
+94	können			can; be able to; may
+95	wieder			again
+96	sagen			say; tell
+97	machen			go; do; perform
+98	danke			thanks; thank you; cheers
+99	sehr			very; positively; much
+100	alle			all gone; used up
+101	denn			because; since#Konjunktion; than
+103	tun			do; work; act
+104	ihm			it; him
+105	zum			to the; to a
+106	gehen			work; operable; go
+107	sehen			see; look; view
+108	vielleicht			maybe; perhaps; possibly
+109	einem	ein		one; on; a
+110	wer			who; somebody
+111	ihre	mein		my; mine
+112	diese	dies		this
+113	euch			you
+114	einer	ein		one; on; a
+116	über			about; on; above
+117	gibt	geben		be; give; pour
+118	okay			okay
+119	wissen			know
+120	deine	mein		my; mine
+121	müssen			must; have to
+122	soll	sollen		should; shall
+123	werde	werden		be; will; must
+124	nie			never
+125	wirklich			real; natural; true
+126	hey			hey
+127	kein			no; none
+128	viel			much; many; a lot
+129	weg			away; to be gone; to have gone
+130	würde	werden		be; will; must
+131	tut	tun		do; work; act
+132	am			a
+133	des	der		who; which; the
+134	einfach			single; simple; simply
+135	leben			live
+136	hatte	haben		have; have got; contain
+137	zeit			time of my life
+138	weil			because; for; since
+139	willst	wollen		want; wish; woollen
+140	kommen			come; cum; advance
+141	dein			your; yours
+142	heute			today; nowadays; now
+143	kommt	kommen		come; cum; advance
+144	wollen			want; wish; woollen
+145	damit			so; so that; in order that
+146	ganz			just; only; very
+147	wäre	sein		be; exist; have
+148	wollte	wollen		want; wish; woollen
+149	weißt	wissen		know
+151	sicher			safe; sure; certain
+152	gesagt	sagen		say; tell
+154	nun			now
+155	bis			to; until; by
+156	wurde	werden		be; will; must
+157	leid			unpleasant; hideous; fed up
+158	na			well
+159	kannst	können		can; be able to; may
+160	macht	machen		go; do; perform
+161	dieser			this
+162	zurück			back
+163	lassen			stop; give up; quit
+164	hallo			hello; hi
+165	meinen			mean; signify; think
+167	seine	mein		my; mine
+168	hätte	haben		have; have got; contain
+169	zwei			two; two year old
+170	könnte	können		can; be able to; may
+171	genau			exact; precisely; precise
+172	waren	sein		be; exist; have
+173	zur			to the
+174	lass			weak; worn out
+175	klar			clear; obvious; lucid
+176	morgen			tomorrow
+177	leute			lot
+179	schön			beautiful; nice; pretty
+180	glaube	glauben		believe; suppose; trust
+182	ab			from; off
+183	gerade			just; even; straight
+184	tag	tagen		dawn; meet
+185	gesehen	sehen		see; look; view
+186	reden			talk; speak; say
+187	wohl			well; probably; possibly
+188	liebe	lieb		dear; nice
+189	sollte	sollen		should; shall
+190	sagte	sagen		say; tell
+191	unsere	mein		my; mine
+192	jemand			someone; somebody; anyone
+194	durch			by; crazy; through
+195	ob			above; atop; on
+196	keinen	kein		no; none
+198	raus			out
+199	gemacht	machen		go; do; perform
+200	paar			few; paired; in pairs
+202	passiert	passieren		pass; cross; filter
+203	dachte	denken		think
+204	besser			better; rather
+206	wieso			why; how so
+208	dieses	dies		this
+209	selbst			even; -self; yourself
+210	gehört	gehören		belong; belong to
+211	möchte	mögen		like; may
+212	ohne			without
+214	her			here; hither; from
+216	meiner	ich		I; me
+218	helfen			help; aid; assist
+220	finden			think; find; discover
+221	diesen	dies		this
+222	gute	gut		good; nice; well
+223	wirst	werden		be; will; must
+224	lange			long; for a long time
+225	natürlich			course; natural; normal
+226	ach			oh; oh no!; oh no, of course not
+227	meinem	mein		my; mine
+228	gar			completely; entirely; fully
+229	ins			to the
+230	sei	sein		be; exist; have
+231	dort			there
+232	weiter			further
+233	geben			be; give; pour
+234	seit			for; since
+235	gleich			like; just; equal
+236	sagt	sagen		say; tell
+237	recht			right
+238	ihren	mein		my; mine
+239	richtig			correct; right; exact
+241	vom			from; from the; of the
+242	hören			listen; hear; obey
+243	sieht	sehen		see; look; view
+244	davon			thereof; from it; about it
+245	dafür			therefore; exchange; favor
+247	diesem	dies		this
+248	wegen			because of; on account of
+249	hause	Haus		house; home
+250	sollten	sollen		should; shall
+252	hin			to; lost
+253	sollen			should; shall
+255	haus	hausen		dwell
+256	denke	denken		think
+257	viele	viel		much; many; a lot
+258	drei			three
+259	deinen	mein		my; mine
+261	guten	gut		good; nice; well
+262	unser			our; ours
+263	warte	warten		wait; maintain
+264	machst	machen		go; do; perform
+265	menschen	Mensch		human; man; person
+266	essen			eat
+268	bleiben			last; stay; remain
+269	zusammen			together
+271	unter			under; below; among
+272	habt	haben		have; have got; contain
+273	schnell			fast; quick; rapid
+274	andere			other
+275	tot			dead
+276	getan	tun		do; work; act
+277	darf	dürfen		may; allowed
+278	erst			just; first; only
+279	rein			in; clean; pure
+280	stimmt	stimmen		render; turn; vote
+281	nehmen			take; have; seize
+282	kinder	Kind		child; kid; kiddo
+283	eines	ein		one; on; a
+284	glauben			believe; suppose; trust
+285	bringen			bring; take
+286	ganze	ganz		just; only; very
+287	genug			enough; sufficient
+288	scheiße			shit; crappy; shitty
+289	brauchen			use; need; require
+290	gegen			against; into
+292	junge	jung		young
+293	steht	stehen		be; stand; suit
+294	sonst			otherwise; or else; usually
+297	seid	sein		be; exist; have
+298	ihrer	ich		I; me
+299	fragen			ask; enquire; wonder
+301	dabei			thereby
+302	heißt	heißen		call; mean; say
+304	warten			wait; maintain
+305	niemand			nobody; no one
+306	sofort			immediately; instantly
+307	bevor			before; prior
+308	jahre	Jahr		year; age
+309	einmal			once; one time; sometime
+312	wann			when
+313	brauche	Brauch		custom; practice
+314	fertig			ready; done; exhausted
+315	halt			stop; just; simply
+316	allein			alone
+317	beim			in the middle of
+318	sprechen			speak; talk; propose
+319	beide			two; both
+320	gefunden	finden		think; find; discover
+321	hatten	haben		have; have got; contain
+324	verdammt			damn
+325	ne			nah; eh
+326	jeder			everyone; everybody; every
+327	warst	sein		be; exist; have
+328	gern			gladly; willingly; frequently
+329	konnte	können		can; be able to; may
+330	darüber			meanwhile; in the meantime; above it
+331	halten			stop; hold; keep
+332	siehst	sehen		see; look; view
+333	verstehe	verstehen		mean; interpret; understand
+334	jahren	Jahr		year; age
+335	kam	kommen		come; cum; advance
+338	wahr			true
+340	dazu			to it
+342	daran			thereon
+343	ihrem	mein		my; mine
+344	denken			think
+345	könnten	können		can; be able to; may
+346	dank			thanks to
+347	würden	werden		be; will; must
+348	lieber			better; rather; preferably
+350	deiner	ich		I; me
+351	sehe	sehen		see; look; view
+352	egal			level; all the same
+353	kennen			know
+354	deinem	mein		my; mine
+355	vergessen			forget; forgotten; forget oneself
+356	frage	fragen		ask; enquire; wonder
+357	mache	machen		go; do; perform
+358	komme	kommen		come; cum; advance
+359	sage	sagen		say; tell
+360	mag	mögen		like; may
+361	sieh	sehen		see; look; view
+362	echt			genuine; real
+363	gib	geben		be; give; pour
+364	eigentlich			proper; actually; in fact
+367	gab	geben		be; give; pour
+370	männer	Mann		man; husband; spouse
+372	fahren			run; go; cart
+373	namen	Name		name
+374	bekommen			get; receive; be given
+376	hi			to; hi
+377	gehe	gehen		work; operable; go
+378	kleine	klein		little; insignificant; small
+379	später			future; later; later on
+380	glück	glücken		succeed
+381	letzte			last
+382	freunde	Freund		friend; pal; boyfriend
+384	all			all
+385	darauf			thereon; on it; after that
+386	ende	enden		end
+388	bald			quickly; almost; soon
+389	töten			kill; slay
+390	dinge	Ding		thing
+391	meinst	meinen		mean; signify; think
+392	toll			cool; corking; fantastic
+393	eins			one
+394	minuten	Minute		minute
+395	vielen	viel		much; many; a lot
+396	bereit			ready
+397	weit			far; wide; vast
+399	seiner	ich		I; me
+400	bisschen			bit; trifle; not one bit of
+404	eure	mein		my; mine
+405	augen	Auge		eye; pip; globule of fat
+407	stehen			be; stand; suit
+408	sterben			die; pass away; decease
+409	hätten	haben		have; have got; contain
+410	draußen			outside; outdoors; out of doors
+411	kenne	kennen		know
+412	fast			almost; nearly; all but
+413	runter			down
+414	vorbei			past; over
+415	treffen			hit; meet; affect
+416	gerne			easily; often; willingly
+417	dran			get it; get what's coming to one
+418	wurden	werden		be; will; must
+419	arbeiten			work; function; employ
+421	verrückt			crazy; mad; displace
+422	neue	neu		new; novel; unused
+423	ging	gehen		work; operable; go
+424	hinter			after; behind; hind
+425	sorgen			care; tend; cause
+426	einzige	einzig		only; sole; unique
+427	jemanden	jemand		someone; somebody; anyone
+428	darum			therefore; eo ipso; hence
+430	braucht	brauchen		use; need; require
+433	drin			inside
+434	ruhig			quiet; still; silent
+435	sah	sehen		see; look; view
+436	ganzen	ganz		just; only; very
+437	spät			late; tardy; belated
+438	ziemlich			quite; pretty; rather
+439	solltest	sollen		should; shall
+441	sogar			even; including; as far as
+442	kurz			short; brief
+444	frauen	Frau		woman; wife; spouse
+445	liegt	liegen		be; lie; be located
+446	suchen			search; seek; look for
+447	finde	finden		think; find; discover
+448	je			the; per; ever
+449	woher			from where
+450	lang			long
+452	keiner			nobody
+453	seinem	mein		my; mine
+454	hört	hören		listen; hear; obey
+455	verstehen			mean; interpret; understand
+456	spielen			play; act
+458	überhaupt			even; anyway; at all
+460	verstanden	verstehen		mean; interpret; understand
+461	verloren			lost
+462	große	groß		great; big; large
+466	kommst	kommen		come; cum; advance
+468	ruhe	ruhen		stop; halt; stall
+469	gewesen			has-been
+471	stunden			defer
+472	hoffe	hoffen		hope; trust
+473	denkst	denken		think
+474	oben			up; above; upstairs
+475	gestern			yesterday
+476	versuchen			try; attempt; taste
+478	letzten	Letzte		last
+480	endlich			finally; at last; eventually
+481	he			hey
+482	nimm	nehmen		take; have; seize
+483	etwa			about; approximately; for example
+484	erzählt	erzählen		tell; narrate
+485	läuft	laufen		run; walk
+486	schwer			hard; heavy; grave
+487	anders			a lot; completely; eminently
+490	fünf			five
+493	erste			first
+494	versucht	versuchen		try; attempt; taste
+495	gekommen	kommen		come; cum; advance
+497	wenig			little; a few; few
+498	holen			catch; kidnap; fetch
+499	bedeutet	bedeuten		mean; signify
+500	nett			nice; cute
+503	bringt	bringen		bring; take
+504	deshalb			therefore; hence; thus
+505	welche			what; which; some
+506	bestimmt			certainly; definite; certain
+507	hoch			high; tall
+508	alter	alt		old; aged
+509	sagst	sagen		say; tell
+510	schau	schauen		look; gaze; see
+514	wagen			dare; venture
+515	vier			four
+516	gefallen			please; like; fallen
+517	spaß	spaßen		joke
+518	niemals			never
+519	schuld			be to blame; responsible
+520	getötet			killed
+521	wollten	wollen		want; wish; woollen
+522	verlassen			leave; abandon; forsake
+523	zeigen			point; show; demonstrate
+524	beste	gut		good; nice; well
+525	ernst			serious
+526	unserer	mein		my; mine
+527	denen	der		who; which; the
+529	bleibt	bleiben		last; stay; remain
+530	würdest	werden		be; will; must
+531	manchmal			sometimes
+532	glaubst	glauben		believe; suppose; trust
+535	zwischen			between; among
+536	eben			just; even; plain
+537	während			while; as; during
+538	spiel	spielen		play; act
+539	nehme	nehmen		take; have; seize
+540	ersten	erst		just; first; only
+541	guter	gut		good; nice; well
+544	krieg	kriegen		get; come down with; have
+545	gefällt	fällen		precipitate; fell; cut down
+546	kleinen	klein		little; insignificant; small
+547	erzählen			tell; narrate
+548	anderes			alternate
+549	tage	Tag		day; daytime; period
+550	entschuldigen			excuse; apologize
+551	wichtig			important; significant; relevant
+552	gehst	gehen		work; operable; go
+553	allen	all		all
+556	sachen	Sache		thing; matter; business
+558	schlecht			bad; shoddy; evil
+559	schule	schulen		instruct
+563	hättest	haben		have; have got; contain
+564	wären	sein		be; exist; have
+566	schlafen			sleep; be asleep; stay at someones place
+567	äh			er; uh
+569	euer			your; yours
+572	falls			in case; if
+573	neuen	neu		new; novel; unused
+574	bloß			just; bare
+575	unten			below; downstairs; down there
+576	teil	teilen		share; divide; part
+578	mensch			one
+579	kleiner	klein		little; insignificant; small
+580	stellen			face; confront; turn oneself in
+581	oft			often; frequently
+582	sorge	sorgen		care; tend; cause
+583	gedacht	denken		think
+584	tust	tun		do; work; act
+585	trinken			drink
+586	einige			some; several; quite a lot
+587	dies			this
+588	ding	dingen		hire
+589	unseren	mein		my; mine
+590	kriegen			get; come down with; have
+592	ehrlich			real; really; honest
+594	scheint	scheinen		shine; seem
+597	glücklich			happy; lucky; fortunate
+598	alte	alt		old; aged
+599	alt			old; aged
+601	wiedersehen			meet again
+602	frei			free; emancipated; liberated
+603	wen			who; whom
+604	drauf			high
+605	möglich			possible; potential
+606	irgendwie			somehow
+607	reicht	reichen		hand; pass; serve
+608	fest			hard; stable; solid
+609	besten	gut		good; nice; well
+611	kaum			soon; hardly; barely
+612	irgendwas			something; anything
+613	klingt	klingen		ring; clink; sound
+614	platz	platzen		burst; have an emotional outburst
+615	brauchst	brauchen		use; need; require
+616	rede	reden		talk; speak; say
+618	falsch			wrong; false; fake
+619	sondern			but; but rather; separate
+620	alten	alt		old; aged
+622	früher			before; formerly; used to
+623	jungen	jung		young
+624	wohin			where; whither
+625	außer			except; besides; apart from
+626	früh			early
+627	setzen			place; plant; put
+628	zuerst			first
+629	wahrscheinlich			probably; probable; likely
+630	dürfen			may; allowed
+631	jede			all
+634	tue	tun		do; work; act
+635	kennst	kennen		know
+636	willkommen			welcome
+637	plan			planar; plane
+638	großen	groß		great; big; large
+639	retten			save; rescue; escape
+640	hierher			hither
+644	wollt	wollen		want; wish; woollen
+646	zehn			ten
+647	allem	alle		all gone; used up
+649	nächste	nächst		next
+650	stunde	stunden		defer
+651	hände	Hand		hand
+652	gegeben	geben		be; give; pour
+654	langsam			slow; slowly; step by step
+655	bereits			already; just
+656	wartet	warten		wait; maintain
+657	sechs			six
+658	lieben			love; make love; have sex
+659	meines	mein		my; mine
+661	nächsten	nächst		next
+662	gebe	geben		be; give; pour
+663	wochen	Woche		week; puerperal
+664	ruf	rufen		call; shout; summon
+665	schaffen			work; take; create
+666	leider			unfortunately; alas
+669	trotzdem			nevertheless; all the same; anyway
+671	tja			well; hmm
+673	voll			full; sozzled
+674	film	filmen		film
+675	überall			everywhere; anywhere; all over
+677	geworden	werden		be; will; must
+678	direkt			direct
+679	wolltest	wollen		want; wish; woollen
+680	tat	tun		do; work; act
+681	denkt	denken		think
+682	schiff	schiffen		rain; piss
+683	neues	neu		new; novel; unused
+684	wem			whom
+686	danach			afterwards; subsequently; after
+687	funktioniert	funktionieren		function; work; operate
+688	hattest	haben		have; have got; contain
+689	lernen			learn; study
+690	deswegen			therefore; for this reason; hence
+691	wow			wow
+692	nennen			name; mention; call
+693	hm			mmm; mhm; hm
+694	feuer	feuern		fire
+695	laufen			run; walk
+696	alleine			alone
+697	erinnern			remember; recall; remind
+698	völlig			totally; completely; entirely
+699	kleines	klein		little; insignificant; small
+700	könnt	können		can; be able to; may
+701	stelle	stellen		face; confront; turn oneself in
+703	verlieren			lose; relinquish
+704	probleme	Problem		problem; trouble
+705	spricht	sprechen		speak; talk; propose
+708	fand	finden		think; find; discover
+709	i			eek
+710	entschuldige	entschuldigen		excuse; apologize
+711	ziehen			move; migrate; roam
+712	verschwinden			leave; make off; get lost
+713	könntest	können		can; be able to; may
+714	seht	sehen		see; look; view
+715	aufhören			stop; cease; quit
+716	eigenen	eigen		own; peculiar
+717	richtige	richtig		correct; right; exact
+718	unserem	mein		my; mine
+719	suche	suchen		search; seek; look for
+720	zwar			certainly; indeed; while
+721	groß			great; big; large
+723	buch	buchen		book; reserve; register
+724	krank			ill; sick
+725	fühle	fühlen		feel; sense
+726	jedes			each; every
+727	verstehst	verstehen		mean; interpret; understand
+728	wert			dear; valued; worth
+730	froh			happy; merry; glad
+731	versuche	Versuch		try; attempt; experiment
+733	rufen			call; shout; summon
+734	heiraten			get married; marry; wed
+735	super			super
+737	lebt	leben		live
+738	gutes	gut		good; nice; well
+739	lasse	lassen		stop; give up; quit
+741	total			total; complete
+742	gebracht	bringen		bring; take
+744	erklären			explain; declare; state
+745	spielt	spielen		play; act
+747	vertrauen			trust
+748	damals			then; at that time
+749	tagen			dawn; meet
+750	leicht			light; lightweight; easy
+751	nachdem			because; after
+752	gegangen	gehen		work; operable; go
+754	kaufen			buy; purchase; bribe
+755	geschafft	schaffen		work; take; create
+756	typen	Typ		type; guy
+757	interessiert			interested
+758	möchten	mögen		like; may
+759	halte	Halt		stop; support; hold
+760	hält	halten		stop; hold; keep
+762	irgendwo			somewhere
+764	genauso			as well
+765	kennt	kennen		know
+766	genommen	nehmen		take; have; seize
+768	weniger			less
+769	cool			cool
+770	licht			light; bright; clear
+771	getroffen	treffen		hit; meet; affect
+774	drüben			on the other side; over there
+776	sagten	sagen		say; tell
+777	kümmern			take care of; pay attention to; look after
+778	laut			loud; according
+780	angerufen	anrufen		call; phone; ring
+781	sitzen			fit; sit
+783	erde	erden		ground; earth
+784	großer	groß		great; big; large
+787	passieren			pass; cross; filter
+788	eher			rather; more like; sooner
+789	gefragt			in demand
+791	opfer	opfern		sacrifice
+793	solche	solch		such
+796	findet	finden		think; find; discover
+797	schreiben			write; store; touch-type
+798	böse			bad; nasty; naughty
+799	gesprochen	sprechen		speak; talk; propose
+800	versuch	versuchen		try; attempt; taste
+801	vorstellen			play; present; imagine
+802	wovon			about what; what ... about; of which
+803	sobald			as soon as
+804	nochmal			again
+805	herren	Herr		lord; master; gentleman
+807	waffen	Waffe		weapon; arm; talon
+809	weh			woe; dare; woe betide
+810	heißen			call; mean; say
+812	bringe	bringen		bring; take
+813	höre	hören		listen; hear; obey
+814	millionen	Million		million
+815	klasse			great; awesome
+816	hart			hard; unyielding; cruel
+817	worden	werden		be; will; must
+818	sinn	sinnen		plan; brood; meditate
+819	außerdem			furthermore; moreover; besides
+820	verletzt			hurt; injured; offended
+821	ändern			change; alter; vary
+822	erfahren			learn; find out; experience
+823	tragen			yield; drag; carry
+824	wenigstens			at least
+825	vorsichtig			careful; prudent; wary
+827	stolz			tall; very; haughty
+828	stark			strong; powerful; intense
+829	fällt	fallen		fall; drop; be killed in action
+830	möchtest	mögen		like; may
+831	leuten	Leute		people; persons
+832	besonders			especially; particularly
+833	schöne	schön		beautiful; nice; pretty
+834	schicken			send; consign
+836	schätze	Schatz		darling; sweetheart; treasure
+837	solange			as long as; while; so long as
+838	länger	lang		long
+839	großartig			awesome; brilliant
+840	lacht	lachen		laugh; giggle
+841	anrufen			call; phone; ring
+842	stand	stehen		be; stand; suit
+843	redest	reden		talk; speak; say
+844	fühlen			feel; sense
+845	erwartet			expected; forward
+848	stimme	stimmen		render; turn; vote
+849	glaubt	glauben		believe; suppose; trust
+850	still			still; quiet; silent
+855	kämpfen			fight; struggle; wrestle
+857	lachen			laugh; giggle
+858	hörst	hören		listen; hear; obey
+859	zeug	zeugen		show; beget; father
+860	lustig			happy; merry; gay
+861	umbringen			kill; commit suicide; kill oneself
+862	sollst	sollen		should; shall
+863	hasse	hassen		mob; hate; abhor
+864	schlimm			bad; terrible; serious
+865	o			oh; O
+866	unglaublich			incredible; unbelievable
+867	wärst	sein		be; exist; have
+868	laden			charge; load; download
+869	führen			lead
+870	gestorben			deceased
+871	schauen			look; gaze; see
+873	lesen			read; pick; glean
+875	frank			frank
+877	geschehen			happen; occur
+881	fliegen			fly; aviate; be expelled
+888	vorher			before; previously
+890	schneller	schnell		fast; quick; rapid
+891	liebt	lieben		love; make love; have sex
+892	verdient	verdienen		earn; deserve; merit
+893	mögen			like; may
+894	meisten	meist		most; mostly
+896	umgebracht	umbringen		kill; commit suicide; kill oneself
+897	perfekt			perfect
+898	versprochen			promised
+900	hinten			at the back; at the end; far back
+901	monate	Monat		month
+902	erinnere	erinnern		remember; recall; remind
+903	acht			eight
+904	arbeitet	arbeiten		work; function; employ
+905	fallen			fall; drop; be killed in action
+906	rufe	Ruf		call; summons; reputation
+907	nötig			necessary
+908	a			a
+910	heraus			out
+911	tages	Tag		day; daytime; period
+912	unmöglich			impossible; ridiculous; inconceivable
+915	tatsächlich			actual; real; as a matter of fact
+916	folgen			follow; come after; ensue
+917	bitten			ask; beg; invite
+918	behalten			keep; remember
+919	nähe	nähen		sew; stitch; suture
+920	arbeite	arbeiten		work; function; employ
+922	verdammte	verdammen		condemn; damn
+923	plötzlich			suddenly; all of a sudden
+924	lebens	Leben		life
+925	hole	holen		catch; kidnap; fetch
+928	hörte	hören		listen; hear; obey
+929	jemals			ever
+930	liegen			be; lie; be located
+931	verkaufen			sell; make a bad buy
+932	gefährlich			dangerous; perilous; hazardous
+933	anfangen			begin; start
+934	bekommt	bekommen		get; receive; be given
+935	machte	machen		go; do; perform
+936	ha			have
+938	hilft	helfen		help; aid; assist
+939	werdet	werden		be; will; must
+940	meister	meist		most; mostly
+943	konnten	können		can; be able to; may
+944	geschickt			skilled; handy; deft
+946	obwohl			although; even though; though
+947	sieben			seven; sift; sieve
+948	komisch			strange; weird; funny
+949	gewinnen			win; gain; earn
+950	ihres	mein		my; mine
+951	bezahlt	bezahlen		pay
+953	voller			full of
+954	unterwegs			on the way; on the road; out and about
+955	dumm			stupid; dumb
+956	ärger	ärgern		be; annoyed; annoy
+959	neu			new; novel; unused
+960	bezahlen			pay
+961	dagegen			on the other hand; in contrast; by comparison
+962	seien	sein		be; exist; have
+963	starb	sterben		die; pass away; decease
+965	monaten	Monat		month
+967	niemanden	niemand		nobody; no one
+970	verheiratet			married
+973	nimmt	nehmen		take; have; seize
+974	gerettet	retten		save; rescue; escape
+978	schlimmer	schlimm		bad; terrible; serious
+979	regeln			control; manage; regulate
+981	fangen			catch; bag; capture
+982	fort			away; carry on; continuously
+983	ständig			persistent; constantly
+984	findest	finden		think; find; discover
+986	absolut			absolute
+991	gedanken	Gedanke		idea; thought; thinking
+993	ziel	zielen		aim; direct
+994	benutzt			used
+996	jemandem	jemand		someone; somebody; anyone
+997	wünschte	wünschen		wish; desire; require
+998	worte	Wort		word; expression; term
+999	kamen	kommen		come; cum; advance
+1000	welcher			some; who; that
+1001	zahlen			pay
+1003	legen			lay; put; deal the Skat
+1004	erinnerst	erinnern		remember; recall; remind
+1007	sitzt	sitzen		fit; sit
+1008	hilf	helfen		help; aid; assist
+1009	offen			open
+1010	schönen			clarify; clear; fine
+1012	müsste			should
+1013	arme	Arm		arm; right-hand man; right-hand woman
+1015	fürs			in favor
+1017	klein			little; insignificant; small
+1019	klappe	klappen		work; work out; clap
+1020	süß			sweet; fresh; cute
+1021	herum			around; about
+1023	ehe			before; ere
+1024	rolle	rollen		roll
+1025	ließ	lassen		stop; give up; quit
+1026	gleiche	gleich		like; just; equal
+1030	führt	führen		lead
+1032	wach			awake
+1033	wozu			what for; wherefore
+1034	arm			poor; needy; unfortunate
+1035	geschrieben			written
+1037	benutzen			use; utilize
+1038	informationen	Information		information
+1039	erledigt			finished; completed; done
+1040	hoffentlich			hopefully
+1042	fühlt	fühlen		feel; sense
+1043	tanzen			dance
+1044	ansehen			look at; watch
+1045	darfst	dürfen		may; allowed
+1046	zuhause			at home
+1047	wunderbar			wonderful; marvellous; marvelous
+1048	hältst	halten		stop; hold; keep
+1049	reise	reisen		travel
+1050	gewonnen	gewinnen		win; gain; earn
+1052	irgendwann			anytime; at some point; eventually
+1055	steckt	stecken		stick; insert; tell
+1056	jedenfalls			at any rate; anyhow; at all events
+1057	schreit	schreien		cry; shout; scream
+1058	tolle	toll		cool; corking; fantastic
+1060	tschüss			bye
+1061	nennt	nennen		name; mention; call
+1063	heiß			hot; in heat; on heat
+1065	kalt			cold; chilly; cool
+1067	irgendetwas			something; anything
+1068	weile	weilen		linger; stay
+1069	bisher			so far; hitherto; up to now
+1071	unbedingt			unconditional; absolute; at all events
+1073	sekunden	Sekunde		second
+1074	wofür			for what
+1077	beweise	Beweis		evidence; proof
+1078	nahm	nehmen		take; have; seize
+1079	aller	all		all
+1080	freut	freuen		rejoice; be glad; be happy
+1082	schießen			shoot
+1083	müde			tired; sleepy
+1084	dauert	dauern		last; take time
+1085	magst	mögen		like; may
+1088	gelernt			learned; learnt; skilled
+1089	sucht	suchen		search; seek; look for
+1090	bekannt			famous; known
+1091	weitere	weit		far; wide; vast
+1093	dahin			then; there
+1097	dasselbe	derselbe		same
+1098	herzen			hug
+1099	schlagen			fight; beat; whip
+1100	wütend			angry; furious
+1101	weise			wise
+1102	damen	Dame		queen; lady; checkers
+1103	darin			therein
+1104	gottes	Gott		God; deity; godhead
+1105	holt	holen		catch; kidnap; fetch
+1106	fehlt	fehlen		lack; miss; be missing
+1108	heiße	heiß		hot; in heat; on heat
+1109	beweisen			prove; show
+1110	gehabt	haben		have; have got; contain
+1111	zumindest			at least; at the lowest; leastways
+1112	vermisst			missing
+1113	hübsch			nice; pretty
+1114	kriegt	kriegen		get; come down with; have
+1116	tief			deep; profound
+1119	sowieso			anyway
+1120	kraft			by means of; by virtue of; on the basis of
+1121	normal			normal
+1122	lauf	laufen		run; walk
+1123	ehre	ehren		honor; honour
+1126	bar			pure; plain; bare
+1128	gelesen	lesen		read; pick; glean
+1129	gekauft	kaufen		buy; purchase; bribe
+1131	gestohlen			stolen
+1132	hunger	hungern		be hungry; hunger; starve
+1134	lügen			lie
+1137	verschwunden			lost
+1139	nächstes	nächst		next
+1140	gearbeitet	arbeiten		work; function; employ
+1141	preis	preisen		laud; praise; glorify
+1143	meinte	meinen		mean; signify; think
+1144	liste	listen		list
+1146	neben			beside; next to
+1147	gesucht			affected; in demand
+1149	süße	süß		sweet; fresh; cute
+1150	rücken			move; draw; push
+1151	schrecklich			terrible; horrible
+1152	letzter			latter
+1153	verliebt			in love; enamoured; fond
+1154	öffnen			open
+1155	redet	reden		talk; speak; say
+1157	seltsam			weird; strange; bizarre
+1158	versteckt			hidden
+1159	fürchte	fürchten		fear; afraid
+1160	verschwinde	verschwinden		leave; make off; get lost
+1161	erwischt	erwischen		catch; catch red-handed; grab
+1162	verkauft			sold
+1164	erwarten			expect; await; abide
+1166	wunder	wund		sore; raw
+1167	sauer			acid; acidic; sour
+1168	vermutlich			probably
+1169	näher	nah		near; close
+1171	jung			young
+1173	aussehen			look; look like
+1175	de			crooked
+1177	links			left; left-wing; reverse
+1178	großes	groß		great; big; large
+1179	welches			which
+1180	beschützen			protect
+1181	geboren			born; nee; née
+1182	erreichen			reach; acquire; get through
+1184	kindern	Kind		child; kid; kiddo
+1186	verraten			betray; reveal
+1187	selber			oneself; personally
+1190	fährt	fahren		run; go; cart
+1191	zieht	ziehen		move; migrate; roam
+1193	haut	hauen		beat; hew
+1194	wette	wetten		bet; wager
+1195	reich			rich; wealthy; delicious
+1197	fahre	fahren		run; go; cart
+1198	schwöre	schwören		swear; swear by
+1199	geredet	reden		talk; speak; say
+1202	eigene	eigen		own; peculiar
+1203	zeiten	Zeit		time; tense; tide
+1204	traurig			sorry; sad; unhappy
+1206	nachrichten	Nachricht		message; news; notification
+1210	euren	mein		my; mine
+1211	diesmal			this time
+1212	schade			pity; shame; too bad
+1213	persönlich			personal; personally; in person
+1214	kriege	Krieg		war; warfare
+1215	stirbt	sterben		die; pass away; decease
+1216	bleibe	bleiben		last; stay; remain
+1217	verändert	verändern		change
+1218	sonne	sonnen		sun
+1219	lieb			dear; nice
+1220	nämlich			same; in fact; actually
+1222	bekam	bekommen		get; receive; be given
+1223	ruft	rufen		call; shout; summon
+1227	ewig			eternal
+1228	singen			rat; squeal; sing
+1230	beschäftigt			busy
+1233	toten	tot		dead
+1234	weihnachten			approach; Christmas; Christmassy
+1235	offensichtlich			apparently; apparent; obvious
+1236	naja			if you say so
+1238	gefühle	Gefühl		feeling; emotion; affection
+1239	fuß	fußen		be based on; be based upon; rest on
+1246	drogen	Droge		drug
+1248	wein	weinen		cry; weep
+1249	kriegst	kriegen		get; come down with; have
+1250	ermordet			murdered
+1251	fotos	Foto		photo; picture; photography
+1252	entfernt			away; distant; far
+1253	geschlafen	schlafen		sleep; be asleep; stay at someones place
+1254	manche	manch		some
+1255	erledigen			complete; finish; deal with
+1256	ran			near; come on; dig in
+1257	gegenüber			opposite; across; vis-à-vis
+1258	schlaf	schlafen		sleep; be asleep; stay at someones place
+1260	wunderschön			gorgeous; beautiful; wonderful
+1261	witzig			funny; facetious; jocular
+1263	zerstört			destroyed
+1264	übrigens			by the way; incidentally
+1265	willen			for the sake of; on account of
+1266	heim			home
+1267	richtigen	richtig		correct; right; exact
+1268	deines	mein		my; mine
+1269	namens			in the name of; on behalf of; by the name of
+1270	zeigt	zeigen		point; show; demonstrate
+1271	geliebt			beloved; dear
+1272	gehören			belong; belong to
+1273	brachte	bringen		bring; take
+1275	blick	blicken		look
+1276	besuch	besuchen		visit; attend
+1277	schlechte	schlecht		bad; shoddy; evil
+1278	bewegen			move; agitate; induce
+1279	haare	Haar		hair
+1280	antworten			answer; reply
+1282	sagtest	sagen		say; tell
+1284	stecken			stick; insert; tell
+1285	lebe	leben		live
+1286	rechts			right; right-wing
+1287	interessant			interesting
+1288	entscheiden			rule; decide
+1289	miteinander			together; with each other
+1290	meint	meinen		mean; signify; think
+1291	liebst	lieben		love; make love; have sex
+1292	indem			as; by; meanwhile
+1293	bleibst	bleiben		last; stay; remain
+1294	kümmere	kümmern		take care of; pay attention to; look after
+1295	wohnen			live; reside; dwell
+1296	weder			neither
+1298	kaputt			broken; out of order; broken-down
+1299	bekomme	bekommen		get; receive; be given
+1302	anderer			second; other; different
+1303	zweite			second
+1307	entweder			either
+1308	weiss			white
+1311	aufhalten			stop; hinder; balk
+1312	stellt	stellen		face; confront; turn oneself in
+1313	verspreche	versprechen		promise; pledge; expect
+1314	überrascht			surprised
+1315	sauber			clean; accurate; well done
+1318	schlag	schlagen		fight; beat; whip
+1321	setzt	setzen		place; plant; put
+1323	vaters	Vater		father; dad; daddy
+1324	nervös			nervous; jittery; jumpy
+1326	verstecken			hide; conceal
+1327	schuldig			guilty
+1328	hals	halsen		gybe; jibe; gibe
+1329	schützen			protect
+1330	besuchen			visit; attend
+1332	passen			pass; skip; fit
+1333	überleben			survive; overlive
+1334	erhalten			receive; obtain; get
+1335	teilen			share; divide; part
+1340	besorgt			worried; anxious; apprehensive
+1342	lief	laufen		run; walk
+1343	vergnügen			please; have fun
+1347	herausfinden			find out; discover; figure out
+1349	soldaten	Soldat		soldier
+1350	feiern			celebrate
+1352	lag	liegen		be; lie; be located
+1353	gelassen			serene; calm
+1354	allerdings			however; absolutely; certainly
+1355	soweit			as far as; insofar as; so far as
+1356	gefahren	fahren		run; go; cart
+1357	verstand	verstehen		mean; interpret; understand
+1358	bord			embarge
+1359	schönes	schön		beautiful; nice; pretty
+1362	angefangen	anfangen		begin; start
+1364	fühlst	fühlen		feel; sense
+1367	rat	raten		guess; rate; advise
+1368	worauf			on what; on which
+1369	gebeten	bitten		ask; beg; invite
+1374	ganzes	ganz		just; only; very
+1375	schuhe	Schuh		shoe; boot
+1378	niemandem	niemand		nobody; no one
+1379	gibst	geben		be; give; pour
+1380	statt			instead; and not
+1381	übernehmen			assume; take over; take
+1386	nimmst	nehmen		take; have; seize
+1388	erkennen			realize; understand; recognize
+1390	falsche	falsch		wrong; false; fake
+1391	verantwortlich			responsible
+1393	stöhnt	stöhnen		moan; groan
+1394	herein			in; come in
+1396	zerstören			destroy; ruin
+1397	jawohl			yes
+1399	gegessen	essen		eat
+1400	abendessen			supper
+1402	gemeinsam			common; shared; jointly
+1403	geholfen	helfen		help; aid; assist
+1404	erster	erst		just; first; only
+1405	wohnt	wohnen		live; reside; dwell
+1406	schritt	schreiten		stride
+1408	nahe			close; near; nearby
+1409	aussieht	aussehen		look; look like
+1410	beginnen			begin; start; commence
+1411	dachten	denken		think
+1412	band	binden		tie; bind; blend
+1413	ungefähr			about; roughly; approximate
+1415	neun			nine; o'clock
+1416	furchtbar			terrible
+1417	drinnen			inside; indoors
+1418	zuvor			previously; earlier; afore
+1420	freue	freuen		rejoice; be glad; be happy
+1422	übrig			remaining
+1423	spur	spuren		toe the line; lay a track
+1424	falschen	falsch		wrong; false; fake
+1426	melden			report; get in touch; raise one's hand
+1427	helfe	helfen		help; aid; assist
+1428	werfen			cast; throw; hurl
+1430	haltet	halten		stop; hold; keep
+1431	erinnert	erinnern		remember; recall; remind
+1432	hängt	hängen		hang; impend; pend
+1435	erschossen	erschießen		shoot; shoot dead
+1436	verzeihen			forgive; pardon; excuse
+1438	uh			d'oh
+1440	entschieden			evident; obvious; determined
+1442	verdammten	verdammen		condemn; damn
+1443	brauch	brauchen		use; need; require
+1445	vorne			at the front
+1447	übel			bad; sick; unpleasant
+1449	schöner	schön		beautiful; nice; pretty
+1453	gesund			healthy; well; sane
+1455	pro			per
+1456	leisten			perform; afford; allow oneself
+1457	davor			before
+1459	bedeuten			mean; signify
+1460	ball	ballen		crowd; thicken; ball up
+1461	mitnehmen			take; keep; take with
+1462	gespielt	spielen		play; act
+1464	schwierigkeiten	Schwierigkeit		difficulty; trouble; problem
+1466	kannte	kennen		know
+1467	stehe	stehen		be; stand; suit
+1469	planeten	Planet		planet
+1470	schwanger			pregnant; with child; gravid
+1473	verhaftet	verhaften		arrest; seize
+1475	seines	mein		my; mine
+1476	irgendwelche			any; some
+1477	händen	Hand		hand
+1478	versteht	verstehen		mean; interpret; understand
+1479	drehen			turn; spin; shoot
+1480	eis	Ei		egg; ball; ovum
+1481	danken			thank
+1482	erfolg	erfolgen		happen; take place
+1483	zufrieden			satisfied; content; pleased
+1484	schließen			close; shut; fasten
+1485	besorgen			get; fix up with; obtain
+1487	worüber			about what
+1488	stimmen			render; turn; vote
+1489	nehmt	nehmen		take; have; seize
+1492	witze	Witz		joke; gag; wit
+1493	beine	Bein		bone; leg; foot
+1494	verbrechen			be responsible for; be up to; perpetrate
+1496	nachts			at night; during the night
+1499	schmerz	schmerzen		hurt; ache; pain
+1500	klingelt	klingeln		ring
+1502	echte	echt		genuine; real
+1503	gleichen			closely resemble
+1504	fernsehen			watch TV
+1505	wünsche	Wunsch		wish; request; desire
+1506	schließlich			eventually; finally; after all
+1507	gefangen	fangen		catch; bag; capture
+1510	schwierig			difficult
+1512	nah			near; close
+1514	gewartet	warten		wait; maintain
+1515	kümmert	kümmern		take care of; pay attention to; look after
+1516	ring	ringen		struggle; wrestle; wrestle with oneself
+1517	rennen			run; race; sprint
+1519	eier	Ei		egg; ball; ovum
+1521	sorry			sorry
+1522	fantastisch			fantastic
+1523	schaut	schauen		look; gaze; see
+1524	hielt	halten		stop; hold; keep
+1525	falle	Fall		fall; drape; case
+1528	dauern			last; take time
+1529	daher			therefore; ergo
+1530	zufällig			by chance; random; casual
+1533	bewegt			eventful
+1534	mitten			in the middle
+1535	bullen	Bulle		bull; gorilla; hulk
+1537	einverstanden			agreed; agreement
+1538	neuer	neu		new; novel; unused
+1539	bauen			build; construct; erect
+1540	trägt	tragen		yield; drag; carry
+1541	hängen			hang; impend; pend
+1542	freunden	Freund		friend; pal; boyfriend
+1543	deren	der		who; which; the
+1544	halb			half
+1546	sprach	sprechen		speak; talk; propose
+1547	leise			quiet; faint; low
+1548	armen	arm		poor; needy; unfortunate
+1550	fanden	finden		think; find; discover
+1551	unternehmen			undertake
+1552	träume	Traum		dream
+1553	schläft	schlafen		sleep; be asleep; stay at someones place
+1554	kostet	kosten		taste; get a taste of; cost
+1555	spiele	Spiel		play; game; backlash
+1556	unseres	mein		my; mine
+1557	entlang			along; alongside
+1559	versprechen			promise; pledge; expect
+1560	tiere	Tier		animal; beast
+1562	verdienen			earn; deserve; merit
+1563	aha			aha; I see
+1564	unterhalten			talk; chat; propose
+1565	eingeladen	einladen		invite; load in
+1566	schaden			harm; hurt; damage
+1567	genannt	nennen		name; mention; call
+1568	beenden			finish; end; complete
+1570	geändert	ändern		change; alter; vary
+1572	lächerlich			petty; trivial; ridiculous
+1573	geschlagen	schlagen		fight; beat; whip
+1574	park	parken		park
+1575	schätzen			guess; appreciate; value
+1576	männern	Mann		man; husband; spouse
+1578	beginnt	beginnen		begin; start; commence
+1579	ehren			honor; honour
+1580	größte	groß		great; big; large
+1584	besteht	bestehen		pass; succeed; exist
+1585	reichen			hand; pass; serve
+1588	worum			about what; what … about
+1589	nachgedacht	nachdenken		ponder; reflect; think
+1590	betrunken			drunk; inebriated; drunken
+1591	sowas			something like that; such a thing
+1592	patienten	Patient		patient
+1594	leiden			suffer; put up with; tolerate
+1596	tötet	töten		kill; slay
+1598	unterschied	unterscheiden		distinguish; tell apart; differ
+1599	wind	winden		wind; wriggle; wrest
+1600	singt	singen		rat; squeal; sing
+1601	schreien			cry; shout; scream
+1603	sahen	sehen		see; look; view
+1604	wand	winden		wind; wriggle; wrest
+1607	angriff	angreifen		touch; attack; affect
+1608	verhalten			be; relate; stand
+1609	loch	lochen		perforate; pierce; hole
+1611	treten			step; tread; kick
+1613	trifft	treffen		hit; meet; affect
+1615	blumen	Blume		flower; blossom
+1616	neuigkeiten	Neuigkeit		news
+1617	bringst	bringen		bring; take
+1619	rief	rufen		call; shout; summon
+1621	fassen			take; contain; hold
+1623	konntest	können		can; be able to; may
+1624	schafft	schaffen		work; take; create
+1626	spreche	sprechen		speak; talk; propose
+1629	bekommst	bekommen		get; receive; be given
+1630	verbringen			bring; bring up; carry
+1631	bücher	Buch		book; ledger; volume
+1632	blöd			stupid; silly; frustrating
+1636	bilder	Bild		picture; painting; image
+1637	aufpassen			take care; pay attention; be careful
+1639	dessen			his; its; this one's
+1640	muß	müssen		must; have to
+1641	freuen			rejoice; be glad; be happy
+1643	offenbar			obvious; manifest; obviously
+1645	fang	fangen		catch; bag; capture
+1646	lüge	lügen		lie
+1647	ohren	Ohr		ear; hearing
+1648	au			ouch; ow; oh
+1649	angetan			appropriate; suitable
+1651	brechen			break; vomit; burst
+1652	brüder	Bruder		brother; friar; monk
+1654	keinem	kein		no; none
+1657	druck	drucken		print
+1658	mitgebracht	mitbringen		bring; bring along
+1659	seufzt	seufzen		sigh; groan
+1664	leer			empty; blank; deserted
+1665	entkommen			escape
+1667	weißen			whiten
+1669	wart	sein		be; exist; have
+1671	irre			crazy; insane; mad
+1672	gestellt	stellen		face; confront; turn oneself in
+1674	gebrochen			broken; fractional; blackletter
+1675	weinen			cry; weep
+1676	nutzen			utilize; use; employ
+1677	wünschen			wish; desire; require
+1678	fragt	fragen		ask; enquire; wonder
+1679	maul	maulen		moan; nag
+1683	lächeln			smile; grin
+1686	grad			just
+1688	hinaus			out
+1689	mitkommen			understand; accompany; come along
+1690	vorhin			a little while ago; recently
+1691	fahrt	fahren		run; go; cart
+1692	gemeint	meinen		mean; signify; think
+1693	ernsthaft			grave; serious; earnest
+1694	gebaut			built
+1695	bombe	bomben		bomb; slam
+1698	kosten			taste; get a taste of; cost
+1699	zeige	zeigen		point; show; demonstrate
+1700	traf	treffen		hit; meet; affect
+1701	eigenes	eigen		own; peculiar
+1702	haar	haaren		lose hair; shed
+1703	fragte	fragen		ask; enquire; wonder
+1706	befehle	Befehl		order; warrant; command
+1707	schmerzen			hurt; ache; pain
+1708	erklärt	erklären		explain; declare; state
+1711	folge	folgen		follow; come after; ensue
+1712	gelaufen	laufen		run; walk
+1713	schwarze	schwarz		black
+1714	dankbar			grateful; thankful
+1716	töte	töten		kill; slay
+1717	mädels	Mädel		girl; maid
+1719	heilige	heilig		holy; sacred; saintly
+1723	mannes	Mann		man; husband; spouse
+1725	nee			nah; nope; no
+1728	geschlossen			complete; united; well-rounded
+1729	hintern			abaft
+1732	fiel	fallen		fall; drop; be killed in action
+1733	gehalten			controlled; selfcontrolled
+1734	dorthin			there; thitherward
+1737	vorwärts			forward
+1738	überprüfen			check; review; recheck
+1739	besseres	gut		good; nice; well
+1740	beweis	beweisen		prove; show
+1742	gebt	geben		be; give; pour
+1743	funktionieren			function; work; operate
+1744	anscheinend			apparently; seeming
+1746	hoffen			hope; trust
+1747	bessere	gut		good; nice; well
+1754	entschuldigt	entschuldigen		excuse; apologize
+1755	gilt	gelten		accept; allow; hold
+1757	daraus			hence
+1758	erstes	erst		just; first; only
+1761	prima			excellent; super
+1762	brauchte	brauchen		use; need; require
+1765	liebes	lieb		dear; nice
+1766	schaffst	schaffen		work; take; create
+1767	nachdenken			ponder; reflect; think
+1770	pläne	Plan		plan; map; blueprint
+1771	jagen			hunt; chase; rush
+1773	runde	Rund		round
+1774	deutsche	deutsch		German
+1776	taten	Tat		act; deed; action
+1778	dringend			strong; urgent; badly
+1781	sommer			just
+1782	gezeigt	zeigen		point; show; demonstrate
+1783	hinterlassen			leave; leave behind
+1785	getrunken	trinken		drink
+1786	wahre	wahr		true
+1788	kunden	Kunde		area; field; news
+1790	zeugen			show; beget; father
+1791	geplant			planned
+1793	erreicht	erreichen		reach; acquire; get through
+1794	stören			disturb; hinder; interfere
+1796	atmen			breathe; respire
+1798	weiße	Weiß		white; whiteness
+1799	sprichst	sprechen		speak; talk; propose
+1800	größer	groß		great; big; large
+1801	schickt	schicken		send; consign
+1804	behandelt	behandeln		treat; cover
+1805	tote	tot		dead
+1806	überlegen			superior; predominant; ponder
+1807	karten	Karte		card; map; chart
+1817	verschwindet	verschwinden		leave; make off; get lost
+1818	lautet	lauten		be; go; read
+1819	streit	streiten		fight; argue
+1820	küssen			kiss
+1821	sprich	sprechen		speak; talk; propose
+1822	längst			long; for a long time; long ago
+1823	fängt	fangen		catch; bag; capture
+1825	gingen	gehen		work; operable; go
+1826	erlaubt	erlauben		allow; permit; indulge
+1827	einzigen	einzig		only; sole; unique
+1829	schmeckt	schmecken		like; smell; taste
+1831	normalerweise			normally
+1832	schwarzen	schwarz		black
+1833	rauf			up; up here; up there
+1835	beruhigen			calm; blow over
+1837	halbe	halb		half
+1839	geschieht	geschehen		happen; occur
+1840	einiges	einig		united; agreed; in agreement
+1841	entdeckt	entdecken		discover; descry; spot
+1842	morgens			in the morning
+1843	schlechter	schlecht		bad; shoddy; evil
+1844	vollkommen			perfect; absolute; completely
+1845	gelogen	lügen		lie
+1846	verfolgt	verfolgen		follow; pursue; trace
+1848	weiteren	weit		far; wide; vast
+1851	eh			anyway
+1853	hunde	Hund		dog; hound; scoundrel
+1854	steigen			get; rise; climb
+1855	verdammter	verdammt		damn
+1856	dürfte	dürfen		may; allowed
+1857	riecht	riechen		smell; reek
+1859	bat	bitten		ask; beg; invite
+1862	mindestens			at least
+1863	fisch	fischen		fish
+1864	eurem	mein		my; mine
+1865	füße	Fuß		base; foot; leg
+1866	stehst	stehen		be; stand; suit
+1867	erschießen			shoot; shoot dead
+1869	versuchte	versuchen		try; attempt; taste
+1870	zustand	zustehen		be; entitled
+1872	gäste	Gast		guest; visitor; invitee
+1873	erwähnt	erwähnen		mention; bring up
+1876	einigen			agree; unite
+1878	garten	garen		cook
+1879	junger	jung		young
+1880	autos	Auto		order; resolution; writ
+1881	abgesehen			apart; except; other
+1882	fair			fair
+1883	vertraut			close; familiar
+1885	hieß	heißen		call; mean; say
+1887	wirkt	wirken		work; act; operate
+1889	netter	nett		nice; cute
+1890	seitdem			since then; since; since that time
+1891	angegriffen	angreifen		touch; attack; affect
+1892	geschichten	Geschichte		history; story; tale
+1893	wahnsinnig			insane; mad; incredibly
+1894	ähnlich			similar; alike
+1896	aufgeben			give; assign; give up
+1898	entführt	entführen		abduct; kidnap; hijack
+1901	solchen	solch		such
+1903	geschossen	schießen		shoot
+1904	lager	lagern		camp; encamp; store
+1905	besprechen			review; discuss
+1906	reihe	reihen		tack; arrange; rank
+1907	polizisten	Polizist		policeman; police officer; cop
+1909	legt	legen		lay; put; deal the Skat
+1912	schwarz			black
+1913	fern			far; distant
+1915	scherz	scherzen		joke; jest
+1917	erzählte	erzählen		tell; narrate
+1920	langweilig			boring; dull; tedious
+1921	womit			whereby; with what
+1922	geschäfte	Geschäft		deal; profit; business
+1924	kapiert	kapieren		get; twig; grasp
+1925	nachher			later; afterwards
+1926	verlangt	verlangen		desire; long for; demand
+1927	schlägt	schlagen		fight; beat; whip
+1928	überzeugt	überzeugen		convince; persuade; satisfy
+1929	irgendjemand			somebody; someone
+1930	rot			red
+1932	vorbereitet	vorbereiten		prepare
+1933	geschah	geschehen		happen; occur
+1934	reisen			travel
+1937	stehlen			steal; sneak; steal away
+1938	rechte	Recht		right; law; justice
+1940	bemerkt	bemerken		notice; note; observe
+1942	stört	stören		disturb; hinder; interfere
+1944	beruhige	beruhigen		calm; blow over
+1945	pferde	Pferd		horse; vaulting horse; knight
+1946	vertrag	vertragen		tolerate; get along with
+1947	arbeitest	arbeiten		work; function; employ
+1948	dienst	dienen		serve; be useful; help
+1949	zählt	zählen		count; rank
+1950	fragst	fragen		ask; enquire; wonder
+1955	woran			which; on what
+1956	geblieben	bleiben		last; stay; remain
+1957	durcheinander			confused; dazed; perplexed
+1960	nette	nett		nice; cute
+1963	dadurch			because; thus; thereby
+1965	wichtiger	wichtig		important; significant; relevant
+1969	akte	Akt		act; nude; action
+1972	erzähle	erzählen		tell; narrate
+1973	lösen			release; buy; dissolve
+1974	bravo			bravo
+1975	griff	greifen		grab; seize; grip
+1976	verfolgen			follow; pursue; trace
+1977	zweifel	zweifeln		doubt
+1980	nerven			irritate; annoy; bother
+1983	langer	lang		long
+1984	ziehe	ziehen		move; migrate; roam
+1985	entlassen			dismiss; discharge; fire
+1986	zweimal			twice
+1987	abholen			pick up; collect; take away
+1989	kollegen	Kollege		colleague; workmate; co-worker
+1994	scheinen			shine; seem
+1995	bösen	böse		bad; nasty; naughty
+1996	schaffe	schaffen		work; take; create
+1998	wache	wachen		watch over; stay up; stay awake
+1999	neulich			lately; recently; not long ago
+2000	beeilen			hurry
+2001	knie	knien		kneel
+2003	lauter			pure; sincere
+2004	spannende	spannend		interesting; exciting; thrilling
+2005	unschuldig			innocent; virginal
+2006	folgt	folgen		follow; come after; ensue
+2008	weshalb			why; ergo; hence
+2009	geheiratet	heiraten		get married; marry; wed
+2010	woanders			elsewhere
+2011	wurdest	werden		be; will; must
+2013	verhindern			prevent; avert; inhibit
+2017	klug			smart; clever; wise
+2018	kräfte	Kraft		power; might; potency
+2019	verlangen			desire; long for; demand
+2020	außerhalb			outside
+2022	selbstverständlich			self-evident; natural
+2023	aufstehen			get up; rise; stand up
+2024	hassen			mob; hate; abhor
+2026	gebrauchen			use
+2027	geglaubt	glauben		believe; suppose; trust
+2030	gefeuert	feuern		fire
+2031	erinnerungen	Erinnerung		memory; recollection; remembrance
+2033	suchst	suchen		search; seek; look for
+2034	fährst	fahren		run; go; cart
+2035	kochen			cook; make; boil
+2036	schwach			weak; faint; feeble
+2037	schreibt	schreiben		write; store; touch-type
+2038	schulden			owe
+2039	hinein			in; into
+2041	grenze	grenzen		abut
+2042	braut	brauen		brew
+2043	gebraucht			secondhand; second-hand
+2044	peinlich			awkward; embarrassing; cringy
+2045	klappt	klappen		work; work out; clap
+2046	geheimnisse	Geheimnis		secret; secrecy
+2049	form	formen		form; shape; model
+2050	umsonst			free; gratis; in vain
+2051	kennenzulernen	kennenlernen		get to know
+2052	überlebt	überleben		survive; overlive
+2053	nirgendwo			nowhere
+2054	meilen	Meile		mile; league
+2055	einfacher	einfach		single; simple; simply
+2056	blöde	blöd		stupid; silly; frustrating
+2058	ergibt	ergeben		surrender; capitulate; produce
+2059	daten			date
+2060	merken			notice; realize; remember
+2063	fühlte	fühlen		feel; sense
+2065	sieg	siegen		win
+2066	satt			full; satiated; replete
+2071	handeln			act; do; trade
+2073	enden			end
+2074	warm			warm; hot
+2075	raten			guess; rate; advise
+2079	desto			all the; the … the
+2081	schweigen			be silent; keep quiet; keep a secret
+2083	toller	toll		cool; corking; fantastic
+2085	wachen			watch over; stay up; stay awake
+2088	stock	stocken		falter; halt; stiffen
+2090	hingehen			go
+2091	verboten			forbidden; prohibited; verboten
+2092	gäbe	geben		be; give; pour
+2094	leichen	Leiche		corpse; cadaver; body
+2095	high			high
+2096	beendet	beenden		finish; end; complete
+2099	verflucht			cursed; damned
+2100	dunkel			dark; gloomy; grave
+2102	enttäuscht			disappointed; crestfallen
+2103	klopfen			knock; beat; tap
+2104	spuren			toe the line; lay a track
+2106	seiten	Seite		side; page; party
+2107	mühe	mühen		labour; work; take care
+2108	gezogen	ziehen		move; migrate; roam
+2110	kontrollieren			check; inspect
+2112	schick			elegant
+2113	getrennt	trennen		sort; separate; break up
+2115	grab	graben		dig
+2116	ebenso			equally; as well; likewise
+2117	trage	tragen		yield; drag; carry
+2118	nachbarn	Nachbar		neighbour; neighbor
+2119	bieten			show; offer; accept
+2120	bestes	gut		good; nice; well
+2122	fuhr	fahren		run; go; cart
+2124	freundlich			friendly; cordial; affable
+2125	dennoch			however; nevertheless; anyhow
+2126	rauchen			smoke
+2127	dick			fat; big; thick
+2130	bester	gut		good; nice; well
+2131	schicke	schick		elegant
+2132	vergeben			miss; award; assign sth.
+2133	ausgehen			go out; go places; assume
+2134	behandeln			treat; cover
+2135	trotz			despite; in spite of
+2137	ändert	ändern		change; alter; vary
+2138	passierte	passieren		pass; cross; filter
+2140	annehmen			accept; adopt; receive
+2141	herzlichen	herzlich		cordial; hearty
+2142	hexe	hexen		astound; do wonders; practise witchcraft
+2143	erwachsen			adult; grown-up; grown
+2146	saß	sitzen		fit; sit
+2147	dreht	drehen		turn; spin; shoot
+2148	aussage	aussagen		state; express; reveal
+2149	liebte	lieben		love; make love; have sex
+2151	genießen			enjoy; savour; relish
+2152	eifersüchtig			jealous
+2153	derjenige			that; the one
+2154	teuer			dear; costly; expensive
+2156	zähne	Zahn		tooth; cog; tine
+2157	beobachtet	beobachten		observe; watch; supervise
+2159	wählen			choose; select; adopt
+2160	helft	helfen		help; aid; assist
+2161	fliegt	fliegen		fly; aviate; be expelled
+2163	regen			move; stir
+2164	feinde	Feind		enemy; foe
+2166	erlauben			allow; permit; indulge
+2167	zulassen			allow; permit; tolerate
+2168	schnappen			catch; snap; grab
+2169	komplett			complete
+2172	bewusst			deliberate; wilful; considered
+2173	deutschen	deutsch		German
+2174	voraus			ahead
+2175	sterbe	sterben		die; pass away; decease
+2176	solltet	sollen		should; shall
+2177	begleiten			accompany; trace
+2178	einander			each other
+2180	erlebt	erleben		experience; encounter
+2181	weiterhin			still; furthermore
+2182	stärker	stark		strong; powerful; intense
+2184	konzentrieren			concentrate; focus; center on
+2185	streiten			fight; argue
+2186	angeht	angehen		attack; sprout; beg
+2189	überzeugen			convince; persuade; satisfy
+2191	übersetzt	übersetzen		translate; ferry; cross
+2192	verrückte	verrückt		crazy; mad; displace
+2195	begann	beginnen		begin; start; commence
+2196	angenommen	annehmen		accept; adopt; receive
+2197	weitermachen			continue; go on; keep going
+2198	echter	echt		genuine; real
+2201	mitgenommen			beat-up
+2203	ideen	Idee		idea
+2204	fehlen			lack; miss; be missing
+2205	aufgeregt			excited; flustered; nervous
+2207	dumme	dumm		stupid; dumb
+2208	zurückkommen			return; come back; get back
+2209	irgendein			any; somebody; someone
+2212	schlage	Schlag		beat; blow; stroke
+2213	handelt	handeln		act; do; trade
+2214	treffe	treffen		hit; meet; affect
+2215	untersuchen			examine; investigate
+2216	flucht	fluchen		curse; swear
+2217	verliert	verlieren		lose; relinquish
+2220	betrifft	betreffen		concern; affect
+2221	scharf			live; hot; sharp
+2222	gehofft	hoffen		hope; trust
+2223	kennengelernt	kennenlernen		get to know
+2224	schlimmste	schlimm		bad; terrible; serious
+2227	immerhin			also; anyway; anyhow
+2228	mehrere			several; multiple; various
+2229	erwarte	erwarten		expect; await; abide
+2230	mochte	mögen		like; may
+2231	schwimmen			float; swim; bathe
+2232	zählen			count; rank
+2233	innerhalb			inside; within
+2234	matt			dull; mat; weak
+2235	blind			blind; sightless; opaque
+2236	schwestern	Schwester		sister; sis; nurse
+2239	schlau			clever; smart; leery
+2242	spielst	spielen		play; act
+2243	zuletzt			last; lastly; recently
+2246	englisch			English; rare; angelic
+2248	verletzen			hurt; wound; bruise
+2251	schien	scheinen		shine; seem
+2252	gewinnt	gewinnen		win; gain; earn
+2253	älter	alt		old; aged
+2254	merkwürdig			strange; remarkable
+2256	vermisse	vermissen		miss
+2258	tritt	treten		step; tread; kick
+2259	trauen			trust; marry; dare
+2260	präsidenten	Präsident		president; chairman
+2264	roten	rot		red
+2265	überlegt	überlegen		superior; predominant; ponder
+2266	größten	groß		great; big; large
+2268	zwölf			twelve
+2270	schrieb	schreiben		write; store; touch-type
+2271	reinkommen			enter
+2274	antun			dress; cause; do
+2276	dieselbe	derselbe		same
+2277	verändern			change
+2278	möglicherweise			possibly; maybe
+2279	definitiv			definitive; definite; positively
+2280	locker			loose; casual; easygoing
+2284	abends			in the evening
+2285	frisch			fresh
+2286	kohle	Kohl		cabbage; cole; nonsense
+2287	fing	fangen		catch; bag; capture
+2290	familien	Familie		family
+2291	einsam			unique; lonely; alone
+2292	lebendig			alive; live; vivid
+2293	heiligen			holy
+2294	knapp			straight; short; almost
+2295	ebenfalls			as well; also; likewise
+2296	überprüft	überprüfen		check; review; recheck
+2298	gesetzt	setzen		place; plant; put
+2299	jederzeit			at any time; anytime; at any moment
+2300	kompliziert			complicated; difficult; sophisticated
+2301	spüren			feel; sense
+2304	stich	stechen		prick; sting
+2306	probieren			try; attempt; taste
+2307	tode	Tod		death
+2308	wundervoll			wonderful; marvelous; marvellous
+2309	tanz	tanzen		dance
+2310	geöffnet			open; opened
+2311	kerle	Kerl		fellow; bloke; dude
+2312	begraben			bury
+2314	stoppen			stop
+2316	riesen	Riese		giant
+2317	rote	rot		red
+2319	liest	lesen		read; pick; glean
+2320	vorn			at the front; in front of; fore
+2321	wichtige	wichtig		important; significant; relevant
+2322	aufmachen			open; make for a place
+2324	sexy			sexy
+2330	leichter	leicht		light; lightweight; easy
+2331	halben	halb		half
+2332	filme	Film		film; movie; motion picture
+2335	packen			get; seize; pack
+2336	dritte			third
+2337	inzwischen			meanwhile; meantime; in the meantime
+2339	presse	pressen		press; push; squeeze
+2340	sitze	Sitz		seat; headquarters; domicile
+2341	machten	machen		go; do; perform
+2342	geklaut	klauen		pinch; swipe; nick
+2343	helden	Held		hero; protagonist
+2347	reparieren			repair; fix
+2348	hä			huh; what; I didn't catch ya'
+2351	fälle	Fall		fall; drape; case
+2352	selten			rare; seldom; rarely
+2353	anrufe	Anruf		call; phone call
+2354	unterschreiben			sign
+2356	drücken			press; push; be too tight
+2359	endet	enden		end
+2362	schreibe	schreiben		write; store; touch-type
+2363	verhaften			arrest; seize
+2366	amen			amen
+2369	abhauen			cut off; run away
+2372	beinahe			almost; nearly
+2373	lebst	leben		live
+2374	tolles	toll		cool; corking; fantastic
+2375	anhalten			stop; hold on; last
+2376	fremden	fremd		strange; foreign; somebody else's
+2378	akzeptieren			accept
+2380	ärzte	Arzt		doctor; physician; doc
+2381	anziehen			dress; attire; put on
+2382	dingen			hire
+2383	umgehen			handle; deal; treat
+2384	bauch	bauchen		bulge
+2385	gesamte	gesamt		total; whole; entire
+2386	hübsche	hübsch		nice; pretty
+2387	ertragen			endure; bear; take
+2389	brennt	brennen		be; lit; burn
+2390	teile	Teil		part; piece; deal
+2392	landen			land; alight; disembark
+2394	straßen	Straße		straight; street; road
+2395	aufgenommen	aufnehmen		host; receive; admit
+2396	gerufen	rufen		call; shout; summon
+2399	blieb	bleiben		last; stay; remain
+2400	vertraue	vertrauen		trust
+2401	extra			deliberately; additionally; particularly
+2403	beobachten			observe; watch; supervise
+2405	tschüs			goodbye; bye; bye-bye
+2406	babys	Baby		baby; infant
+2407	wehtun			hurt; ache
+2408	zog	ziehen		move; migrate; roam
+2411	echten	echt		genuine; real
+2412	springen			spring; jump; leap
+2413	nackt			naked; nude; bare
+2414	existiert	existieren		exist
+2415	befreien			free; liberate
+2416	gerät	geraten		succeed; turn out; resemble
+2418	gezwungen	zwingen		force; compel
+2419	perfekte	perfekt		perfect
+2420	erzählst	erzählen		tell; narrate
+2422	interessieren			interest
+2423	schlechten	schlecht		bad; shoddy; evil
+2425	steigt	steigen		get; rise; climb
+2429	gekriegt	kriegen		get; come down with; have
+2430	fliehen			flee; escape
+2431	trug	tragen		yield; drag; carry
+2433	rate	Rat		advice; counsel; council
+2434	papiere	Papier		paper; document
+2435	abgeschlossen			secluded; completed; enclosed
+2437	beruf	berufen		appeal
+2438	gebiet	gebieten		command; order; reign
+2440	jedoch			however
+2441	beten			pray
+2442	verbunden			connected; interconnected; related
+2443	sprachen	Sprache		language; tongue; speech
+2445	wichtigste	wichtig		important; significant; relevant
+2446	prost			cheers; here's to you; here's to your health
+2448	aufgehört	aufhören		stop; cease; quit
+2449	kleider	Kleid		dress; gown; clothes
+2451	bestellt	bestellen		order; convey; pass on
+2452	herkommen			come; derive; originate
+2453	wild			wild; savage; feral
+2454	nenne	nennen		name; mention; call
+2455	angesehen			respected; distinguished; reputable
+2456	zuhören			listen; hear; pay attention
+2457	trennen			sort; separate; break up
+2460	meins			mine
+2463	vermissen			miss
+2464	angekommen	ankommen		matter; arrive; depend
+2465	beantworten			answer; respond
+2466	deutlich			clear; distinct; marked
+2467	träumen			dream; daydream
+2468	verwirrt			confused
+2469	akten	Akt		act; nude; action
+2470	riskieren			risk; hazard
+2471	b			flat; B
+2474	erkannt	erkennen		realize; understand; recognize
+2478	möge	mögen		like; may
+2479	stellte	stellen		face; confront; turn oneself in
+2481	erleben			experience; encounter
+2483	decke	decken		cover; roof; tile
+2485	wege	Weg		path; way; road
+2486	schritte	schreiten		stride
+2488	gemeldet	melden		report; get in touch; raise one's hand
+2489	hilfst	helfen		help; aid; assist
+2490	mittagessen			lunch
+2491	weint	weinen		cry; weep
+2492	vernichten			annihilate; destroy
+2495	ellen	Elle		cubit; ell; ulna
+2498	türen	Tür		door; gate
+2501	arbeitete	arbeiten		work; function; employ
+2502	spiegel	spiegeln		mirror
+2503	hauen			beat; hew
+2504	geraten			succeed; turn out; resemble
+2505	dritten	Dritte		third
+2508	wetter	wettern		storm; thunder; fulminate
+2509	schwul			gay
+2510	regel	regeln		control; manage; regulate
+2511	befindet	befinden		be located
+2514	armer	arm		poor; needy; unfortunate
+2515	gucken			watch; look
+2516	anstatt			instead of
+2517	champagner			champagne
+2518	gründe	Grund		land; reason; cause
+2519	strafe	strafen		punish
+2524	langen			suffice; be enough
+2525	altes	alt		old; aged
+2526	ruiniert			ruined
+2529	gras	grasen		graze
+2531	agenten	Agent		agent; spy
+2534	rechten			argue; claim; defend
+2537	erfreut			pleased; delighted
+2538	lügt	lügen		lie
+2540	harte	hart		hard; unyielding; cruel
+2541	staaten	Staat		country; territory; state
+2543	gaben	Gabe		gift; present; donation
+2544	hinterher			after; behind; afterwards
+2545	verpassen			miss
+2546	geholt	holen		catch; kidnap; fetch
+2549	trinke	trinken		drink
+2550	klären			clear; purge; treat
+2551	praktisch			handy; practical; virtually
+2555	besseren	gut		good; nice; well
+2558	versuchst	versuchen		try; attempt; taste
+2559	dahinter			behind
+2560	schwere	schwer		hard; heavy; grave
+2561	feuern			fire
+2563	schießt	schießen		shoot
+2565	schief			oblique; not straight
+2566	blau			blue; drunk; boozed
+2567	bestens			perfectly
+2568	wartest	warten		wait; maintain
+2571	unrecht			incorrect
+2572	leck			leaking; leaky
+2573	wonach			according to; what for; what of
+2574	entwickelt			developed
+2578	gemein			mean; common
+2579	wessen			whose
+2582	quelle	quellen		well; gush; swell
+2583	zahl	zahlen		pay
+2584	schiffe	Schiff		ship; boat; nave
+2586	bricht	brechen		break; vomit; burst
+2588	spitze	spitz		sharp; pointed; acute
+2590	treiben			do; drive; float
+2591	ausgezeichnet			excellent; marvellous; marvelous
+2593	möglichkeiten	Möglichkeit		possibility; option; feasibility
+2594	trinkt	trinken		drink
+2595	esse	essen		eat
+2597	details	Detail		detail; particular
+2599	wahren			maintain; preserve
+2601	offiziell			official; officially
+2602	dienen			serve; be useful; help
+2604	entscheidungen	Entscheidung		decision; judgment; ruling
+2605	dauernd			continuous
+2607	gegenseitig			mutual; reciprocal
+2608	gewählt	wählen		choose; select; adopt
+2611	verteidigen			defend; protect
+2612	schauspieler	schauspielern		act; play-act
+2613	personen	Person		person
+2614	überlassen			leave; abandon; concede
+2616	trägst	tragen		yield; drag; carry
+2617	wechseln			change; vary; exchange
+2618	begegnet	begegnen		face; respond; meet
+2619	betrogen	betrügen		cheat; deceive; betray
+2620	besucht			attended
+2621	vertrau	vertrauen		trust
+2626	süßer	süß		sweet; fresh; cute
+2627	loswerden			get rid of
+2628	melde	melden		report; get in touch; raise one's hand
+2630	bestätigt	bestätigen		confirm; authenticate
+2633	setze	setzen		place; plant; put
+2634	briefe	Brief		letter; epistle
+2635	null			zero; nought; nil
+2637	schlafe	Schlaf		sleep; rheum; eye boogers
+2638	wirken			work; act; operate
+2639	geführt	führen		lead
+2640	starten			start
+2641	götter	Gott		God; deity; godhead
+2642	festhalten			record; capture; fasten
+2643	geheim			secret; confidential; hidden
+2644	übergeben			vomit; hand over; cover up
+2648	wetten			bet; wager
+2649	gefolgt	folgen		follow; come after; ensue
+2650	verschiedene	verschieden		different; various; distinct
+2651	gleichzeitig			at the same time; simultaneous; contemporaneous
+2653	hungrig			hungry
+2655	zwingen			force; compel
+2656	atmet	atmen		breathe; respire
+2658	unterstützen			support
+2659	geworfen	werfen		cast; throw; hurl
+2660	verlor	verlieren		lose; relinquish
+2664	versteck	verstecken		hide; conceal
+2665	tötete	töten		kill; slay
+2666	fähigkeiten	Fähigkeit		ability; capability; skill
+2667	beruhigt	beruhigen		calm; blow over
+2668	rechtzeitig			opportune; duly
+2669	streng			hard; strict; sternly
+2671	gelebt	leben		live
+2674	richtiger	richtig		correct; right; exact
+2675	aufnehmen			host; receive; admit
+2678	öffnet	öffnen		open
+2682	medikamente	Medikament		drug; medicament; medicine
+2683	geschenkt	schenken		give; donate; pour
+2685	gelegt	legen		lay; put; deal the Skat
+2686	anfassen			touch
+2688	schlechtes	schlecht		bad; shoddy; evil
+2691	behauptet	behaupten		defend; maintain; assert
+2694	angeblich			supposedly; alleged; putative
+2695	reiten			ride; ride on horseback
+2698	gewarnt	warnen		warn
+2699	wohne	wohnen		live; reside; dwell
+2700	las	lesen		read; pick; glean
+2702	spazieren			walk; stroll
+2704	hiermit			hereby
+2705	schließt	schließen		close; shut; fasten
+2707	vieles	viel		much; many; a lot
+2708	erfüllt	erfüllen		elate; fulfil
+2709	tausend			thousand
+2711	eindeutig			unambiguous; univocal; unequivocal
+2713	gründen			base; build; found
+2715	zugeben			allow; assent; add
+2716	mittel			middle; mediocre
+2718	gefangenen	Gefangene		prisoner
+2720	frische	frisch		fresh
+2721	verdächtigen			suspect
+2722	neugierig			curious; inquisitive
+2724	kennenlernen			get to know
+2725	fliege	fliegen		fly; aviate; be expelled
+2726	lebte	leben		live
+2727	menschliche	menschlich		human; humane
+2729	auseinander			apart; asunder
+2730	fressen			gorge; eat; feed
+2731	beides	beide		two; both
+2732	ficken			fuck; screw; bonk
+2734	spüre	spüren		feel; sense
+2735	eilig			hasty; urgent
+2736	stammt	stammen		date; come; originate
+2737	vorgestellt			presented
+2739	welch			what
+2740	wichtiges	wichtig		important; significant; relevant
+2742	gehörte	gehören		belong; belong to
+2744	glaubte	glauben		believe; suppose; trust
+2745	oberst			topmost
+2747	fremde	fremd		strange; foreign; somebody else's
+2751	entspannen			relax
+2753	schläfst	schlafen		sleep; be asleep; stay at someones place
+2756	vernünftig			reasonable; sensible
+2757	fein			fine; delicate; good
+2758	greifen			grab; seize; grip
+2761	schickte	schicken		send; consign
+2762	per			by; via
+2764	einziger	einzig		only; sole; unique
+2765	umzubringen	umbringen		kill; commit suicide; kill oneself
+2766	zurückkehren			return; come back
+2769	erschaffen			create
+2771	hergekommen	herkommen		come; derive; originate
+2773	stärke	stärken		starch; strengthen; invigorate
+2774	vermögen			be able; be capable
+2775	verbracht	verbrechen		be responsible for; be up to; perpetrate
+2777	waschen			wash; clean
+2780	geister	Geist		ghost; mind; spirit
+2781	behaupten			defend; maintain; assert
+2783	würdet	werden		be; will; must
+2784	vögel	Vogel		bird; fowl; character
+2785	warnen			warn
+2786	albert	albern		silly; childish; play up
+2787	chancen	Chance		chance; opportunity; prospect
+2788	treibt	treiben		do; drive; float
+2789	nannte	nennen		name; mention; call
+2790	vermute	vermuten		suppose; suspect; guess
+2793	freundinnen	Freundin		friend; girlfriend
+2794	lecker			delicious; yummy; tasty
+2796	dicht			close; crazy; nutty
+2797	befinden			be located
+2798	ließen	lassen		stop; give up; quit
+2800	verursacht	verursachen		cause; bring about
+2802	klang	klingen		ring; clink; sound
+2804	aufregend	aufregen		upset; excite
+2805	grenzen			abut
+2809	besitz	besitzen		possess; own
+2811	eingesperrt	einsperren		cage; corral; pen in
+2812	irren			err; be mistaken; roam
+2814	schlug	schlagen		fight; beat; whip
+2817	öffne	öffnen		open
+2819	richten			point; direct; judge
+2821	erfunden	erfinden		invent; fabricate
+2824	behalte	behalten		keep; remember
+2825	beschützt	beschützen		protect
+2826	punkte	Punkt		point; dot; place
+2827	entfernen			distance; remove; delete
+2828	abgehauen	abhauen		cut off; run away
+2829	geträumt	träumen		dream; daydream
+2832	tränen			tear
+2833	erfolgreich			successful
+2834	volle	voll		full; sozzled
+2837	höher	hoch		high; tall
+2838	happy			glad; satisfied
+2843	liebsten	lieb		dear; nice
+2847	kauf	kaufen		buy; purchase; bribe
+2848	spinnst	spinnen		spin; purr; be crazy
+2852	beziehungen	Beziehung		connection; concern; relationship
+2853	abgemacht	abmachen		agree; remove; take off
+2854	schreie	schreien		cry; shout; scream
+2855	hmm			d'oh
+2856	bestätigen			confirm; authenticate
+2857	erschreckt	erschrecken		be; frightened; get
+2862	empfangen			receive; welcome; conceive
+2864	kämpfe	Kampf		fight; battle; combat
+2865	ergeben			surrender; capitulate; produce
+2867	fange	Fang		catch; success; fang
+2868	häuser	Haus		house; home
+2869	verliere	verlieren		lose; relinquish
+2872	heutzutage			nowadays
+2873	gefühlt	fühlen		feel; sense
+2874	schnitt	schneiden		cut; slice; tap
+2877	lebend			living; alive; animate
+2878	real			real; natural
+2881	spielte	spielen		play; act
+2882	begonnen	beginnen		begin; start; commence
+2883	ziehst	ziehen		move; migrate; roam
+2884	gelandet	landen		land; alight; disembark
+2887	beschlossen			agreed; decided
+2889	riechen			smell; reek
+2891	begeistert			passionate; ardent; avid
+2892	ei			oh
+2894	geil			rich; horny; randy
+2895	nieder			down; low; inferior
+2896	erkläre	erklären		explain; declare; state
+2897	schreckliche	schrecklich		terrible; horrible
+2898	beeindruckt			impressed
+2900	aufgegeben	aufgeben		give; assign; give up
+2901	aufgrund			because of; by reason of
+2902	momentan			at the moment; currently; momentarily
+2903	solch			such
+2904	meistens			mostly; most of the time; largely
+2906	sterne	Stern		star; angel; princess
+2907	heilen			cure; heal
+2908	soviel			as far as
+2909	kannten	kennen		know
+2910	stattdessen			instead; in lieu
+2915	aufgefallen	auffallen		notice; catch someone's eye; stand out
+2916	kämpft	kämpfen		fight; struggle; wrestle
+2919	wachsen			grow; increase; wax
+2920	verurteilt			condemned; sentenced
+2921	himmels	Himmel		space; sky; firmament
+2923	urteil	urteilen		judge
+2924	schweine	Schwein		pig; swine; pork
+2925	nettes	nett		nice; cute
+2928	verließ	verlassen		leave; abandon; forsake
+2929	wirf	werfen		cast; throw; hurl
+2930	wenige	wenig		little; a few; few
+2932	schulter	schultern		shoulder; sling
+2934	lernt	lernen		learn; study
+2935	beigebracht	beibringen		teach; provide; produce
+2936	normale	normal		normal
+2937	anbieten			offer; propose; be suitable for
+2938	verwenden			use; employ; utilise
+2939	gratuliere	gratulieren		congratulate
+2940	fluch	fluchen		curse; swear
+2943	grün			green
+2945	dachtest	denken		think
+2946	verarschen			fool; taunt; trick
+2947	gewöhnt	gewöhnen		get used; accustom; habituate
+2948	anklage	anklagen		indict; accuse; attach
+2949	tollen			frolic; romp
+2950	lippen	Lippe		lip; labium
+2951	fett			fat; bold; fertile
+2952	lege	legen		lay; put; deal the Skat
+2954	achten			watch; keep an eye on; pay attention to
+2956	erfährt	erfahren		learn; find out; experience
+2957	gewohnt			accustomed; usual; habitual
+2959	äußerst			extremely; utterly
+2960	einladen			invite; load in
+2962	aufwachen			wake up; awake
+2964	uniform			uniform
+2965	zusehen			watch; make sure
+2969	hosen	Hose		tornado; whirlwind; landspout
+2970	kurze	kurz		short; brief
+2972	täglich			daily; everyday; every day
+2973	fresse	fressen		gorge; eat; feed
+2974	übernehme	übernehmen		assume; take over; take
+2975	wiederholen			repeat; iterate; revise
+2976	bestellen			order; convey; pass on
+2977	freiwillig			voluntary; voluntarily; optionally
+2980	zeuge	Zeug		stuff; fabric
+2983	fähig			capable; able; competent
+2985	reifen			ripen; mature; cover with frost
+2987	führe	fahren		run; go; cart
+2988	durchgemacht	durchmachen		go through; endure; suffer
+2989	tests	Test		test; check
+2990	führte	führen		lead
+2991	schenken			give; donate; pour
+2995	albern			silly; childish; play up
+2996	brav			brave; conservative; upright
+2997	schwerer	schwer		hard; heavy; grave
+2999	versagt	versagen		fail; deny; abstain
+3001	steckst	stecken		stick; insert; tell
+3002	geschenke	Geschenk		present; gift
+3003	sicherlich			surely
+3005	merkt	merken		notice; realize; remember
+3009	liefern			fight; produce; deliver
+3010	jo			yeah
+3011	starke	stark		strong; powerful; intense
+3012	grunde	Grund		land; reason; cause
+3015	verschwand	verschwinden		leave; make off; get lost
+3016	schulde	schulden		owe
+3017	russen	Russe		Russian
+3019	gemerkt	merken		notice; realize; remember
+3020	ciao			bye
+3021	loslassen			release; let go; let loose
+3022	berichten			report; relate; refer
+3023	verabschieden			pass; adopt; enact
+3027	benehmen			behave
+3028	verdacht	verdenken		blame; resent
+3029	hübsches	hübsch		nice; pretty
+3031	e			e
+3034	probe	proben		rehearse
+3040	nahmen	nehmen		take; have; seize
+3041	zahlt	zahlen		pay
+3042	vorbereiten			prepare
+3043	verbrannt			burnt; burned; adust
+3044	verdammtes	verdammt		damn
+3046	informiert			informed
+3047	einziges	einzig		only; sole; unique
+3049	stinkt	stinken		stink; reek
+3050	schnappt	schnappen		catch; snap; grab
+3052	standen	stehen		be; stand; suit
+3053	klamotten	Klamotte		big; lump of rock; rag
+3054	heil			intact; unhurt
+3058	drum			therefore
+3062	lügst	lügen		lie
+3063	lies	lesen		read; pick; glean
+3067	beeilt	beeilen		hurry
+3069	einst			once; long ago; at one time
+3074	korrekt			correct
+3075	besessen	besitzen		possess; own
+3076	bewahren			keep; preserve; protect
+3078	pack	packen		get; seize; pack
+3079	gekämpft	kämpfen		fight; struggle; wrestle
+3081	angreifen			touch; attack; affect
+3082	tiefer	tief		deep; profound
+3084	truppen	Truppe		troop; troupe; body of soldiers
+3086	osten			orientate
+3087	elf			eleven
+3088	beeindruckend			impressive
+3089	besitzt	besitzen		possess; own
+3092	clever			smart; clever; cunning
+3093	verrückten	verrückt		crazy; mad; displace
+3094	freien			court
+3096	antworte	antworten		answer; reply
+3097	posten			post
+3098	schneiden			cut; slice; tap
+3099	sammeln			gather; accumulate; collect
+3100	gesteckt	stecken		stick; insert; tell
+3103	gewiss			certainly; surely; certain
+3106	meinetwegen			ok; because of me; on my account
+3109	ausziehen			move; trace; depart
+3110	verzweifelt			desperate; despairing; frantic
+3113	stets			always; constantly; continuously
+3115	viertel			quarter
+3117	pünktlich			punctual
+3118	erfüllen			elate; fulfil
+3119	kauft	kaufen		buy; purchase; bribe
+3123	schock	schocken		shock
+3124	empfang	empfangen		receive; welcome; conceive
+3125	wiederhole	wiederholen		repeat; iterate; revise
+3126	wünscht	wünschen		wish; desire; require
+3127	besondere			special
+3132	anweisungen	Anweisung		statement; instruction; directive
+3133	zahle	zahlen		pay
+3135	opfern			sacrifice
+3136	blaue	blau		blue; drunk; boozed
+3137	sparen			save; put aside; economize
+3138	weiteres	weit		far; wide; vast
+3139	gehörst	gehören		belong; belong to
+3141	erstaunlich			amazing
+3143	miete	mieten		rent; hire
+3144	verwandelt	verwandeln		convert; transform; metamorphose
+3145	daneben			next to; that
+3147	bereiten			cause; prepare; get something ready
+3148	wüste	wüst		desert; desolate; waste
+3149	prüfen			examine; test; check
+3151	hundert			hundred
+3152	erscheinen			appear; turn up; seem
+3153	laß	lassen		stop; give up; quit
+3154	besiegen			defeat; beat; bag
+3156	umständen	Umstand		trouble; circumstance
+3158	landes	Land		earth; soil; country
+3160	folgendes	folgend		following; subsequent
+3161	fürchten			fear; afraid
+3162	mordes	Mord		murder; homicide; slaying
+3163	nennst	nennen		name; mention; call
+3164	angestellt			employed
+3166	aufgetaucht	auftauchen		show; show up; turn up
+3167	rausfinden			find out
+3168	ächzt	ächzen		groan
+3169	rauskommen			get out
+3170	planet	planen		plan; contrive
+3172	erwischen			catch; catch red-handed; grab
+3173	sitz	sitzen		fit; sit
+3177	rosa			pink
+3179	amerikanische	amerikanisch		American
+3180	schönste	schön		beautiful; nice; pretty
+3181	rufst	rufen		call; shout; summon
+3182	berührt	berühren		touch; move; address
+3183	französisch			French; oral; orally
+3186	kaufe	Kauf		purchase; buy
+3190	bestraft	bestrafen		punish
+3191	kreis	kreisen		circle; circumgyrate
+3192	reine	rein		in; clean; pure
+3194	schlimmes	schlimm		bad; terrible; serious
+3195	bestehen			pass; succeed; exist
+3197	erscheint	erscheinen		appear; turn up; seem
+3201	hässlich			ugly; nasty
+3202	lauft	laufen		run; walk
+3203	angezogen			decent; dressed; attracted
+3205	half	helfen		help; aid; assist
+3206	sollt	sollen		should; shall
+3210	mutig			brave; courageous; valiant
+3211	ausruhen			rest
+3213	linken			link; cheat
+3215	umstände	Umstand		trouble; circumstance
+3216	not			necessary
+3218	eng			close; intimate; narrow
+3221	üben			do; exercise; practice
+3223	gelöst	lösen		release; buy; dissolve
+3225	morde	Mord		murder; homicide; slaying
+3226	dusche	duschen		shower; take a shower; have a shower
+3229	bedroht	bedrohen		threaten
+3230	gehöre	gehören		belong; belong to
+3231	befreit	befreien		free; liberate
+3232	stöhnen			moan; groan
+3233	reagiert	reagieren		react
+3235	rund			about; round about; round
+3239	leiten			lead; manage; conduct
+3242	unheimlich			scary; uncanny; weird
+3245	irgend			some; at all; in any way
+3248	extrem			extreme
+3252	juden	Jude		Jew; Judaist
+3253	studiert	studieren		study
+3254	angelogen	anlügen		lie
+3255	schaue	schauen		look; gaze; see
+3260	nebenan			next door
+3263	mäuse	Maus		mouse
+3264	staub	stauben		flour
+3266	kugeln	Kugel		ball; globe; sphere
+3267	dutzend			majority
+3270	testen			test; trial
+3271	auftritt	auftreten		act; appear; step
+3274	verdienst	verdienen		earn; deserve; merit
+3275	langsamer	langsam		slow; slowly; step by step
+3276	wunde	wund		sore; raw
+3280	kurzem	kurz		short; brief
+3281	fische	Fisch		fish; Pisces; Fisch
+3282	einkaufen			buy; go shopping; buy in
+3283	kreuz	kreuzen		cross; hybridize; interbreed
+3285	begangen	begehen		celebrate; commit; perpetrate
+3287	nachsehen			check; look up
+3288	junior			junior
+3289	bäume	Baum		tree; boom
+3291	geliebte	geliebt		beloved; dear
+3292	bereuen			regret; rue; repent
+3294	berge	Berg		mountain; hill; pile
+3295	verwendet			used
+3296	steuern			head; control; steer
+3297	gekümmert	kümmern		take care of; pay attention to; look after
+3298	voran			ahead; onward
+3299	wieviel			how many
+3303	verlasse	verlassen		leave; abandon; forsake
+3304	überfallen			attack; invade; assault
+3306	umdrehen			turn; flip; reverse
+3310	negativ			negative
+3312	tanzt	tanzen		dance
+3313	verbrennen			burn; incinerate; burn at the stake
+3314	gefreut	freuen		rejoice; be glad; be happy
+3316	blauen	blau		blue; drunk; boozed
+3318	stücke	Stück		part; piece
+3321	identifizieren			identify
+3324	kameras	Kamera		camera
+3325	zentrale	zentral		central; crucial; essential
+3329	wenden			turn; turn to; address
+3331	holst	holen		catch; kidnap; fetch
+3332	suchte	suchen		search; seek; look for
+3334	füßen	Fuß		base; foot; leg
+3335	unglücklich			unhappy
+3336	frohe	froh		happy; merry; glad
+3339	plus			plus
+3341	brachten	bringen		bring; take
+3342	zauber	zaubern		magic trick; conjure up; do magic
+3343	berühren			touch; move; address
+3348	verschwenden			squander; waste
+3349	untersucht			probed
+3350	königs	König		king
+3352	lese	lesen		read; pick; glean
+3353	stahl	stehlen		steal; sneak; steal away
+3354	hättet	haben		have; have got; contain
+3355	affen	Affe		monkey; ape; apeman
+3358	gewollt			intended
+3360	vermeiden			avoid
+3362	aussagen			state; express; reveal
+3363	wunderbare	wunderbar		wonderful; marvellous; marvelous
+3366	verrückter	verrückt		crazy; mad; displace
+3369	einfache	einfach		single; simple; simply
+3371	laufe	Lauf		run; course; race
+3373	seltsame	seltsam		weird; strange; bizarre
+3374	heiratet	heiraten		get married; marry; wed
+3375	angenehm			pleasant; agreeable; pleased to meet you
+3376	daheim			at home
+3377	planen			plan; contrive
+3378	klauen			pinch; swipe; nick
+3381	klingen			ring; clink; sound
+3383	nächster	nächst		next
+3384	hörten	hören		listen; hear; obey
+3386	trafen	treffen		hit; meet; affect
+3387	ungern			reluctantly; grudgingly
+3388	abgelehnt			declined; rejected
+3389	erstens			first
+3393	zeigte	zeigen		point; show; demonstrate
+3395	hohen	hoch		high; tall
+3397	ladys	Lady		lady
+3399	verkauf	verkaufen		sell; make a bad buy
+3401	verbergen			hide; conceal; suppress
+3402	sorgt	sorgen		care; tend; cause
+3405	berühmt			famous; renowned; celebrated
+3406	aussteigen			fail; stop; switch off
+3408	ginge	gehen		work; operable; go
+3409	reingehen			enter
+3410	durfte	dürfen		may; allowed
+3412	wirft	werfen		cast; throw; hurl
+3414	betreten			enter; step into; embarrassed
+3415	todes	Tod		death
+3418	blöden	blöd		stupid; silly; frustrating
+3421	hohe	hoch		high; tall
+3425	hübscher	hübsch		nice; pretty
+3429	höhle	höhlen		hollow out
+3431	angeboten	anbieten		offer; propose; be suitable for
+3432	befreundet			friendly; close; friend
+3434	ausgerechnet			even; just; calculated
+3436	beibringen			teach; provide; produce
+3440	seelen	Seele		soul; spirit; sound post
+3441	steine	Stein		stone; rock; boulder
+3444	gestört			crazy; disturbed; insane
+3446	ruhen			stop; halt; stall
+3447	pillen	Pille		ball; pill; birth control pill
+3452	amerikanischen	amerikanisch		American
+3453	telefonieren			telephone; phone
+3454	heirate	heiraten		get married; marry; wed
+3455	erkenne	erkennen		realize; understand; recognize
+3456	funk	funken		cable; radio; spark
+3459	mögliche	möglich		possible; potential
+3461	uni			plain
+3462	scheinbar			apparently; seeming; pretended
+3463	fakten	Faktum		fact
+3464	informieren			inform; let know
+3466	feier	feiern		celebrate
+3467	wenigen	wenig		little; a few; few
+3468	söhne	Sohn		son
+3470	nix			nothing; nix
+3471	vampire	Vampir		vampire; vampire bat
+3472	erkennt	erkennen		realize; understand; recognize
+3473	sicherer	sicher		safe; sure; certain
+3474	zigaretten	Zigarette		cigarette; fag
+3475	dummes	dumm		stupid; dumb
+3476	mauer	mauern		lay bricks; mason
+3477	erneut			again; anew
+3479	schluck	schlucken		swallow
+3480	hierbleiben			stay
+3483	bezahle	bezahlen		pay
+3484	böses	böse		bad; nasty; naughty
+3486	gerüchte	Gerücht		rumour; rumor
+3487	eingestellt	einstellen		set; adjust; tune
+3489	weitergehen			continue; proceed
+3492	bezweifle	bezweifeln		doubt
+3494	over			compact
+3495	gekostet	kosten		taste; get a taste of; cost
+3496	anzeige	anzeigen		report; indicate; display
+3497	wohnst	wohnen		live; reside; dwell
+3500	bedingungen	Bedingung		condition; requirement; circumstance
+3502	aufzuhalten	aufhalten		stop; hinder; balk
+3503	versprich	versprechen		promise; pledge; expect
+3504	verdiene	verdienen		earn; deserve; merit
+3505	geschnappt	schnappen		catch; snap; grab
+3507	eile	eilen		hurry; be urgent
+3508	innen			inside
+3510	einig			united; agreed; in agreement
+3511	verhandeln			negotiate
+3512	weswegen			why
+3513	nützlich			useful; helpful
+3517	vergesse	vergessen		forget; forgotten; forget oneself
+3518	dunkle	dunkel		dark; gloomy; grave
+3521	diamanten			diamond
+3522	wächst	wachsen		grow; increase; wax
+3523	gewöhnlich			common; ordinary; usual
+3527	großartige	großartig		awesome; brilliant
+3530	traurige	traurig		sorry; sad; unhappy
+3531	persönliche	persönlich		personal; personally; in person
+3535	anschauen			look at; watch
+3536	kürzlich			recently; lately; recent
+3539	käme	kommen		come; cum; advance
+3540	stellst	stellen		face; confront; turn oneself in
+3541	bereitet	bereiten		cause; prepare; get something ready
+3542	einfallen			occur; remember; intrude
+3545	brach			fallow
+3549	schuldest	schulden		owe
+3550	nass			wet
+3551	rächen			revenge; avenge; retaliate
+3552	womöglich			possibly
+3553	begrüßen			welcome; greet; hail
+3556	überraschen			surprise
+3557	menschlichen	menschlich		human; humane
+3558	repariert	reparieren		repair; fix
+3560	gestanden			accomplished
+3562	schütze	schützen		protect
+3563	störe	stören		disturb; hinder; interfere
+3565	filmen			film
+3566	jobs	Job		job
+3567	maschinen	Maschine		machine; engine; aircraft
+3568	unterlagen	Unterlage		base; underlay; pad
+3570	graben			dig
+3571	kette	ketten		chain
+3572	auftauchen			show; show up; turn up
+3573	interessante	interessant		interesting
+3575	springt	springen		spring; jump; leap
+3576	terroristen	Terrorist		terrorist
+3578	bekämpfen			battle; antagonize; combat
+3579	lärm	lärmen		make noise; be noisy; brawl
+3580	flehe	flehen		implore; entreat; supplicate
+3581	aufgewachsen	aufwachsen		grow up
+3583	größere	groß		great; big; large
+3585	betrachten			consider; regard; observe
+3588	widerstand	widerstehen		resist; withstand
+3589	bergen			bear; shelter; salvage
+3592	vögeln			screw; fowl
+3593	bescheuert			stupid; dumb
+3594	weggehen			leave; go away; disappear
+3596	original			original
+3600	verbinden			bandage; connect; associate
+3602	ermittlungen	Ermittlung		investigation; inquiry; determining
+3606	besonderen	Besondere		special
+3608	versetzt	versetzen		transfer; pawn; relocate
+3610	heiliger	heilig		holy; sacred; saintly
+3613	besitzen			possess; own
+3614	zeitungen	Zeitung		newspaper; paper; gazette
+3615	zurückgekommen	zurückkommen		return; come back; get back
+3616	süßes	süß		sweet; fresh; cute
+3618	ungewöhnlich			unusual; unwontedly
+3620	geschaffen	schaffen		work; take; create
+3621	beschreiben			describe
+3622	ausgesucht	aussuchen		choose; select; pick
+3623	notwendig			necessary
+3624	dunklen	dunkel		dark; gloomy; grave
+3625	ignorieren			ignore
+3626	toter	tot		dead
+3628	narr	narren		fool
+3629	scheißegal			I don’t care; give a shit
+3630	höchstens			at most; at the best
+3631	übersehen			overlook; comprehend
+3632	geirrt	irren		err; be mistaken; roam
+3633	darunter			below; underneath; thereunder
+3634	außen			external; outside
+3635	einzig			only; sole; unique
+3636	stirbst	sterben		die; pass away; decease
+3642	wilde	wild		wild; savage; feral
+3644	bequem			easy; relaxed; comfortable
+3645	rauch			thick
+3646	verschiedenen	verschieden		different; various; distinct
+3647	kamst	kommen		come; cum; advance
+3655	vernichtet	vernichten		annihilate; destroy
+3656	gesichter	Gesicht		face; expression; vision
+3657	derselbe			same
+3658	hattet	haben		have; have got; contain
+3660	freie	frei		free; emancipated; liberated
+3662	haken			stick; hook
+3666	gefasst			calm; composed; cool
+3668	geklappt	klappen		work; work out; clap
+3670	erwähnen			mention; bring up
+3672	reißen			kill; savage; tear
+3674	genial			brilliant; ingenious
+3675	berichte	Bericht		report
+3676	kram	kramen		dig; rummage
+3678	solle	sollen		should; shall
+3680	umziehen			move; surround; cloud over
+3681	zunächst			firstly
+3682	keinerlei			no…at all
+3683	typisch			typical
+3684	bietet	bieten		show; offer; accept
+3688	ruinieren			ruin
+3689	jünger	jung		young
+3691	umso			all the more; even; more
+3692	starben	sterben		die; pass away; decease
+3693	rette	retten		save; rescue; escape
+3694	triffst	treffen		hit; meet; affect
+3695	unhöflich			impolite; discourteous
+3696	safe			safe
+3697	anzurufen	anrufen		call; phone; ring
+3700	heben			hold; lift; raise
+3701	koch	kochen		cook; make; boil
+3702	derselben	derselbe		same
+3704	male	Mal		time; mark; marking
+3708	gesetze	Gesetz		rule; principle; law
+3711	getragen	tragen		yield; drag; carry
+3713	mitmachen			function; participate; join in
+3714	tauschen			change; swap; exchange
+3715	ergebnisse	Ergebnis		result; outcome
+3718	einstellen			set; adjust; tune
+3719	reagieren			react
+3720	gefehlt	fehlen		lack; miss; be missing
+3721	verwandeln			convert; transform; metamorphose
+3722	gedauert	dauern		last; take time
+3723	senden			broadcast; send
+3726	abgeben			concern; hand in; concede
+3729	anhören			sound; sound like something; hear
+3732	hinsetzen			put down; sit down
+3737	schalten			change; shift; place
+3739	gewöhnen			get used; accustom; habituate
+3740	lernte	lernen		learn; study
+3741	vereinigten	vereinigen		unify; band; coalesce
+3743	zweiter			latter
+3745	schieben			push; shove; impute
+3746	dreimal			thrice; three times
+3747	weich			soft; weak; mellow
+3748	echtes	echt		genuine; real
+3749	zweitens			secondly
+3750	drachen	Drache		dragon; Draco
+3752	erschöpft			exhausted
+3753	genauer	genau		exact; precisely; precise
+3754	verlange	verlangen		desire; long for; demand
+3755	spanisch			Spanish
+3756	verrat	verraten		betray; reveal
+3757	hexen			astound; do wonders; practise witchcraft
+3758	live			live
+3760	taub			deaf; numb; insensitive
+3763	hopp			chop-chop
+3764	wiederzusehen	wiedersehen		meet again
+3765	doppelt			double
+3766	last	lesen		read; pick; glean
+3767	vergleich	vergleichen		compare
+3768	böser	böse		bad; nasty; naughty
+3769	herzlich			cordial; hearty
+3771	taschen	Tasche		bag; pocket
+3772	genügt	genügen		suffice; comply
+3775	großzügig			generous; spacious; permissive
+3777	hauses	Haus		house; home
+3778	leihen			borrow; lend
+3779	scheiden			separate; divorce
+3781	köstlich			delicious; exquisite; amusing
+3783	einheiten	Einheit		unit; unity; entity
+3784	wichtigen	wichtig		important; significant; relevant
+3786	warne	warnen		warn
+3791	sklaven	Sklave		slave
+3793	gesamten	gesamt		total; whole; entire
+3794	stille	still		still; quiet; silent
+3796	geflogen	fliegen		fly; aviate; be expelled
+3801	hervorragend			outstanding; excellent; superb
+3803	verärgert			annoyed; angry; angrily
+3805	überfall	überfallen		attack; invade; assault
+3806	unwichtig			unimportant
+3808	linke	link		left
+3811	franzosen	Franzose		Frenchman; French; monkey wrench
+3813	schwäche	schwächen		weaken
+3817	atme	atmen		breathe; respire
+3819	unterstützt	unterstützen		support
+3822	pleite			broke; skint; bankrupt
+3823	beleidigt			huffy; in a huff; offended
+3826	schlimme	schlimm		bad; terrible; serious
+3827	beweist	beweisen		prove; show
+3829	dramatische	dramatisch		dramatic
+3830	heutigen	heutig		present-day; today’s
+3831	leere	leer		empty; blank; deserted
+3835	trinkst	trinken		drink
+3836	heimlich			secret; clandestine; covert
+3837	eingehen			die; deal; go into
+3839	greift	greifen		grab; seize; grip
+3840	mächtig			master; powerful; mighty
+3842	sinnlos			absurd; senseless
+3843	versaut			raunchy; swinish
+3846	anstellen			do; queue; queue up
+3847	milliarden	Milliarde		billion; milliard
+3848	flotte	flott		quick; swift; fashionable
+3850	mitbringen			bring; bring along
+3851	beteiligt			involved; participating; concerned
+3852	dunkeln	Dunkel		dark
+3853	entwickeln			develop; devise; evolve
+3854	schämen			be ashamed
+3855	erwachsene	erwachsen		adult; grown-up; grown
+3856	zack			chop-chop
+3857	durchsuchen			search
+3859	rollen			roll
+3861	tricks	Trick		trick; flim-flam; hoax
+3862	plätze	Platz		place; square; space
+3864	sünden	Sünde		sin
+3867	räumen			clear; move; move out
+3868	lerne	lernen		learn; study
+3869	rettet	retten		save; rescue; escape
+3870	hinweise	Hinweis		hint; clue; reference
+3871	ausreden			talk out of
+3874	diejenige	derjenige		that; the one
+3875	nächte	Nacht		night
+3876	herrscht	herrschen		rule; reign; prevail
+3878	jahres	Jahr		year; age
+3880	romantisch			romantic
+3881	flüstert	flüstern		whisper; susurrate
+3884	bedanken			thank; bethank
+3885	verabredet	verabreden		agree; arrange; make an appointment
+3889	reizend			charming; lovely; irritating
+3890	grade	Grad		degree; order
+3893	stecke	stecken		stick; insert; tell
+3896	vergewaltigt	vergewaltigen		rape; violate
+3897	mußt	müssen		must; have to
+3900	studieren			study
+3901	köpfe	Kopf		head; header
+3902	duschen			shower; take a shower; have a shower
+3904	öl	ölen		oil
+3905	knarre	knarren		creak; grit
+3910	versehen			occupy; perform; expect
+3911	bande	Band		band; group; volume
+3912	treu			loyal; faithful
+3913	positiv			positive
+3914	meiste	meist		most; mostly
+3918	verlobt	verloben		betroth; plight; get engaged
+3919	besiegt			defeated
+3920	existieren			exist
+3921	könne	können		can; be able to; may
+3922	proben			rehearse
+3923	beschissen			shitty; crappy
+3924	gewinne	Gewinn		prize; profit; gain
+3925	personal			personal
+3927	bewaffnet			weaponed; armed
+3928	fällen			precipitate; fell; cut down
+3929	wecken			cause; bring about; wake
+3936	amüsieren			amuse; entertain
+3937	ordentlich			orderly; tidy
+3938	weglaufen			run away
+3939	aufgewacht	aufwachen		wake up; awake
+3940	nähern			approach; bring close
+3941	decken			cover; roof; tile
+3942	sinne	Sinn		sense; meaning
+3946	bittet	bitten		ask; beg; invite
+3948	klopft	klopfen		knock; beat; tap
+3952	kontrolliert			controlled; certified; checked
+3954	abnehmen			test; lose; steal
+3955	ratten	Ratte		rat
+3956	anwälte	Anwalt		lawyer; advocate
+3958	vergiftet			poisoned
+3961	wunden	wund		sore; raw
+3962	unangenehm			unpleasant; nasty; disagreeable
+3965	präsentiert	präsentieren		present
+3969	garantiert	garantieren		guarantee
+3970	durchsucht	durchsuchen		search
+3973	verfluchte	verfluchen		curse
+3974	bestimmten	bestimmen		rule; determine
+3979	beinen	Bein		bone; leg; foot
+3980	hell			light; bright; sharp
+3984	benutze	benutzen		use; utilize
+3986	ziele	Ziel		goal; objective; finish
+3989	nirgends			nowhere
+3992	bau	bauen		build; construct; erect
+3993	brennen			be; lit; burn
+3997	schwarzer	schwarz		black
+3998	schmutzig			dirty; filthy
+4000	ersetzen			replace; substitute
+4002	verfahren			corrupt; accede; hopeless
+4006	allzu			all too
+4008	dürft	dürfen		may; allowed
+4009	orten			locate
+4014	wolle	wollen		want; wish; woollen
+4015	knurrt	knurren		growl; rumble
+4016	meldet	melden		report; get in touch; raise one's hand
+4019	trocken			dry
+4021	schreibst	schreiben		write; store; touch-type
+4027	unterschrieben			signed
+4029	heulen			howl; ululate; hoot
+4030	entschlossen			determined; resolute; decided
+4032	gefiel	gefallen		please; like; fallen
+4033	bekamen	bekommen		get; receive; be given
+4034	netten	nett		nice; cute
+4035	geheime	geheim		secret; confidential; hidden
+4037	aktiviert			activated
+4039	hinweg			away with you; begone
+4040	schmuck			pretty
+4042	wunderschöne	wunderschön		gorgeous; beautiful; wonderful
+4043	zurückkommt	zurückkommen		return; come back; get back
+4045	illegal			illegal; illicit; clandestine
+4047	persönlichen	persönlich		personal; personally; in person
+4048	geiseln	Geisel		hostage
+4049	segne	segnen		bless
+4050	normaler	normal		normal
+4051	steuer	steuern		head; control; steer
+4055	dummen	dumm		stupid; dumb
+4056	weißer	weiß		white; Caucasian
+4061	entgegen			against; towards; contrary to
+4062	fasse	fassen		take; contain; hold
+4063	strecke	strecken		stretch; dilute
+4066	hilfreich			helpful; useful
+4067	schweren	schwer		hard; heavy; grave
+4068	h			B minor; b
+4069	jahrelang			long-standing; for years; in years
+4070	leeren			empty
+4073	behörden	Behörde		authority; agency
+4074	grüße	Gruß		greeting; salutation; salute
+4075	geklärt	klären		clear; purge; treat
+4076	bruders	Bruder		brother; friar; monk
+4077	kaufte	kaufen		buy; purchase; bribe
+4082	denselben	derselbe		same
+4084	widerlich			disgusting; nauseating; abhorrent
+4086	katzen	Katze		cat; feline; bitch
+4088	sozusagen			so to speak; as it were; quasi
+4090	unschuldige	unschuldig		innocent; virginal
+4091	abwarten			wait; observe; await
+4095	grünen			turn green; green
+4096	könntet	können		can; be able to; may
+4097	aufnahmen	Aufnahme		start; reception; absorption
+4100	passe	passen		pass; skip; fit
+4102	glückliche	glücklich		happy; lucky; fortunate
+4106	klienten	Klient		client
+4107	nervt	nerven		irritate; annoy; bother
+4108	leidet	leiden		suffer; put up with; tolerate
+4110	trainieren			train
+4112	zurückbringen			bring back
+4115	studenten	Student		student; undergraduate
+4116	durchaus			absolutely; all in all
+4117	grausam			cruel; fierce; brutal
+4118	höchste	hoch		high; tall
+4119	verwickelt	verwickeln		involve; entangle
+4120	schmecken			like; smell; taste
+4121	klappen			work; work out; clap
+4122	apropos			apropos; by the way
+4125	ansonsten			otherwise; apart from that
+4128	mitglieder	Mitglied		member
+4131	blicken			look
+4132	glücklicher	glücklich		happy; lucky; fortunate
+4133	hübschen	hübsch		nice; pretty
+4134	dicke	dick		fat; big; thick
+4135	gewünscht			desired; wanted; wished-for
+4136	gejagt			hunted
+4137	diejenigen			those
+4138	diskutieren			discuss
+4139	pinkeln			pee; urinate; piss
+4141	erheben			charge; impose; levy
+4144	möglichen	möglich		possible; potential
+4145	jenseits			across; beyond; on the other side of
+4149	pfeift	pfeifen		whistle; peach; arbitrate
+4150	dieselben	derselbe		same
+4151	wilden	wild		wild; savage; feral
+4152	vergaß	vergessen		forget; forgotten; forget oneself
+4153	enttäuschen			disappoint; falsify
+4155	konsequenzen	Konsequenz		consequence
+4159	online			online
+4160	bete	beten		pray
+4161	verdächtige	verdächtigen		suspect
+4163	normalen	normal		normal
+4166	süßen			sweeten
+4167	riesige	riesig		great; huge; gigantic
+4170	wiederkommen			come back
+4172	warf	werfen		cast; throw; hurl
+4173	telefoniert	telefonieren		telephone; phone
+4175	einzelnen	einzeln		single; singly
+4177	hielten	halten		stop; hold; keep
+4178	handel	handeln		act; do; trade
+4179	gekannt	kennen		know
+4180	getrieben	Getriebe		gear; transmission; gearbox
+4184	bomben			bomb; slam
+4187	bedenken			give; consider; reflect
+4190	sicheren	sicher		safe; sure; certain
+4191	verkaufe	Verkauf		sale; selling; sales
+4193	tapfer			brave; valiant; courageous
+4195	besorge	besorgen		get; fix up with; obtain
+4196	tiefe	tief		deep; profound
+4197	narren			fool
+4198	abgeholt	abholen		pick up; collect; take away
+4199	abhalten			give; hold; deter
+4200	bestimmte	bestimmen		rule; determine
+4201	laufenden	laufend		current; ongoing; pending
+4202	auftaucht	auftauchen		show; show up; turn up
+4204	löschen			quench; put out; extinguish
+4207	mies			bad; lousy; rotten
+4210	vertragen			tolerate; get along with
+4211	gebissen	beißen		burn; bite; itch
+4212	geheimen	geheim		secret; confidential; hidden
+4213	drinks	Drink		drink
+4214	schlief	schlafen		sleep; be asleep; stay at someones place
+4216	soeben			just now
+4217	komische	komisch		strange; weird; funny
+4219	aufgehalten	aufhalten		stop; hinder; balk
+4221	attraktiv			attractive
+4222	begriff	begreifen		understand; comprehend; include
+4223	versichere	versichern		assure; insure; make certain
+4224	schilde	Schild		sign; shield
+4225	legte	legen		lay; put; deal the Skat
+4226	mitteilen			communicate; inform
+4228	gemütlich			comfortable
+4229	muster	mustern		scrutinize
+4230	versprach	versprechen		promise; pledge; expect
+4231	überwachen			oversee; surveil; survey
+4232	eingeschlafen	einschlafen		fall asleep; pass away; go to sleep
+4233	schlimmsten	schlimm		bad; terrible; serious
+4234	verlierst	verlieren		lose; relinquish
+4235	einzelne	einzeln		single; singly
+4236	vergib	vergeben		miss; award; assign sth.
+4237	vorbeikommen			pass by; come by; come over
+4238	aua			ouch; ow
+4239	brüste	Brust		breast; chest; thorax
+4248	einsteigen			board; get in; climb in
+4249	löwen	Löwe		lion; Leo
+4250	einsetzen			use; apply; employ
+4251	gewinn	gewinnen		win; gain; earn
+4252	schüchtern			shy
+4253	scheinst	scheinen		shine; seem
+4254	pflanzen			plant
+4260	werte	Wert		value; worth; price
+4262	übernimmt	übernehmen		assume; take over; take
+4264	heftig			severe; violent; hefty
+4267	teams	Team		team
+4270	freier	frei		free; emancipated; liberated
+4273	zurzeit			currently; at present
+4274	ausmachen			bother; mind; aggregate
+4276	töchter	Tochter		daughter; girl
+4277	laute	laut		loud; according
+4278	akzeptiert			accepted
+4280	beliebt			popular
+4281	verpflichtet	verpflichten		commit; sign on; undertake
+4283	lohnt	lohnen		pay; reward; worthwhile
+4285	blöder	blöd		stupid; silly; frustrating
+4291	kehren			turn; sweep; take care of
+4292	baut	bauen		build; construct; erect
+4293	chinesen	Chinese		Chinese
+4294	gesichert			secured
+4298	belogen	belügen		lie; tell someone a lie
+4299	malen			color; colour; calligraph
+4305	ausgegangen	ausgehen		go out; go places; assume
+4306	begreifen			understand; comprehend; include
+4308	blitz	blitzen		flash; there's lightning
+4309	löst	lösen		release; buy; dissolve
+4312	ernstes	ernst		serious
+4313	verteilt	verteilen		distribute
+4314	bezüglich			regarding; with respect to; referential
+4315	faszinierend			fascinating
+4316	aufmerksam			thoughtful; attentive; mindful
+4320	orte	Ort		place; site; spot
+4322	keucht	keuchen		gasp; wheeze
+4323	erhielt	erhalten		receive; obtain; get
+4324	treue	treu		loyal; faithful
+4325	felsen	Fels		rock; Fels; Larochette
+4327	kurzen	kurz		short; brief
+4329	taucht	tauchen		dive; pop; bathe
+4330	bestimmen			rule; determine
+4331	ausgesetzt	aussetzen		subject; expose; offer
+4332	zurückgeben			return; resign
+4333	verkehr	verkehren		deal; interact; twist
+4334	bewiesen	beweisen		prove; show
+4336	liebste	lieb		dear; nice
+4337	ausrichten			tell; arrange; organize
+4339	ebene	eben		just; even; plain
+4340	herrlich			magnificent; wonderful; marvellous
+4341	stürzen			fall; overthrow; plunge
+4343	gefälligst			kindly; please; if you don’t mind
+4344	farben	Farbe		color; colour; paint
+4345	geliebten	geliebt		beloved; dear
+4346	ankommen			matter; arrive; depend
+4348	unterbrechen			interrupt; disconnect; disrupt
+4349	kindes	Kind		child; kid; kiddo
+4351	erden			ground; earth
+4352	schrecklichen	schrecklich		terrible; horrible
+4353	falsches	falsch		wrong; false; fake
+4354	täuschen			deceive; mislead; delude
+4356	irgendwer			anyone
+4359	sichern			save; secure; protect
+4361	betrug	betragen		amount; come; behave
+4362	trauer	trauern		mourn
+4364	bilden			form; educate
+4365	gewachsen	wachsen		grow; increase; wax
+4368	verlaufen			run; get lost; stray
+4371	rechnen			calculate; compute; reckon
+4373	befragen			survey; consult; interrogate
+4374	wegnehmen			take away; take up
+4375	abschied	abscheiden		release; separate; decease
+4376	benötigen			require; need; take
+4377	pst			hist; hush; shh
+4379	reiche	Reich		kingdom; empire; realm
+4381	beginn	beginnen		begin; start; commence
+4383	bestrafen			punish
+4385	weine	Wein		wine; grape; raisin
+4386	fremder	fremd		strange; foreign; somebody else's
+4387	sachte			gentle
+4388	identifiziert	identifizieren		identify
+4389	gestehen			confess; admit
+4393	riesig			great; huge; gigantic
+4394	entscheide	entscheiden		rule; decide
+4396	prinzen	Prinz		prince
+4397	bewusstlos			unconscious
+4399	marke	Mark		mark; march; marrow
+4400	harter	hart		hard; unyielding; cruel
+4402	höflich			polite; courteous; suave
+4404	setzte	setzen		place; plant; put
+4406	absichtlich			intentional; on purpose
+4407	vermasselt	vermasseln		fuck up; mess up; muck up
+4408	verschlossen			reserved; taciturn; locked
+4409	sowie			as soon as; as well as
+4411	gedreht	drehen		turn; spin; shoot
+4414	ey			hey
+4416	rosen	Rose		rose; rose window
+4417	persönliches	persönlich		personal; personally; in person
+4419	fortschritte	fortschreiten		advance; proceed; progress
+4421	zugehört	zugehören		be part of
+4422	biete	bieten		show; offer; accept
+4424	vorhaben			intend
+4428	explodiert			exploded
+4430	verzichten			renounce; forgo; resign
+4436	anzusehen	ansehen		look at; watch
+4437	ohnmächtig			unconscious; powerless
+4440	geladen			loaded; armed; charged
+4441	guckt	gucken		watch; look
+4442	privat			private
+4444	brauchten	brauchen		use; need; require
+4450	blasen			blow; puff; suck off
+4452	salz	salzen		salt
+4453	unfair			unfair
+4454	verzeiht	verzeihen		forgive; pardon; excuse
+4458	entscheidet	entscheiden		rule; decide
+4461	betrachtet	betrachten		consider; regard; observe
+4462	bauern	Bauer		peasant; farmer; jack
+4464	wartete	warten		wait; maintain
+4465	schaust	schauen		look; gaze; see
+4466	genossen	genießen		enjoy; savour; relish
+4467	tropfen			drip; drop
+4468	probiert	probieren		try; attempt; taste
+4471	verhungern			starve; famish
+4472	versuchten	versuchen		try; attempt; taste
+4473	mütter	Mutter		mother; nut; Mom
+4476	bestanden	bestehen		pass; succeed; exist
+4477	haaren			lose hair; shed
+4479	schluchzt	schluchzen		sob; snivel
+4480	übertrieben			exaggerated; extreme; overstated
+4484	friedlich			peaceful; amicable; placid
+4485	richtiges	richtig		correct; right; exact
+4488	geliefert	liefern		fight; produce; deliver
+4490	gestritten	streiten		fight; argue
+4492	lediglich			merely; solely
+4495	krass			crass; crazy; wicked
+4496	weiterer	weit		far; wide; vast
+4500	geräusche	Geräusch		noise; sound
+4501	lichter	Licht		light
+4502	starken	stark		strong; powerful; intense
+4503	dexter			dexter
+4505	flaschen	Flasche		bottle; flask; loser
+4506	putzen			clean; plaster; render
+4508	geheilt	heilen		cure; heal
+4509	beißen			burn; bite; itch
+4511	stammen			date; come; originate
+4512	wände	Wand		wall; barrier
+4513	befürchte	befürchten		fear; be afraid; dread
+4516	grüßen			remember; greet
+4517	versagen			fail; deny; abstain
+4518	übernommen	übernehmen		assume; take over; take
+4519	hoffte	hoffen		hope; trust
+4520	verschieben			move; shift; postpone
+4525	entdecken			discover; descry; spot
+4526	traue	trauen		trust; marry; dare
+4527	thron	thronen		be enthroned; sit enthroned; sit in state
+4528	riesigen	riesig		great; huge; gigantic
+4532	übertragen			transfer; transform; figurative
+4534	flammen	Flamme		flame; blaze; burner
+4535	erkennst	erkennen		realize; understand; recognize
+4536	erschrecken			be; frightened; get
+4546	vertreten			support; represent; stand in
+4548	lernst	lernen		learn; study
+4549	brüllt	brüllen		low; bray; roar
+4550	füllen			fill
+4551	letztendlich			eventually
+4556	kekse	Keks		star; bullshit; drivel
+4557	ausschalten			eliminate; switch off; turn off
+4561	erledige	erledigen		complete; finish; deal with
+4563	fängst	fangen		catch; bag; capture
+4566	angeln			angle; fish
+4567	rausgehen			get out
+4570	eures	mein		my; mine
+4571	gesessen	sitzen		fit; sit
+4572	verrate	verraten		betray; reveal
+4573	kehrt	kehren		turn; sweep; take care of
+4576	lade	laden		charge; load; download
+4577	billig			cheap; inexpensive; fitting
+4581	gerissen			cunning; crafty
+4582	festgenommen	festnehmen		arrest; apprehend; seize
+4584	befohlen	befehlen		command; order
+4585	überlege	überlegen		superior; predominant; ponder
+4587	flog	fliegen		fly; aviate; be expelled
+4589	hinlegen			lie down; lay down; put down
+4591	liege	liegen		be; lie; be located
+4592	geflohen	fliehen		flee; escape
+4593	knall	knallen		bang; slam
+4594	nebenbei			in passing; incidentally
+4599	geleistet	leisten		perform; afford; allow oneself
+4600	nutzt	nutzen		utilize; use; employ
+4601	fröhliche	fröhlich		merry; cheerful; happy
+4606	kontaktieren			contact
+4608	fuhren	fahren		run; go; cart
+4610	eingesetzt	einsetzen		use; apply; employ
+4614	schlimmeres	schlimm		bad; terrible; serious
+4615	rennt	rennen		run; race; sprint
+4616	anlegen			land; dock; moor
+4617	nachzudenken	nachdenken		ponder; reflect; think
+4619	übliche	üblich		usual; common
+4621	verderben			ruin; spoil; decay
+4622	medizinische	medizinisch		medical; medically
+4623	besetzt	besetzen		occupy; decorate; garnish
+4624	zugriff	zugreifen		access; grab; seize
+4627	grüne	grün		green
+4628	ausgeben			spend; dispense; issue#Verb
+4633	schwören			swear; swear by
+4635	arten	Art		kind; type; sort
+4636	aufgebaut	aufbauen		build; construct; establish
+4638	betrügen			cheat; deceive; betray
+4640	trank	trinken		drink
+4641	glatt			plain; simply; smooth
+4642	trainiert	trainieren		train
+4645	geweint	weinen		cry; weep
+4647	verletzungen	Verletzung		wound; injury; lesion
+4649	zwillinge	Zwilling		twin; Gemini
+4651	reißt	reißen		kill; savage; tear
+4652	zeigst	zeigen		point; show; demonstrate
+4653	stirb	sterben		die; pass away; decease
+4656	gefickt			fucked
+4657	schlägst	schlagen		fight; beat; whip
+4659	erwartest	erwarten		expect; await; abide
+4660	gestoßen	stoßen		push; encounter; run into
+4661	durchgehen			pass; go through
+4663	gründlich			diligent; thorough
+4665	eingeschlossen	einschließen		include; lock up
+4667	vollständig			complete; total; whole
+4671	vertraust	vertrauen		trust
+4673	eigener	eigen		own; peculiar
+4679	private	privat		private
+4680	welten	Welt		world; Earth
+4681	verlegen			lay; shy; abashed
+4683	erfuhr	erfahren		learn; find out; experience
+4686	dummer	dumm		stupid; dumb
+4688	stabil			stable; sturdy
+4689	ausgeschlossen			out of the question; impossible
+4690	out			out of fashion
+4692	aufgehoben	aufheben		keep; pick up; abolish
+4693	single			single
+4695	vielmals			a lot; very much; many times
+4697	bestand	bestehen		pass; succeed; exist
+4699	erbe	erben		inherit
+4700	weggelaufen	weglaufen		run away
+4703	leichte	leicht		light; lightweight; easy
+4704	zuständig			in charge of; responsible for
+4705	losgehen			fire; go off; leave
+4707	hustet	husten		cough
+4708	brutal			brutal; brutish; violent
+4709	besprochen	besprechen		review; discuss
+4710	halbes	halb		half
+4714	zusammenarbeiten			cooperate; work together
+4715	beunruhigt	beunruhigen		worry
+4716	achte			eighth
+4717	innere			inward
+4719	eklig			disgusting; icky; yucky
+4720	x			x
+4721	armes	arm		poor; needy; unfortunate
+4723	öffentlich			public; open
+4724	nützt	nützen		use; serve; useful
+4726	brillant			brilliant
+4727	köder	ködern		attract; bait
+4728	gespräche	Gespräch		conversation; talk
+4730	vorgehen			happen; proceed; precede
+4735	gerecht			fair; just; conforming
+4739	gesorgt	sorgen		care; tend; cause
+4744	schnelle	schnell		fast; quick; rapid
+4745	normales	normal		normal
+4746	gefesselt	fesseln		bind; chain; captivate
+4747	lautes	laut		loud; according
+4748	kalte	kalt		cold; chilly; cool
+4749	leitet	leiten		lead; manage; conduct
+4750	angehen			attack; sprout; beg
+4751	ekelhaft			disgusting; disgustful; feculent
+4754	intelligent			intelligent; smart
+4757	socken	Socke		sock
+4760	packt	packen		get; seize; pack
+4761	eventuell			possible; perhaps; maybe
+4762	nirgendwohin			nowhere
+4764	gelangen			attain; reach
+4765	gespannt			tense; excited; curious
+4767	zurückgehen			return; go back; decrease
+4768	regnet	regnen		rain
+4770	entspannt	entspannen		relax
+4771	wörter	Wort		word; expression; term
+4772	klingeln			ring
+4773	ruhige	ruhig		quiet; still; silent
+4775	anständig			proper; decent; honest
+4777	harten	hart		hard; unyielding; cruel
+4778	aufzeichnungen	Aufzeichnung		note; record; recording
+4781	endgültig			definitive; final
+4782	aufgaben	Aufgabe		task; job; duty
+4784	deutsch			German
+4789	respektieren			respect
+4790	riskant			risky
+4791	lohn	lohnen		pay; reward; worthwhile
+4793	zustimmen			agree
+4797	erleichtert			relieved; alleviated; facilitated
+4804	kotzen			puke; barf; throw up
+4806	hurra			hurrah; hurray; hooray
+4808	symptome	Symptom		symptom
+4809	vorfahren			drive ahead; drive up
+4810	nutzlos			useless; futile
+4813	nochmals			again; once more
+4815	medien	Medium		medium; media
+4816	faul			lazy; idle; slothful
+4817	dient	dienen		serve; be useful; help
+4819	ereignisse	Ereignis		event; occurrence
+4820	aussuchen			choose; select; pick
+4821	verprügelt	verprügeln		beat up; thrash
+4824	fabelhaft			fantastic; great; fabulous
+4825	klinge	klingen		ring; clink; sound
+4829	durchführen			carry out; give a tour; guide
+4831	eröffnen			inaugurate; open; open up
+4833	seist	sein		be; exist; have
+4834	stoßen			push; encounter; run into
+4837	genügend			enough; sufficient
+4839	gestatten			allow; permit
+4840	gekocht			cooked
+4844	ausgelöst	auslösen		cause; trigger; provoke
+4845	väter	Vater		father; dad; daddy
+4846	verarscht	verarschen		fool; taunt; trick
+4847	butter	buttern		butter; churn
+4851	goldene	golden		golden; gold
+4852	schließe	schließen		close; shut; fasten
+4854	begehen			celebrate; commit; perpetrate
+4856	geschworen	schwären		suppurate; ulcerate
+4857	abgenommen	abnehmen		test; lose; steal
+4859	überreden			persuade; cajole; talk over
+4860	nannten	nennen		name; mention; call
+4864	bewundere	bewundern		admire; marvel; adore
+4865	geschieden			divorced
+4868	lebten	leben		live
+4873	geschnitten			cut
+4875	quietschen			squeak; creak; screech
+4876	füttern			feed
+4878	unschuldigen	unschuldig		innocent; virginal
+4879	menschlich			human; humane
+4880	eigenartig			peculiar; strange; weird
+4881	oje			oh dear
+4886	zahn	zahnen		teethe
+4887	landet	landen		land; alight; disembark
+4888	kisten	Kiste		box; coffer
+4889	liegst	liegen		be; lie; be located
+4892	leine	leinen		leash; put on a lead; put on a leash
+4894	ausmacht	ausmachen		bother; mind; aggregate
+4895	beschädigt			damaged
+4897	steckte	stecken		stick; insert; tell
+4898	bahn	bahnen		pave (a road)
+4902	nö			nah; nope
+4903	angesichts			given; in view of
+4908	angeklagt	anklagen		indict; accuse; attach
+4909	aufhört	aufhören		stop; cease; quit
+4910	baden			swim; bathe; bath
+4911	knacken			crack; nap; sleep
+4912	verbindungen	Verbindung		connection; link; bond
+4913	panzer	panzern		armor
+4916	leiser	leise		quiet; faint; low
+4921	sanft			soft; gentle; suave
+4923	charmant			charming
+4924	aufbauen			build; construct; establish
+4927	zähle	zählen		count; rank
+4928	verlieben			fall in love
+4933	jener			that; those; yon
+4934	begegnen			face; respond; meet
+4935	dämlich			stupid; sodding
+4942	tabletten	Tablette		tablet; pill
+4944	auftreten			act; appear; step
+4947	gelöscht	löschen		quench; put out; extinguish
+4950	niedlich			cute; sweet
+4952	klage	klagen		wail; lament; whinge
+4953	wolltet	wollen		want; wish; woollen
+4961	jene			that
+4963	angelegenheiten	Angelegenheit		concern; business
+4964	dokumente	Dokument		document
+4965	fröhlich			merry; cheerful; happy
+4969	opfers	Opfer		sacrifice; victim; offering
+4970	noten	Note		note; note verbale; grade
+4972	irgendwohin			somewhere; to some place
+4979	jagt	jagen		hunt; chase; rush
+4982	spenden			dispense; donate; give
+4983	betrieb	betreiben		collect; practice; practise
+4984	gemeinsame	gemeinsam		common; shared; jointly
+4985	absurd			absurd
+4988	dünn			thin; weak
+4990	schultern			shoulder; sling
+4992	vergehen			die; perish; pass
+4993	ahnen			guess; raden; vermoeden
+4994	verbessern			correct; improve

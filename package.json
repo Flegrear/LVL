@@ -1,0 +1,23 @@
+{
+  "name": "lvl",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.17.0" },
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "test": "node --test tests/*.test.js"
+  },
+  "dependencies": {
+    "adm-zip": "^0.6.1",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "hangul-romanization": "^1.0.1",
+    "kuroshiro": "^1.2.0",
+    "kuroshiro-analyzer-kuromoji": "^1.1.0",
+    "pinyin-pro": "^3.29.4",
+    "webtorrent": "^3.0.21",
+    "wyzie-lib": "^2.5.2"
+  }
+}

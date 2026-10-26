@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "2026.09.15.1",
+  "wordSizes": [100, 1000, 5000],
+  "phraseSizes": [100, 1000],
+  "languages": {
+    "EN": { "name": "English", "wordSourceCode": "en", "phraseSourceCode": "en" },
+    "ES": { "name": "Spanish", "wordSourceCode": "es", "phraseSourceCode": "es" },
+    "FR": { "name": "French", "wordSourceCode": "fr", "phraseSourceCode": "fr" },
+    "DE": { "name": "German", "wordSourceCode": "de", "phraseSourceCode": "de" },
+    "IT": { "name": "Italian", "wordSourceCode": "it", "phraseSourceCode": "it" },
+    "PT": { "name": "Portuguese", "wordSourceCode": "pt", "phraseSourceCode": "pt" },
+    "JA": { "name": "Japanese", "wordSourceCode": "ja", "phraseSourceCode": "ja" },
+    "KO": { "name": "Korean", "wordSourceCode": "ko", "phraseSourceCode": "ko" },
+    "ZH": { "name": "Chinese (Simplified)", "wordSourceCode": "zh_cn", "phraseSourceCode": "zh_cn" },
+    "RU": { "name": "Russian", "wordSourceCode": "ru", "phraseSourceCode": "ru" },
+    "NL": { "name": "Dutch", "wordSourceCode": "nl", "phraseSourceCode": "nl" },
+    "PL": { "name": "Polish", "wordSourceCode": "pl", "phraseSourceCode": "pl" },
+    "TR": { "name": "Turkish", "wordSourceCode": "tr", "phraseSourceCode": "tr" }
+  },
+  "provenance": {
+    "words": {
+      "source": "FrequencyWords",
+      "corpus": "OpenSubtitles2018",
+      "upstreamCommit": "525f9b560de45753a5ea01069454e72e9aa541c6",
+      "sourceUrl": "https://github.com/hermitdave/FrequencyWords",
+      "license": "CC BY-SA 4.0",
+      "licenseUrl": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "attribution": "FrequencyWords by Hermit Dave; frequency counts derived from OpenSubtitles2018."
+    },
+    "phrases": {
+      "source": "top-open-subtitles-sentences",
+      "corpus": "OpenSubtitles2018",
+      "upstreamCommit": "861f4267cdbb36f4cca4ddfdb2221f1c75bf485b",
+      "sourceUrl": "https://github.com/orgtre/top-open-subtitles-sentences",
+      "license": "Upstream list terms follow the underlying OpenSubtitles2018 corpus; generator code is CC BY 3.0",
+      "licenseUrl": "https://github.com/orgtre/top-open-subtitles-sentences#the-underlying-corpus",
+      "attribution": "orgtre/top-open-subtitles-sentences; derived from the OPUS OpenSubtitles2018 corpus."
+    }
+  }
+}

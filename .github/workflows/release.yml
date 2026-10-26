@@ -1,0 +1,81 @@
+name: Tagged LVL release
+
+on:
+  push:
+    tags:
+      - 'v[0-9]*.[0-9]*.[0-9]*'
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install source test dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Validate release tag and run tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          if ($tag -cnotmatch '^v\d+\.\d+\.\d+$') { throw 'Expected vMAJOR.MINOR.PATCH tag' }
+          $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($tag -cne "v$version") { throw "Tag $tag must match committed package.json version $version" }
+          node --version
+          npm test
+          if ($LASTEXITCODE -ne 0) { throw 'Source tests failed' }
+          node --test installer/packaging.test.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Installer contract tests failed' }
+      - name: Build source patch or select full bootstrap
+        id: update
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $version = $tag.Substring(1)
+          $prior = @(git tag --list 'v*' --sort=-v:refname | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' -and [version]$_.Substring(1) -lt [version]$version } | Select-Object -First 1)
+          $mode = 'full'
+          if ($version -ne '0.1.1' -and $prior.Count -eq 1) {
+            node scripts/build-update.mjs --from $prior[0] --to $version --out-dir dist
+            if ($LASTEXITCODE -eq 0) { $mode = 'patch' }
+            else { Write-Host 'This change is incompatible with source-only patches; building the full installer fallback.' }
+          }
+          "mode=$mode" >> $env:GITHUB_OUTPUT
+          Write-Host "Release $tag mode: $mode"
+      - name: Install Inno Setup for full/bootstrapping releases
+        if: steps.update.outputs.mode == 'full'
+        shell: pwsh
+        run: choco install innosetup --yes --no-progress
+      - name: Build full Windows installer if required
+        if: steps.update.outputs.mode == 'full'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./installer/build.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'LVL setup build failed' }
+          # build.ps1 produces exactly one installer and its matching hash.
+          if (-not (Test-Path dist/LVL-Setup.exe) -or -not (Test-Path dist/LVL-Setup.exe.sha256)) {
+            throw 'Canonical LVL-Setup.exe release artifacts are missing'
+          }
+      - name: Publish tagged Windows update to GitHub Releases
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = '${{ github.ref_name }}'
+          $assets = @(Get-ChildItem dist -File | Where-Object { $_.Name -match '^(?:LVL-Setup\.exe(?:\.sha256)?|LVL-update-v\d+\.\d+\.\d+\.zip(?:\.sha256)?)$' } | ForEach-Object { $_.FullName })
+          if ($assets.Count -ne 2) { throw "Expected an update or full setup and matching checksum, got $($assets.Count)" }
+          if ($assets | Where-Object { $_ -match '[\\/]LVL\.exe(?:\.sha256)?$' }) { throw 'LVL.exe is the installed app, not a GitHub release installer' }
+          gh release create $tag @assets --repo '${{ github.repository }}' --verify-tag --title "LVL Alpha $tag" --generate-notes --latest
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release upload failed for $tag" }

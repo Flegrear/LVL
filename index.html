@@ -1,0 +1,1239 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark" />
+    <script>document.documentElement.dataset.learningMode = "off";</script>
+    <script>
+      // OAuth tokens arrive in URL fragments. Hide the credential from the
+      // address bar BEFORE external modules or their dependencies load.
+      if (window.location.pathname === "/anilist/callback") {
+        window.__lvlAniListOAuthResponse = { hash: window.location.hash };
+        window.history.replaceState({ view: "settings" }, "", "/settings");
+      }
+    </script>
+    <title>LVL</title>
+    <meta name="theme-color" content="#000000" />
+    <link rel="icon" href="/favicon.ico?v=2" sizes="any" />
+    <link rel="icon" href="/icon.svg?v=2" type="image/svg+xml" sizes="any" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=2" sizes="180x180" />
+    <link rel="manifest" href="/site.webmanifest?v=2" />
+    <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/ui.css" />
+    <link rel="stylesheet" href="/calendar.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside id="app-primary-nav" class="app-sidebar" aria-label="Primary navigation" data-i18n-aria-label="Primary navigation">
+        <div class="sidebar-head">
+          <button id="sidebar-toggle" class="sidebar-toggle" type="button" aria-label="Expand navigation" aria-expanded="false" aria-controls="app-primary-nav" title="Expand navigation" data-i18n-title="Expand navigation" data-i18n-aria-label="Expand navigation">
+            <span></span><span></span><span></span>
+          </button>
+          <button id="sidebar-brand-link" class="sidebar-brand-link" type="button" aria-label="Go to Home" title="Home">
+            <img src="/brand/lvl_app_icon_dark.svg" width="30" height="30" alt="" />
+          </button>
+        </div>
+        <div class="sidebar-label" data-i18n="WORKSPACE">WORKSPACE</div>
+        <nav class="side-nav" aria-label="Main navigation" data-i18n-aria-label="Main navigation">
+          <button class="nav-btn is-active" data-view="home" title="Home" aria-label="Home" data-i18n-title="Home" data-i18n-aria-label="Home">
+            <span class="nav-key">01</span>
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="m4 10 8-6 8 6"/><path d="M6 9v11h12V9"/><path d="M9.5 20v-6h5v6"/></svg></span>
+            <span class="nav-label" data-i18n="HOME">HOME</span>
+          </button>
+          <button class="nav-btn" data-view="watch" title="Watch" aria-label="Watch" data-i18n-title="Watch" data-i18n-aria-label="Watch">
+            <span class="nav-key">02</span>
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 5.5h16v13H4z"/><path d="m10 9 5 3-5 3z"/></svg></span>
+            <span class="nav-label" data-i18n="WATCH">WATCH</span>
+          </button>
+          <button class="nav-btn" data-view="library" title="Library" aria-label="Library" data-i18n-title="Library" data-i18n-aria-label="Library">
+            <span class="nav-key">03</span>
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="6" height="6"/><rect x="14" y="4" width="6" height="6"/><rect x="4" y="14" width="6" height="6"/><rect x="14" y="14" width="6" height="6"/></svg></span>
+            <span class="nav-label" data-i18n="LIBRARY">LIBRARY</span>
+            <span id="library-count" class="count-pill">0</span>
+          </button>
+          <button class="nav-btn" data-view="calendar" title="Calendar" aria-label="Calendar">
+            <span class="nav-key">04</span>
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7.5 3.5v4M16.5 3.5v4M3.5 10h17M8 14h3M8 17.5h5"/></svg></span>
+            <span class="nav-label">CALENDAR</span>
+          </button>
+          <button class="nav-btn" data-view="study" title="Study" aria-label="Study" data-i18n-title="Study" data-i18n-aria-label="Study">
+            <span class="nav-key">04</span>
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5.5h5.5A2.5 2.5 0 0 1 13 8v11a2.5 2.5 0 0 0-2.5-2.5H5z"/><path d="M19 5.5h-3.5A2.5 2.5 0 0 0 13 8v11a2.5 2.5 0 0 1 2.5-2.5H19z"/></svg></span>
+            <span class="nav-label" data-i18n="STUDY">STUDY</span>
+            <span id="due-count" class="count-pill">0</span>
+          </button>
+          <button class="nav-btn" data-view="review" title="Review" aria-label="Review" data-i18n-title="Review" data-i18n-aria-label="Review">
+            <span class="nav-key">05</span>
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.5 7H17a3 3 0 0 1 3 3v5"/><path d="m17 12 3 3 3-3"/><path d="M17.5 17H7a3 3 0 0 1-3-3V9"/><path d="m7 12-3-3-3 3"/></svg></span>
+            <span class="nav-label" data-i18n="REVIEW">REVIEW</span>
+          </button>
+          <button class="nav-btn" data-view="test" title="Tests" aria-label="Tests" data-i18n-title="Tests" data-i18n-aria-label="Tests">
+            <span class="nav-key">06</span>
+            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h10v3H7z"/><path d="M6 7h12v13H6z"/><path d="m9 13 2 2 4-5"/></svg></span>
+            <span class="nav-label" data-i18n="TESTS">TESTS</span>
+          </button>
+          <div class="nav-settings-actions">
+            <button class="nav-btn" data-view="settings" title="Settings" aria-label="Settings" data-i18n-title="Settings" data-i18n-aria-label="Settings">
+              <span class="nav-key">07</span>
+              <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M4 7h10"/><circle cx="17" cy="7" r="2"/><path d="M20 7h0"/><path d="M4 17h3"/><circle cx="10" cy="17" r="2"/><path d="M13 17h7"/><path d="M4 12h6"/><circle cx="13" cy="12" r="2"/><path d="M16 12h4"/></svg></span>
+              <span class="nav-label" data-i18n="SETTINGS">SETTINGS</span>
+            </button>
+            <button id="sidebar-notifications" class="nav-notification-btn" type="button" aria-label="Notifications" title="Notifications" aria-haspopup="true" aria-expanded="false" aria-controls="app-notifications-popover">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 8-3 9h18c0-1-3-2-3-9"/><path d="M10 21h4"/></svg>
+              <span id="sidebar-notification-count" class="notification-count" hidden>1</span>
+            </button>
+          </div>
+        </nav>
+        <div class="sidebar-spacer"></div>
+      </aside>
+      <div id="app-notifications-popover" class="app-notifications-popover" role="region" aria-label="Notifications" tabindex="-1" hidden>
+        <div class="app-notifications-popover__head"><strong>Notifications</strong><button id="app-notifications-close" type="button" aria-label="Close notifications">×</button></div>
+        <div id="app-notifications-list" class="app-notifications-list" aria-live="polite"><p>No notifications</p></div>
+        <button id="app-notifications-settings" class="app-notifications-settings" type="button">Notification settings</button>
+      </div>
+
+      <main class="app-main">
+        <!-- Home has its own browsing header; every other section uses the
+             simpler branded header below. Both share one live-search panel. -->
+        <header id="home-topbar" class="ui-topbar home-topbar app-topbar">
+          <button id="app-sidebar-toggle" class="app-nav-toggle" type="button" aria-label="Expand navigation" aria-expanded="false" aria-controls="app-primary-nav" title="Expand navigation" data-i18n-title="Expand navigation" data-i18n-aria-label="Expand navigation">
+            <span></span><span></span><span></span>
+          </button>
+              <div id="home-tabs" class="ui-tabs" role="tablist" aria-label="Browse by type" data-i18n-aria-label="Browse by type">
+                <button id="home-tab-all" class="ui-tab" type="button" role="tab" data-value="all" aria-selected="true" aria-controls="home-panel" tabindex="0" data-i18n="All">All</button>
+                <button id="home-tab-movie" class="ui-tab" type="button" role="tab" data-value="movie" aria-selected="false" aria-controls="home-panel" tabindex="-1" data-i18n="Movies">Movies</button>
+                <button id="home-tab-tv" class="ui-tab" type="button" role="tab" data-value="tv" aria-selected="false" aria-controls="home-panel" tabindex="-1" data-i18n="TV Shows">TV Shows</button>
+                <button id="home-tab-anime" class="ui-tab" type="button" role="tab" data-value="anime" aria-selected="false" aria-controls="home-panel" tabindex="-1" data-i18n="Anime">Anime</button>
+              </div>
+              <div class="ui-topbar__actions">
+                <div id="topbar-catalog-search-host" class="catalog-search-host">
+                  <button id="home-search-title" class="ui-search-trigger" type="button" aria-label="Search titles" aria-keyshortcuts="/" aria-expanded="false" aria-controls="catalog-search-panel" data-i18n-aria-label="Search titles">
+                    <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+                    <span class="ui-search-trigger__label" data-i18n="Search titles">Search titles</span>
+                  </button>
+                  <div id="catalog-search-shell" class="catalog-search-shell" hidden>
+                    <form id="catalog-search-form" class="catalog-search-form" role="search">
+                      <label class="ui-search catalog-search">
+                        <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+                        <span class="ui-visually-hidden" data-i18n="Search movies and series">Search movies and series</span>
+                        <input id="catalog-search-input" class="ui-search__input" type="search" placeholder="Search titles" autocomplete="off" aria-label="Search movies and series" aria-controls="catalog-results" aria-expanded="false" data-i18n-placeholder="Search titles" data-i18n-aria-label="Search movies and series" />
+                      </label>
+                    </form>
+                    <div id="catalog-search-panel" class="catalog-search-panel" role="region" aria-label="Matching titles" hidden>
+                      <p id="catalog-status" class="catalog-search-status" role="status" aria-live="polite"></p>
+                      <div id="catalog-results" class="catalog-search-results" aria-label="Matching titles"></div>
+                    </div>
+                  </div>
+                </div>
+                <button id="home-refresh-picks" class="ui-icon-btn random-pick-trigger" type="button" aria-label="Open random recommendation" aria-haspopup="dialog" aria-expanded="false" aria-controls="random-pick-popover" data-ui-tooltip="Random title" data-ui-tooltip-pos="bottom" data-ui-tooltip-align="end">
+                  <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 17h2.7c1.6 0 3-.8 3.9-2.2l2.8-5.6c.9-1.4 2.3-2.2 3.9-2.2H20"/><path d="m17 4.5 3 2.5-3 2.5"/><path d="M4 7h2.7c1.3 0 2.5.5 3.3 1.5"/><path d="M14 15.5c.8 1 2 1.5 3.3 1.5H20"/><path d="m17 14.5 3 2.5-3 2.5"/></svg>
+                </button>
+                <button id="home-open-library" class="ui-icon-btn" type="button" aria-label="Open Library" data-ui-tooltip="Library" data-ui-tooltip-pos="bottom" data-ui-tooltip-align="end" data-i18n-aria-label="Open Library" data-i18n-ui-tooltip="Library">
+                  <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>
+                </button>
+              </div>
+            </header>
+        <header id="section-topbar" class="ui-topbar section-topbar app-topbar" aria-label="Section navigation">
+          <button id="section-sidebar-toggle" class="app-nav-toggle" type="button" aria-label="Expand navigation" aria-expanded="false" aria-controls="app-primary-nav" title="Expand navigation" data-i18n-title="Expand navigation" data-i18n-aria-label="Expand navigation">
+            <span></span><span></span><span></span>
+          </button>
+          <button id="section-home-button" class="section-home-button" type="button" aria-label="Home" title="Home" data-i18n-aria-label="Home" data-i18n-title="Home">
+            <img id="section-view-icon" class="section-view-icon" src="/brand/lvl_app_icon_dark.svg" width="42" height="42" alt="" aria-hidden="true" decoding="async" />
+          </button>
+          <span id="app-topbar-view-label" class="ui-visually-hidden" aria-live="off">Watch</span>
+          <div class="ui-topbar__actions">
+            <div id="section-catalog-search-host" class="catalog-search-host">
+              <button id="section-search-title" class="ui-search-trigger" type="button" aria-label="Search titles" aria-keyshortcuts="/" aria-expanded="false" aria-controls="catalog-search-panel" data-i18n-aria-label="Search titles">
+                <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+                <span class="ui-search-trigger__label" data-i18n="Search titles">Search titles</span>
+              </button>
+            </div>
+            <button id="section-random-pick" class="ui-icon-btn random-pick-trigger" type="button" aria-label="Open random recommendation" aria-haspopup="dialog" aria-expanded="false" aria-controls="random-pick-popover" data-ui-tooltip="Random title" data-ui-tooltip-pos="bottom" data-ui-tooltip-align="end">
+              <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M4 17h2.7c1.6 0 3-.8 3.9-2.2l2.8-5.6c.9-1.4 2.3-2.2 3.9-2.2H20"/><path d="m17 4.5 3 2.5-3 2.5"/><path d="M4 7h2.7c1.3 0 2.5.5 3.3 1.5"/><path d="M14 15.5c.8 1 2 1.3 3.3 1.5H20"/><path d="m17 14.5 3 2.5-3 2.5"/></svg>
+            </button>
+            <button id="section-open-library" class="ui-icon-btn" type="button" aria-label="Open Library" data-ui-tooltip="Library" data-ui-tooltip-pos="bottom" data-ui-tooltip-align="end" data-i18n-aria-label="Open Library" data-i18n-ui-tooltip="Library">
+              <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><rect x="4" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="4" width="6.5" height="6.5" rx="1.5"/><rect x="4" y="13.5" width="6.5" height="6.5" rx="1.5"/><rect x="13.5" y="13.5" width="6.5" height="6.5" rx="1.5"/></svg>
+            </button>
+          </div>
+        </header>
+        <div id="random-pick-popover" class="random-pick-popover" role="dialog" aria-label="Random title selection" tabindex="-1" hidden></div>
+        <section id="view-home" class="view is-active" aria-labelledby="home-heading">
+          <div class="home-page">
+            <h1 id="home-heading" class="ui-visually-hidden" data-i18n="Home">Home</h1>
+
+            <div id="home-panel" class="home-panel" role="tabpanel" aria-labelledby="home-tab-all">
+              <section id="home-hero" class="ui-hero home-hero" aria-roledescription="carousel" aria-label="Featured titles" data-i18n-aria-label="Featured titles"></section>
+              <div id="home-rows" class="home-rows" aria-busy="true"></div>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-watch" class="view">
+          <div class="watch-page">
+            <div class="workspace-grid">
+              <section class="panel player-panel">
+                <h1 id="media-title" class="ui-visually-hidden">No video loaded</h1>
+
+                <div id="watch-player-layout" class="watch-player-layout">
+                  <div class="watch-player-main">
+                <div id="floating-player-placeholder" class="floating-player-placeholder" hidden>
+                  <span>Video is playing in a floating window.</span>
+                  <button id="floating-player-placeholder-return" class="ui-btn ui-btn--primary ui-btn--sm" type="button">Return to Watch</button>
+                </div>
+                <div class="video-frame" id="video-frame">
+                  <video id="video" playsinline></video>
+                  <div id="compat-controls" class="compat-controls" hidden>
+                    <div class="player-control-row">
+                      <button id="player-prev-chapter" class="player-tool player-icon" type="button" data-tooltip="Previous chapter" aria-label="Previous chapter" data-i18n-aria-label="Previous chapter" data-i18n-tooltip="Previous chapter"><svg viewBox="0 0 24 24"><path d="M6 5v14M18 6l-8 6 8 6z"/></svg></button>
+                      <button id="player-seek-back" class="player-tool player-icon" type="button" data-tooltip="Back 10 seconds" aria-label="Back 10 seconds" data-i18n-aria-label="Back 10 seconds" data-i18n-tooltip="Back 10 seconds"><svg viewBox="0 0 24 24"><path d="M5 8V4l-3 3 3 3V8a8 8 0 1 1-1 7"/><text x="9" y="15">10</text></svg></button>
+                      <button id="compat-play" class="compat-play player-icon" type="button" aria-label="Play" data-tooltip="Play" data-i18n-aria-label="Play" data-i18n-tooltip="Play"><svg class="icon-play" viewBox="0 0 24 24"><path d="m8 5 11 7-11 7z"/></svg><svg class="icon-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></svg></button>
+                      <button id="player-seek-forward" class="player-tool player-icon" type="button" data-tooltip="Forward 10 seconds" aria-label="Forward 10 seconds" data-i18n-aria-label="Forward 10 seconds" data-i18n-tooltip="Forward 10 seconds"><svg viewBox="0 0 24 24"><path d="M19 8V4l3 3-3 3V8a8 8 0 1 0 1 7"/><text x="7" y="15">10</text></svg></button>
+                      <button id="player-next-chapter" class="player-tool player-icon" type="button" data-tooltip="Next chapter" aria-label="Next chapter" data-i18n-aria-label="Next chapter" data-i18n-tooltip="Next chapter"><svg viewBox="0 0 24 24"><path d="M18 5v14M6 6l8 6-8 6z"/></svg></button>
+                      <div id="player-now-playing" class="player-now-playing"><strong id="player-now-title">No video loaded</strong></div>
+                      <span class="player-control-spacer"></span>
+                      <span id="player-sync-status" class="player-sync-status" hidden></span>
+                      <button id="player-source-switcher" class="player-tool player-icon" type="button" data-tooltip="Video sources" aria-label="Video sources" data-i18n-aria-label="Video sources" data-i18n-tooltip="Video sources"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="m9 20 3-4 3 4M7 20h10"/></svg></button>
+                      <button id="player-audio-switcher" class="player-tool player-icon" type="button" data-tooltip="Audio track" aria-label="Audio track" data-i18n-aria-label="Audio track" data-i18n-tooltip="Audio track"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></button>
+                      <div class="player-playback-metrics">
+                        <div id="player-transfer-stats" class="player-transfer-stats" aria-label="Torrent transfer totals" hidden>
+                          <span id="player-downloaded">↓ 0 B</span><span id="player-uploaded">↑ 0 B</span>
+                        </div>
+                        <span id="compat-time" class="compat-time">00:00 / 00:00</span>
+                      </div>
+                      <div class="player-speed">
+                        <button id="speed-select" class="player-speed-trigger" type="button" aria-label="Playback speed: 1×" aria-haspopup="menu" aria-expanded="false" aria-controls="player-speed-menu">1×</button>
+                        <div id="player-speed-menu" class="player-speed-menu" role="menu" aria-label="Playback speed" hidden>
+                          <button type="button" role="menuitemradio" aria-checked="false" data-speed="0.75">0.75×</button>
+                          <button type="button" role="menuitemradio" aria-checked="true" data-speed="1">1×</button>
+                          <button type="button" role="menuitemradio" aria-checked="false" data-speed="1.25">1.25×</button>
+                          <button type="button" role="menuitemradio" aria-checked="false" data-speed="1.5">1.5×</button>
+                          <button type="button" role="menuitemradio" aria-checked="false" data-speed="2">2×</button>
+                        </div>
+                      </div>
+                      <button id="player-mute" class="player-tool player-icon" type="button" data-tooltip="Mute" aria-label="Mute" data-i18n-aria-label="Mute" data-i18n-tooltip="Mute"><svg class="icon-volume" viewBox="0 0 24 24"><path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg><svg class="icon-muted" viewBox="0 0 24 24"><path d="M4 10v4h4l5 4V6L8 10zM17 9l5 5M22 9l-5 5"/></svg></button>
+                      <input id="player-volume" class="player-volume" type="range" min="0" max="1" step="0.05" value="1" aria-label="Volume" data-i18n-aria-label="Volume" />
+                      <button id="player-toggle-subs" class="player-tool player-icon is-active" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="player-subtitle-menu" data-tooltip="Captions" aria-label="Captions"><svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 11h5M13 11h5M6 15h8"/></svg></button>
+                      <button id="player-loop-line" class="player-tool player-icon" type="button" aria-pressed="false" data-tooltip="Loop subtitle line" aria-label="Loop subtitle line" data-i18n-aria-label="Loop subtitle line" data-i18n-tooltip="Loop subtitle line"><svg viewBox="0 0 24 24"><path d="M7 7h10a4 4 0 0 1 4 4v1M17 17H7a4 4 0 0 1-4-4v-1M18 4l3 3-3 3M6 20l-3-3 3-3"/></svg></button>
+                      <button id="player-swap-languages" class="player-tool player-icon" type="button" data-tooltip="Swap subtitle languages" aria-label="Swap subtitle languages" data-i18n-aria-label="Swap subtitle languages" data-i18n-tooltip="Swap subtitle languages"><svg viewBox="0 0 24 24"><path d="M5 7h12M14 4l3 3-3 3M19 17H7M10 14l-3 3 3 3"/></svg></button>
+                      <button id="player-float" class="player-tool player-icon" type="button" data-tooltip="Floating player" aria-label="Open floating player" title="Floating player"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><rect x="11" y="12" width="8" height="5" rx="1"/></svg></button>
+                      <button id="player-theater" class="player-tool player-icon" type="button" aria-pressed="false" aria-keyshortcuts="T" data-tooltip="Theater mode" aria-label="Theater mode"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="4" width="19" height="16" rx="2"/><path d="M2.5 14h19"/></svg></button>
+                      <button id="player-fullscreen" class="player-tool player-icon" type="button" data-tooltip="Fullscreen" aria-label="Fullscreen" data-i18n-aria-label="Fullscreen" data-i18n-tooltip="Fullscreen"><svg viewBox="0 0 24 24"><path d="M8 3H3v5M16 3h5v5M8 21H3v-5M16 21h5v-5"/></svg></button>
+                    </div>
+                    <div class="player-timeline-row">
+                      <div class="player-progress" id="player-progress">
+                        <div class="player-progress-track" aria-hidden="true">
+                          <canvas id="player-progress-map" class="player-progress-map" width="600" height="1"></canvas>
+                          <span id="player-progress-ready" class="player-progress-ready"></span>
+                          <span id="player-progress-played" class="player-progress-played"></span>
+                          <span id="player-timeline-segments" class="player-timeline-segments"></span>
+                        </div>
+                        <input id="compat-progress" class="compat-progress" type="range" min="0" max="1" step="0.1" value="0" aria-label="Playback position" aria-describedby="player-timeline-summary" data-i18n-aria-label="Playback position" />
+                        <span id="player-timeline-summary" class="ui-visually-hidden"></span>
+                        <span id="player-scrub-time" class="player-scrub-time" aria-hidden="true" hidden>00:00</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div id="video-loading" class="video-loading" role="status" aria-live="polite" hidden>
+                    <div id="video-loading-brand" class="video-loading-brand" aria-hidden="true" hidden>
+                      <img id="video-loading-logo-ghost" class="video-loading-brand__ghost" alt="" decoding="async" />
+                      <img id="video-loading-logo-fill" class="video-loading-brand__fill" alt="" decoding="async" />
+                    </div>
+                    <div class="video-loading-fallback" aria-hidden="true"><span></span></div>
+                    <strong id="video-loading-title" class="video-loading-title" data-i18n="Loading">Loading</strong>
+                    <p id="video-recovery-message" class="video-recovery-message" hidden></p>
+                    <p id="video-recovery-meta" class="video-recovery-meta" hidden></p>
+                    <div id="video-loading-actions" class="video-loading-actions" hidden>
+                      <button id="player-retry-source" class="ui-btn ui-btn--primary ui-btn--sm" type="button">Retry</button>
+                      <button id="player-choose-source" class="ui-btn ui-btn--secondary ui-btn--sm" type="button">Choose source</button>
+                    </div>
+                    <details id="video-recovery-details" class="video-recovery-details" hidden>
+                      <summary>Details</summary>
+                      <div id="video-recovery-events" class="video-recovery-events"></div>
+                    </details>
+                  </div>
+                  <div id="player-up-next" class="player-up-next" role="status" aria-live="polite" hidden>
+                    <span class="player-up-next__kicker">UP NEXT</span>
+                    <strong id="player-up-next-title">Next episode</strong>
+                    <span id="player-up-next-countdown">Playing in 8 seconds</span>
+                    <div class="player-up-next__actions">
+                      <button id="player-up-next-play" class="ui-btn ui-btn--primary ui-btn--sm" type="button">Play now</button>
+                      <button id="player-up-next-cancel" class="ui-btn ui-btn--secondary ui-btn--sm" type="button">Cancel</button>
+                    </div>
+                  </div>
+                  <div id="player-source-menu" class="player-popover" hidden></div>
+                  <div id="player-audio-menu" class="player-popover" hidden></div>
+                  <div id="player-subtitle-menu" class="player-popover" role="menu" aria-label="Captions" hidden></div>
+                  <div class="player-placeholder" aria-hidden="true"></div>
+                  <div id="subtitle-overlay" class="subtitle-overlay" aria-live="polite"></div>
+                  <div id="floating-player-actions" class="floating-player-actions" aria-label="Floating playback controls" hidden>
+                    <div class="floating-player-top">
+                      <button id="floating-player-captions" class="floating-player-action" type="button" aria-label="Captions" title="Captions" aria-haspopup="menu" aria-expanded="false" aria-controls="player-subtitle-menu"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M6 11h5M13 11h5M6 15h8"/></svg></button>
+                      <button id="floating-player-return" class="floating-player-action" type="button" aria-label="Return to Watch" title="Return to Watch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5H4v4M4 5l7 7M11 5h8v14H5v-8"/></svg></button>
+                      <button id="floating-player-close" class="floating-player-action" type="button" aria-label="Close floating player" title="Close floating player"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5l14 14M19 5 5 19"/></svg></button>
+                    </div>
+                    <div class="floating-player-bottom">
+                      <input id="floating-player-progress" class="floating-player-progress" type="range" min="0" max="1" step="0.1" value="0" aria-label="Playback position" />
+                      <div class="floating-player-controls">
+                        <button id="floating-player-back" class="floating-player-tool player-icon" type="button" aria-label="Back 10 seconds"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8V4l-3 3 3 3V8a8 8 0 1 1-1 7"/><text x="9" y="15">10</text></svg></button>
+                        <button id="floating-player-pause" class="floating-player-play player-icon" type="button" aria-label="Pause video"><svg class="icon-play" viewBox="0 0 24 24" aria-hidden="true"><path d="m8 5 11 7-11 7z"/></svg><svg class="icon-pause" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5v14M16 5v14"/></svg></button>
+                        <button id="floating-player-forward" class="floating-player-tool player-icon" type="button" aria-label="Forward 10 seconds"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19 8V4l3 3-3 3V8a8 8 0 1 0 1 7"/><text x="7" y="15">10</text></svg></button>
+                        <span class="floating-player-spacer"></span>
+                        <span id="floating-player-time" class="floating-player-time">00:00 / --:--</span>
+                        <button id="floating-player-mute" class="floating-player-tool player-icon" type="button" aria-label="Mute"><svg class="icon-volume" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10zM16 9a4 4 0 0 1 0 6M18 6a8 8 0 0 1 0 12"/></svg><svg class="icon-muted" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10v4h4l5 4V6L8 10zM17 9l5 5M22 9l-5 5"/></svg></button>
+                        <label class="floating-player-volume"><span class="ui-visually-hidden">Floating player volume</span><input id="floating-player-volume" type="range" min="0" max="1" step=".05" value="1" aria-label="Floating player volume" /></label>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="watch-skip-options" role="group" aria-label="Episode playback options">
+                  <button id="watch-skip-intro" class="watch-skip-action" type="button" aria-pressed="false" title="Automatically skip identified openings">Skip intro</button>
+                  <button id="watch-skip-credits" class="watch-skip-action" type="button" aria-pressed="false" title="Automatically skip identified endings">Skip ending</button>
+                  <button id="watch-autoplay-inline" class="watch-skip-action" type="button" aria-pressed="true">Autoplay next</button>
+                </div>
+                <div class="transport-strip watch-transport">
+                  <div class="transport-group" role="group" aria-label="Subtitle line" data-i18n-aria-label="Subtitle line">
+                    <button id="prev-cue" class="line-button" type="button" aria-keyshortcuts="[" title="Go to the previous line ( [ )" data-i18n="Previous line" data-i18n-title="Go to the previous line ( [ )"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6"/></svg>Previous line</button>
+                    <button id="repeat-cue" class="line-button" type="button" aria-keyshortcuts="R" title="Hear the current line again ( R )" data-i18n="Replay line" data-i18n-title="Hear the current line again ( R )"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h11a4 4 0 0 1 4 4v1M8 5 5 8l3 3"/></svg>Replay line</button>
+                    <button id="next-cue" class="line-button" type="button" aria-keyshortcuts="]" title="Go to the next line ( ] )" data-i18n="Next line" data-i18n-title="Go to the next line ( ] )">Next line<svg viewBox="0 0 24 24" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg></button>
+                  </div>
+                  <div class="transport-group transport-group-right">
+                    <label class="ui-check watch-pause-toggle" data-i18n="Pause after each line"><input id="pause-after-cue" type="checkbox" /><span class="ui-check__box" aria-hidden="true"></span>Pause after each line</label>
+                  </div>
+                </div>
+                <div class="watch-playback-meta">
+                  <p id="media-status" class="watch-status" role="status" aria-live="polite"></p>
+                </div>
+                <section id="watch-title-info" class="watch-title-info" aria-label="Title description" hidden></section>
+                <dialog id="player-subtitle-dialog" class="player-subtitle-dialog" aria-labelledby="subtitle-dock-title">
+                <section class="panel side-panel subtitle-dock" aria-labelledby="subtitle-dock-title">
+                  <header class="subtitle-dock-head">
+                    <div class="subtitle-dock-title">
+                      <h2 id="subtitle-dock-title" data-i18n="Subtitles">Subtitles</h2>
+                      <span id="track-count" class="ui-count ui-count--quiet">0</span>
+                    </div>
+                    <div class="subtitle-dock-actions">
+                      <button id="find-subtitles-web" class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-i18n="Find subtitles">Find subtitles</button>
+                      <button id="subtitle-add-file" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Add file">Add file</button>
+                      <input id="subtitle-input" type="file" accept=".srt,.vtt,text/vtt,application/x-subrip" multiple hidden />
+                      <button id="sync-subtitles" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" title="Sync every track to the audio again" data-i18n="Resync" data-i18n-title="Sync every track to the audio again">Resync</button>
+                      <button id="subtitle-dock-style" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Appearance">Appearance</button>
+                    </div>
+                    <button id="subtitle-manager-close" class="dialog-close subtitle-dock-close" type="button" aria-label="Close subtitles" title="Close subtitles">×</button>
+                  </header>
+                  <div class="subtitle-dock-body">
+                    <div id="track-list" class="track-list"></div>
+                    <details id="embedded-subtitle-section" class="embedded-subtitle-section" hidden>
+                      <summary><span data-i18n="In the video file">In the video file</span><small id="embedded-subtitle-count"></small></summary>
+                      <div id="embedded-subtitle-tracks" class="embedded-subtitle-tracks"></div>
+                    </details>
+                  </div>
+                  <footer class="subtitle-dock-foot">
+                    <span data-learning-only data-i18n="lines"><b id="cue-stat">0</b> lines</span>
+                    <span data-learning-only data-i18n="words"><b id="word-stat">—</b> words</span>
+                    <span data-learning-only data-i18n="cards"><b id="card-stat">0</b> cards</span>
+                    <span class="subtitle-dock-hint"><span data-i18n="Drop .srt or .vtt here.">Drop .srt or .vtt here.</span> <kbd class="ui-kbd">G</kbd> <kbd class="ui-kbd">H</kbd> <span data-i18n="shift timing">shift timing</span></span>
+                  </footer>
+                </section>
+                </dialog>
+                  </div>
+                  <aside id="watch-side-rail" class="watch-side-rail" aria-label="Episodes and discovery" hidden>
+                  <section id="watch-chapters" class="watch-chapters" aria-label="Episodes" hidden>
+                    <header class="watch-chapters__summary">
+                      <span class="watch-chapters__summary-copy"><strong>Episodes</strong><small id="watch-chapters-summary">Jump to a chapter and track what you watched</small></span>
+                    </header>
+                    <div id="watch-chapters-body" class="watch-chapters__body" role="region" aria-label="Episode list" tabindex="0"></div>
+                  </section>
+                  <section id="watch-seasons" class="watch-side-block" aria-label="Seasons" hidden></section>
+                  <section id="watch-related" class="watch-side-block" aria-label="Related titles" hidden></section>
+                  <section id="watch-recommended" class="watch-side-block" aria-label="Recommended titles" hidden></section>
+                  </aside>
+                </div>
+              </section>
+
+            </div>
+          </div>
+        </section>
+
+        <section id="view-calendar" class="view" aria-label="Calendar">
+          <div id="calendar-root" class="calendar-page"></div>
+        </section>
+        <section id="view-library" class="view">
+          <div class="lib-page">
+            <h1 class="ui-visually-hidden" data-i18n="Library">Library</h1>
+            <aside class="lib-status-sidebar" aria-label="Filter Library by status">
+              <h2 class="lib-status-sidebar__heading">MY LISTS</h2>
+              <div id="library-status-filter" class="lib-status-list" role="group" aria-label="Watch status">
+                <button class="lib-status-option" type="button" data-library-status="any" aria-pressed="true"><span>All statuses</span><span class="lib-status-count" data-library-status-count="any"></span></button>
+                <button class="lib-status-option" type="button" data-library-status="CURRENT" aria-pressed="false"><span>Watching</span><span class="lib-status-count" data-library-status-count="CURRENT"></span></button>
+                <button class="lib-status-option" type="button" data-library-status="COMPLETED" aria-pressed="false"><span>Completed</span><span class="lib-status-count" data-library-status-count="COMPLETED"></span></button>
+                <button class="lib-status-option" type="button" data-library-status="PLANNING" aria-pressed="false"><span>Planning</span><span class="lib-status-count" data-library-status-count="PLANNING"></span></button>
+                <button class="lib-status-option" type="button" data-library-status="PAUSED" aria-pressed="false"><span>Paused</span><span class="lib-status-count" data-library-status-count="PAUSED"></span></button>
+                <button class="lib-status-option" type="button" data-library-status="DROPPED" aria-pressed="false"><span>Dropped</span><span class="lib-status-count" data-library-status-count="DROPPED"></span></button>
+                <button class="lib-status-option" type="button" data-library-status="REPEATING" aria-pressed="false"><span>Rewatching</span><span class="lib-status-count" data-library-status-count="REPEATING"></span></button>
+              </div>
+            </aside>
+            <div class="lib-main">
+            <div id="library-catalog-search-host" class="library-catalog-search-host"></div>
+            <div class="lib-toolbar">
+              <div id="library-filter" class="ui-tabs lib-tabs" role="tablist" aria-label="Show" data-i18n-aria-label="Show">
+                <button id="library-filter-all" class="ui-tab" type="button" role="tab" data-value="all" aria-selected="true" aria-controls="library-list" tabindex="0" data-i18n="All">All<span class="ui-tab__count" data-library-count="all"></span></button>
+                <button id="library-filter-series" class="ui-tab" type="button" role="tab" data-value="series" aria-selected="false" aria-controls="library-list" tabindex="-1" data-i18n="Series">Series<span class="ui-tab__count" data-library-count="series"></span></button>
+                <button id="library-filter-movie" class="ui-tab" type="button" role="tab" data-value="movie" aria-selected="false" aria-controls="library-list" tabindex="-1" data-i18n="Movies">Movies<span class="ui-tab__count" data-library-count="movie"></span></button>
+                <button id="library-filter-anime" class="ui-tab" type="button" role="tab" data-value="anime" aria-selected="false" aria-controls="library-list" tabindex="-1" data-i18n="Anime">Anime<span class="ui-tab__count" data-library-count="anime"></span></button>
+              </div>
+              <div class="lib-toolbar__tools">
+                <label class="ui-search lib-search">
+                  <svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+                  <span class="ui-visually-hidden" data-i18n="Filter your library">Filter your library</span>
+                  <input id="library-search" class="ui-search__input" type="search" placeholder="Filter your library" autocomplete="off" data-i18n-placeholder="Filter your library" />
+                </label>
+                <label class="learn-select lib-sort"><span data-i18n="Sort">Sort</span>
+                  <select id="library-sort">
+                    <option value="recent" data-i18n="Recent">Recent</option>
+                    <option value="added" data-i18n="Recently added">Recently added</option>
+                    <option value="title" data-i18n="Title">Title (A–Z)</option>
+                    <option value="title-desc">Title (Z–A)</option>
+                    <option value="watched">Recently watched</option>
+                    <option value="unfinished">Unwatched first</option>
+                    <option value="progress">Most progress</option>
+                  </select>
+                </label>
+                <button id="library-add-magnet" class="ui-btn ui-btn--secondary ui-btn--sm" type="button">Add magnet</button>
+                <div class="lib-more">
+                  <button id="library-more" class="ui-icon-btn" type="button" aria-label="More library actions" aria-haspopup="menu" aria-expanded="false" aria-controls="library-more-menu" data-i18n-aria-label="More library actions"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none"/></svg></button>
+                  <div id="library-more-menu" class="ui-menu lib-menu" role="menu" aria-labelledby="library-more" hidden>
+                    <button id="library-open-file" class="ui-menu__item" type="button" role="menuitem" data-i18n="Play a video file">Play a video file</button>
+                    <button id="library-import" class="ui-menu__item" type="button" role="menuitem" data-i18n="Import a library">Import a library</button>
+                    <button id="library-export" class="ui-menu__item" type="button" role="menuitem" data-i18n="Export the library">Export the library</button>
+                    <button id="library-show-anilist" class="ui-menu__item" type="button" role="menuitem">Show my AniList titles</button>
+                  </div>
+                  <input id="video-input" type="file" accept="video/*" hidden />
+                </div>
+              </div>
+            </div>
+            <section id="library-continue" class="lib-continue" aria-label="Continue watching" hidden data-i18n-aria-label="Continue watching"></section>
+            <div id="library-list" class="ui-grid lib-grid" aria-live="polite"></div>
+            <section id="library-recommendations" class="library-recommendations-section" aria-label="Recommended next" data-i18n-aria-label="Recommended next"></section>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-title" class="view" aria-labelledby="title-name">
+          <div class="title-page">
+            <div id="title-hero" class="title-hero-slot"></div>
+            <div class="title-body">
+              <div id="title-progress" class="title-progress" hidden></div>
+              <section id="title-your-rating" class="title-block title-your-rating" aria-labelledby="title-your-rating-heading" hidden></section>
+              <div id="title-main" class="title-main"></div>
+              <section id="title-related-movies" class="title-block title-related-movies" aria-labelledby="title-related-movies-heading" hidden></section>
+              <section id="title-about" class="title-block title-about" aria-labelledby="title-about-heading" hidden></section>
+            </div>
+            <p id="title-status" class="tool-status app-status title-status" role="status" aria-live="polite"></p>
+          </div>
+        </section>
+
+        <section id="view-study" class="view">
+          <div class="learn-page">
+            <header class="learn-head">
+              <div class="learn-head__copy">
+                <h1 data-i18n="Study">Study</h1>
+                <p id="study-summary" class="learn-head__sub"></p>
+              </div>
+              <div class="learn-head__actions">
+                <label class="learn-select"><span class="ui-visually-hidden" data-i18n="Target language">Target language</span><select id="study-target-language" aria-label="Target language" data-i18n-aria-label="Target language"></select></label>
+              </div>
+            </header>
+            <div id="study-tabs" class="ui-tabs learn-tabs" role="tablist" aria-label="Study" data-i18n-aria-label="Study">
+              <button id="study-tab-decks" class="ui-tab" type="button" role="tab" data-value="decks" aria-selected="true" aria-controls="study-panel-decks" tabindex="0" data-i18n="Decks">Decks</button>
+              <button id="study-tab-dictation" class="ui-tab" type="button" role="tab" data-value="dictation" aria-selected="false" aria-controls="study-panel-dictation" tabindex="-1" data-i18n="Dictation">Dictation</button>
+              <button id="study-tab-words" class="ui-tab" type="button" role="tab" data-value="words" aria-selected="false" aria-controls="study-panel-words" tabindex="-1" data-i18n="Video vocabulary">Video vocabulary</button>
+            </div>
+
+            <div id="study-panel-decks" class="learn-panel" role="tabpanel" aria-labelledby="study-tab-decks">
+              <div class="learn-toolbar">
+                <div class="learn-toolbar__group">
+                  <button id="study-add-top" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Top words">Top words</button>
+                  <button id="study-add-ankiweb" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="AnkiWeb decks">AnkiWeb decks</button>
+                  <button id="review-import-anki" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Import file">Import file</button>
+                  <input id="review-import-file" type="file" accept=".apkg,.colpkg,.txt,.tsv,.csv" hidden />
+                </div>
+                <div class="learn-toolbar__group">
+                  <button id="review-export-anki" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Export .apkg">Export .apkg</button>
+                  <button id="review-export-text" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Export text">Export text</button>
+                </div>
+              </div>
+              <div id="study-deck-list" class="deck-list" aria-live="polite"></div>
+              <p id="review-deck-summary" class="learn-footnote"></p>
+            </div>
+
+            <div id="study-panel-dictation" class="learn-panel" role="tabpanel" aria-labelledby="study-tab-dictation" hidden>
+              <div id="dictation-stage" class="dictation-stage"></div>
+            </div>
+
+            <div id="study-panel-words" class="learn-panel" role="tabpanel" aria-labelledby="study-tab-words" hidden>
+              <div class="study-shell">
+                <div class="study-controls">
+                  <div class="ui-segmented study-source-tabs" role="group" aria-label="Word source" data-i18n-aria-label="Word source" hidden>
+                    <button class="ui-segmented__item study-source-tab" type="button" data-study-category="preset" data-i18n="Most frequent">Most frequent</button>
+                    <button class="ui-segmented__item study-source-tab" type="button" data-study-category="chapter" data-i18n="From chapters">From chapters</button>
+                  </div>
+                  <div id="study-source-presets" class="study-source-panel" hidden>
+                    <div class="study-tier-row">
+                      <span data-i18n="Words">Words</span>
+                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="word" data-study-tier="100">100</button>
+                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="word" data-study-tier="1000">1K</button>
+                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="word" data-study-tier="5000">5K</button>
+                    </div>
+                    <div class="study-tier-row">
+                      <span data-i18n="Phrases">Phrases</span>
+                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="phrase" data-study-tier="100">100</button>
+                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="phrase" data-study-tier="1000">1K</button>
+                    </div>
+                  </div>
+                  <div id="study-source-chapters" class="study-source-panel">
+                    <div class="study-chapter-row">
+                      <label class="learn-select">
+                        <span class="ui-visually-hidden" data-i18n="Chapter">Chapter</span>
+                        <select id="study-chapter-select"><option value="" data-i18n="No Library chapters">No Library chapters</option></select>
+                      </label>
+                      <div class="study-chapter-type-actions">
+                        <button class="ui-chip study-tier" type="button" data-study-source="chapter" data-study-type="word" data-i18n="Words">Words</button>
+                        <button class="ui-chip study-tier" type="button" data-study-source="chapter" data-study-type="phrase" data-i18n="Phrases">Phrases</button>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="study-filter-row">
+                    <label class="learn-select"><span data-i18n="Show">Show</span><select id="study-filter"><option value="all" data-i18n="All">All</option><option value="unknown" data-i18n="New">New</option><option value="review" data-i18n="Learning">Learning</option><option value="known" data-i18n="Mastered">Mastered</option></select></label>
+                    <label class="ui-check study-color-toggle" data-i18n="Color subtitles"><input id="study-color-subs" type="checkbox" /><span class="ui-check__box" aria-hidden="true"></span>Color subtitles</label>
+                    <div class="study-legend" aria-label="Subtitle learning colors" data-i18n-aria-label="Subtitle learning colors"><span class="learning-known" data-i18n="Mastered">Mastered</span><span class="learning-review" data-i18n="Learning">Learning</span><span class="learning-common-100" data-i18n="Top 100">Top 100</span><span class="learning-common-1000">1K</span><span class="learning-common-5000">5K</span></div>
+                  </div>
+                </div>
+                <div class="ui-stat-group study-progress-strip">
+                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="Mastered">Mastered</span><strong id="study-stat-known" class="ui-stat__value">0</strong></div>
+                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="In review">In review</span><strong id="study-stat-review" class="ui-stat__value">0</strong></div>
+                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="Due">Due</span><strong id="study-stat-due" class="ui-stat__value">0</strong></div>
+                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="Seen in videos">Seen in videos</span><strong id="study-stat-seen" class="ui-stat__value">0</strong></div>
+                </div>
+                <section class="study-list-panel">
+                  <div class="study-list-head">
+                    <h2 id="study-list-title">Words</h2>
+                    <div class="study-page-actions"><button id="study-page-prev" class="ui-icon-btn ui-icon-btn--sm" type="button" aria-label="Previous page" data-i18n-aria-label="Previous page">‹</button><span id="study-page-range" class="ui-count ui-count--quiet">0</span><button id="study-page-next" class="ui-icon-btn ui-icon-btn--sm" type="button" aria-label="Next page" data-i18n-aria-label="Next page">›</button></div>
+                  </div>
+                  <div id="study-items"></div>
+                </section>
+                <div id="study-preset-status" class="learn-footnote study-preset-status" aria-live="polite"></div>
+              </div>
+            </div>
+
+            <section id="study-session" class="study-session" aria-label="Study session" hidden data-i18n-aria-label="Study session">
+              <header class="study-session__head">
+                <button id="study-session-back" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="‹ Decks">‹ Decks</button>
+                <strong id="study-session-title" class="study-session__title"></strong>
+                <div class="study-counts" aria-label="Cards today" data-i18n-aria-label="Cards today">
+                  <span data-count="new" data-i18n="New"><b id="review-count-new">0</b> New</span>
+                  <span data-count="learning" data-i18n="Learning"><b id="review-count-learning">0</b> Learning</span>
+                  <span data-count="review" data-i18n="Due"><b id="review-count-review">0</b> Due</span>
+                </div>
+              </header>
+              <div id="study-stage" class="study-stage"></div>
+              <p class="review-shortcuts learn-footnote"><span data-i18n="show"><kbd class="ui-kbd" data-i18n="Space">Space</kbd> show</span> <span><kbd class="ui-kbd">1</kbd>–<kbd class="ui-kbd">4</kbd> <span data-i18n="rate">rate</span></span> <span data-i18n="replay"><kbd class="ui-kbd">R</kbd> replay</span> <span data-i18n="undo"><kbd class="ui-kbd">U</kbd> undo</span> <span data-i18n="decks"><kbd class="ui-kbd">Esc</kbd> decks</span></p>
+            </section>
+          </div>
+        </section>
+
+        <section id="view-review" class="view">
+          <div class="learn-page review-page">
+            <header class="learn-head">
+              <div class="learn-head__copy">
+                <h1 data-i18n="Review">Review</h1>
+                <p id="review-summary" class="learn-head__sub"></p>
+              </div>
+              <div class="learn-head__actions">
+                <label class="learn-select"><span class="ui-visually-hidden" data-i18n="Target language">Target language</span><select id="review-target-language" aria-label="Target language" data-i18n-aria-label="Target language"></select></label>
+              </div>
+            </header>
+            <div class="ui-tabs learn-tabs review-primary-tabs" role="tablist" aria-label="Review mode" data-i18n-aria-label="Review mode">
+              <button class="ui-tab" type="button" role="tab" data-review-tab="cards" data-value="cards" data-i18n="Quiz">Quiz</button>
+              <button class="ui-tab" type="button" role="tab" data-review-tab="practice" data-value="practice" data-i18n="Pronunciation">Pronunciation</button>
+              <button class="ui-tab" type="button" role="tab" data-review-tab="live" data-value="live" data-i18n="Conversation">Conversation</button>
+            </div>
+            <div class="review-layout">
+              <div id="quiz-panel" class="quiz-panel"></div>
+              <section id="review-stage" class="review-stage"></section>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-test" class="view">
+          <div class="learn-page test-page">
+            <header class="learn-head">
+              <div class="learn-head__copy">
+                <h1 data-i18n="Tests">Tests</h1>
+                <p class="learn-head__sub" data-i18n="Multiple choice, typing and listening. Answers are shown at the end.">Multiple choice, typing and listening. Answers are shown at the end.</p>
+              </div>
+            </header>
+            <div class="ui-stat-group test-stats" aria-label="Test score summary" data-i18n-aria-label="Test score summary">
+              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Last">Last</span><strong id="test-stat-last" class="ui-stat__value">—</strong></div>
+              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Average">Average</span><strong id="test-stat-average" class="ui-stat__value">—</strong></div>
+              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Best">Best</span><strong id="test-stat-best" class="ui-stat__value">—</strong></div>
+              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Tests taken">Tests taken</span><strong id="test-stat-sessions" class="ui-stat__value">0</strong></div>
+            </div>
+            <div class="test-grid">
+              <section id="test-stage" class="test-stage"></section>
+              <aside class="test-history-panel">
+                <div class="test-history-head"><span data-i18n="Scores">Scores</span><strong id="test-history-mode">Last 20</strong></div>
+                <div id="test-history-chart" class="test-history-chart"></div>
+                <div id="test-history-list" class="test-history-list"></div>
+              </aside>
+            </div>
+          </div>
+        </section>
+
+        <section id="view-settings" class="view">
+          <div class="learn-page settings-page">
+            <header class="learn-head">
+              <div class="learn-head__copy"><h1 data-i18n="Settings">Settings</h1></div>
+            </header>
+            <div id="settings-tabs" class="ui-tabs learn-tabs" role="tablist" aria-label="Settings" data-i18n-aria-label="Settings">
+              <button id="settings-tab-general" class="ui-tab" type="button" role="tab" data-value="general" aria-selected="true" aria-controls="settings-panel-general" tabindex="0" data-i18n="General">General</button>
+              <button id="settings-tab-coach" class="ui-tab" type="button" role="tab" data-value="coach" aria-selected="false" aria-controls="settings-panel-coach" tabindex="-1" data-i18n="Coach">Coach</button>
+              <button id="settings-tab-library" class="ui-tab" type="button" role="tab" data-value="library" aria-selected="false" aria-controls="settings-panel-library" tabindex="-1" data-i18n="Library">Library</button>
+              <button id="settings-tab-storage" class="ui-tab" type="button" role="tab" data-value="storage" aria-selected="false" aria-controls="settings-panel-storage" tabindex="-1" data-i18n="Storage">Storage</button>
+              <button id="settings-tab-updates" class="ui-tab" type="button" role="tab" data-value="updates" aria-selected="false" aria-controls="settings-panel-updates" tabindex="-1">Updates</button>
+              <button id="settings-tab-notifications" class="ui-tab" type="button" role="tab" data-value="notifications" aria-selected="false" aria-controls="settings-panel-notifications" tabindex="-1">Notifications</button>
+              <button id="settings-tab-recs" class="ui-tab" type="button" role="tab" data-value="recs" aria-selected="false" aria-controls="settings-panel-recs" tabindex="-1" data-i18n="Tracking">Tracking</button>
+            </div>
+
+            <div id="settings-panel-general" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-general">
+            <section class="settings-card" aria-labelledby="settings-playback-heading">
+              <div class="settings-card__head"><h2 id="settings-playback-heading" data-i18n="Playback">Playback</h2></div>
+              <label class="ui-switch settings-switch-row" for="watch-autoplay-next">
+                <input id="watch-autoplay-next" type="checkbox" checked />
+                <span class="ui-switch__track" aria-hidden="true"></span>
+                <span class="settings-learning-copy"><strong data-i18n="Autoplay next episode">Autoplay next episode</strong></span>
+              </label>
+            </section>
+            <section class="settings-card" aria-labelledby="settings-random-heading">
+              <div class="settings-card__head"><h2 id="settings-random-heading">Random titles</h2></div>
+              <div class="settings-field">
+                <select id="settings-random-source" aria-label="Random selection mode">
+                  <option value="recommended">Choose from my recommendations</option>
+                  <option value="anything">Choose from anything</option>
+                </select>
+              </div>
+            </section>
+            <section class="settings-card" aria-labelledby="settings-learning-heading">
+              <div class="settings-card__head"><h2 id="settings-learning-heading">Learning features</h2></div>
+              <p class="settings-hint">Coming soon. Your saved learning data is preserved.</p>
+            </section>
+            <section class="settings-card settings-floating-player" aria-labelledby="settings-floating-heading">
+              <div class="settings-card__head"><h2 id="settings-floating-heading">Floating player</h2></div>
+              <label class="ui-switch settings-switch-row" for="settings-float-auto">
+                <input id="settings-float-auto" type="checkbox" checked />
+                <span class="ui-switch__track" aria-hidden="true"></span>
+                <span class="settings-learning-copy"><strong>Pop out when leaving Watch</strong><small>Only while playing. Turn off to pop out manually using the player button.</small></span>
+              </label>
+              <label class="settings-field" for="settings-float-scope">
+                <span>Show floating player</span>
+                <select id="settings-float-scope">
+                  <option value="site">Borderless inside LVL - movable and resizable</option>
+                  <option value="desktop">Above other apps - Browser PiP (browser title bar)</option>
+                </select>
+              </label>
+              <p id="settings-float-message" class="settings-floating-hint" role="status" aria-live="polite">Borderless mode stays inside LVL. Browser PiP can float above other applications where supported; the browser controls its title bar and window placement.</p>
+            </section>
+            <form id="settings-subdl-form" class="settings-card">
+              <div class="settings-card__head"><h2 data-i18n="Languages">Languages</h2></div>
+              <div class="settings-grid two">
+                <label class="settings-field">
+                  <span data-i18n="I speak">I speak</span>
+                  <select id="settings-base-language">
+                    <option value="EN" data-i18n="English">English</option><option value="ES" data-i18n="Spanish">Spanish</option><option value="FR" data-i18n="French">French</option><option value="DE" data-i18n="German">German</option><option value="IT" data-i18n="Italian">Italian</option><option value="PT" data-i18n="Portuguese">Portuguese</option><option value="JA" data-i18n="Japanese">Japanese</option><option value="KO" data-i18n="Korean">Korean</option><option value="ZH" data-i18n="Chinese">Chinese</option><option value="RU" data-i18n="Russian">Russian</option><option value="NL" data-i18n="Dutch">Dutch</option><option value="PL" data-i18n="Polish">Polish</option><option value="TR" data-i18n="Turkish">Turkish</option>
+                  </select>
+                </label>
+                <label class="settings-field">
+                  <span data-i18n="I&#x27;m learning">I'm learning</span>
+                  <select id="settings-target-language">
+                    <option value="ES" data-i18n="Spanish">Spanish</option><option value="EN" data-i18n="English">English</option><option value="FR" data-i18n="French">French</option><option value="DE" data-i18n="German">German</option><option value="IT" data-i18n="Italian">Italian</option><option value="PT" data-i18n="Portuguese">Portuguese</option><option value="JA" data-i18n="Japanese">Japanese</option><option value="KO" data-i18n="Korean">Korean</option><option value="ZH" data-i18n="Chinese">Chinese</option><option value="RU" data-i18n="Russian">Russian</option><option value="NL" data-i18n="Dutch">Dutch</option><option value="PL" data-i18n="Polish">Polish</option><option value="TR" data-i18n="Turkish">Turkish</option>
+                  </select>
+                </label>
+              </div>
+              <div class="settings-grid two">
+                <label class="settings-field">
+                  <span data-i18n="Base accent">Base accent</span>
+                  <select id="settings-base-locale">
+                    <option value="en-US" data-i18n="English - United States">English - United States</option>
+                    <option value="en-GB" data-i18n="English - United Kingdom">English - United Kingdom</option>
+                  </select>
+                </label>
+                <label class="settings-field">
+                  <span data-i18n="Learning accent">Learning accent</span>
+                  <select id="settings-learning-locale">
+                    <option value="es" data-i18n="Spanish - Neutral">Spanish - Neutral</option>
+                    <option value="es-ES" data-i18n="Spanish - Spain">Spanish - Spain</option>
+                    <option value="es-AR" data-i18n="Spanish - Argentina">Spanish - Argentina</option>
+                  </select>
+                </label>
+                <label class="settings-field">
+                  <span data-i18n="Interface language">Interface language</span>
+                  <select id="settings-interface-language">
+                    <option value="auto" data-i18n="Automatic - match my base language">Automatic - match my base language</option>
+                    <option value="en" data-i18n="English">English</option>
+                    <option value="es" data-i18n="Spanish">Spanish</option>
+                  </select>
+                </label>
+              </div>
+              <div class="settings-card__head settings-card__head--sub"><h3 data-i18n="Subtitle search">Subtitle search</h3><span id="settings-subdl-state" class="ui-badge ui-badge--outline">1 active</span></div>
+              <div class="settings-grid three">
+                <div class="settings-field"><a href="https://subdl.com/api-doc" target="_blank" rel="noopener noreferrer" data-i18n="SubDL key">SubDL key</a><input id="settings-subdl-key" type="password" autocomplete="off" aria-label="SubDL key" placeholder="Optional" data-i18n-placeholder="Optional" /></div>
+                <div class="settings-field"><a href="https://store.wyzie.io/redeem" target="_blank" rel="noopener noreferrer" data-i18n="Wyzie key">Wyzie key</a><input id="settings-wyzie-key" type="password" autocomplete="off" aria-label="Wyzie key" placeholder="Optional" data-i18n-placeholder="Optional" /></div>
+                <div class="settings-field"><a href="https://subsource.net/dashboard/api" target="_blank" rel="noopener noreferrer" data-i18n="SubSource key">SubSource key</a><input id="settings-subsource-key" type="password" autocomplete="off" aria-label="SubSource key" placeholder="Optional" data-i18n-placeholder="Optional" /></div>
+              </div>
+              <div class="settings-actions">
+                <button class="ui-btn ui-btn--primary ui-btn--sm" type="submit" data-i18n="Save">Save</button>
+                <button id="settings-subdl-clear" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Clear keys">Clear keys</button>
+                <p id="settings-subdl-message" class="tool-status settings-status" aria-live="polite"></p>
+              </div>
+            </form>
+            </div>
+
+            <div id="settings-panel-coach" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-coach" hidden>
+            <section class="settings-card settings-browser-coach-panel" aria-labelledby="settings-coach-title">
+              <div class="settings-card__head"><h2 id="settings-coach-title" data-i18n="Conversation coach">Conversation coach</h2><span id="settings-browser-coach-state" class="ui-badge ui-badge--outline">Check</span></div>
+              <div class="settings-grid two">
+                <label class="settings-field"><span data-i18n="Provider">Provider</span><select id="settings-ai-provider"><option value="chatgpt-browser" data-i18n="ChatGPT in your browser">ChatGPT in your browser</option></select></label>
+                <div class="settings-field"><span data-i18n="Helper folder">Helper folder</span><div id="settings-browser-coach-path" class="settings-path">browser-extension</div></div>
+              </div>
+              <div class="settings-actions">
+                <button id="settings-browser-coach-check" class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-i18n="Connect">Connect</button>
+                <button id="settings-browser-coach-open" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Install helper">Install helper</button>
+              </div>
+              <p id="settings-browser-coach-message" class="tool-status settings-status" aria-live="polite"></p>
+              <p id="settings-browser-coach-action" class="settings-browser-coach-action" aria-live="polite"></p>
+              <details class="settings-guide">
+                <summary data-i18n="Setup">Setup</summary>
+                <ol>
+                  <li><span data-i18n="Stay signed in to">Stay signed in to</span> <code>chatgpt.com</code> <span data-i18n="in this browser.">in this browser.</span></li>
+                  <li><span data-i18n="Press">Press</span> <em data-i18n="Install helper">Install helper</em>.</li>
+                  <li><span data-i18n="In Extensions, turn on Developer mode, choose">In Extensions, turn on Developer mode, choose</span> <em data-i18n="Load unpacked">Load unpacked</em> <span data-i18n="and pick the">and pick the</span> <code>browser-extension</code> <span data-i18n="folder.">folder.</span></li>
+                  <li><span data-i18n="Press">Press</span> <em data-i18n="Connect">Connect</em>.</li>
+                  <li><span data-i18n="After an app update, press">After an app update, press</span> <em data-i18n="Reload">Reload</em> <span data-i18n="on the helper in Extensions.">on the helper in Extensions.</span></li>
+                </ol>
+              </details>
+            </section>
+            </div>
+
+            <div id="settings-panel-library" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-library" hidden>
+            <section class="settings-card settings-artwork-panel" aria-labelledby="settings-artwork-title">
+              <div class="settings-card__head"><h2 id="settings-artwork-title" data-i18n="Artwork">Artwork</h2><span id="settings-artwork-state" class="ui-badge ui-badge--outline">Off</span></div>
+              <label class="ui-switch settings-switch-row"><input id="settings-auto-artwork" type="checkbox" /><span class="ui-switch__track" aria-hidden="true"></span><span data-i18n="Fetch posters automatically">Fetch posters automatically</span></label>
+              <div class="settings-actions">
+                <button id="settings-fetch-artwork" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Fetch missing posters">Fetch missing posters</button>
+                <p id="settings-artwork-message" class="tool-status settings-status" aria-live="polite"></p>
+              </div>
+            </section>
+            </div>
+
+            <div id="settings-panel-storage" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-storage" hidden>
+            <section class="settings-card storage-card" aria-labelledby="settings-storage-title">
+              <div class="settings-card__head"><h2 id="settings-storage-title" data-i18n="Storage">Storage</h2><button id="storage-refresh" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Refresh">Refresh</button></div>
+
+              <div class="storage-row">
+                <div class="storage-row__head">
+                  <label class="storage-row__label" for="storage-player-gb" data-i18n="Player storage">Player storage</label>
+                  <button class="ui-help" type="button" data-ui-tip="tip-storage-player" aria-label="What player storage is" aria-describedby="tip-storage-player" data-i18n-aria-label="What player storage is">?</button>
+                  <span id="tip-storage-player" class="ui-tip-content" hidden><strong data-i18n="Player storage">Player storage</strong><p data-i18n="Space for the videos the player downloads from torrents while you watch. Only the file you play is downloaded, a piece at a time.">Space for the videos the player downloads from torrents while you watch. Only the file you play is downloaded, a piece at a time.</p><ul><li data-i18n="When you switch to another video, the previous download is deleted.">When you switch to another video, the previous download is deleted.</li><li data-i18n="Downloads you aren&#x27;t watching are deleted after 30 minutes unused, and when the app starts again.">Downloads you aren't watching are deleted after 30 minutes unused, and when the app starts again.</li><li data-i18n="If this space fills up, the downloads you used longest ago go first. The video you&#x27;re watching is never removed.">If this space fills up, the downloads you used longest ago go first. The video you're watching is never removed.</li></ul><p data-i18n="A video bigger than this limit can&#x27;t be played until you raise it.">A video bigger than this limit can't be played until you raise it.</p><p data-i18n="Enough for any 1080p movie, or a few episodes at once. 4K movies can be 40 to 80 GB; raise it if you play those. On a nearly full drive the recommendation is at most a quarter of its free space."><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="player">20 GB</span>.</strong> Enough for any 1080p movie, or a few episodes at once. 4K movies can be 40 to 80 GB; raise it if you play those. On a nearly full drive the recommendation is at most a quarter of its free space.</p></span>
+                  <span id="storage-player-usage" class="storage-row__usage">Checking…</span>
+                </div>
+                <div class="storage-row__control">
+                  <label class="storage-input"><input id="storage-player-gb" type="number" min="2" max="1000" step="1" inputmode="numeric" aria-describedby="storage-player-usage storage-player-rec" /><span aria-hidden="true">GB</span></label>
+                  <input id="storage-player-slider" class="storage-limit-slider" type="range" min="2" max="1000" step="1" value="20" aria-label="Maximum player storage in GB" />
+                  <button id="storage-player-clear" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Free space now">Free space now</button>
+                </div>
+                <p class="storage-row__rec"><span id="storage-player-rec">Recommended: 20 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="player" hidden>Use 20 GB</button></p>
+              </div>
+
+              <div class="storage-row" data-learning-only>
+                <div class="storage-row__head">
+                  <label class="storage-row__label" for="storage-clip-gb" data-i18n="Saved video fragments">Saved video fragments</label>
+                  <button class="ui-help" type="button" data-ui-tip="tip-storage-clips" aria-label="What saved video fragments are" aria-describedby="tip-storage-clips" data-i18n-aria-label="What saved video fragments are">?</button>
+                  <span id="tip-storage-clips" class="ui-tip-content" hidden><strong data-i18n="Saved video fragments">Saved video fragments</strong><p data-i18n="Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.">Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.</p><ul><li data-i18n="A card&#x27;s clip is kept as long as the card exists.">A card's clip is kept as long as the card exists.</li><li data-i18n="When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.">When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.</li></ul><p><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="clip">2 GB</span>.</strong> <span data-i18n="That holds about">That holds about</span> <span data-storage-rec="clip-lines">20,000</span> <span data-i18n="lines. The recommendation grows to twice what your cards&#x27; clips use, so they always have room.">lines. The recommendation grows to twice what your cards' clips use, so they always have room.</span></p></span>
+                  <span id="storage-clip-usage" class="storage-row__usage">Checking…</span>
+                </div>
+                <div class="storage-row__control">
+                  <label class="storage-input"><input id="storage-clip-gb" type="number" min="0.25" max="200" step="0.25" inputmode="decimal" aria-describedby="storage-clip-usage storage-clip-rec" /><span aria-hidden="true">GB</span></label>
+                  <div id="storage-clip-meter" class="ui-progress storage-meter" role="progressbar" aria-label="Saved video fragments used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-i18n-aria-label="Saved video fragments used"><span></span></div>
+                </div>
+                <p class="storage-row__rec"><span id="storage-clip-rec">Recommended: 2 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="clip" hidden>Use 2 GB</button></p>
+              </div>
+
+              <div class="storage-row storage-row--info" data-learning-only>
+                <div class="storage-row__head">
+                  <span class="storage-row__label" data-i18n="Anki deck media">Anki deck media</span>
+                  <button class="ui-help" type="button" data-ui-tip="tip-storage-decks" aria-label="What Anki deck media is" aria-describedby="tip-storage-decks" data-i18n-aria-label="What Anki deck media is">?</button>
+                  <span id="tip-storage-decks" class="ui-tip-content" hidden><strong data-i18n="Anki deck media">Anki deck media</strong><p data-i18n="Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app&#x27;s data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.">Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app's data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.</p></span>
+                  <span id="storage-deck-usage" class="storage-row__usage">Checking…</span>
+                </div>
+              </div>
+
+              <div id="storage-leftovers" class="storage-leftovers" hidden>
+                <div>
+                  <strong id="storage-leftovers-title">Leftover downloads</strong>
+                  <p data-i18n="Downloads from earlier runs that ended without cleaning up. Nothing uses them.">Downloads from earlier runs that ended without cleaning up. Nothing uses them.</p>
+                </div>
+                <button id="storage-leftovers-clear" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Delete leftovers">Delete leftovers</button>
+              </div>
+              <p id="storage-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
+            </section>
+            </div>
+
+            <div id="settings-panel-updates" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-updates" hidden>
+              <section class="settings-card" aria-labelledby="settings-app-updates-title">
+                <div class="settings-card__head">
+                  <h2 id="settings-app-updates-title">App updates</h2>
+                  <span id="settings-app-updates-version" class="app-updates-version">…</span>
+                </div>
+                <label class="ui-switch settings-switch-row" for="settings-app-updates-auto">
+                  <input id="settings-app-updates-auto" type="checkbox" disabled>
+                  <span class="ui-switch__track" aria-hidden="true"></span>
+                  <span class="settings-learning-copy"><strong>Update LVL automatically</strong>
+                    <small>Checks at the selected frequency. Verified updates install and restart LVL automatically, including larger runtime releases when needed.</small></span>
+                </label>
+                <label class="settings-field" for="settings-app-updates-interval">
+                  <span>Check frequency</span>
+                  <select id="settings-app-updates-interval" disabled>
+                    <option value="1">Every day</option>
+                    <option value="7">Every 7 days</option>
+                    <option value="30">Every 30 days</option>
+                  </select>
+                </label>
+                <div class="settings-actions">
+                  <button id="settings-app-updates-check" class="ui-btn ui-btn--primary ui-btn--sm" type="button" disabled>Check for updates</button>
+                  <button id="settings-app-updates-install" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" hidden>Install available update…</button>
+                </div>
+                <p id="settings-app-updates-status" class="tool-status settings-status" role="status" aria-live="polite">Reading updater settings…</p>
+                <p class="settings-hint">Updates are separate from recommendations. The updater preserves your Library and browser profile. Large runtime changes may need a full installer.</p>
+                <details id="settings-app-updates-changelog-details" class="settings-guide">
+                  <summary>Changelog</summary>
+                  <div id="settings-app-updates-changelog-inline" class="app-changelog-history" aria-live="polite"></div>
+                </details>
+              </section>
+            </div>
+
+            <div id="settings-panel-notifications" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-notifications" hidden>
+              <section class="settings-card" aria-labelledby="settings-notification-title">
+                <div class="settings-card__head">
+                  <h2 id="settings-notification-title">Notifications</h2>
+                </div>
+                <label class="ui-switch settings-switch-row" for="settings-notification-update-alerts">
+                  <input id="settings-notification-update-alerts" type="checkbox" checked>
+                  <span class="ui-switch__track" aria-hidden="true"></span>
+                  <span class="settings-learning-copy"><strong>New version notifications</strong></span>
+                </label>
+              </section>
+            </div>
+
+            <div id="settings-panel-recs" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-recs" hidden>
+            <section class="settings-card recs-card" aria-labelledby="recs-ratings-title">
+              <div class="settings-card__head"><h2 id="recs-ratings-title" data-i18n="Your ratings">Your ratings</h2><span id="recs-rated-count" class="ui-badge ui-badge--outline">None yet</span></div>
+              <div class="recs-row">
+                <div class="recs-row__head">
+                  <label class="recs-row__label" for="recs-anilist-name">AniList</label>
+                  <span id="recs-anilist-usage" class="recs-row__usage">Not linked</span>
+                </div>
+                <form id="recs-anilist-form" class="recs-row__control">
+                  <div class="settings-field recs-row__field"><input id="recs-anilist-name" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="40" placeholder="User name" data-i18n-placeholder="User name" /></div>
+                  <button class="ui-btn ui-btn--primary ui-btn--sm" type="submit" data-i18n="Link">Link</button>
+                </form>
+                <div id="recs-anilist-linked" class="recs-row__control" hidden>
+                  <p id="recs-anilist-note" class="recs-row__note"></p>
+                  <button id="recs-anilist-sync" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Sync now">Sync now</button>
+                  <button id="recs-anilist-unlink" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Unlink">Unlink</button>
+                </div>
+              </div>
+              <section id="anilist-auto-settings" class="anilist-auto-settings" aria-labelledby="anilist-auto-title">
+                <div class="anilist-auto-heading">
+                  <div>
+                    <h3 id="anilist-auto-title">AniList account sync</h3>
+                  </div>
+                  <span id="anilist-auto-state" class="ui-badge ui-badge--outline">Not authorized</span>
+                </div>
+                <div class="anilist-auto-actions" role="group" aria-label="AniList account connection">
+                  <button id="anilist-auto-connect" class="ui-btn ui-btn--primary ui-btn--sm" type="button">Authorize account sync</button>
+                  <button id="anilist-auto-disconnect" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" disabled>Disconnect</button>
+                  <button id="anilist-auto-sync" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" title="Send your watched episode progress to AniList" disabled>Sync now</button>
+                </div>
+                <p class="recs-row__note">AniList OAuth callback for this LVL window: <code id="anilist-auto-redirect-url">Detecting local address…</code>. Your AniList developer application's registered Redirect URL must match this address exactly, including the port. A shared Client ID's redirect can only be changed by its owner.</p>
+                <p id="anilist-auto-status" class="tool-status settings-status anilist-auto-status" role="status" aria-live="polite" aria-atomic="true"></p>
+                <div class="anilist-auto-options">
+                  <label class="ui-switch settings-switch-row anilist-auto-toggle" for="anilist-auto-enabled">
+                    <input id="anilist-auto-enabled" type="checkbox" />
+                    <span class="ui-switch__track" aria-hidden="true"></span>
+                    <span class="anilist-auto-toggle-copy"><strong>Sync watched episodes automatically</strong></span>
+                  </label>
+                  <label class="ui-switch settings-switch-row anilist-auto-toggle" for="anilist-score-sync-enabled">
+                    <input id="anilist-score-sync-enabled" type="checkbox" />
+                    <span class="ui-switch__track" aria-hidden="true"></span>
+                    <span class="anilist-auto-toggle-copy"><strong>Sync anime ratings both ways</strong></span>
+                  </label>
+                  <label class="settings-field anilist-auto-threshold" for="anilist-auto-threshold">
+                    <span>Episode completion threshold</span>
+                    <span class="anilist-auto-percent"><input id="anilist-auto-threshold" type="number" min="1" max="100" step="1" value="80" inputmode="numeric" aria-describedby="anilist-auto-threshold-help" /><span aria-hidden="true">%</span></span>
+                    <small id="anilist-auto-threshold-help">Default 80%</small>
+                  </label>
+                </div>
+                <details id="anilist-auto-pin-fallback" class="anilist-auto-client-settings">
+                  <summary>Manual connection</summary>
+                  <p id="anilist-auto-pin-help">The default Client ID is 53636; change it only if you registered your own AniList app. AniList provides a separate access token to paste after authorization.</p>
+                  <div id="anilist-auto-client-settings" class="anilist-auto-manual-client">
+                    <label class="settings-field" for="anilist-auto-client-id">
+                      <span>Client ID</span>
+                      <input id="anilist-auto-client-id" type="text" inputmode="numeric" pattern="[0-9]*" autocomplete="off" autocapitalize="off" spellcheck="false" value="53636" aria-describedby="anilist-auto-pin-help" />
+                    </label>
+                  </div>
+                  <form id="anilist-auto-pin-form" class="anilist-auto-pin-form" autocomplete="off">
+                    <label class="settings-field" for="anilist-auto-pin">
+                      <span>Access token</span>
+                      <input id="anilist-auto-pin" type="password" autocomplete="off" spellcheck="false" placeholder="Paste AniList token" required aria-describedby="anilist-auto-pin-help" />
+                    </label>
+                    <button id="anilist-auto-pin-submit" class="ui-btn ui-btn--secondary ui-btn--sm" type="submit">Connect token</button>
+                  </form>
+                </details>
+                <details id="anilist-auto-dev-diagnostics" class="anilist-auto-client-settings" hidden>
+                  <summary>Developer: test AniList add / advance / remove</summary>
+                  <p class="recs-row__note">This live test temporarily adds an anime not already on your AniList list, advances progress through episodes 1, 2 and 3, then deletes only the newly created list entry. AniList activity notifications may remain even after cleanup. Do not run during another AniList sync.</p>
+                  <button id="anilist-auto-dev-test" class="ui-btn ui-btn--secondary ui-btn--sm" type="button">Run reversible AniList test</button>
+                  <p id="anilist-auto-dev-test-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
+                </details>
+              </section>
+              <div class="recs-row">
+                <div class="recs-row__head">
+                  <label class="recs-row__label" for="recs-letterboxd-name">Letterboxd</label>
+                  <button class="ui-help" type="button" data-ui-tip="tip-recs-letterboxd" aria-label="About linking Letterboxd" aria-describedby="tip-recs-letterboxd" data-i18n-aria-label="About linking Letterboxd">?</button>
+                  <span id="tip-recs-letterboxd" class="ui-tip-content" hidden><strong>Letterboxd</strong><p data-i18n="Your public profile shows your latest films and ratings. For your whole diary, export your data on letterboxd.com (Settings, Data, Export your data) and import the zip here.">Your public profile shows your latest films and ratings. For your whole diary, export your data on letterboxd.com (Settings, Data, Export your data) and import the zip here.</p><ul><li data-i18n="Stars become 1 to 10: 4½ stars is 9.">Stars become 1 to 10: 4½ stars is 9.</li><li data-i18n="Films count for your picks once a TMDB key is saved.">Films count for your picks once a TMDB key is saved.</li></ul></span>
+                  <span id="recs-letterboxd-usage" class="recs-row__usage">Not linked</span>
+                </div>
+                <form id="recs-letterboxd-form" class="recs-row__control">
+                  <div class="settings-field recs-row__field"><input id="recs-letterboxd-name" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="128" placeholder="User name" data-i18n-placeholder="User name" /></div>
+                  <button class="ui-btn ui-btn--primary ui-btn--sm" type="submit" data-i18n="Link">Link</button>
+                </form>
+                <div id="recs-letterboxd-linked" class="recs-row__control" hidden>
+                  <p id="recs-letterboxd-note" class="recs-row__note"></p>
+                  <button id="recs-letterboxd-sync" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Sync now">Sync now</button>
+                  <button id="recs-letterboxd-unlink" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Unlink">Unlink</button>
+                </div>
+                <div class="recs-row__control">
+                  <button id="recs-letterboxd-import" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Import your export">Import your export</button>
+                  <input id="recs-letterboxd-file" type="file" accept=".zip,.csv,application/zip,text/csv" hidden />
+                </div>
+              </div>
+              <p id="recs-ratings-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
+            </section>
+
+            <section class="settings-card recs-card" aria-labelledby="recs-tmdb-title">
+              <div class="settings-card__head"><h2 id="recs-tmdb-title" data-i18n="Movies and series">Movies and series</h2><span id="recs-tmdb-state" class="ui-badge ui-badge--outline">Off</span></div>
+              <div class="recs-row">
+                <div class="recs-row__head">
+                  <label class="recs-row__label" for="recs-tmdb-key" data-i18n="TMDB key">TMDB key</label>
+                  <button class="ui-help" type="button" data-ui-tip="tip-recs-tmdb" aria-label="About the TMDB key" aria-describedby="tip-recs-tmdb" data-i18n-aria-label="About the TMDB key">?</button>
+                  <span id="tip-recs-tmdb" class="ui-tip-content" hidden><strong data-i18n="TMDB key">TMDB key</strong><p data-i18n="Optional. With a free key from The Movie Database, your picks also include movies and series, and your Letterboxd films count.">Optional. With a free key from The Movie Database, your picks also include movies and series, and your Letterboxd films count.</p><ul><li data-i18n="Sign in at themoviedb.org, open Settings, then API, and request a key for personal use.">Sign in at themoviedb.org, open Settings, then API, and request a key for personal use.</li><li data-i18n="Paste the API key or the API read access token.">Paste the API key or the API read access token.</li><li data-i18n="The key stays on this computer and is never exported.">The key stays on this computer and is never exported.</li></ul></span>
+                  <span id="recs-tmdb-usage" class="recs-row__usage">Not set</span>
+                </div>
+                <form id="recs-tmdb-form" class="recs-row__control">
+                  <div class="settings-field recs-row__field"><input id="recs-tmdb-key" type="password" autocomplete="off" spellcheck="false" maxlength="400" placeholder="API key or read access token" data-i18n-placeholder="API key or read access token" /></div>
+                  <button class="ui-btn ui-btn--primary ui-btn--sm" type="submit" data-i18n="Save">Save</button>
+                  <button id="recs-tmdb-remove" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" hidden data-i18n="Remove">Remove</button>
+                </form>
+              </div>
+              <p id="recs-tmdb-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
+            </section>
+
+            <section class="settings-card recs-card" aria-labelledby="recs-updates-title">
+              <div class="settings-card__head"><h2 id="recs-updates-title" data-i18n="Recommendations">Recommendations</h2><button id="recs-refresh" class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-i18n="Update now">Update now</button></div>
+              <p class="recs-row__note" data-i18n="Recommendations refresh automatically when you open LVL, at most once per day. Use Update now to refresh anytime.">Recommendations refresh automatically when you open LVL, at most once per day. Use Update now to refresh anytime.</p>
+              <div class="recs-run-row">
+                <p id="recs-run" class="recs-run"></p>
+                <button id="recs-see-picks" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" hidden data-i18n="See recommendations">See recommendations</button>
+              </div>
+              <p id="recs-updates-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
+            </section>
+
+            <section class="settings-card recs-card" aria-labelledby="recs-data-title">
+              <div class="settings-card__head">
+                <h2 id="recs-data-title" data-i18n="Your data">Your data</h2>
+                <button class="ui-help recs-card__tip" type="button" data-ui-tip="tip-recs-data" aria-label="What the export holds" aria-describedby="tip-recs-data" data-i18n-aria-label="What the export holds">?</button>
+                <span id="tip-recs-data" class="ui-tip-content" hidden><strong data-i18n="Export">Export</strong><ul><li data-i18n="Export all: one JSON file with your ratings, every show by season (score, votes, genres, description, the date it was read, what fans recommend), your picks and hidden titles.">Export all: one JSON file with your ratings, every show by season (score, votes, genres, description, the date it was read, what fans recommend), your picks and hidden titles.</li><li data-i18n="Export ratings: your ratings as a spreadsheet (CSV).">Export ratings: your ratings as a spreadsheet (CSV).</li></ul><p data-i18n="The TMDB key isn&#x27;t included. Everything is kept in the app&#x27;s database in the data folder.">The TMDB key isn't included. Everything is kept in the app's database in the data folder.</p></span>
+              </div>
+              <p id="recs-data-usage" class="recs-row__note"></p>
+              <div class="settings-actions">
+                <a class="ui-btn ui-btn--secondary ui-btn--sm" href="/api/recs/export" download data-i18n="Export all">Export all</a>
+                <a class="ui-btn ui-btn--secondary ui-btn--sm" href="/api/recs/export?format=csv" download data-i18n="Export ratings">Export ratings</a>
+                <button id="recs-unhide" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" disabled data-i18n="No hidden titles">No hidden titles</button>
+                <button id="recs-clear" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Clear saved details">Clear saved details</button>
+              </div>
+              <p id="recs-data-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
+            </section>
+            <details class="settings-credits">
+              <summary>Credits</summary>
+              <a href="https://www.themoviedb.org" target="_blank" rel="noopener noreferrer" aria-label="The Movie Database"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2aWV3Qm94PSIwIDAgMTg1LjA0IDEzMy40Ij48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6dXJsKCNsaW5lYXItZ3JhZGllbnQpO308L3N0eWxlPjxsaW5lYXJHcmFkaWVudCBpZD0ibGluZWFyLWdyYWRpZW50IiB5MT0iNjYuNyIgeDI9IjE4NS4wNCIgeTI9IjY2LjciIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiM5MGNlYTEiLz48c3RvcCBvZmZzZXQ9IjAuNTYiIHN0b3AtY29sb3I9IiMzY2JlYzkiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMwMGIzZTUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48dGl0bGU+QXNzZXQgNDwvdGl0bGU+PGcgaWQ9IkxheWVyXzIiIGRhdGEtbmFtZT0iTGF5ZXIgMiI+PGcgaWQ9IkxheWVyXzEtMiIgZGF0YS1uYW1lPSJMYXllciAxIj48cGF0aCBjbGFzcz0iY2xzLTEiIGQ9Ik01MS4wNiw2Ni43aDBBMTcuNjcsMTcuNjcsMCwwLDEsNjguNzMsNDloLS4xQTE3LjY3LDE3LjY3LDAsMCwxLDg2LjMsNjYuN2gwQTE3LjY3LDE3LjY3LDAsMCwxLDY4LjYzLDg0LjM3aC4xQTE3LjY3LDE3LjY3LDAsMCwxLDUxLjA2LDY2LjdabTgyLjY3LTMxLjMzaDMyLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTg0LjMsMTcuN2gwQTE3LjY3LDE3LjY3LDAsMCwwLDE2Ni42MywwaC0zMi45QTE3LjY3LDE3LjY3LDAsMCwwLDExNi4wNiwxNy43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMTMzLjczLDM1LjM3Wm0tMTEzLDk4aDYzLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTAyLjMsMTE1LjdoMEExNy42NywxNy42NywwLDAsMCw4NC42Myw5OEgyMC43M0ExNy42NywxNy42NywwLDAsMCwzLjA2LDExNS43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMjAuNzMsMTMzLjM3Wm04My45Mi00OWg2LjI1TDEyNS41LDQ5aC04LjM1bC04LjksMjMuMmgtLjFMOTkuNCw0OUg5MC41Wm0zMi40NSwwaDcuOFY0OWgtNy44Wm0yMi4yLDBoMjQuOTVWNzcuMkgxNjcuMVY3MGgxNS4zNVY2Mi44SDE2Ny4xVjU2LjJoMTYuMjVWNDloLTI0Wk0xMC4xLDM1LjRoNy44VjYuOUgyOFYwSDBWNi45SDEwLjFaTTM5LDM1LjRoNy44VjIwLjFINjEuOVYzNS40aDcuOFYwSDYxLjlWMTMuMkg0Ni43NVYwSDM5Wm00MS4yNSwwaDI1VjI4LjJIODhWMjFoMTUuMzVWMTMuOEg4OFY3LjJoMTYuMjVWMGgtMjRabS03OSw0OUg5VjU3LjI1aC4xbDksMjcuMTVIMjRsOS4zLTI3LjE1aC4xVjg0LjRoNy44VjQ5SDI5LjQ1bC04LjIsMjMuMWgtLjFMMTMsNDlIMS4yWm0xMTIuMDksNDlIMTI2YTI0LjU5LDI0LjU5LDAsMCwwLDcuNTYtMS4xNSwxOS41MiwxOS41MiwwLDAsMCw2LjM1LTMuMzcsMTYuMzcsMTYuMzcsMCwwLDAsNC4zNy01LjVBMTYuOTEsMTYuOTEsMCwwLDAsMTQ2LDExNS44YTE4LjUsMTguNSwwLDAsMC0xLjY4LTguMjUsMTUuMSwxNS4xLDAsMCwwLTQuNTItNS41M0ExOC41NSwxOC41NSwwLDAsMCwxMzMuMDcsOTksMzMuNTQsMzMuNTQsMCwwLDAsMTI1LDk4SDExMy4yOVptNy44MS0yOC4yaDQuNmExNy40MywxNy40MywwLDAsMSw0LjY3LjYyLDExLjY4LDExLjY4LDAsMCwxLDMuODgsMS44OCw5LDksMCwwLDEsMi42MiwzLjE4LDkuODcsOS44NywwLDAsMSwxLDQuNTIsMTEuOTIsMTEuOTIsMCwwLDEtMSw1LjA4LDguNjksOC42OSwwLDAsMS0yLjY3LDMuMzQsMTAuODcsMTAuODcsMCwwLDEtNCwxLjgzLDIxLjU3LDIxLjU3LDAsMCwxLTUsLjU1SDEyMS4xWm0zNi4xNCwyOC4yaDE0LjVhMjMuMTEsMjMuMTEsMCwwLDAsNC43My0uNSwxMy4zOCwxMy4zOCwwLDAsMCw0LjI3LTEuNjUsOS40Miw5LjQyLDAsMCwwLDMuMS0zLDguNTIsOC41MiwwLDAsMCwxLjItNC42OCw5LjE2LDkuMTYsMCwwLDAtLjU1LTMuMiw3Ljc5LDcuNzksMCwwLDAtMS41Ny0yLjYyLDguMzgsOC4zOCwwLDAsMC0yLjQ1LTEuODUsMTAsMTAsMCwwLDAtMy4xOC0xdi0uMWE5LjI4LDkuMjgsMCwwLDAsNC40My0yLjgyLDcuNDIsNy40MiwwLDAsMCwxLjY3LTUsOC4zNCw4LjM0LDAsMCwwLTEuMTUtNC42NSw3Ljg4LDcuODgsMCwwLDAtMy0yLjczLDEyLjksMTIuOSwwLDAsMC00LjE3LTEuMywzNC40MiwzNC40MiwwLDAsMC00LjYzLS4zMmgtMTMuMlptNy44LTI4LjhoNS4zYTEwLjc5LDEwLjc5LDAsMCwxLDEuODUuMTcsNS43Nyw1Ljc3LDAsMCwxLDEuNy41OCwzLjMzLDMuMzMsMCwwLDEsMS4yMywxLjEzLDMuMjIsMy4yMiwwLDAsMSwuNDcsMS44MiwzLjYzLDMuNjMsMCwwLDEtLjQyLDEuOCwzLjM0LDMuMzQsMCwwLDEtMS4xMywxLjIsNC43OCw0Ljc4LDAsMCwxLTEuNTcuNjUsOC4xNiw4LjE2LDAsMCwxLTEuNzguMkgxNjVabTAsMTQuMTVoNS45YTE1LjEyLDE1LjEyLDAsMCwxLDIuMDUuMTUsNy44Myw3LjgzLDAsMCwxLDIsLjU1LDQsNCwwLDAsMSwxLjU4LDEuMTcsMy4xMywzLjEzLDAsMCwxLC42MiwyLDMuNzEsMy43MSwwLDAsMS0uNDcsMS45NSw0LDQsMCwwLDEtMS4yMywxLjMsNC43OCw0Ljc4LDAsMCwxLTEuNjcuNyw4LjkxLDguOTEsMCwwLDEtMS44My4yaC03WiIvPjwvZz48L2c+PC9zdmc+" alt="TMDB" width="70" height="50" loading="lazy" /></a>
+              <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
+            </details>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <dialog id="detail-dialog" class="detail-dialog">
+      <button id="dialog-close" class="dialog-close" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div id="dialog-content"></div>
+    </dialog>
+
+    <dialog id="app-changelog-dialog" class="detail-dialog app-changelog-dialog" aria-labelledby="app-changelog-title">
+      <button id="app-changelog-close" class="dialog-close" type="button" aria-label="Close changelog">×</button>
+      <div class="app-changelog-dialog__body">
+        <h2 id="app-changelog-title">LVL changelog</h2>
+        <p id="app-changelog-intro" class="settings-hint"></p>
+        <div id="app-changelog-history" class="app-changelog-history" aria-live="polite"></div>
+      </div>
+    </dialog>
+
+    <dialog id="magnet-dialog" class="detail-dialog tool-dialog app-dialog" aria-labelledby="magnet-title">
+      <button class="dialog-close" data-close-dialog="magnet-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="app-dialog__body">
+        <h2 id="magnet-title" class="app-dialog__title" data-i18n="Open a magnet link">Open a magnet link</h2>
+        <form id="magnet-form" class="magnet-form">
+          <label class="ui-field">
+            <span class="ui-field__label" data-i18n="Magnet link">Magnet link</span>
+            <textarea id="magnet-input" class="ui-input magnet-input" rows="3" spellcheck="false" placeholder="magnet:?xt=urn:btih:…" required></textarea>
+          </label>
+          <div class="app-dialog__actions"><button class="ui-btn ui-btn--primary" type="submit" data-i18n="Open">Open</button></div>
+        </form>
+        <p id="magnet-status" class="tool-status app-status" role="status" aria-live="polite"></p>
+        <div id="magnet-files" class="magnet-files"></div>
+      </div>
+    </dialog>
+
+    <dialog id="line-preview-dialog" class="detail-dialog line-preview-dialog" aria-labelledby="line-preview-title">
+      <button class="dialog-close" data-close-dialog="line-preview-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="line-preview-body">
+        <div class="line-preview-heading">
+          <h2 id="line-preview-title" data-i18n="Replay line">Replay line</h2>
+          <button id="line-preview-replay" class="ui-btn ui-btn--sm" type="button" disabled data-i18n="Replay clip"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h11a4 4 0 0 1 4 4v1M8 5 5 8l3 3"/></svg>Replay clip</button>
+        </div>
+        <div id="line-preview-media" class="line-preview-media"></div>
+        <p id="line-preview-target" class="line-preview-target" data-card-content></p>
+        <p id="line-preview-base" class="line-preview-base" data-card-content></p>
+        <p id="line-preview-status" class="learn-status" role="status"></p>
+      </div>
+    </dialog>
+
+    <dialog id="subtitle-web-dialog" class="detail-dialog tool-dialog subtitle-finder-dialog">
+      <button class="dialog-close" data-close-dialog="subtitle-web-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="detail-body">
+        <h2>Find subtitles</h2>
+        <form id="subtitle-web-form" class="tool-form">
+          <div class="subtitle-finder-languages">
+            <label class="field-stack" for="subtitle-language"><span>SUBTITLE LANGUAGES</span><input id="subtitle-language" type="text" value="ES,EN" placeholder="ES,EN or one language code" autocomplete="off" spellcheck="false" /></label>
+            <div class="subtitle-language-chips" role="group" aria-label="Quick subtitle language selection">
+              <button type="button" data-subtitle-lang-toggle="EN" aria-pressed="false">English</button>
+              <button type="button" data-subtitle-lang-toggle="ES" aria-pressed="false">Español</button>
+              <button type="button" data-subtitle-lang-toggle="JA" aria-pressed="false">日本語</button>
+              <button type="button" data-subtitle-lang-toggle="FR" aria-pressed="false">Français</button>
+              <button type="button" data-subtitle-lang-toggle="DE" aria-pressed="false">Deutsch</button>
+              <button type="button" data-subtitle-lang-toggle="PT" aria-pressed="false">Português</button>
+              <button type="button" data-subtitle-lang-toggle="IT" aria-pressed="false">Italiano</button>
+              <button type="button" data-subtitle-lang-toggle="KO" aria-pressed="false">한국어</button>
+              <button type="button" data-subtitle-lang-toggle="ZH" aria-pressed="false">中文</button>
+            </div>
+          </div>
+          <label class="field-stack"><span data-i18n="TITLE / RELEASE NAME">TITLE / RELEASE NAME</span><input id="subtitle-query" type="search" placeholder="Movie or episode title" required data-i18n-placeholder="Movie or episode title" /></label>
+          <div class="field-grid three">
+            <label class="field-stack"><span data-i18n="TYPE">TYPE</span><select id="subtitle-type"><option value="movie" data-i18n="MOVIE">MOVIE</option><option value="tv" data-i18n="TV">TV</option></select></label>
+            <label class="field-stack"><span data-i18n="SEASON">SEASON</span><input id="subtitle-season" type="number" min="1" placeholder="—" /></label>
+            <label class="field-stack"><span data-i18n="EPISODE">EPISODE</span><input id="subtitle-episode" type="number" min="1" placeholder="—" /></label>
+          </div>
+          <div class="settings-actions">
+            <button class="ui-btn ui-btn--primary" type="submit">Search subtitles</button>
+          </div>
+        </form>
+        <div id="subtitle-web-status" class="tool-status" aria-live="polite"></div>
+        <div id="subtitle-web-results" class="tool-results"></div>
+      </div>
+    </dialog>
+
+    <dialog id="subtitle-style-dialog" class="detail-dialog subtitle-style-dialog">
+      <button class="dialog-close" data-close-dialog="subtitle-style-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="subtitle-style-shell">
+        <div class="subtitle-style-preview-wrap">
+          <div id="subtitle-style-preview" class="subtitle-style-preview">
+            <div class="subtitle-preview-lines">
+              <div class="subtitle-line secondary">Everything changes when you understand the scene.</div>
+              <div class="subtitle-line">字幕が分かると、場面が変わって見える。</div>
+              <div class="subtitle-line romanized">jimaku ga wakaru to, bamen ga kawatte mieru.</div>
+            </div>
+          </div>
+          <button id="subtitle-preview-rotate" class="ui-btn ui-btn--ghost ui-btn--sm subtitle-preview-rotate" type="button" data-i18n="Rotate background colors" aria-label="Rotate background colors" data-i18n-aria-label="Rotate background colors">Rotate background colors</button>
+        </div>
+        <div class="subtitle-style-controls">
+          <div>
+            <span class="eyebrow" data-i18n="SUBTITLE APPEARANCE">SUBTITLE APPEARANCE</span>
+            <h2 data-i18n="STYLE">STYLE</h2>
+          </div>
+          <div class="subtitle-style-grid">
+            <label class="field-stack">
+              <span data-i18n="FONT">FONT</span>
+              <select id="subtitle-style-font"></select>
+            </label>
+            <label class="field-stack">
+              <span data-i18n="WEIGHT">WEIGHT</span>
+              <select id="subtitle-style-weight">
+                <option value="400">Regular</option>
+                <option value="500">Medium</option>
+                <option value="700">Bold</option>
+                <option value="900">Black</option>
+              </select>
+            </label>
+            <label class="field-stack subtitle-range-field">
+              <span data-i18n="SIZE">SIZE <strong id="subtitle-style-size-value">100%</strong></span>
+              <input id="subtitle-style-size" type="range" min="70" max="160" step="5" value="100" />
+            </label>
+            <label class="field-stack subtitle-range-field">
+              <span data-i18n="SHADOW">SHADOW <strong id="subtitle-style-shadow-value">40%</strong></span>
+              <input id="subtitle-style-shadow" type="range" min="0" max="100" step="5" value="40" />
+            </label>
+            <label class="field-stack subtitle-color-field">
+              <span data-i18n="TEXT COLOR">TEXT COLOR</span>
+              <input id="subtitle-style-color" type="color" value="#ffffff" aria-label="Subtitle text color" data-i18n-aria-label="Subtitle text color" />
+            </label>
+            <label class="field-stack subtitle-range-field">
+              <span data-i18n="BACKGROUND">BACKGROUND <strong id="subtitle-style-background-value">0%</strong></span>
+              <input id="subtitle-style-background" type="range" min="0" max="85" step="5" value="0" />
+            </label>
+            <label class="field-stack subtitle-range-field">
+              <span>HEIGHT (POSITION) <strong id="subtitle-style-position-value">16% from bottom</strong></span>
+              <input id="subtitle-style-position" type="range" min="5" max="70" step="1" value="16" aria-label="Subtitle height (position from bottom)" />
+            </label>
+            <label class="settings-toggle-row subtitle-label-toggle">
+              <span>
+                <strong data-i18n="Show Romanized Text">Show Romanized Text</strong>
+              </span>
+              <input id="subtitle-style-romanization" type="checkbox" checked />
+            </label>
+          </div>
+          <div class="settings-actions">
+            <button id="subtitle-style-reset" class="button" type="button" data-i18n="RESET">RESET</button>
+            <button class="button button-solid" type="button" data-close-dialog="subtitle-style-dialog" data-i18n="DONE">DONE</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="library-import-dialog" class="detail-dialog tool-dialog app-dialog library-import-dialog" aria-labelledby="library-import-title">
+      <button class="dialog-close" data-close-dialog="library-import-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="app-dialog__body">
+        <h2 id="library-import-title" class="app-dialog__title" data-i18n="Import a library">Import a library</h2>
+        <div class="library-import-options">
+          <section class="library-import-card">
+            <h3 data-i18n="Library file">Library file</h3>
+            <p data-i18n="A file exported from this app.">A file exported from this app.</p>
+            <label class="ui-btn ui-btn--secondary library-import-pick" for="library-db-file" data-i18n="Choose file">Choose file</label>
+            <input id="library-db-file" type="file" accept="application/json,.json" hidden />
+          </section>
+          <form id="anilist-import-form" class="library-import-card">
+            <h3>AniList</h3>
+            <p data-i18n="Your anime list, a title per show. Your scores also shape your Top picks.">Your anime list, a title per show. Your scores also shape your Top picks.</p>
+            <button id="anilist-import-connected" class="ui-btn ui-btn--primary" type="button" hidden>Import my connected AniList</button>
+            <label class="ui-field"><span class="ui-visually-hidden" data-i18n="AniList username">AniList username</span><input id="anilist-username" class="ui-input" type="text" autocomplete="off" placeholder="AniList username" required data-i18n-placeholder="AniList username" /></label>
+            <button class="ui-btn ui-btn--secondary" type="submit">Import a public username</button>
+          </form>
+        </div>
+        <p id="library-import-status" class="tool-status app-status" role="status" aria-live="polite"></p>
+      </div>
+    </dialog>
+
+    <dialog id="library-words-dialog" class="detail-dialog app-dialog library-words-dialog" aria-labelledby="library-words-title">
+      <button class="dialog-close" data-close-dialog="library-words-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="app-dialog__body">
+        <h2 id="library-words-title" class="app-dialog__title" data-i18n="Words">Words</h2>
+        <p id="library-words-source" class="app-dialog__sub"></p>
+        <div id="library-words-content" class="library-words-content"></div>
+      </div>
+    </dialog>
+
+    <dialog id="top-words-dialog" class="detail-dialog learn-dialog" aria-labelledby="top-words-title">
+      <button class="dialog-close" data-close-dialog="top-words-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="learn-dialog__body">
+        <h2 id="top-words-title" data-i18n="Top words">Top words</h2>
+        <p id="top-words-language" class="learn-dialog__sub"></p>
+        <div id="top-words-options" class="top-words-options"></div>
+        <p id="top-words-status" class="learn-status" role="status" aria-live="polite"></p>
+      </div>
+    </dialog>
+
+    <dialog id="ankiweb-dialog" class="detail-dialog learn-dialog ankiweb-dialog" aria-labelledby="ankiweb-title">
+      <button class="dialog-close" data-close-dialog="ankiweb-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
+      <div class="learn-dialog__body">
+        <h2 id="ankiweb-title" data-i18n="AnkiWeb decks">AnkiWeb decks</h2>
+        <form id="ankiweb-search-form" class="ankiweb-search" role="search">
+          <label class="ui-visually-hidden" for="ankiweb-query" data-i18n="Search shared decks">Search shared decks</label>
+          <input id="ankiweb-query" type="search" autocomplete="off" placeholder="Search shared decks" data-i18n-placeholder="Search shared decks" />
+          <button class="ui-btn ui-btn--primary ui-btn--sm" type="submit" data-i18n="Search">Search</button>
+        </form>
+        <div id="ankiweb-results" class="ankiweb-results" aria-live="polite"></div>
+        <p class="learn-footnote" data-i18n="Decks are shared by the Anki community on ankiweb.net. Downloaded decks are saved in this app&#x27;s data folder.">Decks are shared by the Anki community on ankiweb.net. Downloaded decks are saved in this app's data folder.</p>
+      </div>
+    </dialog>
+
+    <dialog id="library-remove-dialog" class="detail-dialog app-dialog library-remove-dialog" aria-labelledby="library-remove-title">
+      <div class="app-dialog__body">
+        <h2 class="app-dialog__title" id="library-remove-title">Remove from Library</h2>
+        <div class="app-dialog__actions">
+          <button id="library-remove-cancel" class="ui-btn ui-btn--ghost" type="button">Cancel</button>
+          <button id="library-remove-entry" class="ui-btn ui-btn--secondary" type="button">Remove entry</button>
+          <button id="library-remove-chapters" class="ui-btn ui-btn--secondary library-remove-confirm" type="button">Remove entry and chapters</button>
+        </div>
+      </div>
+    </dialog>
+
+    <div id="library-context-menu" class="ui-menu library-context-menu" role="menu" aria-label="Title actions" hidden data-i18n-aria-label="Title actions">
+      <button class="ui-menu__item" type="button" role="menuitem" data-library-action="mark-watched">Mark as watched</button>
+      <div class="library-season-actions" data-library-season-actions hidden></div>
+      <button class="ui-menu__item" type="button" role="menuitem" data-library-action="custom-image" data-i18n="Choose a poster image">Choose a poster image</button>
+      <button class="ui-menu__item" type="button" role="menuitem" data-library-action="fetch-image" data-i18n="Find another poster">Find another poster</button>
+      <button class="ui-menu__item" type="button" role="menuitem" data-library-action="rename" data-i18n="Rename">Rename</button>
+      <div class="ui-menu__sep" role="separator"></div>
+      <button class="ui-menu__item is-danger" type="button" role="menuitem" data-library-action="delete" data-i18n="Remove from Library">Remove from Library</button>
+      <input id="library-custom-image-input" type="file" accept="image/*" hidden />
+    </div>
+
+    <!-- This independent login button handler runs even when an unrelated
+         main-app startup failure prevents the rest of LVL from initializing. -->
+    <script type="module">
+      import { ANILIST_CALLBACK_PATH, readAniListPreference, startAniListLocalAuthorization } from "/anilist-auto-client.js";
+      document.getElementById("anilist-auto-connect")?.addEventListener("click", () => {
+        const status = document.getElementById("anilist-auto-status");
+        try {
+          const { clientId } = readAniListPreference(localStorage);
+          const target = startAniListLocalAuthorization({
+            clientId, origin: window.location.origin, sessionStorage,
+          });
+          if (status) {
+            status.textContent = "Opening AniList authorization in this tab…";
+            status.dataset.error = "false";
+          }
+          window.location.assign(target);
+        } catch (error) {
+          document.getElementById("anilist-auto-pin-fallback")?.setAttribute("open", "");
+          if (status) {
+            status.textContent = `${error.message} The registered AniList Redirect URL must be ${window.location.origin}${ANILIST_CALLBACK_PATH}.`;
+            status.dataset.error = "true";
+          }
+        }
+      });
+    </script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
