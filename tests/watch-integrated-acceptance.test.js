@@ -182,6 +182,43 @@ test("Learning OFF player menu keeps embedded/external captions and modal option
   assert.match(html, /id="subtitle-manager-close"/);
 });
 
+test("a partially loaded embedded subtitle stream can be hidden and shown without re-importing", () => {
+  const start = app.indexOf('$("#player-subtitle-menu")?.addEventListener("click", (event) => {');
+  const end = app.indexOf('$("#subtitle-manager-close")?', start);
+  const renderStart = app.indexOf("function renderPlayerSubtitleMenu() {");
+  const renderEnd = app.indexOf("\nfunction openPlayerSubtitleManager()", renderStart);
+  assert.ok(start > 0 && end > start && renderStart > 0 && renderEnd > renderStart);
+  const partial = { id: "embedded", embeddedStreamIndex: 3, origin: "embedded", language: "EN",
+    visible: true, embeddedImportPartial: true, cues: [{ text: "Already on screen" }] };
+  const state = { subtitlesVisible: true,
+    currentMediaProbe: { subtitleTracks: [{ streamIndex: 3, textBased: true, language: "en", title: "Embedded English" }] },
+    currentSource: { sessionId: "s", fileIndex: 1 } };
+  const menu = fakeNode();
+  const calls = { import: 0, choice: 0 };
+  const ctx = vm.createContext({ state, subtitleRenderMemo: { key: "cached" },
+    $: () => menu, preferredSourceTracks: () => [partial], currentSourceTracks: () => [partial],
+    embeddedSubtitleImports: new Map([["stream", {}]]), embeddedSubtitleImportKey: () => "stream",
+    embeddedSubtitleLabel: (track) => track.title, trackLanguageName: () => "English",
+    normalizeTrackLanguage: () => "EN", escapeHtml: String,
+    noteSubtitleVisibilityIntent: () => { calls.choice++; }, refreshSubtitleClockForInteraction() {},
+    renderSubtitleWorkspace() {}, renderPlayerSubtitleMenu: null, clearPlayerControlsHideTimer() {},
+    importEmbeddedSubtitleTrack() { calls.import++; },
+  });
+  vm.runInContext(app.slice(renderStart, renderEnd) + app.slice(start, end), ctx);
+  const button = { dataset: { captionEmbedded: "3" },
+    hasAttribute: (name) => name === "data-caption-embedded" };
+  vm.runInContext("renderPlayerSubtitleMenu()", ctx);
+  assert.match(menu.innerHTML, /Embedded English[\s\S]*?Hide/,
+    "show a Hide action even while more embedded cues are loading");
+  menu.emit("click", { target: { closest: () => button } });
+  assert.equal(partial.visible, false);
+  assert.equal(calls.import, 0, "hiding a partial stream must not restart extraction");
+  menu.emit("click", { target: { closest: () => button } });
+  assert.equal(partial.visible, true);
+  assert.equal(calls.choice, 2);
+  assert.equal(calls.import, 0, "showing already-loaded cues should be immediate");
+});
+
 test("Watch title click navigates without requesting native PiP; in-app floating player handles continued playback", async () => {
   const watchInfo = fakeNode();
   const order = [];
@@ -361,7 +398,7 @@ test("watched/unwatched state survives Library persistence and overrides stale f
   assert.equal(unwatch(series, "S01E03"), true);
   assert.equal(sourceA.watchedChapters.S01E03, false);
   assert.equal(sourceA.episodes[0].progress.finished, false);
-  assert.equal(sourceA.episodes[0].progress.positionMs, 1000, "Unwatch cannot destroy the saved resume point");
+  assert.equal(sourceA.episodes[0].progress.positionMs, 0, "Explicit unwatch resets this episode for replay");
   assert.equal(status(series, chapter).watched, false);
   assert.equal(persisted.length, 1);
   sourceB.episodes[0].progress.finished = true; // A delayed imported progress snapshot.

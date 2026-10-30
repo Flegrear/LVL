@@ -97,6 +97,7 @@ test("a late-loading logo gets a visible grayscale-to-partial-color sweep after 
   };
   const context = vm.createContext({
     $: (name) => elements[name] || null,
+    isNewSourceFramePending: () => false,
     Image: Probe,
     window: {
       requestAnimationFrame(callback) { const id = ++serial; frames.set(id, callback); return id; },

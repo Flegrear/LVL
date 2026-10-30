@@ -183,6 +183,7 @@
                 </div>
                 <div class="video-frame" id="video-frame">
                   <video id="video" playsinline></video>
+                  <canvas id="video-seek-freeze" class="video-seek-freeze" width="640" height="360" aria-hidden="true" hidden></canvas>
                   <div id="compat-controls" class="compat-controls" hidden>
                     <div class="player-control-row">
                       <button id="player-prev-chapter" class="player-tool player-icon" type="button" data-tooltip="Previous chapter" aria-label="Previous chapter" data-i18n-aria-label="Previous chapter" data-i18n-tooltip="Previous chapter"><svg viewBox="0 0 24 24"><path d="M6 5v14M18 6l-8 6 8 6z"/></svg></button>
@@ -196,8 +197,12 @@
                       <button id="player-source-switcher" class="player-tool player-icon" type="button" data-tooltip="Video sources" aria-label="Video sources" data-i18n-aria-label="Video sources" data-i18n-tooltip="Video sources"><svg viewBox="0 0 24 24"><rect x="4" y="5" width="16" height="11" rx="2"/><path d="m9 20 3-4 3 4M7 20h10"/></svg></button>
                       <button id="player-audio-switcher" class="player-tool player-icon" type="button" data-tooltip="Audio track" aria-label="Audio track" data-i18n-aria-label="Audio track" data-i18n-tooltip="Audio track"><svg viewBox="0 0 24 24"><path d="M9 18V6l10-2v12"/><circle cx="6" cy="18" r="3"/><circle cx="16" cy="16" r="3"/></svg></button>
                       <div class="player-playback-metrics">
-                        <div id="player-transfer-stats" class="player-transfer-stats" aria-label="Torrent transfer totals" hidden>
-                          <span id="player-downloaded">↓ 0 B</span><span id="player-uploaded">↑ 0 B</span>
+                        <div id="player-transfer-stats" class="player-transfer-stats" tabindex="0" role="group" aria-label="Downloaded 0 B; total to download unknown" hidden>
+                          <span id="player-download-target" class="player-transfer-progress" aria-hidden="true">↓ 0 B / —</span>
+                          <span id="player-transfer-down" class="player-transfer-down">
+                            <span id="player-downloaded">↓ 0 B</span>
+                          </span>
+                          <span id="player-uploaded">↑ 0 B</span>
                         </div>
                         <span id="compat-time" class="compat-time">00:00 / 00:00</span>
                       </div>
@@ -253,12 +258,17 @@
                     </details>
                   </div>
                   <div id="player-up-next" class="player-up-next" role="status" aria-live="polite" hidden>
-                    <span class="player-up-next__kicker">UP NEXT</span>
-                    <strong id="player-up-next-title">Next episode</strong>
-                    <span id="player-up-next-countdown">Playing in 8 seconds</span>
+                    <div class="player-up-next__main">
+                      <img id="player-up-next-image" class="player-up-next__image" alt="" decoding="async" />
+                      <div class="player-up-next__copy">
+                        <span class="player-up-next__kicker">UP NEXT</span>
+                        <strong id="player-up-next-title">Next episode</strong>
+                        <span id="player-up-next-countdown">Playing in 8 seconds</span>
+                      </div>
+                    </div>
                     <div class="player-up-next__actions">
-                      <button id="player-up-next-play" class="ui-btn ui-btn--primary ui-btn--sm" type="button">Play now</button>
-                      <button id="player-up-next-cancel" class="ui-btn ui-btn--secondary ui-btn--sm" type="button">Cancel</button>
+                      <button id="player-up-next-play" class="ui-btn ui-btn--primary ui-btn--sm" type="button">Play next</button>
+                      <button id="player-up-next-cancel" class="ui-btn ui-btn--secondary ui-btn--sm" type="button">Not now</button>
                     </div>
                   </div>
                   <div id="player-source-menu" class="player-popover" hidden></div>
@@ -741,7 +751,16 @@
                 <div class="storage-row__head">
                   <label class="storage-row__label" for="storage-player-gb" data-i18n="Player storage">Player storage</label>
                   <button class="ui-help" type="button" data-ui-tip="tip-storage-player" aria-label="What player storage is" aria-describedby="tip-storage-player" data-i18n-aria-label="What player storage is">?</button>
-                  <span id="tip-storage-player" class="ui-tip-content" hidden><strong data-i18n="Player storage">Player storage</strong><p data-i18n="Space for the videos the player downloads from torrents while you watch. Only the file you play is downloaded, a piece at a time.">Space for the videos the player downloads from torrents while you watch. Only the file you play is downloaded, a piece at a time.</p><ul><li data-i18n="When you switch to another video, the previous download is deleted.">When you switch to another video, the previous download is deleted.</li><li data-i18n="Downloads you aren&#x27;t watching are deleted after 30 minutes unused, and when the app starts again.">Downloads you aren't watching are deleted after 30 minutes unused, and when the app starts again.</li><li data-i18n="If this space fills up, the downloads you used longest ago go first. The video you&#x27;re watching is never removed.">If this space fills up, the downloads you used longest ago go first. The video you're watching is never removed.</li></ul><p data-i18n="A video bigger than this limit can&#x27;t be played until you raise it.">A video bigger than this limit can't be played until you raise it.</p><p data-i18n="Enough for any 1080p movie, or a few episodes at once. 4K movies can be 40 to 80 GB; raise it if you play those. On a nearly full drive the recommendation is at most a quarter of its free space."><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="player">20 GB</span>.</strong> Enough for any 1080p movie, or a few episodes at once. 4K movies can be 40 to 80 GB; raise it if you play those. On a nearly full drive the recommendation is at most a quarter of its free space.</p></span>
+                  <span id="tip-storage-player" class="ui-tip-content" hidden>
+                    <strong data-i18n="Player storage">Player storage</strong>
+                    <p>The player storage limit is shared by selected-episode torrent downloads, reusable converted video and playback cache. Only the selected video is downloaded, piece by piece.</p>
+                    <ul>
+                      <li>With the cache on, eligible fully downloaded SDR episodes may be converted once into a fully seekable file. Until preparation finishes, normal streaming and bounded-buffer seeking continue. Conversion uses CPU and extra disk space.</li>
+                      <li>Unused downloads and cache are cleaned up when space is needed. Active playback is protected.</li>
+                    </ul>
+                    <p data-i18n="A video bigger than this limit can&#x27;t be played until you raise it.">A video bigger than this limit can't be played until you raise it.</p>
+                    <p><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="player">20 GB</span>.</strong> Enough for most 1080p videos; large 4K files may require a higher limit. On a nearly full drive, keep this budget below a quarter of the free space.</p>
+                  </span>
                   <span id="storage-player-usage" class="storage-row__usage">Checking…</span>
                 </div>
                 <div class="storage-row__control">
@@ -750,6 +769,21 @@
                   <button id="storage-player-clear" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Free space now">Free space now</button>
                 </div>
                 <p class="storage-row__rec"><span id="storage-player-rec">Recommended: 20 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="player" hidden>Use 20 GB</button></p>
+                <p id="storage-player-budget-note" class="storage-row__note">Torrent downloads, indexed seekable video and playback cache share this one storage limit.</p>
+              </div>
+
+              <div class="storage-cache-option">
+                <label class="ui-switch settings-switch-row storage-cache-option__toggle" for="storage-remux-cache-enabled">
+                  <input id="storage-remux-cache-enabled" type="checkbox" checked aria-describedby="storage-remux-cache-description" />
+                  <span class="ui-switch__track" aria-hidden="true"></span>
+                  <span class="settings-learning-copy">
+                    <strong>Playback improvements and seek cache</strong>
+                    <small id="storage-remux-cache-description">
+                      <span class="storage-cache-option__mode"><b>On (default):</b> Retain compatible playback buffers and prepare a reusable, fully seekable H.264 file for supported, verified completed episodes. Preparation uses CPU and disk within the player budget. Unsupported videos keep normal playback.</span>
+                      <span class="storage-cache-option__mode"><b>Off:</b> No background seek conversion or retained playback improvements; normal torrent streaming and on-demand FFmpeg conversion continue.</span>
+                    </small>
+                  </span>
+                </label>
               </div>
 
               <div class="storage-row" data-learning-only>
@@ -837,8 +871,6 @@
                 </form>
                 <div id="recs-anilist-linked" class="recs-row__control" hidden>
                   <p id="recs-anilist-note" class="recs-row__note"></p>
-                  <button id="recs-anilist-sync" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Sync now">Sync now</button>
-                  <button id="recs-anilist-unlink" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Unlink">Unlink</button>
                 </div>
               </div>
               <section id="anilist-auto-settings" class="anilist-auto-settings" aria-labelledby="anilist-auto-title">

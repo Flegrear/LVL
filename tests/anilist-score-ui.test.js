@@ -37,7 +37,8 @@ test("LVL season editor is independent of imported scores, but verified season c
 test("Connected AniList score imports refresh title editor and recommendations, independently of watch progress", () => {
   assert.match(app, /scoreSyncEnabled: anilistScoreSyncEnabled\(\)/);
   assert.match(app, /recsUi\.invalidateRatings\(\)/);
-  assert.match(app, /if \(anilistScoreSyncEnabled\(\)\) void syncAniListLibrary/);
+  assert.match(app, /void syncAniListLibrary\(\{ quiet: true \}\)\.catch\(\(\) => \{\}\);/,
+    "Connected accounts refresh their watched history independently of score-sync preference");
   assert.match(ui, /function invalidateRatings\(\)/);
 });
 

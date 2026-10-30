@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   animeCatalogRootName, animeCatalogRootSearchNames, animeCatalogSearchNames,
+  animeCatalogCombinedSearchNames, animeCatalogSubtitleSearchNames,
   verifiedAnimeCatalogMatch,
 } from "../frontend/catalog/anime-catalog-match.js";
 
@@ -61,4 +62,46 @@ test("exact sequel series titles are accepted even without a separate IMDb year"
   assert.equal(verifiedAnimeCatalogMatch(media, [
     { id: "tt55555", name: "Something Season 2", type: "series" },
   ])?.id, "tt55555");
+});
+
+test("Jujutsu Kaisen new-season story arc has a verifiable original-series root, not the arc as a distinct show", () => {
+  const media = {
+    title: "JUJUTSU KAISEN Season 3: The Culling Game Part 1",
+    titleAlt: "Jujutsu Kaisen: Shimetsu Kaiyuu - Zenpen", year: 2026, format: "TV",
+  };
+  assert.equal(animeCatalogRootName(media.title), "JUJUTSU KAISEN");
+  assert.deepEqual(animeCatalogRootSearchNames(media), ["JUJUTSU KAISEN"]);
+  assert.equal(verifiedAnimeCatalogMatch(media, [
+    { id: "tt12343534", name: "Jujutsu Kaisen", type: "series", releaseInfo: "2020" },
+    { id: "tt14331144", name: "Jujutsu Kaisen 0", type: "movie", releaseInfo: "2021" },
+  ])?.id, "tt12343534");
+  assert.equal(animeCatalogRootName("Arc Season 3 means trouble"), "Arc Season 3 means trouble",
+    "season references inside a distinct show title must not be stripped");
+});
+
+test("Hell’s Paradise season 2 queries a combined English/romaji IMDb alias without accepting fuzzy results", () => {
+  const media = { title: "Hell’s Paradise Season 2", titleAlt: "Jigokuraku 2nd Season", year: 2026, format: "TV" };
+  assert.deepEqual(animeCatalogRootSearchNames(media), ["Hell’s Paradise", "Jigokuraku"]);
+  assert.deepEqual(animeCatalogCombinedSearchNames(media), ["Hell’s Paradise: Jigokuraku"]);
+  const candidates = [
+    { id: "tt0214705", name: "Jailhouse Wardress", type: "movie", releaseInfo: "1981" },
+    { id: "tt13911284", name: "Hell's Paradise", type: "series", releaseInfo: "2023" },
+  ];
+  assert.equal(verifiedAnimeCatalogMatch(media, candidates)?.id, "tt13911284");
+  assert.equal(verifiedAnimeCatalogMatch(media, [
+    { id: "tt1999999", name: "Hell in Paradise", type: "series", releaseInfo: "2025" },
+  ]), null, "the combined search query is discovery only; it cannot loosen verified identity");
+  assert.deepEqual(animeCatalogCombinedSearchNames({ title: "Blue Box" }), []);
+});
+
+test("short romanized subtitle prefix finds Sentenced to Be a Hero when Cinemeta ignores its full AniList title", () => {
+  const media = { title: "Sentenced to Be a Hero",
+    titleAlt: "Yuusha Kei ni Shosu: Choubatsu Yuusha 9004-tai Keimu Kiroku", year: 2026, format: "TV" };
+  assert.deepEqual(animeCatalogSubtitleSearchNames(media), ["Yuusha Kei ni Shosu"]);
+  assert.equal(verifiedAnimeCatalogMatch(media, [
+    { id: "tt32536168", name: "Sentenced to Be a Hero", type: "series", releaseInfo: "2026" },
+  ])?.id, "tt32536168");
+  assert.deepEqual(animeCatalogSubtitleSearchNames({ title: "Blue Box" }), []);
+  assert.deepEqual(animeCatalogSubtitleSearchNames({ title: "Frieren: Beyond Journey’s End Season 2",
+    titleAlt: "Sousou no Frieren 2nd Season" }), [], "do not abbreviate English-only title by guessing");
 });

@@ -4,6 +4,7 @@ import fs from "node:fs";
 import vm from "node:vm";
 import { addRecoveryEvent, recoveryEpisodeCode } from "../frontend/player/playback-diagnostics.js";
 import { createPlaybackRecoveryState, recordPlaybackProgress, requestPlaybackRecovery, playbackRetryStrategy } from "../frontend/player/playback-recovery.js";
+import { classifyPlaybackStreamStatus } from "../frontend/player/stream-status.js";
 
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
 const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
@@ -64,8 +65,11 @@ function harness() {
     video: { dataset: { mode: "torrent-direct" }, error: null, ended: false, currentTime: 15 },
     watchPendingSelection: null,
     addRecoveryEvent, recoveryEpisodeCode, createPlaybackRecoveryState,
+    classifyPlaybackStreamStatus,
+    HTMLMediaElement: { HAVE_FUTURE_DATA: 3 },
     requestPlaybackRecovery, playbackRetryStrategy, recordPlaybackProgress,
-    playbackRecovery: createPlaybackRecoveryState("source-a"),
+    playbackRecovery: createPlaybackRecoveryState("source-a", 0),
+    playbackLoadRequestId: 0,
     recoveryBusy: false,
     recoveryWaitingSince: null,
     recoveryLastMotionAt: 0,
@@ -148,6 +152,25 @@ test("Only real forward playback closes a recovery overlay; initial media readin
   assert.equal(h.nodes["video-recovery-meta"].hidden, true);
 });
 
+test("recovery overlay stays visible until the new source presents an actual decoder frame", async () => {
+  const h = harness();
+  await h.run('recoverPlayback("stall")');
+  h.context.video.requestVideoFrameCallback = () => 1;
+  h.context.presentedSubtitleSeconds = () => null;
+  vm.runInContext(section("function markPlaybackMotion(", "\nfunction beginRecoveryWatch("), h.context);
+  h.context.absolutePlaybackSeconds = () => 15;
+  h.run('markPlaybackMotion()');
+  h.context.absolutePlaybackSeconds = () => 15.5;
+  h.run('markPlaybackMotion()');
+  assert.equal(h.run('recoveryDisplayPhase'), 'recovering',
+    'timeupdate alone is not proof of the first decoded frame');
+  h.context.presentedSubtitleSeconds = () => 15.75;
+  h.context.absolutePlaybackSeconds = () => 15.8;
+  h.run('markPlaybackMotion()');
+  assert.equal(h.run('recoveryDisplayPhase'), '',
+    'matching presented frame and clock can confirm restoration');
+});
+
 test("Delayed media errors cannot restart hidden Watch, but active PiP may recover", async () => {
   const h = harness();
   h.context.viewActive = () => false;
@@ -158,6 +181,37 @@ test("Delayed media errors cannot restart hidden Watch, but active PiP may recov
   await h.run('recoverPlayback("error")');
   assert.equal(h.run("playbackRecovery.retryCount"), 1);
   assert.ok(h.actions.includes("restart-direct"), "visible native PiP still gets playback recovery");
+});
+
+test("measured torrent starvation prevents a misleading codec fallback after browser error 3", async () => {
+  const h = harness();
+  h.context.video.error = { code: 3 };
+  h.context.video.paused = false;
+  h.context.video.readyState = 2;
+  h.context.forceCompatibilityTranscode = async () => { h.actions.push("compatibility"); return true; };
+  h.run(`streamStatusHealth = { peers: 0, activeReaderCount: 1, readers: [
+    { role: 'unknown', ageMs: 9000, nextPiecePresent: false, firstPiecePresent: true }
+  ] }; streamStatusAt = Date.now(); recoveryWaitingSince = Date.now();`);
+  await h.run('recoverPlayback("error")');
+  assert.ok(h.actions.includes("restart-direct"));
+  assert.ok(!h.actions.includes("compatibility"));
+  assert.match(h.nodes["video-recovery-message"].textContent, /No peers/);
+  assert.equal(h.nodes["video-recovery-message"].hidden, false, "the measured reason is visible while restoring");
+  assert.equal(h.nodes["video-loading-actions"].hidden, true, "existing Retry and Choose source are failure actions");
+});
+
+test("expired or absent reader evidence leaves existing genuine codec fallback intact", async () => {
+  const h = harness();
+  h.context.video.error = { code: 3 };
+  h.context.video.paused = false;
+  h.context.video.readyState = 2;
+  h.context.forceCompatibilityTranscode = async () => { h.actions.push("compatibility"); return true; };
+  h.run(`streamStatusHealth = { peers: 0, activeReaderCount: 1,
+    readers: [{ nextPiecePresent: false }] }; streamStatusAt = Date.now() - 10_000;
+    recoveryWaitingSince = Date.now();`);
+  await h.run('recoverPlayback("error")');
+  assert.ok(h.actions.includes("compatibility"));
+  assert.equal(h.nodes["video-recovery-message"].hidden, true);
 });
 
 test("Alternative-source recovery is recorded as a switch, not an unbounded same-source retry", async () => {

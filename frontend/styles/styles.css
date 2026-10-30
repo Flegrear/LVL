@@ -500,12 +500,21 @@ button { color: inherit; }
 .video-frame { position:relative; width:100%; min-height:0; aspect-ratio:16 / 9; overflow:hidden; background:#000; border:0; border-radius:6px; box-shadow:0 24px 90px rgba(0,0,0,.72); }
 .video-frame video { width: 100%; height: 100%; object-fit: contain; display: none; background: #000; }
 .video-frame.has-video video { display: block; }
+/* Keep a dimmed LAST frame from the SAME episode behind a cold FFmpeg seek.
+   The old frame is explicitly a waiting backdrop, never a claim that the
+   requested timestamp is decoded. It clears on the NEW loadeddata event. */
+.video-seek-freeze { position:absolute; inset:0; z-index:2; width:100%; height:100%; object-fit:contain; pointer-events:none; filter:brightness(.52) blur(2px); }
+.video-seek-freeze[hidden] { display:none; }
 /* Keep remux keyframe preroll decoding at full speed without exposing the
    earlier movie frames or their captions. `display:none` would throttle video
    frame callbacks and prevent the player from reaching the requested frame. */
 .video-frame.is-sync-preroll video,
 .video-frame.is-sync-preroll .subtitle-overlay { opacity:0 !important; }
-.video-frame.source-transition video { filter:blur(12px) brightness(.52); transform:scale(1.015); transition:filter .16s ease,transform .16s ease; }
+/* Source A must not remain visible beneath source B's branded loader while
+   B's metadata, decoder, or keyframe preflight is still pending. Keep the
+   element laid out so MSE decoders and video frame callbacks can progress. */
+.video-frame.source-transition video,
+.video-frame.source-transition .subtitle-overlay { opacity:0 !important; }
 .compat-controls { position:absolute; left:0; right:0; bottom:0; z-index:8; display:grid; gap:10px; padding:82px clamp(18px,2vw,30px) 20px; border:0; background:linear-gradient(transparent,rgba(0,0,0,.2) 28%,rgba(0,0,0,.92) 78%,#000); opacity:1; transform:translateY(0); transition:opacity .18s ease,transform .18s ease; }
 .compat-controls[hidden] { display:none; }
 .video-frame.controls-hidden .compat-controls { opacity:0; transform:translateY(10px); pointer-events:none; }
@@ -522,9 +531,17 @@ button { color: inherit; }
 .player-tool:disabled { opacity:.28; cursor:not-allowed; }
 .player-volume { width:74px; accent-color:#fff; }
 .player-buffered { display:none; }
-.player-transfer-stats { display:inline-flex; align-items:center; gap:7px; color:#b4b4b4; font:500 11px/1.2 var(--font-sans); white-space:nowrap; }
+.player-transfer-stats { position:relative; display:inline-flex; align-items:center; gap:7px; color:#b4b4b4; font:500 11px/1.2 var(--font-sans); white-space:nowrap; cursor:default; }
 .player-transfer-stats[hidden] { display:none; }
 .player-transfer-stats span { font-variant-numeric:tabular-nums; }
+/* The selected episode's downloaded/total progress sits directly above the
+   existing transfer counters on hover or keyboard focus, without changing the
+   bottom bar's width, height or its downloaded/uploaded figures. */
+.player-transfer-progress { position:absolute; bottom:calc(100% + 6px); left:0; z-index:2; visibility:hidden; pointer-events:none; color:inherit; font:inherit; white-space:nowrap; }
+.player-transfer-stats:is(:hover,:focus-visible) .player-transfer-progress { visibility:visible; }
+.player-transfer-down { white-space:nowrap; }
+.player-transfer-stats #player-uploaded { white-space:nowrap; }
+.player-transfer-stats:focus-visible { outline:2px solid #fff; outline-offset:3px; border-radius:2px; }
 .player-speed { position:relative; flex:none; display:inline-flex; align-items:center; color:#f0f0f0; font:600 12px/1.2 var(--font-sans); white-space:nowrap; }
 .player-speed-trigger { min-width:38px; height:32px; padding:0 4px; border:0; border-radius:4px; background:transparent; color:inherit; font:inherit; cursor:pointer; }
 .player-speed-trigger:hover,.player-speed-trigger[aria-expanded="true"] { color:#fff; }
@@ -556,12 +573,17 @@ button { color: inherit; }
 .video-recovery-details summary { cursor:pointer; font-weight:600; }
 .video-recovery-details summary:focus-visible { outline:2px solid #fff; outline-offset:3px; }
 .video-recovery-events { display:grid; gap:7px; max-height:145px; overflow-y:auto; margin-top:10px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
-.player-up-next { position:absolute; right:clamp(16px,4%,48px); bottom:clamp(90px,19%,160px); z-index:12; display:grid; gap:8px; width:min(330px,calc(100% - 32px)); padding:19px 21px; border:1px solid rgba(255,255,255,.22); border-radius:14px; background:rgba(8,8,8,.94); color:#fff; box-shadow:0 18px 55px rgba(0,0,0,.55); backdrop-filter:blur(10px); }
+.player-up-next { position:absolute; right:clamp(12px,3%,32px); bottom:clamp(74px,15%,120px); z-index:12; box-sizing:border-box; display:grid; gap:12px; width:min(354px,calc(100% - 24px)); padding:12px; border:1px solid #252525; border-radius:10px; background:#000; color:#fff; box-shadow:0 12px 32px rgba(0,0,0,.48); }
 .player-up-next[hidden] { display:none; }
-.player-up-next__kicker { font:700 10px/1 var(--font-mono); letter-spacing:.16em; color:#aaa; }
-.player-up-next strong { font:650 20px/1.2 var(--font-sans); }
-#player-up-next-countdown { font:500 12px/1.45 var(--font-sans); color:#c8c8c8; }
-.player-up-next__actions { display:flex; flex-wrap:wrap; gap:9px; margin-top:4px; }
+.player-up-next__main { display:flex; min-width:0; align-items:center; gap:11px; }
+.player-up-next__image { display:block; flex:0 0 104px; width:104px; height:62px; border-radius:5px; background:#151515; object-fit:cover; }
+.player-up-next__copy { display:grid; gap:4px; align-content:center; min-width:0; }
+.player-up-next__kicker { font:700 10px/1 var(--font-mono); letter-spacing:.12em; color:#aaa; }
+.player-up-next strong { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; font:650 14px/1.25 var(--font-sans); }
+#player-up-next-countdown { font:500 11px/1.45 var(--font-sans); color:#aaa; }
+.player-up-next__actions { display:flex; justify-content:flex-end; gap:8px; }
+.player-up-next__actions .ui-btn { min-height:29px; padding:5px 12px; }
+@media (max-width:440px) { .player-up-next { bottom:76px; } .player-up-next__image { flex-basis:88px; width:88px; height:54px; } }
 .player-placeholder { position:absolute; inset:0; display:block; overflow:hidden; background:#000; }
 .has-video .player-placeholder { display:none; }
 .subtitle-overlay { pointer-events:none; position:absolute; left:50%; bottom:var(--subtitle-bottom,16%); width:min(90%,1040px); transform:translateX(-50%); display:grid; gap:7px; text-align:center; z-index:6; }
@@ -2935,6 +2957,14 @@ select:focus-visible { outline:2px solid #fff; outline-offset:2px; }
 .storage-limit-slider:focus-visible { outline:2px solid #fff; outline-offset:3px; }
 .storage-row__rec { display:flex; align-items:center; flex-wrap:wrap; gap:6px 12px; margin:-2px 0 0; color:#9a9a9a; font:500 13px/1.45 var(--font-sans); }
 .storage-row__rec [hidden] { display:none; }
+.storage-row__note { margin:0; color:#8f8f8f; font:400 12px/1.5 var(--font-sans); }
+.storage-cache-option { padding:18px 0; border-top:1px solid var(--ui-line-subtle); }
+.storage-cache-option__toggle { display:flex; align-items:flex-start; gap:12px; width:100%; padding:0; cursor:pointer; }
+.storage-cache-option__toggle .ui-switch__track { margin-top:1px; }
+.storage-cache-option__toggle .settings-learning-copy { gap:6px; }
+.storage-cache-option__mode { display:block; }
+.storage-cache-option__mode + .storage-cache-option__mode { margin-top:4px; }
+.storage-cache-option__mode b { color:#d4d4d4; font-weight:650; }
 .storage-meter > span { width:var(--ui-progress,0%); }
 .storage-meter.is-full > span { background:#ffb4b4; }
 .storage-leftovers { display:flex; align-items:center; justify-content:space-between; gap:16px; margin-top:6px; padding:14px 16px; border:1px solid var(--ui-line-strong); border-radius:var(--ui-radius-lg); background:var(--ui-surface-2); }

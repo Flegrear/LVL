@@ -20,11 +20,28 @@ test("Automatic embedded subtitles do not override a user's captions-off or chos
   assert.equal(defaultEmbeddedSubtitleTrack({ media: { subtitleTracks: [{ streamIndex: 2, textBased: false }] } }), null);
 });
 
+test("Forced signs-only captions cannot displace a complete same-language dialogue track", () => {
+  const media = { subtitleTracks: [
+    textTrack(2, "eng", { disposition: { forced: 1, default: 1 } }),
+    textTrack(3, "eng", { disposition: { forced: 0, default: 0 } }),
+    textTrack(4, "spa", { disposition: { forced: 0, default: 1 } }),
+  ] };
+  assert.equal(defaultEmbeddedSubtitleTrack({ media, languages: ["EN", "ES"], normalizeLanguage: normalize }).streamIndex, 3);
+  assert.equal(defaultEmbeddedSubtitleTrack({ media, languages: ["ES"], normalizeLanguage: normalize }).streamIndex, 4);
+  assert.equal(defaultEmbeddedSubtitleTrack({ media: { subtitleTracks: media.subtitleTracks.slice(0, 1) } }).streamIndex, 2,
+    "an only-available forced track is still usable");
+  const server = readFileSync(new URL("../server.js", import.meta.url), "utf8");
+  assert.match(server, /forced:\s*Number\(stream\.disposition\?\.forced\) === 1 \? 1 : 0/,
+    "the real FFprobe endpoint must transmit forced/default flags to the browser");
+});
+
 test("Player initializes embedded caption extraction on both early and delayed media probe", () => {
   const app = readFileSync(new URL("../app.js", import.meta.url), "utf8");
   assert.match(app, /enableDefaultEmbeddedSubtitles\(probedMedia, startAtSeconds, \{ urgent: startAtSeconds >= 12 \}\)/);
-  assert.match(app, /enableDefaultEmbeddedSubtitles\(media, startAtSeconds, \{ urgent: startAtSeconds >= 12 \}\)/);
+  assert.match(app, /enableDefaultEmbeddedSubtitles\(media, subtitlePosition,[\s\S]*?urgent: subtitlePosition >= 12/,
+    "delayed media probe must select the current playhead rather than stale startup time");
   assert.match(app, /importEmbeddedSubtitleTrack\(candidate, null, \{ automatic: true, activate: true/);
-  assert.match(app, /activate && state\.subtitlesVisible && controller\.visibilityRevision === subtitleVisibilityRevision && !currentSourceTracks\(\)\.some/);
+  assert.match(app, /activate && state\.subtitlesVisible && controller\.visibilityRevision === subtitleVisibilityRevision && !currentSourceTracks\(\)\.some/,
+    "pending auto-imports must respect the most recent explicit caption visibility choice");
   assert.match(app, /initialEmbeddedSubtitleSource === key/);
 });

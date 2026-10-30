@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { calendarAddDays, calendarAniListIds, calendarDateKey, calendarLibraryEvents, calendarMatchLibrary,
   calendarTorrentLookup, calendarTorrentSummary, calendarWeekStart, createCalendarView, validCalendarDate } from "../frontend/calendar/calendar-view.js";
+import { renderCalendarSurface } from "../frontend/calendar/calendar-surface.js";
 
 const index = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
@@ -51,6 +52,51 @@ test("Public releases match saved titles only through ids or exact year/title, a
   assert.deepEqual(calendarMatchLibrary([event], library).map((row) => [row.inMyList, row.seriesKey, row.watched]),
     [[true, "frieren", false]]);
   assert.equal(calendarMatchLibrary([{ ...event, providerId: "9999", title: "Unrelated" }], library)[0].inMyList, false);
+});
+
+test("An ongoing show's premiere year, not the episode year, matches an exact saved title", () => {
+  const saved = makeSeries({ key: "older-show", title: "Example Show", catalogId: "",
+    mediaKind: "", releaseInfo: "2022", sources: [], aliases: [] });
+  const row = { id: "tvmaze:822", providerId: "42", source: "TVmaze", type: "series",
+    title: "Example Show", date: "2026-10-26", premiereYear: 2022, code: "S04E03" };
+  assert.equal(calendarMatchLibrary([row], [saved])[0].inMyList, true);
+  assert.equal(calendarMatchLibrary([{ ...row, premiereYear: 2021 }], [saved])[0].inMyList, false,
+    "a different edition with the same name must not be linked");
+});
+
+test("Two providers reporting one anime episode show one release without hiding a different chapter", async () => {
+  const root = { innerHTML: "", addEventListener() {} };
+  const calendar = createCalendarView({ root, getSeries: () => [makeSeries({
+    sources: [{ externalSource: "ANILIST", externalId: "123" }],
+  })], getChapterList: () => null, openTitle() {},
+  storage: { getItem: () => null, setItem() {} }, now: () => new Date(2026, 9, 26, 12),
+  fetchReleases: async () => ({ events: [
+    { id: "anilist:4", providerId: "123", title: "Frieren", source: "AniList", type: "anime",
+      date: "2026-10-26", timestamp: Date.UTC(2026, 9, 26, 15), code: "EP 4" },
+    { id: "tvmaze:4", catalogId: "tt22248376", title: "Frieren", source: "TVmaze", type: "series",
+      date: "2026-10-26", timestamp: Date.UTC(2026, 9, 26, 18), code: "S01E04" },
+    { id: "tvmaze:5", catalogId: "tt22248376", title: "Frieren", source: "TVmaze", type: "series",
+      date: "2026-10-26", timestamp: Date.UTC(2026, 9, 26, 20), code: "S01E05" },
+  ] }),
+  });
+  calendar.activate();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.match(root.innerHTML, /data-calendar-event="anilist:4"/);
+  assert.doesNotMatch(root.innerHTML, /data-calendar-event="tvmaze:4"/);
+  assert.match(root.innerHTML, /data-calendar-event="tvmaze:5"/, "a different episode on the same day stays visible");
+});
+
+test("Month release counts exclude adjacent-month cells while preserving their events", () => {
+  const html = renderCalendarSurface({
+    mode: "month", anchor: new Date(2026, 9, 14, 12), today: new Date(2026, 9, 14, 12),
+    type: "all", events: [{ id: "outside", title: "September finale", date: "2026-09-30",
+      type: "series", code: "S01E10" }], selected: "", agendaLimit: 80,
+    hourFocus: "", coverage: {}, releaseState: "ready", libraryPending: false,
+    indexedSeriesCount: 1, trackedSeriesCount: 1, savedTitleCount: 1,
+  });
+  assert.match(html, /data-calendar-event="outside"/);
+  assert.match(html, /1 saved title - No matching air dates this month/);
+  assert.match(html, /class="calendar-filter-count">0 releases/);
 });
 
 test("A saved first season tracks sequel episodes with their own season art and title", () => {
@@ -232,7 +278,7 @@ test("Large matched schedules load agenda rows in batches and Refresh bypasses t
       calls.push(args);
       return { events: Array.from({ length: 200 }, (_, i) => ({
           id: `tvmaze:${i}`, providerId: String(i), catalogId: "tt22248376", title: `Show ${i}`,
-        date: "2026-10-14", type: "series", code: "S01E01", episodeTitle: "Episode",
+        date: "2026-10-14", type: "series", code: `S01E${String(i + 1).padStart(3, "0")}`, episodeTitle: "Episode",
         source: "TVmaze",
       })), coverage: { TVmaze: { status: "ok" } } };
     },
@@ -443,4 +489,33 @@ test("Navigating does not rescan saved shows, and catalog loads stay bounded and
   assert.equal(waiting.size, 12, "Completing requests makes room for the next batch");
   await new Promise((resolve) => setTimeout(resolve, 125));
   assert.ok(paints - before <= 2, "One burst of completed requests should trigger at most two redraws");
+});
+
+test("Large libraries eventually index catalog dates beyond the first 128 saved shows", async () => {
+  const callbacks = new Map();
+  const shows = Array.from({ length: 135 }, (_, index) => makeSeries({
+    key: `show-${index}`, catalogId: `tt${String(100000 + index)}`, title: `Saved ${index}`,
+  }));
+  const calendar = createCalendarView({
+    root: { innerHTML: "", addEventListener() {} },
+    getSeries: () => shows,
+    getChapterList: (id, callback) => { callbacks.set(id, callback); return null; },
+    openTitle() {}, storage: { getItem: () => null, setItem() {} },
+    now: () => new Date(2026, 9, 26, 12),
+    fetchReleases: async () => ({ events: [] }),
+  });
+  calendar.activate();
+  let completed = 0;
+  while (completed < shows.length) {
+    const pending = [...callbacks.entries()].filter(([id]) => !callbacks.get(`${id}-done`));
+    assert.ok(pending.length > 0 && pending.length <= 6, "chapter loads stay bounded at six");
+    for (const [id, callback] of pending) {
+      callbacks.delete(id);
+      callback({ chapters: [{ season: 1, episode: 1, released: "2026-10-26", name: "Premiere" }] });
+      completed++;
+    }
+  }
+  await new Promise((resolve) => setTimeout(resolve, 125));
+  assert.equal(calendar.getState().count, shows.length);
+  assert.equal(completed, 135, "every saved title, including the last seven, supplies its catalog releases");
 });

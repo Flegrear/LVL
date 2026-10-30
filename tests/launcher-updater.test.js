@@ -22,10 +22,20 @@ using System;
 using System.IO;
 using System.Reflection;
 using System.Net.Sockets;
+using System.Net;
 using System.Text;
 using System.Windows.Forms;
 
 class UpdaterProbe {
+  private sealed class TlsProbeFactory : IWebRequestCreate {
+    public bool SawCreate;
+    public bool SawTls12;
+    public WebRequest Create(Uri uri) {
+      SawCreate = true;
+      SawTls12 = (ServicePointManager.SecurityProtocol & (SecurityProtocolType)3072) != 0;
+      throw new InvalidOperationException("TLS request intercepted before network access");
+    }
+  }
   static object Invoke(Type type, string method, params object[] parameters) {
     return type.GetMethod(method, BindingFlags.NonPublic | BindingFlags.Static)
       .Invoke(null, parameters);
@@ -60,11 +70,67 @@ class UpdaterProbe {
     Require(Invoke(type, "ParseSha256", line, "other.exe") == null, "checksum must match exact setup filename");
     Require((string)Invoke(type, "ParseSha256", hash, "LVL-Setup-0.1.1.exe") == hash, "dedicated checksum accepted");
     Require((string)Invoke(type, "ParseSha256", hash + " *LVL-update-v0.1.2.zip", "LVL-update-v0.1.2.zip") == hash, "patch named checksum accepted");
+    // This machine's .NET Framework can cache protocol settings as soon as
+    // WebRequest.Create is called. Capture the setting without external I/O.
+    SecurityProtocolType originalProtocol = ServicePointManager.SecurityProtocol;
+    try {
+      TlsProbeFactory feedFactory = new TlsProbeFactory();
+      Require(WebRequest.RegisterPrefix("https://api.github.com/repos/Flegrear/LVL/releases?per_page=20", feedFactory), "intercept official release feed");
+      ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls;
+      try {
+        Invoke(type, "ReadBounded", "https://api.github.com/repos/Flegrear/LVL/releases?per_page=20", 524288);
+        throw new Exception("expected isolated TLS probe interception");
+      } catch (TargetInvocationException issue) {
+        Require(issue.InnerException is InvalidOperationException && feedFactory.SawCreate && feedFactory.SawTls12,
+          "release feed must enable TLS 1.2 before request creation");
+      }
+      TlsProbeFactory downloadFactory = new TlsProbeFactory();
+      string setupUrl = "https://github.com/Flegrear/LVL/releases/download/v0.1.13/LVL-Setup.exe";
+      Require(WebRequest.RegisterPrefix(setupUrl, downloadFactory), "intercept official installer download");
+      ServicePointManager.SecurityProtocol = SecurityProtocolType.Tls;
+      try {
+        Invoke(type, "DownloadInstaller", setupUrl, Path.Combine(Path.GetDirectoryName(args[0]), "no-download.exe"), false);
+        throw new Exception("expected isolated download TLS probe interception");
+      } catch (TargetInvocationException issue) {
+        Require(issue.InnerException is InvalidOperationException && downloadFactory.SawCreate && downloadFactory.SawTls12,
+          "installer download must enable TLS 1.2 before request creation");
+      }
+    } finally {
+      ServicePointManager.SecurityProtocol = originalProtocol;
+    }
+    int attempts = 0;
+    int pauses = 0;
+    byte[] recovered = (byte[])Invoke(type, "ReadReleaseFeed",
+      new Func<byte[]>(delegate { attempts++; if (attempts == 1) throw new WebException("cold initial timeout", WebExceptionStatus.Timeout); return Encoding.UTF8.GetBytes("[]"); }),
+      new Action<int>(delegate(int ms) { pauses++; Require(ms > 0 && ms <= 1000, "short bounded retry delay"); }));
+    Require(Encoding.UTF8.GetString(recovered) == "[]" && attempts == 2 && pauses == 1,
+      "first transient check fails but the same manual check recovers automatically");
+    attempts = 0;
+    pauses = 0;
+    try {
+      Invoke(type, "ReadReleaseFeed", new Func<byte[]>(delegate { attempts++; throw new WebException("invalid certificate", WebExceptionStatus.TrustFailure); }),
+        new Action<int>(delegate(int ms) { pauses++; }));
+      throw new Exception("permanent error must propagate");
+    } catch (TargetInvocationException issue) {
+      Require(issue.InnerException is WebException && attempts == 1 && pauses == 0,
+        "non-transient security errors must never be retried");
+    }
+    attempts = 0;
+    pauses = 0;
+    try {
+      Invoke(type, "ReadReleaseFeed", new Func<byte[]>(delegate { attempts++; throw new WebException("still offline", WebExceptionStatus.ConnectFailure); }),
+        new Action<int>(delegate(int ms) { pauses++; }));
+      throw new Exception("bounded transient error must propagate");
+    } catch (TargetInvocationException issue) {
+      Require(issue.InnerException is WebException && attempts == 3 && pauses == 2,
+        "persistent network failure has strictly bounded retries");
+    }
     string fakeRoot = Path.Combine(Path.GetDirectoryName(args[0]), "isolated-updater-data");
     Directory.CreateDirectory(fakeRoot);
     Require(!(bool)type.GetMethod("IsInstalled").Invoke(null, new object[] {fakeRoot}), "source checkout has no installed marker");
     File.WriteAllText(Path.Combine(fakeRoot, "installed-app.json"), "{}");
     File.WriteAllText(Path.Combine(fakeRoot, "package.json"), "{\"version\":\"0.1.0\"}");
+    File.WriteAllText(Path.Combine(fakeRoot, "lvl-update-settings.json"), "{\"automatic\":false,\"intervalDays\":30}");
     Require((bool)type.GetMethod("IsInstalled").Invoke(null, new object[] {fakeRoot}), "fresh marker enables updates");
     Type logType = compiled.GetType("LanguageVideoLearner.Log", true);
     object log = Activator.CreateInstance(logType, new object[] {Path.Combine(fakeRoot, "logs")});
@@ -74,9 +140,12 @@ class UpdaterProbe {
       try {
         string status = Send(address, "{\"secret\":\"SECRET\",\"action\":\"status\"}");
         Require(status.Contains("\"installed\":true") && status.Contains("\"installedVersion\":\"0.1.0\""), "authenticated local status");
+        Require(status.Contains("\"intervalDays\":1"), "legacy 30-day preferences normalize to fixed daily checks");
         Require(Send(address, "{\"secret\":\"wrong\",\"action\":\"status\"}") == null, "wrong secret cannot read status");
         string settings = Send(address, "{\"secret\":\"SECRET\",\"action\":\"settings\",\"automatic\":false,\"intervalDays\":7}");
-        Require(settings.Contains("\"intervalDays\":1") && File.Exists(Path.Combine(fakeRoot, "lvl-update-settings.json")), "fixed daily settings persist within isolated LVL data root");
+        Require(settings.Contains("\"intervalDays\":1") && File.Exists(Path.Combine(fakeRoot, "lvl-update-settings.json"))
+          && File.ReadAllText(Path.Combine(fakeRoot, "lvl-update-settings.json")).Contains("\"intervalDays\":1"),
+          "legacy bridge requests preserve automatic preference while using only daily checks");
         Require(Send(address, "{\"secret\":\"SECRET\",\"action\":\"install\"}").Contains("No verified LVL update"), "cannot install without a verified release");
       } finally {
         type.GetMethod("EndBridge").Invoke(updater, null);

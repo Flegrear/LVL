@@ -164,6 +164,7 @@ test("Up Next countdown is eight ticks, and Cancel/source switch/navigation prev
     currentCatalogNeighbors: () => ({ next: { code: "S01E02" } }),
     currentChapterNavigation: () => ({ next: null }),
     adjacentChapterBusy: false,
+    artworkFallback: () => "data:image/svg+xml,preview",
     revealPlayerControls() {},
     playAdjacentChapter: () => { starts += 1; },
   });
@@ -172,6 +173,7 @@ test("Up Next countdown is eight ticks, and Cancel/source switch/navigation prev
   const tick = () => [...intervals.values()][0]?.();
   call("startAutoNext");
   assert.equal(nodes.get("#player-up-next-countdown").textContent, "Playing in 8 seconds");
+  assert.equal(nodes.get("#player-up-next-image").src, "data:image/svg+xml,preview");
   for (let i = 0; i < 7; i++) tick();
   assert.equal(starts, 0);
   tick();

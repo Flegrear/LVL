@@ -5,6 +5,7 @@ import { EventEmitter } from "node:events";
 import path from "node:path";
 import vm from "node:vm";
 import { createTranscodePlan, transcodeVideoFilter } from "../shared/media/media-compat.js";
+import { pruneExitedTranscodes } from "../backend/media/transcode-slot-lifecycle.js";
 
 const server = readFileSync(new URL("../server.js", import.meta.url), "utf8");
 const from = server.indexOf("async function copiedSeekOrigin(");
@@ -59,7 +60,8 @@ function harness({ probe, duration = 0, sessionState = "ready" } = {}) {
 }
 
 test("actual route contract returns copy preroll clock with no cached metadata and caches only verified results", async () => {
-  assert.match(server, /\(stream\|transcode\|transcode-start\|metadata\|subtitle\|speech\)/);
+  assert.match(server, /\(stream\|transcode\|transcode-start\|metadata\|subtitle\|speech\|indexed\|indexed\\\/status\|remux-cache\\\/window\)/,
+    "verified copied-seek preflight stays available alongside bounded cache-window route");
   assert.match(server, /if \(fileAction === "transcode-start"\)/);
   const h = harness();
   const first = await h.call();
@@ -126,7 +128,8 @@ test("session replacement while probing rejects the stale video origin", async (
 test("FFmpeg transcode retains codec, requested speech tape and -t, and exports the verified effective base", () => {
   const transcode = server.slice(server.indexOf("async function transcodeTorrentFile("), server.indexOf("\nfunction boundedInteger(", server.indexOf("async function transcodeTorrentFile(")));
   assert.match(transcode, /effectiveStartSeconds = origin\.effectiveStartSeconds/);
-  assert.match(transcode, /Number\(media\.durationSeconds\) - startSeconds/);
+  assert.match(transcode, /plan\.video\.mode === "copy" \? effectiveStartSeconds : startSeconds/);
+  assert.match(transcode, /Number\(media\.durationSeconds\) - durationOrigin/);
   assert.match(transcode, /"X-Media-Effective-Start-Seconds": String\(effectiveStartSeconds\)/);
   assert.match(transcode, /speechTapeWriter\(session\.id, fileIndex, audioTrackOrder, startSeconds\)/,
     "the speech tape must still be keyed to requested time, not copied-video GOP preroll");
@@ -149,7 +152,7 @@ function transcodeHarness(h, { noCachedMetadata = false, hdr = false } = {}) {
   Object.assign(h.context, {
     createTranscodePlan, transcodeVideoFilter, MAX_TRANSCODE_JOBS: 2,
     SPEECH_SAMPLE_RATE: 16000,
-    activeTranscodes: new Set(), ffmpegPath: "ffmpeg", probeTorrentFile: async () => media,
+    activeTranscodes: new Set(), pruneExitedTranscodes, ffmpegPath: "ffmpeg", probeTorrentFile: async () => media,
     getCachedMediaProbe: () => noCachedMetadata ? null : media,
     rejectOversizeVideo: () => false, scheduleSessionExpiry: () => {}, trackOpenStream: () => {},
     videoTranscodeEncoder: async () => "libx264", hardwareVideoEncodingArgs: () => ["-c:v", "libx264"],
@@ -186,7 +189,7 @@ function transcodeHarness(h, { noCachedMetadata = false, hdr = false } = {}) {
   return { call, spawned, tapeCalls, media, get created() { return created; } };
 }
 
-test("preflight and copied HEVC HDR transcode share one verified clock, original -ss/audio, and FFmpeg -t semantics", async () => {
+test("preflight and copied HEVC HDR transcode preserve GOP preroll through EOF", async () => {
   const h = harness({ duration: 10 });
   let probed = 0;
   h.setProbe(async ({ requestedStartSeconds }) => {
@@ -211,8 +214,8 @@ test("preflight and copied HEVC HDR transcode share one verified clock, original
   assert.ok(paired("-ss", "9.37"), "FFmpeg must still seek from the requested movie timestamp");
   assert.ok(paired("-c:v", "copy"), "explicit HEVC HDR must never downgrade to H264");
   assert.ok(paired("-map", "0:a:1?"), "selected second audio track must be retained");
-  assert.ok(Math.abs(Number(args[args.indexOf("-t") + 1]) - 0.63) < 0.000001,
-    "FFmpeg -t is relative to the requested 9.37s seek; copied GOP preroll is already included");
+  assert.ok(Math.abs(Number(args[args.indexOf("-t") + 1]) - 2) < 0.000001,
+    "copied -t must include 1.37s of GOP preroll so audio is not truncated before video EOF");
   assert.equal(player.tapeCalls[0].start, 9.37, "speech tape stays on requested timeline");
   assert.equal(player.tapeCalls[0].audio, 1);
 });

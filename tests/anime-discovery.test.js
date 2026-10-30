@@ -62,6 +62,21 @@ test("anime discovery rejects upstream errors and retries without caching failed
   assert.equal(calls, 2);
 });
 
+test('new AniList entries retry their large cover when extraLarge CDN artwork fails', async () => {
+  const extraLarge = 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/extraLarge/new-entry.jpg';
+  const large = 'https://s4.anilist.co/file/anilistcdn/media/anime/cover/large/new-entry.jpg';
+  const service = createAnimeDiscoveryService({ fetchImpl: async () => ({ ok: true,
+    json: async () => ({ data: { Page: { pageInfo: {}, media: [
+      { id: 2026, title: { english: 'New entry' }, coverImage: { extraLarge, large } },
+    ] } } }) }) });
+  const result = await service.discover({ year: 2026 });
+  assert.equal(result.items[0].cover, extraLarge);
+  assert.equal(result.items[0].coverFallback, large,
+    'if extraLarge is missing the existing responsive-image retry should use the real large artwork');
+  assert.match(app, /item\.coverFallback && item\.coverFallback !== item\.cover[\s\S]{0,80}data-fallback-src/,
+    'Anime Home cards should wire the existing image-fallback handler');
+});
+
 test("floating player leaves media element mounted and only appears when playing outside Watch", () => {
   const start = app.indexOf("// A single live video/subtitle DOM");
   const end = app.indexOf("\n// restoreScroll:", start);
@@ -115,7 +130,8 @@ test("anime browse cards show numerical 10-point scores, never percent ratings",
       { id: 1, title: "Rated Anime", cover: "https://example.test/cover.jpg", year: 2026, season: "FALL", format: "TV", score: 87 },
       { id: 2, title: "Not Yet Rated", cover: "", year: 2026, season: "FALL", format: "TV", score: null },
     ], loading: false, loaded: true, error: "", hasNextPage: false },
-    homeBrowseCategory: "anime", viewActive: () => true, escapeHtml: String, refreshImages: () => {},
+    homeBrowseCategory: "anime", viewActive: () => true, escapeHtml: String,
+    artworkFallback: () => "fallback.svg", refreshImages: () => {},
     $: (selector) => ({ "#anime-browser-results": grid, "#anime-browser-status": status, "#anime-browser-more": more })[selector],
   });
   vm.runInContext(app.slice(from, to), context);

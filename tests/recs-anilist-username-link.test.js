@@ -40,7 +40,7 @@ test("Public 404 gives the private-list recovery path; other failures stay unmod
 
 test("Public Link never starts an unintended authenticated pull after importing its own snapshot", () => {
   const section = recsUi.slice(recsUi.indexOf('$("#recs-anilist-form")?.addEventListener'),
-    recsUi.indexOf('$("#recs-anilist-sync")?.addEventListener'));
+    recsUi.indexOf('$("#recs-letterboxd-form")?.addEventListener'));
   assert.match(section, /onAniListChange\(true, ratingsStatus, \{ skipAuthPull: true \}\)/);
   assert.doesNotMatch(section, /skipAuthPull: useViewer/);
 });

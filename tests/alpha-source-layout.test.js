@@ -3,15 +3,19 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { SERVER_FEATURES } from "../backend/features/registry.js";
 
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
+// Part B modules are served through backend/features/registry.js, not server.js.
+const featureAssets = SERVER_FEATURES.flatMap((feature) => feature.assets || []);
 
 test("organized browser imports resolve through the local static asset allowlist", () => {
   const served = new Map(
     [...server.matchAll(/^\s*\["(\/[^"]+\.js)", \{ file: "([^"]+\.js)", cacheControl:/gm)]
       .map(([, url, file]) => [url, file]),
   );
+  for (const [url, asset] of featureAssets) if (url.endsWith(".js")) served.set(url, asset.file);
   const visited = new Set();
   const visit = (url) => {
     if (visited.has(url)) return;
@@ -32,7 +36,17 @@ test("organized browser imports resolve through the local static asset allowlist
   assert.ok(visited.has("/frontend/recommendations/recs-ui.js"));
   assert.ok(visited.has("/frontend/ui/ui.js"));
   assert.ok(visited.has("/shared/subtitles/subtitle-sync.js"));
+  assert.ok(visited.has("/frontend/features/feature-host.js"));
+  assert.ok(visited.has("/frontend/features/registry.js"));
   assert.ok(visited.size > 20, `Expected complete browser module graph, found only ${visited.size}`);
+});
+
+test("feature-registry assets point to existing files inside the project", () => {
+  for (const [url, asset] of featureAssets) {
+    const fullPath = path.resolve(root, asset.file);
+    assert.ok(fullPath.startsWith(root + path.sep), `${url} must remain inside project root`);
+    assert.ok(fs.existsSync(fullPath) && fs.statSync(fullPath).isFile(), `${url} must point to a regular file: ${asset.file}`);
+  }
 });
 
 test("static routes refer only to existing reviewed files, including grouped icons and styles", () => {

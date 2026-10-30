@@ -59,6 +59,7 @@ test("embedded cues arriving while playback continues repaint promptly, includin
     EMBEDDED_WINDOW_SECONDS, embeddedSubtitleSeekStart,
     mergeSubtitleWindows, embeddedTrackMatchesSource,
     absolutePlaybackSeconds: () => videoSeconds,
+    visibleSubtitleClockSeconds: () => videoSeconds,
     presentedSubtitleSeconds: () => null,
     currentSourceTracks: () => state.tracks,
     preferredSourceTracks: () => state.tracks,

@@ -28,6 +28,7 @@ function eventsFixture() {
   const overlay = { hidden: true };
   const context = vm.createContext({
     video, state, recoveryBusy: false, recoveryDisplayPhase: "", recoveryWaitingSince: null,
+    isNewSourceFramePending: () => false, fallbackActiveRemuxMseToNative: () => false,
     recoveryPlaybackRequested: false,
     recoveryPauseSerial: 0,
     window: { setTimeout(callback, delay) { pendingTimers.push({ callback, at: now + delay }); } },
@@ -139,12 +140,15 @@ test("an error before any Play intent does not wake an intentionally idle player
 });
 
 test("explicit Resume records intent even when play() rejects before a play event", async () => {
-  let calls = 0;
+  let calls = 0, recoveries = 0;
   const ctx = vm.createContext({
     linePreview: { pending: false, active: false, preventBackgroundPlayback: false },
     state: { pendingSeek: null },
     video: { play() { calls++; return Promise.reject(new Error("network resume failed")); } },
     resyncTranscodeAfterLongPause: () => false,
+    playbackLoadRequestId: 1,
+    fallbackActiveRemuxMseToNative: () => false,
+    recoverPlayback: () => { recoveries++; },
     recoveryPlaybackRequested: false,
     recoveryPauseSerial: 0,
   });
@@ -154,6 +158,7 @@ test("explicit Resume records intent even when play() rejects before a play even
   assert.equal(calls, 1);
   assert.equal(vm.runInContext("recoveryPlaybackRequested", ctx), true);
   assert.equal(vm.runInContext("recoveryPauseSerial", ctx), 1);
+  assert.equal(recoveries, 1, "a rejected resume must not silently strand a paused player");
 });
 
 function recoveryGuardFixture({ paused, playingIntent, ended = false, visible = true, busy = false } = {}) {

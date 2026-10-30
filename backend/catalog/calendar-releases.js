@@ -71,6 +71,8 @@ export function normalizeAniListAiring(row) {
   return {
     id: `anilist:${row.id}`, providerId: String(media.id),
     title: safeText(media.title?.english || media.title?.romaji),
+    premiereYear: Number.isInteger(media.seasonYear) && media.seasonYear >= 1900 && media.seasonYear <= 2100
+      ? media.seasonYear : null,
     episodeTitle: `Episode ${Number(row.episode) || "?"}`, code: `EP ${Number(row.episode) || "?"}`,
     date: isoDate(when), timestamp: when, verifiedTime: true,
     artwork: validImage(media.coverImage?.large), thumbnail: "",
@@ -94,6 +96,7 @@ export function normalizeTvmazeAiring(row) {
     id: `tvmaze:${row.id}`, providerId: String(show.id),
     catalogId: imdbId(show.externals?.imdb),
     title: safeText(show.name), episodeTitle: safeText(row.name || "Episode"),
+    premiereYear: releaseRange(show.premiered, show.premiered) ? Number(show.premiered.slice(0, 4)) : null,
     code, date, timestamp: hasTime ? stamp : null, verifiedTime: hasTime,
     artwork: validImage(show.image?.medium || show.image?.original),
     thumbnail: validImage(row.image?.medium), type: "series",
@@ -137,9 +140,15 @@ export function createReleaseCalendarService({
   // dozens of pages, and fetching each page sequentially blocked the calendar.
   async function remainingPages(lastPage, loadPage) {
     let nextPage = 2;
+    let complete = true;
     await Promise.all(Array.from({ length: Math.min(3, Math.max(0, lastPage - 1)) }, async () => {
-      while (nextPage <= lastPage) await loadPage(nextPage++);
+      while (nextPage <= lastPage) {
+        const page = nextPage++;
+        try { await loadPage(page); }
+        catch { complete = false; } // A bad page cannot discard successful movie pages.
+      }
     }));
+    return complete;
   }
 
   async function anime(range, mediaIds = null) {
@@ -157,7 +166,10 @@ export function createReleaseCalendarService({
         }),
       });
       if (payload?.errors?.length) throw new Error(payload.errors[0]?.message || "AniList query failed");
-      for (const row of payload?.data?.Page?.airingSchedules || []) {
+      if (!Array.isArray(payload?.data?.Page?.airingSchedules)
+        || typeof payload?.data?.Page?.pageInfo?.hasNextPage !== "boolean")
+        throw new Error("Incomplete AniList airing schedule");
+      for (const row of payload.data.Page.airingSchedules) {
         const event = normalizeAniListAiring(row);
         if (event) result.push(event);
       }
@@ -260,8 +272,8 @@ export function createReleaseCalendarService({
     return promise;
   }
 
-  async function tv() {
-    if (tvmazeSnapshot && now() - tvmazeSnapshot.at < 6 * 60 * 60_000) return tvmazeSnapshot.events;
+  async function tv(force = false) {
+    if (!force && tvmazeSnapshot && now() - tvmazeSnapshot.at < 6 * 60 * 60_000) return tvmazeSnapshot.events;
     if (!tvmazeRequest) {
       tvmazeRequest = jsonFetch(tvmazeEndpoint, {}, 35_000)
         .then((data) => {
@@ -289,7 +301,9 @@ export function createReleaseCalendarService({
       url.searchParams.set("page", String(page));
       if (auth.query) url.searchParams.set("api_key", auth.query);
       const data = await jsonFetch(url, { headers: { Accept: "application/json", ...(auth.header ? { Authorization: auth.header } : {}) } });
-      for (const row of data?.results || []) {
+      if (!Array.isArray(data?.results) || !Number.isInteger(data.total_pages) || data.total_pages < 1)
+        throw new Error("Incomplete TMDb release schedule");
+      for (const row of data.results) {
         const event = normalizeTmdbPremiere(row);
         if (event) result.push(event);
       }
@@ -297,8 +311,8 @@ export function createReleaseCalendarService({
     };
     const firstPage = await fetchPage(1);
     const lastPage = Math.max(1, Number(firstPage?.total_pages) || 1);
-    await remainingPages(Math.min(25, lastPage), fetchPage);
-    complete = lastPage <= 25;
+    const fetched = await remainingPages(Math.min(25, lastPage), fetchPage);
+    complete = lastPage <= 25 && fetched;
     return { events: result, complete };
   }
 
@@ -333,7 +347,7 @@ export function createReleaseCalendarService({
       ? family.then((result) => anime(range, result ? [...result.linkedById.keys()] : anilistIds))
       : anime(range);
     const entries = await Promise.allSettled([
-      broad, tv(), movies(range, tmdbKey),
+      broad, tv(force), movies(range, tmdbKey),
       ...(targeted ? [targeted] : []),
     ]);
     const providerNames = ["AniList", "TVmaze", "TMDb"];

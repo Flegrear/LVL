@@ -46,8 +46,10 @@ test("transient 429 FFmpeg capacity rejection retries after a few seconds, not a
 });
 
 test("nonzero resume uses focused six-second subtitle extraction in both probe paths", () => {
-  const calls = [...app.matchAll(/enableDefaultEmbeddedSubtitles\((?:probedMedia|media), startAtSeconds, \{ urgent: startAtSeconds >= 12 \}\)/g)];
-  assert.equal(calls.length, 2, "immediate and delayed metadata both honor resume position");
+  assert.match(app, /enableDefaultEmbeddedSubtitles\(probedMedia, startAtSeconds, \{ urgent: startAtSeconds >= 12 \}\)/,
+    "immediate metadata uses the initial resume position, never the previous episode clock");
+  assert.match(app, /const subtitlePosition = typeof embeddedSubtitleProbePosition === "function"[\s\S]*?enableDefaultEmbeddedSubtitles\(media, subtitlePosition,[\s\S]*?urgent: subtitlePosition >= 12/,
+    "delayed metadata uses the latest user seek, including a paused target");
   assert.match(importerCode, /focused \? embeddedSubtitleSeekStart\(seekPosition\)/,
     "urgent startup must seek a small distance before the resumed playhead");
 });

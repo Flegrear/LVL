@@ -138,6 +138,31 @@ for (const [key, source] of Object.entries({
 }
 export const UI_TRANSLATIONS = Object.freeze({ en: Object.freeze(en), es: Object.freeze(es) });
 
+// Features registered in frontend/features/registry.js add their own strings
+// here instead of editing SPANISH above. Core strings always win.
+const featureTranslations = { en: {}, es: {} };
+export function registerUiTranslations(table = {}) {
+  for (const [language, entries] of Object.entries(table || {})) {
+    if (!Object.hasOwn(featureTranslations, language) || !entries || typeof entries !== "object") continue;
+    for (const [source, translated] of Object.entries(entries)) {
+      if (typeof translated !== "string") continue;
+      for (const [key, value] of [[source, translated], [source.toUpperCase(), translated.toUpperCase()]]) {
+        if (Object.hasOwn(UI_TRANSLATIONS.en, key) || Object.hasOwn(featureTranslations[language], key)) continue;
+        featureTranslations[language][key] = value;
+        if (!Object.hasOwn(featureTranslations.en, key)) featureTranslations.en[key] = key;
+      }
+    }
+  }
+}
+function lookupTranslation(locale, key) {
+  if (Object.hasOwn(UI_TRANSLATIONS[locale], key)) return UI_TRANSLATIONS[locale][key];
+  if (Object.hasOwn(featureTranslations[locale], key)) return featureTranslations[locale][key];
+  return undefined;
+}
+function knownTranslationKey(key) {
+  return Object.hasOwn(UI_TRANSLATIONS.en, key) || Object.hasOwn(featureTranslations.en, key);
+}
+
 let currentLanguage = "en";
 const originalText = new WeakMap();
 const originalAttributes = new WeakMap();
@@ -152,8 +177,7 @@ const PROTECTED = "iframe,code,pre,script,style,textarea,[data-i18n-ignore],[dat
 export function t(key, params = {}, language = currentLanguage) {
   const source = String(key ?? "");
   const locale = resolveInterfaceLanguage(language);
-  const message = Object.hasOwn(UI_TRANSLATIONS[locale], source) ? UI_TRANSLATIONS[locale][source]
-    : Object.hasOwn(UI_TRANSLATIONS.en, source) ? UI_TRANSLATIONS.en[source] : source;
+  const message = lookupTranslation(locale, source) ?? lookupTranslation("en", source) ?? source;
   return message.replace(/\{([\w]+)\}/g, (placeholder, name) => Object.hasOwn(params || {}, name) ? String(params[name]) : placeholder);
 }
 
@@ -176,7 +200,7 @@ export function translateUi(root = globalThis.document, language = currentLangua
     if (node.closest?.(PROTECTED)) continue;
     const params = paramsFor(node);
     const key = node.getAttribute("data-i18n");
-    if (key && Object.hasOwn(UI_TRANSLATIONS.en, key)) {
+    if (key && knownTranslationKey(key)) {
       const texts = [...(node.childNodes || [])].filter((child) => child.nodeType === 3 && child.nodeValue.trim());
       // Mixed prose belongs in separately annotated spans; a label may have icons/counts.
       if (texts.length === 1) {
@@ -190,7 +214,7 @@ export function translateUi(root = globalThis.document, language = currentLangua
     }
     for (const [annotation, attr] of Object.entries(ATTRIBUTES)) {
       const attrKey = node.getAttribute(annotation);
-      if (!attrKey || !Object.hasOwn(UI_TRANSLATIONS.en, attrKey)) continue;
+      if (!attrKey || !knownTranslationKey(attrKey)) continue;
       let originals = originalAttributes.get(node);
       if (!originals) { originals = {}; originalAttributes.set(node, originals); }
       if (!originals[attr] || originals[attr].key !== attrKey) originals[attr] = { key: attrKey, value: englishOriginal(node.getAttribute(attr) || t(attrKey, params, "en"), attrKey, params) };

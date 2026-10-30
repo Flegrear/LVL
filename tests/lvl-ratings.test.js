@@ -140,7 +140,9 @@ test("watch status sits alongside Magnet and defaults to the linked AniList stat
   assert.match(render(subject, { data: { ratings: [{ source: "app", season: null, status: "COMPLETED" }] } }),
     /value="COMPLETED" selected>Completed/);
   assert.match(render({ ...subject, anilist: { seasons: [{ status: "CURRENT" }, { status: "PAUSED" }] } },
-    { data: { ratings: [] } }), /value="" selected>Watch status/);
+    { data: { ratings: [] } }), /value="" disabled hidden selected>Status/);
+  assert.doesNotMatch(render({ ...subject, anilist: null }, { data: { ratings: [] } }),
+    />Watch status<\/option>/, "Placeholder is not an actionable menu item");
   assert.match(app, /id="title-watch-status-slot"/);
   assert.match(css, /\.title-watch-status-slot select\s*\{[^}]*height:42px/);
   assert.match(source, /wireTitleRating\(\$\("#title-hero"\)\)/);

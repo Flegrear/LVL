@@ -15,15 +15,17 @@ const start = recsPanel.indexOf('<section id="anilist-auto-settings"');
 const end = recsPanel.indexOf("</section>", start);
 const authorized = recsPanel.slice(start, end + "</section>".length);
 
-test("Authorized AniList controls are a distinct section beside the existing public, read-only form", () => {
+test("Only the authorized AniList account row has sync and disconnect actions", () => {
   assert.ok(start >= 0 && end > start, "Authorized sync section exists under Settings › Tracking");
   assert.match(html, /id="settings-tab-recs"[^>]*data-i18n="Tracking">Tracking<\/button>/);
   assert.ok(recsPanel.indexOf('id="recs-anilist-form"') < start, "The existing username form stays above authorized sync");
-  assert.ok(recsPanel.indexOf('id="recs-anilist-linked"') < start, "Public profile sync/unlink controls remain unchanged");
+  assert.ok(recsPanel.indexOf('id="recs-anilist-linked"') < start, "Public profile summary remains above authorized sync");
   assert.ok(end < recsPanel.indexOf('id="recs-letterboxd-form"'), "Authorized sync is grouped with AniList, not Letterboxd");
   assert.match(recsPanel, /<form id="recs-anilist-form"[^>]*>[\s\S]*?<input id="recs-anilist-name"[^>]*>[\s\S]*?<button[^>]+type="submit"[^>]*>Link<\/button>\s*<\/form>/);
-  assert.match(recsPanel, /id="recs-anilist-sync"/);
-  assert.match(recsPanel, /id="recs-anilist-unlink"/);
+  assert.doesNotMatch(recsPanel, /id="recs-anilist-sync"|id="recs-anilist-unlink"/,
+    "Do not duplicate Sync now or Unlink above Reconnect AniList");
+  assert.equal((authorized.match(/>Sync now<\/button>/g) || []).length, 1);
+  assert.equal((authorized.match(/>Disconnect<\/button>/g) || []).length, 1);
   assert.doesNotMatch(authorized, /The username link above|One-time setup:/, "Remove the long account sync introduction");
   assert.doesNotMatch(authorized, /<form\s+id="recs-anilist-form"/i, "Authorized controls are independent from the public username form");
   assert.match(authorized, /<form id="anilist-auto-pin-form"/, "PIN credential entry uses its own form");

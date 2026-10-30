@@ -218,7 +218,10 @@ export function renderCalendarSurface({
   sourceDetail = null, sourceAvailable = false,
 }) {
   const selectedEvent = events.find((event) => event.id === selected);
-  const count = events.length;
+  // The month grid includes dates from adjacent months for complete weeks.
+  // Keep those cards accessible, but don't call them this month's releases.
+  const count = mode === "month" ? events.filter((event) => event.date?.slice(0, 7) === key(anchor).slice(0, 7)).length
+    : events.length;
   const dateLabel = mode === "week" ? `Week of ${format(monday(anchor), { month: "short", day: "numeric", year: "numeric" })}`
     : format(anchor, { month: "long", year: "numeric" });
   const providerStatus = Object.entries(coverage).map(([name, info]) =>

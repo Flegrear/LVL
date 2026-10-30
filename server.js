@@ -6,6 +6,8 @@ import crypto from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { spawn } from "node:child_process";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import WebTorrent from "webtorrent";
 import AdmZip from "adm-zip";
@@ -19,6 +21,7 @@ import { searchSubtitles as searchWyzieSubtitles } from "wyzie-lib";
 import { learningPresetBundle, learningPresetCatalog, learningPresetSlice } from "./learning/presets.js";
 import { alignCueArtifacts, processCueArtifact } from "./learning/subtitle-processing.js";
 import { SPEECH_FRAME_MS, SPEECH_SAMPLE_RATE, speechActivityFromPcm } from "./shared/subtitles/subtitle-sync.js";
+import { assToWebVtt as parseAssToWebVtt } from "./shared/subtitles/ass-events.js";
 import { dropSpeechTapes, speechTapeActivity, speechTapeCoverage, speechTapeWriter } from "./backend/media/speech-tape.js";
 import { probeCopiedSeekOrigin } from "./backend/media/transcode-start.js";
 import { heightFromQualityLabel, qualityLabel, releaseVideoHeight } from "./shared/media/series-sources.js";
@@ -37,9 +40,21 @@ import { createReleaseCalendarService } from "./backend/catalog/calendar-release
 import { createAnimeDiscoveryService } from "./backend/catalog/anime-discovery.js";
 import { exportRecsData, ratingsCsv } from "./backend/recommendations/recs-export.js";
 import { APP_STATE_SECTIONS, createAppDatabase } from "./backend/persistence/app-db.js";
+import { createServerFeatureHost } from "./backend/features/feature-host.js";
+import { SERVER_FEATURES } from "./backend/features/registry.js";
 import { createTranscodePlan, inspectMediaCompatibility, transcodeVideoFilter } from "./shared/media/media-compat.js";
 import { dolbyVisionFromProbe } from "./shared/media/video-profile.js";
+import { normalizeEmbeddedChapterMarkers } from "./shared/media/embedded-chapter-markers.js";
 import { detectHardwareH264Encoder, hardwareVideoEncodingArgs } from "./backend/media/hardware-transcode.js";
+import { createPlaybackTrace } from "./backend/media/performance-trace.js";
+import { createStreamHealth } from "./backend/media/stream-health.js";
+import { createInternalReaderRoles } from "./backend/media/internal-reader-roles.js";
+import { createRemuxSegmentCache } from "./backend/media/remux-segment-cache.js";
+import { pruneExitedTranscodes } from "./backend/media/transcode-slot-lifecycle.js";
+import { pipeRemuxAhead } from "./backend/media/remux-run-ahead.js";
+import { isTorrentFileFullyVerified } from "./backend/media/verified-torrent-file.js";
+import { evaluateEncodedH264CacheEligibility } from "./backend/media/transcode-cache-eligibility.js";
+import { createIndexedVideoCache } from "./backend/media/indexed-video-cache.js";
 import {
   COACH_LIVE_IDLE_TIMEOUT_MS,
   buildVoiceCoachRepairPrompt,
@@ -58,6 +73,21 @@ import {
 const root = path.dirname(fileURLToPath(import.meta.url));
 const port = Number(process.env.PORT || 4173);
 const APP_VERSION = (() => { try { return String(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version || ""); } catch { return ""; } })();
+// Only the optional, short, verified SDR encoded-output cache needs a precise
+// FFmpeg binary identity. Hash its real bytes lazily, once, with bounded
+// streaming memory; ordinary playback must not pay this startup cost.
+let ffmpegBinaryFingerprintPromise = null;
+async function exactFfmpegFingerprint() {
+  if (!ffmpegPath) return null;
+  if (!ffmpegBinaryFingerprintPromise) {
+    ffmpegBinaryFingerprintPromise = (async () => {
+      const digest = crypto.createHash("sha256");
+      for await (const chunk of fs.createReadStream(ffmpegPath, { highWaterMark: 1024 * 1024 })) digest.update(chunk);
+      return digest.digest("hex");
+    })().catch(() => null);
+  }
+  return ffmpegBinaryFingerprintPromise;
+}
 // Started by the Windows tray launcher (launcher/Launcher.cs), which stops the app by closing stdin.
 const STARTED_BY_LAUNCHER = process.env.LANGUAGE_VIDEO_LEARNER_LAUNCHER === "1";
 // The installed alpha launcher generates this ephemeral loopback endpoint and
@@ -114,6 +144,37 @@ const storage = createStorageManager({
   removeSession: (id) => removeTorrentSession(id),
   clipStore,
   ankiStore,
+});
+// Progressive remux outputs live beside (and are counted with) WebTorrent's
+// per-session source bytes, never in a second unlimited storage pool.
+const remuxSegmentCache = createRemuxSegmentCache({
+  sessionsRoot: torrentRoot,
+  enabled: () => storage.limits().remuxCacheEnabled === true,
+  allowance: async (cacheBytes, identity) => {
+    // Reserve ALL not-yet-downloaded bytes for active selected source files.
+    // Without this, a remux duplicate could starve a 12 GB torrent before its
+    // remaining pieces arrive, despite passing a momentary 20 GB usage check.
+    let sourceHeadroom = 0;
+    for (const active of torrentSessions.values()) {
+      if (active.id !== identity.sessionId && (Number(active.openStreams) || 0) < 1) continue;
+      // One torrent session may stream several episode files concurrently;
+      // reserving only its preferred index lets optional cache output starve
+      // another in-flight source. Deduplicate tracked file indices, including
+      // the conversion currently requesting this allowance.
+      const fileIndices = new Set(active.activeStreamFiles?.keys() || []);
+      if (active.id === identity.sessionId) fileIndices.add(identity.fileIndex);
+      if (!fileIndices.size && Number.isInteger(active.preferredFileIndex))
+        fileIndices.add(active.preferredFileIndex);
+      for (const index of fileIndices) {
+        const file = Number.isInteger(index) ? active.torrent?.files?.[index] : null;
+        if (file) sourceHeadroom += Math.max(0, Number(file.length) - (Number(file.downloaded) || 0));
+      }
+    }
+    const gate = await storage.playerCacheAllowance({
+      additionalBytes: cacheBytes, reservedSourceBytes: sourceHeadroom,
+    });
+    return { allowed: gate.allowed, availableBytes: gate.availableBytes };
+  },
 });
 const APP_STATE_CAS_SECTIONS = new Set(["cards", "known", "library", "preferences"]);
 
@@ -306,7 +367,9 @@ const PUBLIC_ASSETS = new Map([
   ["/frontend/anilist/anilist-unwatch.js", { file: "frontend/anilist/anilist-unwatch.js", cacheControl: "no-cache" }],
   ["/frontend/anilist/anilist-test-sync.js", { file: "frontend/anilist/anilist-test-sync.js", cacheControl: "no-cache" }],
   ["/frontend/player/browser-media.js", { file: "frontend/player/browser-media.js", cacheControl: "no-cache" }],
+  ["/frontend/player/remux-mse.js", { file: "frontend/player/remux-mse.js", cacheControl: "no-cache" }],
   ["/frontend/player/embedded-subtitle-default.js", { file: "frontend/player/embedded-subtitle-default.js", cacheControl: "no-cache" }],
+  ["/frontend/player/media-startup.js", { file: "frontend/player/media-startup.js", cacheControl: "no-cache" }],
   ["/shared/media/audio-policy.js", { file: "shared/media/audio-policy.js", cacheControl: "no-cache" }],
   ["/shared/media/video-profile.js", { file: "shared/media/video-profile.js", cacheControl: "no-cache" }],
   ["/frontend/player/playback-recovery.js", { file: "frontend/player/playback-recovery.js", cacheControl: "no-cache" }],
@@ -325,6 +388,11 @@ const PUBLIC_ASSETS = new Map([
   ["/frontend/anilist/anilist-library.js", { file: "frontend/anilist/anilist-library.js", cacheControl: "no-cache" }],
   ["/shared/settings/language-settings.js", { file: "shared/settings/language-settings.js", cacheControl: "no-cache" }],
   ["/frontend/ui/ui-i18n.js", { file: "frontend/ui/ui-i18n.js", cacheControl: "no-cache" }],
+  ["/frontend/features/feature-host.js", { file: "frontend/features/feature-host.js", cacheControl: "no-cache" }],
+  ["/frontend/features/registry.js", { file: "frontend/features/registry.js", cacheControl: "no-cache" }],
+  ["/frontend/player/performance-trace.js", { file: "frontend/player/performance-trace.js", cacheControl: "no-cache" }],
+  ["/frontend/player/stream-status.js", { file: "frontend/player/stream-status.js", cacheControl: "no-cache" }],
+  ["/frontend/player/torrent-piece-wait.js", { file: "frontend/player/torrent-piece-wait.js", cacheControl: "no-cache" }],
   ["/learning/browser/vocabulary-meanings.js", { file: "learning/browser/vocabulary-meanings.js", cacheControl: "no-cache" }],
 ]);
 
@@ -349,6 +417,14 @@ for (const ink of ["black", "white"]) {
 
 const torrentClient = new WebTorrent({ maxConns: 40 });
 const torrentSessions = new Map();
+const playbackTrace = createPlaybackTrace();
+const streamHealth = createStreamHealth();
+const internalReaderRoles = createInternalReaderRoles({ port });
+function internalTorrentSource(session, fileIndex, role) {
+  const base = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
+  const lease = internalReaderRoles.issue(session, fileIndex, role);
+  return { url: lease?.urlFor(base) || base, release: () => lease?.release() };
+}
 const activeTranscodes = new Set();
 const activeEmbeddedSubtitleJobs = new Set();
 let preferredHardwareEncoderPromise = null;
@@ -382,6 +458,38 @@ const browserCoachInstances = new Map();
 let activeProbeJobs = 0;
 let activeCopiedSeekProbes = 0;
 const ffprobePath = ffprobeStatic?.path || null;
+// Full-file browser-range cache is strictly optional. Background conversions
+// consume one of the same two FFmpeg slots as foreground playback, and never
+// start unless there is no active foreground conversion.
+const indexedVideoCache = createIndexedVideoCache({
+  sessionsRoot: torrentRoot, ffmpegPath, ffprobePath,
+  enabled: () => storage.limits().remuxCacheEnabled === true,
+  allowance: bytes => storage.playerCacheAllowance({ additionalBytes: bytes }),
+  isCurrent: identity => {
+    const session = torrentSessions.get(identity.sessionId);
+    const file = session?.torrent?.files?.[identity.fileIndex];
+    return session?.infoHash?.toLowerCase() === identity.infoHash
+      && file?.done === true && file.downloaded === identity.sourceLength
+      && file.length === identity.sourceLength && file.name === identity.sourceName
+      && isTorrentFileFullyVerified(session.torrent, identity.fileIndex);
+  },
+  sourceUrl: identity => {
+    const session = torrentSessions.get(identity.sessionId);
+    if (!session || !session.torrent?.files?.[identity.fileIndex]) return null;
+    return internalTorrentSource(session, identity.fileIndex, "conversion");
+  },
+  // At most one background conversion alongside the one active player. A
+  // new foreground request cancels the background first (below) so the
+  // two-slot hard limit never starves interactive playback.
+  foregroundBusy: () => activeTranscodes.size >= MAX_TRANSCODE_JOBS,
+  onSpawn: child => activeTranscodes.add(child),
+  onClose: child => { if (child) activeTranscodes.delete(child); },
+});
+// A Windows cache file can remain locked by an in-flight HTTP reader when the
+// user disables retention. Retry safe indexed-only cleanup on next startup;
+// never touch selected torrent source pieces or other player data.
+if (storage.limits().remuxCacheEnabled === false)
+  void indexedVideoCache.purgeAll().catch(error => console.warn("Indexed-cache cleanup:", error?.message || error));
 let kuroshiroPromise = null;
 
 torrentClient.on("error", (error) => {
@@ -1599,6 +1707,13 @@ async function removeTorrentSession(id) {
   const session = torrentSessions.get(id);
   if (!session) return;
   torrentSessions.delete(id);
+  // Stop only the background conversion for this session; it may still be
+  // reading selected pieces through an internal local HTTP stream.
+  await indexedVideoCache.stopSession(id);
+  await remuxSegmentCache.dropSession(id).catch(() => {});
+  invalidateSpeechWindowSession(session);
+  streamHealth.clear(session);
+  internalReaderRoles.clear(session);
   dropSpeechTapes(id);
   for (const key of mediaProbeCache.keys()) {
     if (key.startsWith(`${id}:`)) mediaProbeCache.delete(key);
@@ -1666,6 +1781,7 @@ function sessionPayload(session) {
     uploaded: Number(torrent.uploaded) || 0,
     downloadSpeed: Number(torrent.downloadSpeed) || 0,
     uploadSpeed: Number(torrent.uploadSpeed) || 0,
+    streamHealth: streamHealth.snapshot(session, { torrent }),
     safety: session.safety || null,
     files: (torrent.files || []).map((file, index) => {
       const ext = path.extname(file.name).toLowerCase();
@@ -1679,6 +1795,9 @@ function sessionPayload(session) {
         length: file.length,
         downloaded: file.downloaded,
         progress: file.progress,
+        // Unlike downloaded/progress (which can include partial, not-yet-
+        // verified piece bytes), done is WebTorrent's hash-verified file EOF.
+        verifiedComplete: file.done === true && Number(file.downloaded) === Number(file.length),
         video: VIDEO_EXTENSIONS.has(ext),
         needsTranscode,
         type: file.type || mime[ext] || "application/octet-stream",
@@ -1691,6 +1810,35 @@ function sessionPayload(session) {
       };
     }),
   };
+}
+
+function shouldRetryErroredTorrentSession(session, preferredFileIndex) {
+  return session?.state === "error"
+    && (preferredFileIndex !== null || session.safety?.ok !== false);
+}
+
+function selectPreferredTorrentDownload(session) {
+  // WebTorrent's file.createReadStream() selects only its active byte range,
+  // then DESELECTS that range when a seek/error closes the reader. Without an
+  // ordinary file selection, a stalled/failed player leaves no demand for its
+  // remaining episode pieces even if dozens of peers are connected.
+  // Select exactly the validated, playable episode, never an entire pack.
+  if (session?.state !== "ready" || session.safety?.ok !== true) return;
+  const files = session.torrent?.files || [];
+  const index = Number.isInteger(session.preferredFileIndex)
+    ? session.preferredFileIndex : -1;
+  const next = files[index];
+  const valid = Boolean(next && VIDEO_EXTENSIONS.has(path.extname(next.name).toLowerCase())
+    && Number(next.length) > 0 && Number(next.length) <= MAX_TORRENT_VIDEO_BYTES
+    && Number(next.length) <= storage.limits().playerBytes);
+  const desired = valid ? index : null;
+  if (session.downloadSelectionIndex === desired) return;
+  const previous = session.downloadSelectionIndex;
+  if (Number.isInteger(previous)) files[previous]?.deselect();
+  session.downloadSelectionIndex = null;
+  if (desired === null) return;
+  next.select();
+  session.downloadSelectionIndex = desired;
 }
 
 async function createTorrentSession(req, res) {
@@ -1708,12 +1856,15 @@ async function createTorrentSession(req, res) {
   let existingSession = [...torrentSessions.values()].find((session) =>
     session.infoHash === infoHash || session.torrent?.infoHash?.toLowerCase() === infoHash,
   );
-  if (existingSession?.state === "error" && preferredFileIndex !== null) {
+  // Retry transient tracker/network failures even for magnet-only playback.
+  // Keep deterministic safety rejections cached unless a different file was requested.
+  if (shouldRetryErroredTorrentSession(existingSession, preferredFileIndex)) {
     await removeTorrentSession(existingSession.id);
     existingSession = null;
   }
   if (existingSession) {
     if (preferredFileIndex !== null) existingSession.preferredFileIndex = preferredFileIndex;
+    selectPreferredTorrentDownload(existingSession);
     scheduleSessionExpiry(existingSession);
     json(res, 200, { ...sessionPayload(existingSession), reused: true });
     return;
@@ -1782,6 +1933,7 @@ async function createTorrentSession(req, res) {
     }
     session.state = "ready";
     session.error = null;
+    selectPreferredTorrentDownload(session);
   };
   torrent.once("metadata", markReady);
   torrent.once("ready", markReady);
@@ -1812,10 +1964,20 @@ function getTorrentSession(id) {
 }
 
 // While a stream or conversion is open, the session counts as playing (never evicted for space).
-function trackOpenStream(session, res) {
+function trackOpenStream(session, res, fileIndex = null) {
   session.openStreams = (Number(session.openStreams) || 0) + 1;
+  const tracksFile = Number.isSafeInteger(fileIndex) && fileIndex >= 0;
+  if (tracksFile) {
+    session.activeStreamFiles ||= new Map();
+    session.activeStreamFiles.set(fileIndex, (session.activeStreamFiles.get(fileIndex) || 0) + 1);
+  }
   res.once("close", () => {
     session.openStreams = Math.max(0, (Number(session.openStreams) || 0) - 1);
+    if (tracksFile) {
+      const remaining = (session.activeStreamFiles?.get(fileIndex) || 0) - 1;
+      if (remaining > 0) session.activeStreamFiles.set(fileIndex, remaining);
+      else session.activeStreamFiles?.delete(fileIndex);
+    }
     session.lastUsedAt = Date.now();
   });
 }
@@ -1830,7 +1992,11 @@ function rejectOversizeVideo(res, file) {
 
 function parseRange(rangeHeader, length) {
   if (!rangeHeader) return null;
-  const match = /^bytes=(\d*)-(\d*)$/.exec(rangeHeader.trim());
+  const requested = rangeHeader.trim();
+  // Multipart responses are not implemented. HTTP permits ignoring a valid
+  // multiple-range request and returning the entire representation as 200.
+  if (/^bytes=(?:\d+-\d*|-\d+)(?:\s*,\s*(?:\d+-\d*|-\d+))+$/i.test(requested)) return null;
+  const match = /^bytes=(\d*)-(\d*)$/i.exec(requested);
   if (!match) return false;
 
   let start;
@@ -1849,7 +2015,68 @@ function parseRange(rangeHeader, length) {
   return { start, end: Math.min(end, length - 1) };
 }
 
-function streamTorrentFile(req, res, session, fileIndex) {
+// Only a completed, verified, plan-matched indexed file may answer Range.
+// Partials are not addressable. The browser never sees filesystem paths.
+async function serveIndexedSeek(req, res, session, fileIndex, url, statusOnly = false) {
+  const file = session.torrent?.files?.[fileIndex];
+  if (!file || !VIDEO_EXTENSIONS.has(path.extname(file.name).toLowerCase())) {
+    json(res, 404, { error: "Video not found" }); return;
+  }
+  const audioIndex = Number(url.searchParams.get("audio") ?? 0);
+  const audioMode = String(url.searchParams.get("audioMode") || "stereo");
+  const media = getCachedMediaProbe(session.id, fileIndex);
+  const params = { session, fileIndex, media, audioIndex, audioMode };
+  const state = await indexedVideoCache.status(params, { start: statusOnly && req.method === "GET" });
+  if (statusOnly) {
+    const headers = { "Cache-Control": "no-store" };
+    json(res, 200, {
+      status: state.status, bytes: state.bytes || 0,
+      duration: state.duration || 0,
+      ...(state.status === "ready" ? { url: `/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/indexed?audio=${audioIndex}&audioMode=${audioMode}` } : {}),
+    }, headers);
+    return;
+  }
+  if (state.status !== "ready") { json(res, 404, { error: "Indexed video is not ready", status: state.status }); return; }
+  const saved = await indexedVideoCache.finished(state.info);
+  if (!saved) { json(res, 404, { error: "Indexed video unavailable" }); return; }
+  // Open the exact verified output BEFORE writing a 200/206 header. Storage
+  // cleanup can remove a manifest/file between finished() and open(); if so,
+  // return a recoverable 404 rather than a seemingly valid zero-byte video.
+  let handle;
+  try {
+    handle = await fs.promises.open(saved.file, "r");
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.size !== saved.bytes) throw new Error("Indexed rendition changed");
+  } catch {
+    await handle?.close().catch(() => {});
+    if (!res.destroyed && !res.writableEnded) json(res, 404, { error: "Indexed video unavailable" });
+    return;
+  }
+  if (res.destroyed || res.writableEnded) { await handle.close().catch(() => {}); return; }
+  const range = req.method === "HEAD" ? null : parseRange(req.headers.range, saved.bytes);
+  if (range === false) {
+    await handle.close().catch(() => {});
+    res.writeHead(416, { "Accept-Ranges": "bytes", "Content-Range": `bytes */${saved.bytes}` });
+    res.end(); return;
+  }
+  const common = { "Content-Type": "video/mp4", "Accept-Ranges": "bytes",
+    "Cache-Control": "no-store", "X-LVL-Indexed-Seek": "verified-h264-aac-v1",
+    "X-Media-Duration-Seconds": String(saved.duration) };
+  if (req.method === "HEAD") {
+    await handle.close().catch(() => {});
+    res.writeHead(200, { ...common, "Content-Length": saved.bytes }); res.end(); return;
+  }
+  const size = range ? range.end - range.start + 1 : saved.bytes;
+  const stream = handle.createReadStream(range || undefined);
+  stream.on("error", () => res.destroy());
+  res.on("close", () => stream.destroy());
+  trackOpenStream(session, res, fileIndex);
+  res.writeHead(range ? 206 : 200, { ...common, "Content-Length": size,
+    ...(range ? { "Content-Range": `bytes ${range.start}-${range.end}/${saved.bytes}` } : {}) });
+  stream.pipe(res);
+}
+
+function streamTorrentFile(req, res, session, fileIndex, requestUrl = null) {
   if (session.state !== "ready") {
     json(res, 425, { error: "Torrent metadata is still resolving" });
     return;
@@ -1869,7 +2096,8 @@ function streamTorrentFile(req, res, session, fileIndex) {
   }
   if (rejectOversizeVideo(res, file)) return;
 
-  const range = parseRange(req.headers.range, file.length);
+  // HEAD describes the full resource, independently of any Range header.
+  const range = req.method === "HEAD" ? null : parseRange(req.headers.range, file.length);
   if (range === false) {
     res.writeHead(416, { "Content-Range": `bytes */${file.length}` });
     res.end();
@@ -1890,13 +2118,53 @@ function streamTorrentFile(req, res, session, fileIndex) {
     return;
   }
 
-  const pipeTorrentReader = (rangeOptions = null) => {
-    const stream = rangeOptions ? file.createReadStream(rangeOptions) : file.createReadStream();
-    trackOpenStream(session, res);
+  // WebTorrent can throw during iterator creation. Open it before committing
+  // response headers so a failed Range cannot claim a successful partial 206.
+  let stream;
+  try {
+    stream = range ? file.createReadStream(range) : file.createReadStream();
+  } catch {
+    json(res, 503, { error: "Torrent reader unavailable" });
+    return;
+  }
+
+  const pipeTorrentReader = () => {
+    // Only server-issued, scoped opaque tags identify LVL-owned FFmpeg/FFprobe
+    // readers. Anonymous browser/direct readers remain unknown. This role is
+    // diagnostic data, NEVER authorization or torrent scheduling priority.
+    const observedRange = range || { start: 0, end: file.length - 1 };
+    const role = typeof internalReaderRoles === "undefined" ? "unknown"
+      : internalReaderRoles.classify(session, fileIndex, requestUrl?.searchParams?.get("lvl_reader"));
+    const healthReader = typeof streamHealth !== "undefined"
+      ? streamHealth.begin(session, { fileIndex, ...observedRange, role }) : null;
+    if (healthReader) {
+      stream.on("data", (chunk) => healthReader.progress(chunk?.length));
+      stream.once("end", () => healthReader.end("complete"));
+      stream.once("error", () => healthReader.end("error"));
+      stream.once("close", () => healthReader.end("cancel"));
+    }
+    const traceReader = typeof playbackTrace !== "undefined" && playbackTrace.enabled(session.id)
+      ? playbackTrace.reader(session.id, fileIndex, observedRange) : null;
+    if (traceReader) {
+      stream.once("data", () => traceReader.firstByte());
+      stream.once("end", () => traceReader.end("complete"));
+      stream.once("error", () => traceReader.end("error"));
+      stream.once("close", () => traceReader.end("cancel"));
+    }
+    trackOpenStream(session, res, fileIndex);
     // A browser changing src closes the response, but an already-complete GET
     // request need not emit 'aborted'. Tear down its WebTorrent piece reader so
     // old paused/seeked positions stop competing with the new stream.
-    const stop = () => stream.destroy();
+    const stop = () => {
+      // The HTTP response may close before WebTorrent's Readable emits its
+      // own close/end (notably a slow swarm after the requested Range ends).
+      // Release observational state when this actual request closes; keep the
+      // destroy call that cancels the WebTorrent piece iterator.
+      healthReader?.end(res.writableFinished ? "complete" : "cancel");
+      traceReader?.end(res.writableFinished ? "complete" : "cancel");
+      stream.destroy();
+      detach();
+    };
     const detach = () => {
       req.off("aborted", stop);
       res.off("close", stop);
@@ -1916,7 +2184,7 @@ function streamTorrentFile(req, res, session, fileIndex) {
       "Content-Range": `bytes ${range.start}-${range.end}/${file.length}`,
     });
     res.flushHeaders?.();
-    pipeTorrentReader(range);
+    pipeTorrentReader();
     return;
   }
 
@@ -1967,7 +2235,9 @@ async function copiedSeekOrigin(session, fileIndex, startSeconds, signal) {
   void (async () => {
     let result;
     let failure;
-    const source = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
+    const tagged = typeof internalTorrentSource === "function"
+      ? internalTorrentSource(session, fileIndex, "probe") : null;
+    const source = tagged?.url || `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
     try {
       if (flight.controller.signal.aborted) throw Object.assign(new Error("Seek origin request cancelled"), { statusCode: 499 });
       result = await probeCopiedSeekOrigin({ source, requestedStartSeconds: startSeconds,
@@ -1986,6 +2256,7 @@ async function copiedSeekOrigin(session, fileIndex, startSeconds, signal) {
     } catch (error) {
       failure = error;
     } finally {
+      tagged?.release();
       flight.finished = true;
       if (copiedSeekOriginInflight.get(key) === flight) copiedSeekOriginInflight.delete(key);
       activeCopiedSeekProbes -= 1;
@@ -2096,7 +2367,7 @@ function parseFrameRate(value) {
   return Number.isFinite(rate) && rate > 0 ? Math.round(rate * 1000) / 1000 : null;
 }
 
-function runFfprobe(sourceUrl, file) {
+function runFfprobe(sourceUrl, file, { includeChapters = false } = {}) {
   if (!ffprobePath) {
     const error = new Error("Bundled FFprobe binary is unavailable");
     error.statusCode = 503;
@@ -2112,7 +2383,12 @@ function runFfprobe(sourceUrl, file) {
     "-seekable", "1",
     "-probesize", "2097152",
     "-analyzeduration", "3000000",
-    "-show_entries", "format=duration,format_name,bit_rate:stream=index,codec_type,codec_name,profile,pix_fmt,bits_per_raw_sample,width,height,avg_frame_rate,r_frame_rate,duration,channels,channel_layout,sample_rate,bit_rate,color_range,color_space,color_transfer,color_primaries:stream_side_data_list=side_data_type,dv_profile,dv_bl_signal_compatibility_id:stream_tags=language,title",
+    // Chapter enumeration is OPTIONAL and may seek into the missing tail of
+    // an unfinished MKV. Never make cold-swarm *playback metadata* depend on
+    // this Opus enhancement; inspect chapters only for hash-verified files.
+    ...(includeChapters ? ["-show_chapters"] : []),
+    "-show_entries", "format=duration,format_name,bit_rate:stream=index,codec_type,codec_name,profile,pix_fmt,bits_per_raw_sample,width,height,avg_frame_rate,r_frame_rate,duration,channels,channel_layout,sample_rate,bit_rate,color_range,color_space,color_transfer,color_primaries:stream_disposition=default,forced:stream_side_data_list=side_data_type,dv_profile,dv_bl_signal_compatibility_id:stream_tags=language,title"
+      + (includeChapters ? ":chapter=start_time,end_time:chapter_tags=title" : ""),
     "-of", "json",
     sourceUrl,
   ];
@@ -2197,6 +2473,9 @@ function runFfprobe(sourceUrl, file) {
       const media = {
         durationSeconds,
         durationMs: Math.round(duration * 1000),
+        // Only strict, unambiguous OP/ED chapters from this exact probed file.
+        // Never expose arbitrary embedded titles or guess missing cut markers.
+        embeddedSkipMarkers: normalizeEmbeddedChapterMarkers(payload.chapters, durationSeconds),
         format: payload.format?.format_name || path.extname(file.name).slice(1).toLowerCase() || null,
         bitRate: Number.isFinite(Number(payload.format?.bit_rate)) ? Number(payload.format.bit_rate) : null,
         video: video ? {
@@ -2243,6 +2522,12 @@ function runFfprobe(sourceUrl, file) {
             codec: codec || null,
             language: stream.tags?.language || null,
             title: stream.tags?.title || null,
+            // Preserve FFprobe's track intent. Forced-only captions usually
+            // cover signs or foreign speech, not the entire dialogue track.
+            disposition: {
+              default: Number(stream.disposition?.default) === 1 ? 1 : 0,
+              forced: Number(stream.disposition?.forced) === 1 ? 1 : 0,
+            },
             textBased: ["subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"].includes(codec),
           };
         }),
@@ -2253,13 +2538,14 @@ function runFfprobe(sourceUrl, file) {
   });
 }
 
-async function runFfprobeWithRetry(sourceUrl, file) {
+async function runFfprobeWithRetry(sourceUrl, file, { includeChapters = false } = {}) {
   try {
-    return await runFfprobe(sourceUrl, file);
+    return await runFfprobe(sourceUrl, file, { includeChapters });
   } catch (error) {
     if (error.statusCode !== 502 && error.statusCode !== 504) throw error;
     await new Promise((resolve) => setTimeout(resolve, 250));
-    return runFfprobe(sourceUrl, file);
+    // A failed optional chapter scan must not be repeated during startup.
+    return runFfprobe(sourceUrl, file, { includeChapters: false });
   }
 }
 
@@ -2304,9 +2590,14 @@ async function probeTorrentFile(session, fileIndex) {
     throw error;
   }
 
-  const sourceUrl = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
+  const tagged = typeof internalTorrentSource === "function"
+    ? internalTorrentSource(session, fileIndex, "probe") : null;
+  const sourceUrl = tagged?.url || `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   activeProbeJobs += 1;
-  const promise = runFfprobeWithRetry(sourceUrl, file)
+  // Hash-verified completion is the only safe admission for the optional
+  // chapter scan; the ordinary codec probe remains the original short path.
+  const includeChapters = isTorrentFileFullyVerified(session.torrent, fileIndex);
+  const promise = runFfprobeWithRetry(sourceUrl, file, { includeChapters })
     .then((value) => {
       mediaProbeCache.set(key, {
         value,
@@ -2321,6 +2612,7 @@ async function probeTorrentFile(session, fileIndex) {
       throw error;
     })
     .finally(() => {
+      tagged?.release();
       activeProbeJobs -= 1;
     });
   mediaProbeCache.set(key, {
@@ -2365,7 +2657,6 @@ async function extractTorrentSubtitle(req, res, session, fileIndex, url) {
     json(res, 415, { error: `Embedded ${subtitle.codec || "subtitle"} track is image-based and cannot be converted to text` });
     return;
   }
-  const sourceUrl = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   // An ASS stream in MKV is interleaved with the whole movie. Waiting for EOF
   // before responding means a torrent may not yield any subtitles for minutes.
   // Progressive callers can use cues immediately and continue importing as
@@ -2384,6 +2675,9 @@ async function extractTorrentSubtitle(req, res, session, fileIndex, url) {
     json(res, 429, { error: "Too many embedded subtitle windows are being extracted" });
     return;
   }
+  const tagged = typeof internalTorrentSource === "function"
+    ? internalTorrentSource(session, fileIndex, "subtitle") : null;
+  const sourceUrl = tagged?.url || `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   const args = [
     "-v", "error",
     "-rw_timeout", "18000000",
@@ -2400,7 +2694,7 @@ async function extractTorrentSubtitle(req, res, session, fileIndex, url) {
   ];
   const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   activeEmbeddedSubtitleJobs.add(ffmpeg);
-  const releaseSubtitleJob = () => { activeEmbeddedSubtitleJobs.delete(ffmpeg); };
+  const releaseSubtitleJob = () => { tagged?.release(); activeEmbeddedSubtitleJobs.delete(ffmpeg); };
   ffmpeg.once("close", releaseSubtitleJob);
   ffmpeg.once("error", releaseSubtitleJob);
   const chunks = [];
@@ -2491,8 +2785,41 @@ async function extractTorrentSubtitle(req, res, session, fileIndex, url) {
 // that stretch (input seeking), as 16 kHz mono speech-band audio, and returns activity per 10 ms.
 const SPEECH_WINDOW_MAX_SECONDS = 120;
 const MAX_SPEECH_JOBS = 2;
+const MAX_SPEECH_WINDOW_WAITERS = 16;
 const speechWindowCache = new Map();
+const speechMetadataWaiters = new WeakMap();
+// In-flight entries are scoped to the actual session object (not its ID).
+// Only successful completed windows enter the small time-bounded result cache.
+const speechWindowInflight = new WeakMap();
+// A child whose termination could not be confirmed after a bounded kill
+// escalation still reserves one slot until its actual 'close' event arrives.
+const speechUnclosedChildren = new Set();
 let activeSpeechJobs = 0;
+
+function invalidateSpeechWindowSession(session) {
+  const probing = speechMetadataWaiters.get(session);
+  if (probing) {
+    speechMetadataWaiters.delete(session);
+    for (const wake of probing) wake({ status: 410 });
+    probing.clear();
+  }
+  const flights = speechWindowInflight.get(session);
+  if (flights) {
+    speechWindowInflight.delete(session);
+    for (const flight of flights.values()) {
+      flight.controller.abort();
+      // The client may still be connected. Null means the client disconnected;
+      // session removal needs a terminal HTTP response instead of a hanging GET.
+      for (const subscriber of flight.subscribers)
+        subscriber.resolve({ status: 410, message: "Audio source changed; request a fresh window" });
+      flight.subscribers.clear();
+    }
+    flights.clear();
+  }
+  for (const [key, entry] of speechWindowCache) {
+    if (entry.session === session) speechWindowCache.delete(key);
+  }
+}
 
 async function speechActivityWindow(req, res, session, fileIndex, url) {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
@@ -2532,52 +2859,180 @@ async function speechActivityWindow(req, res, session, fileIndex, url) {
     json(res, 503, { error: "Bundled FFmpeg binary is unavailable" });
     return;
   }
-  const media = await probeTorrentFile(session, fileIndex);
-  const audioTracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
-  if (!audioTracks.length) {
-    json(res, 422, { error: "This video has no audio track" });
-    return;
-  }
-  const order = audioOrder < audioTracks.length ? audioOrder : 0;
-  const total = Number(media?.durationSeconds) || 0;
-  const startSeconds = Math.round((total ? Math.min(start, Math.max(0, total - 10)) : start) * 100) / 100;
-  const seconds = Math.round((total ? Math.min(duration, Math.max(10, total - startSeconds)) : duration) * 100) / 100;
-  const key = `${session.id}:${fileIndex}:${order}:${startSeconds}:${seconds}`;
-  for (const [cacheKey, entry] of speechWindowCache) if (entry.expiresAt < Date.now()) speechWindowCache.delete(cacheKey);
-  const cached = speechWindowCache.get(key);
-  if (cached) {
-    json(res, 200, cached.value);
-    return;
-  }
-  if (activeSpeechJobs >= MAX_SPEECH_JOBS) {
-    json(res, 429, { error: "Audio analysis is busy; try again shortly" });
-    return;
-  }
-  activeSpeechJobs += 1;
+  let clientClosed = Boolean(req.aborted || res.destroyed || res.writableEnded);
+  let cancelSubscriber = null;
+  let stopMetadata = null;
+  const onClientClose = () => {
+    clientClosed = true;
+    stopMetadata?.(null);
+    cancelSubscriber?.();
+  };
+  // The metadata probe may be long. A disconnected caller must not start a
+  // speech FFmpeg once that probe eventually returns.
+  req.once("aborted", onClientClose);
+  res.once("close", onClientClose);
+  const currentSession = () => torrentSessions.get(session.id) === session && session.state === "ready";
   try {
-    const pcm = await decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order });
-    if (pcm.length < SPEECH_SAMPLE_RATE * 5) {
-      json(res, 422, { error: "No audio was decoded in this range" });
+    if (clientClosed) return;
+    if (!currentSession()) {
+      json(res, 410, { error: "Audio source changed; request a fresh window" });
       return;
     }
-    const activity = speechActivityFromPcm(pcm, { sampleRate: SPEECH_SAMPLE_RATE });
-    const value = {
-      startMs: Math.round(startSeconds * 1000),
-      frameMs: SPEECH_FRAME_MS,
-      durationMs: activity.length * SPEECH_FRAME_MS,
-      audio: order,
-      activity: Buffer.from(activity).toString("base64"),
-    };
-    if (speechWindowCache.size >= 60) speechWindowCache.delete(speechWindowCache.keys().next().value);
-    speechWindowCache.set(key, { value, expiresAt: Date.now() + TORRENT_SESSION_TTL_MS });
-    json(res, 200, value);
+    let metadataWaiters = speechMetadataWaiters.get(session);
+    if (!metadataWaiters) {
+      metadataWaiters = new Set();
+      speechMetadataWaiters.set(session, metadataWaiters);
+    }
+    if (metadataWaiters.size >= MAX_SPEECH_WINDOW_WAITERS) {
+      json(res, 429, { error: "Too many callers are waiting for audio metadata" });
+      return;
+    }
+    let media;
+    try {
+      const interrupted = new Promise((resolve) => {
+        stopMetadata = resolve;
+        metadataWaiters.add(resolve);
+      });
+      // Observe both outcomes even when the HTTP waiter disconnects: shared
+      // FFprobe continues for others, but its later rejection is always caught.
+      const probeTask = Promise.resolve().then(() => probeTorrentFile(session, fileIndex))
+        .then((value) => ({ media: value }), (error) => ({ error }));
+      const metadata = await Promise.race([probeTask, interrupted]);
+      if (!metadata || clientClosed || req.aborted || res.destroyed || res.writableEnded) return;
+      if (metadata.status === 410) {
+        json(res, 410, { error: "Audio source changed; request a fresh window" });
+        return;
+      }
+      if (metadata.error) throw metadata.error;
+      media = metadata.media;
+    } finally {
+      metadataWaiters.delete(stopMetadata);
+      if (!metadataWaiters.size && speechMetadataWaiters.get(session) === metadataWaiters)
+        speechMetadataWaiters.delete(session);
+      stopMetadata = null;
+    }
+    if (clientClosed || req.aborted || res.destroyed || res.writableEnded) return;
+    if (!currentSession()) {
+      json(res, 410, { error: "Audio source changed; request a fresh window" });
+      return;
+    }
+    const audioTracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
+    if (!audioTracks.length) {
+      json(res, 422, { error: "This video has no audio track" });
+      return;
+    }
+    const order = audioOrder < audioTracks.length ? audioOrder : 0;
+    const total = Number(media?.durationSeconds) || 0;
+    const startSeconds = Math.round((total ? Math.min(start, Math.max(0, total - 10)) : start) * 100) / 100;
+    const seconds = Math.round((total ? Math.min(duration, Math.max(10, total - startSeconds)) : duration) * 100) / 100;
+    const key = `${fileIndex}:${order}:${startSeconds}:${seconds}`;
+    const cacheKey = `${session.id}:${key}`;
+    for (const [entryKey, entry] of speechWindowCache) if (entry.expiresAt < Date.now() || entry.session?.state !== "ready"
+      || torrentSessions.get(entry.session?.id) !== entry.session) speechWindowCache.delete(entryKey);
+    const cached = speechWindowCache.get(cacheKey);
+    if (cached?.session === session) {
+      json(res, 200, cached.value);
+      return;
+    }
+    let flights = speechWindowInflight.get(session);
+    let flight = flights?.get(key);
+    if (!flight) {
+      if (activeSpeechJobs + speechUnclosedChildren.size >= MAX_SPEECH_JOBS) {
+        json(res, 429, { error: "Audio analysis is busy; try again shortly" });
+        return;
+      }
+      if (!flights) {
+        flights = new Map();
+        speechWindowInflight.set(session, flights);
+      }
+      flight = { controller: new AbortController(), subscribers: new Set(), done: false };
+      flights.set(key, flight);
+      activeSpeechJobs += 1;
+      const producer = flight;
+      const ownerFlights = flights;
+      // Queue the worker after this HTTP request subscribes, so a synchronous
+      // disconnect can cancel it without spawning another decoder.
+      queueMicrotask(() => {
+        void (async () => {
+          let result = null;
+          try {
+            if (producer.controller.signal.aborted) return;
+            const pcm = await decodeSpeechAudio(session, fileIndex, {
+              startSeconds, seconds, order, signal: producer.controller.signal,
+            });
+            if (producer.controller.signal.aborted) return;
+            if (pcm.length < SPEECH_SAMPLE_RATE * 5) {
+              result = { status: 422, message: "No audio was decoded in this range" };
+            } else {
+              const activity = speechActivityFromPcm(pcm, { sampleRate: SPEECH_SAMPLE_RATE });
+              const value = {
+                startMs: Math.round(startSeconds * 1000),
+                frameMs: SPEECH_FRAME_MS,
+                durationMs: activity.length * SPEECH_FRAME_MS,
+                audio: order,
+                activity: Buffer.from(activity).toString("base64"),
+              };
+              if (currentSession() && producer.subscribers.size && !producer.controller.signal.aborted) {
+                if (speechWindowCache.size >= 60) speechWindowCache.delete(speechWindowCache.keys().next().value);
+                speechWindowCache.set(cacheKey, { session, value, expiresAt: Date.now() + TORRENT_SESSION_TTL_MS });
+              }
+              result = { value };
+            }
+          } catch (error) {
+            result = { error };
+          } finally {
+            producer.done = true;
+            if (ownerFlights.get(key) === producer) ownerFlights.delete(key);
+            if (!ownerFlights.size && speechWindowInflight.get(session) === ownerFlights)
+              speechWindowInflight.delete(session);
+            activeSpeechJobs -= 1;
+            for (const subscriber of producer.subscribers) subscriber.resolve(result);
+            producer.subscribers.clear();
+          }
+        })();
+      });
+    }
+    if (flight.subscribers.size >= MAX_SPEECH_WINDOW_WAITERS) {
+      json(res, 429, { error: "Too many callers are waiting for audio analysis" });
+      return;
+    }
+    const pending = flight;
+    const result = await new Promise((resolve) => {
+      const subscriber = { resolve };
+      pending.subscribers.add(subscriber);
+      cancelSubscriber = () => {
+        if (!pending.subscribers.delete(subscriber)) return;
+        resolve(null);
+        if (!pending.subscribers.size && !pending.done) {
+          if (flights.get(key) === pending) flights.delete(key);
+          pending.controller.abort();
+        }
+      };
+      if (clientClosed) cancelSubscriber();
+    });
+    cancelSubscriber = null;
+    if (!result || clientClosed || req.aborted || res.destroyed || res.writableEnded) return;
+    if (!currentSession()) {
+      json(res, 410, { error: "Audio source changed; request a fresh window" });
+      return;
+    }
+    if (result.status) {
+      json(res, result.status, { error: result.message });
+      return;
+    }
+    if (result.error) throw result.error;
+    json(res, 200, result.value);
   } finally {
-    activeSpeechJobs -= 1;
+    req.off("aborted", onClientClose);
+    res.off("close", onClientClose);
   }
 }
 
-function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order }) {
-  const sourceUrl = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
+function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order, signal }) {
+  if (signal?.aborted) return Promise.reject(Object.assign(new Error("Audio analysis cancelled"), { statusCode: 499 }));
+  const tagged = typeof internalTorrentSource === "function"
+    ? internalTorrentSource(session, fileIndex, "speech") : null;
+  const sourceUrl = tagged?.url || `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   const args = [
     "-hide_banner", "-loglevel", "error", "-nostdin",
     "-rw_timeout", "30000000",
@@ -2593,19 +3048,45 @@ function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order })
   const maxBytes = Math.ceil(seconds * SPEECH_SAMPLE_RATE * 2) + 64 * 1024;
   return new Promise((resolve, reject) => {
     const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    ffmpeg.once("close", () => tagged?.release());
+    ffmpeg.once("error", () => tagged?.release());
     const chunks = [];
     let size = 0;
     let stderr = "";
     let settled = false;
+    let stopReason = null;
+    let escalationTimer = null;
+    let closeDeadline = null;
     const finish = (error, value) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      if (!ffmpeg.killed) ffmpeg.kill();
+      clearTimeout(escalationTimer);
+      clearTimeout(closeDeadline);
+      signal?.removeEventListener("abort", cancel);
       if (error) reject(error);
       else resolve(value);
     };
-    const timer = setTimeout(() => finish(Object.assign(new Error("Timed out reading audio for subtitle sync"), { statusCode: 504 })), 45_000);
+    const requestStop = (reason) => {
+      if (settled || stopReason) return;
+      stopReason = reason;
+      clearTimeout(timer);
+      try { ffmpeg.kill(); } catch { /* still wait for confirmed process close */ }
+      // A kill request is not evidence the child exited. Retry once with a
+      // stronger signal, then bound the HTTP failure without freeing its slot.
+      escalationTimer = setTimeout(() => {
+        try { ffmpeg.kill("SIGKILL"); } catch { /* keep capacity reserved */ }
+      }, 2_000);
+      escalationTimer.unref?.();
+      closeDeadline = setTimeout(() => {
+        if (settled) return;
+        speechUnclosedChildren.add(ffmpeg);
+        finish(stopReason);
+      }, 8_000);
+      closeDeadline.unref?.();
+    };
+    const cancel = () => requestStop(Object.assign(new Error("Audio analysis cancelled"), { statusCode: 499 }));
+    const timer = setTimeout(() => requestStop(Object.assign(new Error("Timed out reading audio for subtitle sync"), { statusCode: 504 })), 45_000);
     timer.unref?.();
     ffmpeg.stdout.on("data", (chunk) => {
       if (size + chunk.length > maxBytes) chunk = chunk.subarray(0, Math.max(0, maxBytes - size));
@@ -2615,9 +3096,11 @@ function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order })
     ffmpeg.stderr.on("data", (chunk) => {
       if (stderr.length < 8 * 1024) stderr += chunk.toString("utf8");
     });
-    ffmpeg.once("error", (error) => finish(error));
+    ffmpeg.once("error", (error) => requestStop(error));
     ffmpeg.once("close", (code) => {
+      speechUnclosedChildren.delete(ffmpeg);
       if (settled) return;
+      if (stopReason) return finish(stopReason);
       const buffer = Buffer.concat(chunks);
       if (code !== 0 && buffer.length < SPEECH_SAMPLE_RATE * 2) {
         finish(Object.assign(new Error(stderr.trim().slice(-600) || `FFmpeg exited with code ${code}`), { statusCode: 502 }));
@@ -2627,6 +3110,8 @@ function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order })
       for (let index = 0; index < samples.length; index += 1) samples[index] = buffer.readInt16LE(index * 2);
       finish(null, samples);
     });
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
   });
 }
 
@@ -3161,6 +3646,10 @@ async function handleStorageApi(req, res, url) {
   if (pathname === "/api/storage/limits") {
     if (req.method !== "POST") return methodNotAllowed(res, ["POST"]);
     const body = await readJsonBody(req);
+    if (body.remuxCacheEnabled !== undefined && typeof body.remuxCacheEnabled !== "boolean") {
+      json(res, 400, { error: "remuxCacheEnabled must be a boolean" });
+      return true;
+    }
     const gb = (value) => (value === undefined || value === null || value === "" ? undefined : Number(value) * 1024 ** 3);
     // A budget reduction can delete saved learning clips on the next cleanup.
     // Require an explicit, reviewed second request before applying that change.
@@ -3178,7 +3667,12 @@ async function handleStorageApi(req, res, url) {
         return true;
       }
     }
-    storage.setLimits({ playerBytes: gb(body.playerGB), clipBytes: gb(body.clipGB) });
+    storage.setLimits({
+      playerBytes: gb(body.playerGB), clipBytes: gb(body.clipGB),
+      remuxCacheEnabled: body.remuxCacheEnabled,
+    });
+    if (body.remuxCacheEnabled === false) await remuxSegmentCache.purgeIdle();
+    if (body.remuxCacheEnabled === false) await indexedVideoCache.purgeAll();
     await enforcePlayerStorage();
     collectClipGarbage();
     json(res, 200, await storage.report());
@@ -3295,7 +3789,56 @@ async function exportAnkiDeck(req, res) {
   res.end(payload);
 }
 
+async function serveRemuxWarmWindow(req,res,session,fileIndex,requestUrl){
+  if(req.method!=="GET")return methodNotAllowed(res,["GET"]);
+  if(!session.torrent?.files?.[fileIndex]){
+    json(res,404,{error:"Torrent video unavailable"});return;
+  }
+  const producerToken=requestUrl.searchParams.get("producer")||"";
+  const start=requestUrl.searchParams.get("start")||"";
+  if(!/^[a-f0-9]{48}$/.test(producerToken)||!/^(?:0|[1-9]\d{0,5})(?:\.\d{1,3})?$/.test(start)){
+    json(res,400,{error:"Invalid cached window request"});return;
+  }
+  const window=await remuxSegmentCache.lookupWarmWindow({
+    sessionId:session.id,fileIndex,sourceIdentity:session.infoHash,
+    producerToken,startSeconds:Number(start),maxWindowBytes:16*1024*1024,
+  });
+  if(!window){json(res,404,{error:"Warm remux window unavailable"});return;}
+  async function* segments(){
+    for(const range of window.ranges){
+      for(let offset=range.start;offset<=range.end;){
+        const buffer=Buffer.allocUnsafe(Math.min(64*1024,range.end-offset+1));
+        const {bytesRead}=await window.handle.read(buffer,0,buffer.length,offset);
+        if(bytesRead<=0)throw Error('Warm remux window was truncated');
+        offset+=bytesRead;
+        yield buffer.subarray(0,bytesRead);
+      }
+    }
+  }
+  try{
+    if(res.destroyed||res.writableEnded)return;
+    res.writeHead(200,{
+      "Content-Type":"video/mp4","Content-Length":String(window.bytes),
+      "Cache-Control":"no-store","Accept-Ranges":"none",
+      "X-Content-Type-Options":"nosniff",
+      "X-LVL-Window-Base-Seconds":String(window.baseSeconds),
+      "X-LVL-Window-Start-Seconds":String(window.windowStartSeconds),
+      "X-LVL-Window-End-Seconds":String(window.windowEndSeconds),
+      "X-LVL-Window-Producer":window.producerToken,
+      "X-LVL-Window-Source-Generation":window.sourceGeneration,
+    });
+    trackOpenStream(session,res,fileIndex);
+    await pipeline(Readable.from(segments()),res);
+  }catch{
+    if(!res.destroyed)res.destroy();
+  }finally{
+    await window.release();
+  }
+}
+
 async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = null) {
+  const traceToken = typeof playbackTrace !== "undefined" ? playbackTrace.captureToken(session.id, fileIndex) : null;
+  const tracing = Boolean(traceToken);
   const file = session.torrent.files[fileIndex];
   if (!file) {
     json(res, 404, { error: "Torrent file not found" });
@@ -3314,16 +3857,11 @@ async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = n
     json(res, 503, { error: "Bundled FFmpeg binary is unavailable" });
     return;
   }
-  if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) {
-    json(res, 429, { error: "Too many videos are being transcoded right now" });
-    return;
-  }
-
   let media = getCachedMediaProbe(session.id, fileIndex);
   // Do not block playback startup on FFprobe. Duration is loaded by the client
   // independently and cached for later requests; FFmpeg can start immediately.
 
-  const sourceUrl = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
+  let sourceUrl = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   const requestedStart = Number(requestUrl?.searchParams?.get("start") || 0);
   const requestedAudio = Number(requestUrl?.searchParams?.get("audio") || 0);
   const maximumStart = media?.durationSeconds ? Math.max(0, Number(media.durationSeconds) - 0.25) : requestedStart;
@@ -3354,6 +3892,12 @@ async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = n
     clientHevc: truthyParam("hevc"),
     clientAv1: truthyParam("av1"),
   });
+  if (tracing) playbackTrace.plan(session.id, fileIndex, {
+    videoMode: plan.video.mode, videoReason: plan.video.fallbackReason,
+    sourceVideoCodec: plan.video.sourceCodec, audioMode: plan.audio.mode,
+    audioReason: plan.audio.reason, audioOutputCodec: plan.audio.outputCodec,
+    audioOutputChannels: plan.audio.channels, startSeconds,
+  }, traceToken);
   if (startSeconds > 0 && requestedVideoMode === "copy" && plan.video.hdrKind && plan.video.mode !== "copy") {
     json(res, 422, { error: "This HDR video cannot be safely copied with the requested browser codec capabilities" });
     return;
@@ -3377,25 +3921,185 @@ async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = n
       res.off("close", cancel);
     }
   }
-  // FFmpeg applies -t relative to the requested -ss even when -noaccurate_seek
-  // copies earlier GOP preroll. Do not extend -t again: that could overrun a
-  // video when container/audio duration differs from its video track.
-  const remainingDuration = media?.durationSeconds ? Math.max(0.25, Number(media.durationSeconds) - startSeconds) : null;
+  // In copied-video mode -noaccurate_seek retains the preceding GOP for both
+  // streams. -t must cover that preroll, or audio gets cut before the final
+  // video frames near EOF. Keep -ss at the requested time: changing it to the
+  // keyframe origin alters FFmpeg's seek and breaks verified A/V alignment.
+  const durationOrigin = plan.video.mode === "copy" ? effectiveStartSeconds : startSeconds;
+  const remainingDuration = media?.durationSeconds ? Math.max(0.25, Number(media.durationSeconds) - durationOrigin) : null;
   const videoFilter = transcodeVideoFilter(plan);
   const videoEncoder = plan.video.mode === "copy" ? "copy" : await videoTranscodeEncoder();
   if (res.destroyed || res.writableEnded) return;
+  // Fragment caches are strictly bound to their exact validated movie clock,
+  // source, audio track and FFmpeg plan. Only an EOF-verified complete fMP4 is
+  // safe for a native HTMLMediaElement replay. Partial moofs stay internal.
+  let remuxIdentity = plan.video.mode === "copy" ? {
+    sessionId: session.id, sourceIdentity: session.infoHash, fileIndex,
+    sourceLength: Number(file.length), startSeconds, effectiveStartSeconds,
+    remainingDuration, videoMode: plan.video.mode,
+    videoCodec: plan.video.sourceCodec || "unknown", videoTag: plan.video.tag || null,
+    audioTrack: audioTrackOrder, audioMode: plan.audio.mode,
+    audioCodec: plan.audio.codec, audioChannels: plan.audio.channels,
+    audioBitrate: plan.audio.bitRate || null, audioFilter: plan.audio.codec === "copy" ? null : "aresample=async=1",
+  } : null;
+  // Only short, fully downloaded, FFprobe-verified 8-bit SDR conversions may
+  // save an exact-plan H264/AAC output for replay on a repeat request. The
+  // recorder verifies complete EOF and the shared cache enforces a hard
+  // per-record 64MiB cap. This never authorizes an HEVC/HDR MSE warm seek.
+  let encodedAdmission = null;
+  if (!remuxIdentity && startSeconds > 0 && plan.video.mode === "h264"
+    && videoEncoder === "libx264" && media?.durationSeconds
+    && remainingDuration > 0 && remainingDuration <= 180
+    && typeof storage !== "undefined"
+    && typeof isTorrentFileFullyVerified === "function"
+    && storage.limits().remuxCacheEnabled === true
+    && isTorrentFileFullyVerified(session.torrent, fileIndex)) {
+    const estimatedOutputBytes = Math.ceil(
+      Number(file.length) * remainingDuration / Math.max(1, Number(media.durationSeconds)));
+    if (Number.isSafeInteger(estimatedOutputBytes) && estimatedOutputBytes >= 4096
+      && estimatedOutputBytes <= 32 * 1024 * 1024) {
+      try {
+        const allowance = await storage.playerCacheAllowance({
+          additionalBytes: 2 * estimatedOutputBytes + 4 * 1024 * 1024,
+          reservedSourceBytes: 0,
+        });
+        if (allowance.allowed && !res.destroyed && !res.writableEnded
+          && torrentSessions.get(session.id) === session) {
+          const audioFilter = plan.audio.codec === "copy" ? null
+            : "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0";
+          const ffmpegFingerprint = await exactFfmpegFingerprint();
+          // Fingerprinting is asynchronous. A removed/replaced torrent must
+          // not even acquire cache admission under a now-stale source ID.
+          if (res.destroyed || res.writableEnded) return;
+          if (torrentSessions.get(session.id) !== session) {
+            if (!res.headersSent) json(res, 410, { error: "Source session has expired" });
+            else res.destroy();
+            return;
+          }
+          const decision = evaluateEncodedH264CacheEligibility({
+            sessionId: session.id, sourceIdentity: session.infoHash, fileIndex,
+            sourceLength: Number(file.length), media,
+            verifiedProbe: getCachedMediaProbe(session.id, fileIndex) === media,
+            plan, startSeconds, effectiveStartSeconds, remainingDuration,
+            audioTrackOrder, videoEncoder,
+            videoEncodingArgs: hardwareVideoEncodingArgs(videoEncoder, media.video?.height),
+            videoFilter, audioFilter, ffmpegFingerprint,
+            availableCacheBytes: allowance.availableBytes,
+            reservedSourceBytes: 0, estimatedOutputBytes,
+            activeTranscodes: activeTranscodes.size,
+          });
+          if (decision.eligible) {
+            encodedAdmission = decision;
+            remuxIdentity = decision.identity;
+          }
+        }
+      } catch { /* Cache admission is optional; foreground playback proceeds. */ }
+    }
+  }
+  // Computing an optional encoded-cache fingerprint can yield for an entire
+  // file read. Never start a cached conversion for a session retired meanwhile.
+  // Unchanged legacy non-cached routes do not acquire an extra session guard.
+  if (res.destroyed || res.writableEnded) return;
+  if (encodedAdmission && typeof torrentSessions !== "undefined"
+    && torrentSessions.get(session.id) !== session) {
+    // A session can be deleted while the optional FFmpeg binary hash is read.
+    // Do not leave a still-connected HTTP request hanging indefinitely.
+    if (!res.headersSent) json(res, 410, { error: "Source session has expired" });
+    else res.destroy();
+    return;
+  }
+  const outputHeaders = () => ({
+    "Content-Type": "video/mp4",
+    "Cache-Control": "no-store",
+    "Accept-Ranges": "none",
+    "X-Blackline-Transcode": `${plan.video.mode}-${plan.audio.codec}`,
+    "X-Media-Video-Mode": plan.video.mode,
+    "X-Media-Video-Source-Codec": plan.video.sourceCodec || "unknown",
+    "X-Media-Video-Output-Codec": plan.video.mode === "copy" ? (plan.video.sourceCodec || "unknown") : "h264",
+    "X-Media-Video-Encoder": videoEncoder,
+    "X-Media-Video-Keyframe-Seek": plan.video.keyframeSeek ? "1" : "0",
+    "X-Media-Audio-Mode": plan.audio.mode,
+    "X-Media-Audio-Channels": String(plan.audio.channels),
+    "X-Media-Audio-Output-Codec": plan.audio.outputCodec || "none",
+    "X-Media-Audio-Output-Bitrate": plan.audio.bitRate || "original",
+    "X-Media-Audio-Reason": plan.audio.reason,
+    ...(plan.video.hdrKind ? { "X-Media-HDR-Source": plan.video.hdrKind } : {}),
+    ...(plan.video.hdrKind ? { "X-Media-HDR-Output": plan.video.mode === "copy" ? plan.video.hdrKind : "sdr-bt709" } : {}),
+    ...(plan.video.fallbackReason ? { "X-Media-Video-Fallback": plan.video.fallbackReason } : {}),
+    "X-Media-Start-Seconds": String(startSeconds),
+    "X-Media-Effective-Start-Seconds": String(effectiveStartSeconds),
+    "X-Audio-Track-Index": String(audioTrackOrder),
+    ...(media?.durationSeconds ? { "X-Media-Duration-Seconds": String(media.durationSeconds) } : {}),
+  });
+  if (remuxIdentity && typeof remuxSegmentCache !== "undefined") {
+    // A lease pins this exact reader across concurrent session cleanup and
+    // option toggles; it is released after EOF or HTTP disconnect.
+    const complete = await remuxSegmentCache.openComplete(remuxIdentity);
+    // A superseded seek can disconnect while the optional cache lookup
+    // waits for an earlier recorder to finish. A MISS is still asynchronous:
+    // without this guard the old request spawns an orphan FFmpeg after its
+    // abort/close events have already fired, consuming one of only two slots.
+    if (res.destroyed || res.writableEnded || req.aborted) {
+      await complete?.release();
+      return;
+    }
+    if (complete) {
+      let cacheStream = null;
+      try {
+        if (res.destroyed || res.writableEnded) { await complete.release(); return; }
+        cacheStream = complete.handle.createReadStream({ start: 0,
+          end: complete.bytes - 1, autoClose: false });
+        res.writeHead(200, { ...outputHeaders(), "Content-Length": String(complete.bytes),
+          "X-LVL-Remux-Cache": "complete-hit" });
+        trackOpenStream(session, res, fileIndex);
+        // Closing the HTTP response also destroys a paused disk source.
+        res.once("close", () => cacheStream.destroy());
+        void pipeline(cacheStream,res).catch(() => {
+          if (!res.destroyed) res.destroy();
+        }).finally(() => complete.release());
+        return;
+      } catch {
+        if (cacheStream)cacheStream.destroy();
+        await complete.release();
+        if (res.headersSent) { res.destroy(); return; }
+      }
+    }
+  }
+  // Recheck after ALL async cache/admission work. The client may have moved
+  // to another episode or disposed this source before FFmpeg is spawned.
+  if (res.destroyed || res.writableEnded || req.aborted) return;
+  if (typeof torrentSessions !== "undefined" && torrentSessions.get(session.id) !== session) {
+    if (!res.headersSent) json(res, 410, { error: "Source session has expired" });
+    else res.destroy();
+    return;
+  }
   // Encoder detection is asynchronous. Two other requests can have claimed
   // slots while this request awaited it; re-check immediately before spawn.
+  // A dead encoder can remain in this Set if Windows never completes its
+  // ChildProcess "close" event (for example, when an auxiliary pipe stalls).
+  // Reclaim only confirmed exited PIDs before rejecting an otherwise valid
+  // conversion. Do not kill or unpipe any live FFmpeg.
+  pruneExitedTranscodes(activeTranscodes);
+  // Foreground seeks outrank offline encoding, but don't throw away a
+  // half-built whole-episode rendition while a spare FFmpeg slot exists.
+  // Preempt only when admission would otherwise hit the two-slot ceiling;
+  // stopAll waits for actual child close before the next admission check.
+  if (activeTranscodes.size >= MAX_TRANSCODE_JOBS && typeof indexedVideoCache !== "undefined")
+    await indexedVideoCache.stopAll();
   if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) {
     json(res, 429, { error: "Too many videos are being transcoded right now" });
     return;
   }
+  const tagged = typeof internalTorrentSource === "function"
+    ? internalTorrentSource(session, fileIndex, "conversion") : null;
+  if (tagged) sourceUrl = tagged.url;
   const audioFilter = plan.audio.codec === "copy"
     ? null
     : (plan.video.mode === "copy" ? "aresample=async=1" : "asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0");
   const args = [
     "-hide_banner",
     "-loglevel", "error",
+    ...(tracing ? ["-progress", "pipe:2", "-stats_period", "1"] : []),
     "-nostdin",
     // Accurate input seeking discards audio until the exact requested second,
     // but stream-copy video must start at an earlier keyframe. That creates a
@@ -3413,6 +4117,7 @@ async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = n
       : [
         "-pix_fmt", "yuv420p",
         ...(videoFilter ? ["-vf", videoFilter] : []),
+        ...(encodedAdmission ? ["-force_key_frames", "expr:gte(t,n_forced*2)"] : []),
         ...(plan.video.toneMapToSdr ? ["-color_primaries", "bt709", "-color_trc", "bt709", "-colorspace", "bt709"] : []),
       ]),
     "-c:a", plan.audio.codec,
@@ -3443,7 +4148,7 @@ async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = n
   });
   activeTranscodes.add(ffmpeg);
   scheduleSessionExpiry(session);
-  trackOpenStream(session, res);
+  trackOpenStream(session, res, fileIndex);
   if (audioTracks.length && ffmpeg.stdio[3]) {
     const tape = speechTapeWriter(session.id, fileIndex, audioTrackOrder, startSeconds);
     ffmpeg.stdio[3].on("data", (chunk) => tape.push(chunk));
@@ -3452,62 +4157,128 @@ async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = n
   }
 
   let stderr = "";
+  let progressBuffer = "";
   ffmpeg.stderr.on("data", (chunk) => {
+    if (tracing) {
+      progressBuffer = (progressBuffer + chunk.toString("utf8")).slice(-4096);
+      const lines = progressBuffer.split(/\r?\n/);
+      progressBuffer = lines.pop() || "";
+      for (const line of lines) playbackTrace.progress(session.id, line.trim(), traceToken);
+    }
     if (stderr.length < 8192) stderr += chunk.toString("utf8");
   });
 
-  res.writeHead(200, {
-    "Content-Type": "video/mp4",
-    "Cache-Control": "no-store",
-    "Accept-Ranges": "none",
-    "X-Blackline-Transcode": `${plan.video.mode}-${plan.audio.codec}`,
-    "X-Media-Video-Mode": plan.video.mode,
-    "X-Media-Video-Source-Codec": plan.video.sourceCodec || "unknown",
-    "X-Media-Video-Output-Codec": plan.video.mode === "copy" ? (plan.video.sourceCodec || "unknown") : "h264",
-    "X-Media-Video-Encoder": videoEncoder,
-    "X-Media-Video-Keyframe-Seek": plan.video.keyframeSeek ? "1" : "0",
-    "X-Media-Audio-Mode": plan.audio.mode,
-    "X-Media-Audio-Channels": String(plan.audio.channels),
-    "X-Media-Audio-Output-Codec": plan.audio.outputCodec || "none",
-    "X-Media-Audio-Output-Bitrate": plan.audio.bitRate || "original",
-    "X-Media-Audio-Reason": plan.audio.reason,
-    ...(plan.video.hdrKind ? { "X-Media-HDR-Source": plan.video.hdrKind } : {}),
-    ...(plan.video.hdrKind ? { "X-Media-HDR-Output": plan.video.mode === "copy" ? plan.video.hdrKind : "sdr-bt709" } : {}),
-    ...(plan.video.fallbackReason ? { "X-Media-Video-Fallback": plan.video.fallbackReason } : {}),
-    "X-Media-Start-Seconds": String(startSeconds),
-    "X-Media-Effective-Start-Seconds": String(effectiveStartSeconds),
-    "X-Audio-Track-Index": String(audioTrackOrder),
-    ...(media?.durationSeconds ? { "X-Media-Duration-Seconds": String(media.durationSeconds) } : {}),
-  });
+  const remuxRecorder = remuxIdentity && typeof remuxSegmentCache !== "undefined"
+    ? remuxSegmentCache.begin(remuxIdentity,
+      encodedAdmission ? { maxEntryBytes: encodedAdmission.maxOutputBytes } : undefined) : null;
+  // Only verified, already fully downloaded local pieces may run independently
+  // of browser HTTP backpressure. This is SAME-FFmpeg, SAME-producer-token
+  // buffering, not a second torrent reader or a new conversion job. A client
+  // must explicitly opt into the MSE consumer; native streams remain unchanged.
+  const runAheadEligible = Boolean(remuxRecorder && truthyParam("mse")
+    && plan.video.mode === "copy" && plan.video.sourceCodec === "h264"
+    && plan.audio.outputCodec === "aac" && !plan.video.hdrKind
+    && isTorrentFileFullyVerified(session.torrent, fileIndex));
+  res.writeHead(200,{...outputHeaders(),
+    ...(remuxRecorder?{"X-LVL-Remux-Producer":remuxRecorder.producerToken}:{}),
+    ...(runAheadEligible?{"X-LVL-Remux-Run-Ahead":"verified-local-bounded"}:{})});
   res.flushHeaders?.();
-
   ffmpeg.stdout.on("error", () => res.destroy());
-  ffmpeg.stdout.pipe(res);
+  if (remuxRecorder) {
+    remuxRecorder.transform.on("error", () => res.destroy());
+    if (runAheadEligible) {
+      // The recorder sees verified fragments beyond the browser's +45s MSE
+      // read limit. 96MiB of queued output is the HARD cap; once full, normal
+      // backpressure pauses this very same FFmpeg and its cache writer.
+      const generation = remuxRecorder.producerToken;
+      const current = () => torrentSessions.get(session.id) === session
+        && session.torrent?.files?.[fileIndex] === file;
+      const ahead = pipeRemuxAhead({
+        source:remuxRecorder.transform, response:res,sourceGeneration:generation,
+        getCurrentGeneration:()=>current()?generation:null,
+        isVerifiedComplete:()=>current() && file.done === true && Number(file.downloaded) === Number(file.length),
+        maxBufferedBytes:96*1024*1024,
+        onAbort:()=>{if(!ffmpeg.killed)ffmpeg.kill();},
+      });
+      if (ahead.started) {
+        ffmpeg.stdout.pipe(remuxRecorder.transform);
+        void ahead.done.then((result)=>{
+          if(!result.completed && !res.destroyed)res.destroy();
+        });
+      } else ffmpeg.stdout.pipe(remuxRecorder.transform).pipe(res);
+    } else ffmpeg.stdout.pipe(remuxRecorder.transform).pipe(res);
+  } else ffmpeg.stdout.pipe(res);
 
   let cancelledByClient = false;
+  let childClosed = false;
+  let stopEscalation = null;
   const stop = () => {
+    if (res.writableFinished || cancelledByClient) return;
     cancelledByClient = true;
-    if (!ffmpeg.killed) ffmpeg.kill();
+    // Node unpipes a closed HTTP response but does not destroy the upstream
+    // streams. A paused stdout/recorder can keep ChildProcess "close" pending
+    // after FFmpeg has exited, stranding slots and incomplete cache records.
+    // This teardown is ONLY for a disconnected client; successful streams
+    // must keep their original pipe chain until the final MP4 atom drains.
+    try { if (!ffmpeg.killed) ffmpeg.kill(); } catch { /* escalate below */ }
+    stopEscalation = setTimeout(() => {
+      if (!childClosed) {
+        try { ffmpeg.kill("SIGKILL"); } catch { /* retain slot until close */ }
+      }
+    }, 2_000);
+    stopEscalation.unref?.();
+    ffmpeg.stdout.unpipe();
+    ffmpeg.stdout.destroy();
+    remuxRecorder?.transform.destroy();
+    // The optional speech side-channel is another ChildProcess stdio pipe.
+    // Once the movie response is cancelled its output must not pin close.
+    ffmpeg.stdio[3]?.destroy();
   };
   req.once("aborted", stop);
   res.once("close", stop);
 
   ffmpeg.once("error", (error) => {
-    activeTranscodes.delete(ffmpeg);
+    tagged?.release();
+    void remuxRecorder?.finish({ success: false });
+    // Node may emit ChildProcess "error" before its stdio and process have
+    // actually closed. Releasing the slot here could admit a replacement
+    // FFmpeg while this failed child still owns pipes or file handles.
+    // The "close" listener below is the sole slot-release owner.
     console.warn(`FFmpeg failed for ${file.name}:`, error.message);
     if (!res.headersSent) json(res, 500, { error: "Unable to start FFmpeg transcode" });
     else res.destroy();
   });
   ffmpeg.once("close", (code) => {
+    childClosed = true;
+    clearTimeout(stopEscalation);
+    tagged?.release();
+    if (remuxRecorder) {
+      // ChildProcess close does not mean the optional Transform has finished
+      // draining FFmpeg's stdout. Finalizing now can drop its final MP4 atom.
+      // The recorder is optional, so never let it end the browser's response.
+      const settleRecorder = () => void remuxRecorder.finish({
+        success: code === 0 && !cancelledByClient
+          && ffmpeg.stdout.readableEnded && remuxRecorder.transform.writableFinished,
+      });
+      if (remuxRecorder.transform.writableFinished || !ffmpeg.stdout.readableEnded)
+        settleRecorder();
+      else {
+        remuxRecorder.transform.once("finish", settleRecorder);
+        remuxRecorder.transform.once("close", settleRecorder);
+      }
+    }
     activeTranscodes.delete(ffmpeg);
     if (code && videoEncoder !== "copy" && videoEncoder !== "libx264" && !cancelledByClient) {
       failedHardwareEncoder = videoEncoder;
       console.warn(`Hardware encoder ${videoEncoder} failed; future streams will use software H.264`);
     }
     req.removeListener("aborted", stop);
-    res.removeListener("close", stop);
+    // Keep the response-close listener through the final pipe drain: a client
+    // can still disconnect after the child exits while bytes remain queued.
     if (code && stderr.trim()) console.warn(`FFmpeg exited ${code} for ${file.name}: ${stderr.trim().slice(-1200)}`);
-    if (!res.writableEnded) res.end();
+    // stdout.pipe(recorder?).pipe(res) (or the bounded run-ahead pipeline)
+    // must own end-of-response. Calling res.end() at child close truncates
+    // buffered fMP4 output for a slow consumer and causes media decode errors.
   });
 }
 
@@ -4053,32 +4824,11 @@ function assTimestampToVtt(value) {
 }
 
 function assToWebVtt(text) {
-  const cues = [];
-  for (const rawLine of String(text || "").split(/\r?\n/)) {
-    if (!/^Dialogue\s*:/i.test(rawLine)) continue;
-    const payload = rawLine.replace(/^Dialogue\s*:\s*/i, "");
-    const fields = [];
-    let rest = payload;
-    for (let index = 0; index < 9; index += 1) {
-      const comma = rest.indexOf(",");
-      if (comma < 0) break;
-      fields.push(rest.slice(0, comma));
-      rest = rest.slice(comma + 1);
-    }
-    if (fields.length < 9) continue;
-    const start = assTimestampToVtt(fields[1]);
-    const end = assTimestampToVtt(fields[2]);
-    if (!start || !end) continue;
-    const cueText = rest
-      .replace(/\{[^}]*\}/g, "")
-      .replace(/\\N/gi, "\n")
-      .replace(/\\n/gi, "\n")
-      .replace(/\\h/gi, " ")
-      .trim();
-    if (cueText) cues.push(`${start} --> ${end}\n${cueText}`);
-    if (cues.length >= 20_000) break;
-  }
-  return cues.length ? `WEBVTT\n\n${cues.join("\n\n")}\n` : "";
+  // Respect ASS event formatting and drawing mode; the old token stripper
+  // exposed vector coordinates as subtitles and duplicated styled overlays.
+  // Preserve visible signs in the default output (classification remains
+  // available to future optional sign-vs-dialogue controls).
+  return parseAssToWebVtt(text);
 }
 
 function subtitleRecord(name, data) {
@@ -5059,6 +5809,7 @@ async function handleApi(req, res, url) {
   // The helper extension's own routes (pair, poll, result, live-control, live-transcript)
   // stay outside this check: they carry the helper's token instead.
   const appOnlyRoute = url.pathname === "/api/app-state" || url.pathname.startsWith("/api/app-state/")
+    || url.pathname === "/api/diagnostics/playback"
     || url.pathname.startsWith("/api/app-updates/")
     || url.pathname.startsWith("/api/coach/")
     || url.pathname === "/api/browser-coach/status"
@@ -5072,6 +5823,27 @@ async function handleApi(req, res, url) {
     || url.pathname === "/api/ratings"
     || url.pathname === "/api/health";
   if (appOnlyRoute && localRequestRejected(req, res)) return true;
+  if (url.pathname === "/api/diagnostics/playback") {
+    if (req.method !== "GET" && req.method !== "POST") return methodNotAllowed(res, ["GET", "POST"]);
+    const input = req.method === "POST" ? await readJsonBody(req, 1024) : null;
+    const id = req.method === "GET" ? url.searchParams.get("session") : input?.session;
+    if (typeof id !== "string" || !/^[0-9a-f-]{36}$/i.test(id) || !torrentSessions.has(id)) {
+      json(res, 404, { error: "Playback session unavailable" });
+      return true;
+    }
+    const session = torrentSessions.get(id);
+    const fileIndex = req.method === "GET" ? playbackTrace.snapshot(id)?.fileIndex : Number(input?.fileIndex);
+    if (req.method === "POST") {
+      if (input?.action === "stop") playbackTrace.stop(id);
+      else if (input?.action === "start" && Number.isInteger(fileIndex) && fileIndex >= 0 && session.torrent?.files?.[fileIndex]) playbackTrace.start(id, fileIndex);
+      else { json(res, 400, { error: "Invalid playback trace request" }); return true; }
+    }
+    const trace = playbackTrace.snapshot(id, {
+      torrent: session.torrent, file: session.torrent?.files?.[fileIndex], fileIndex,
+    });
+    json(res, 200, trace || { enabled: false });
+    return true;
+  }
   // The Windows launcher checks this before starting the app, so it never starts a second copy.
   if (url.pathname === "/api/health") {
     if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
@@ -5175,7 +5947,7 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  const torrentMatch = /^\/api\/torrents\/([0-9a-f-]+)(?:\/files(?:\/(\d+)\/(stream|transcode|transcode-start|metadata|subtitle|speech))?)?$/.exec(url.pathname);
+  const torrentMatch = /^\/api\/torrents\/([0-9a-f-]+)(?:\/files(?:\/(\d+)\/(stream|transcode|transcode-start|metadata|subtitle|speech|indexed|indexed\/status|remux-cache\/window))?)?$/.exec(url.pathname);
   if (torrentMatch) {
     const [, id, fileIndex, fileAction] = torrentMatch;
     const session = getTorrentSession(id);
@@ -5185,6 +5957,14 @@ async function handleApi(req, res, url) {
     }
     if (fileIndex !== undefined) {
       if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed(res, ["GET", "HEAD"]);
+      if (fileAction === "indexed" || fileAction === "indexed/status") {
+        await serveIndexedSeek(req, res, session, Number(fileIndex), url, fileAction === "indexed/status");
+        return true;
+      }
+      if (fileAction === "remux-cache/window") {
+        await serveRemuxWarmWindow(req,res,session,Number(fileIndex),url);
+        return true;
+      }
       if (fileAction === "transcode-start") {
         await copiedSeekOriginEndpoint(req, res, session, Number(fileIndex), url);
         return true;
@@ -5225,14 +6005,25 @@ async function handleApi(req, res, url) {
           await transcodeTorrentFile(req, res, session, Number(fileIndex), url);
         }
       } else {
-        streamTorrentFile(req, res, session, Number(fileIndex));
+        streamTorrentFile(req, res, session, Number(fileIndex), url);
       }
       return true;
     }
     if (req.method === "GET") {
       const mapFile = url.searchParams.get("file");
       const payload = sessionPayload(session);
-      if (mapFile !== null && /^\d{1,4}$/.test(mapFile)) payload.fileMap = fileDownloadMap(session, Number(mapFile));
+      if (mapFile !== null && /^\d{1,4}$/.test(mapFile)) {
+        const index = Number(mapFile);
+        payload.fileMap = fileDownloadMap(session, index);
+        // The client may name a byte offset, but only an actual open Range
+        // reader covering that position qualifies for a piece observation.
+        const requested = url.searchParams.get("offset");
+        const offset = requested !== null && /^\d{1,16}$/.test(requested)
+          && Number.isSafeInteger(Number(requested)) ? Number(requested) : null;
+        payload.streamHealth = streamHealth.snapshot(session, {
+          torrent: session.torrent, fileIndex: index, offset,
+        });
+      }
       json(res, 200, payload);
       return true;
     }
@@ -5346,11 +6137,22 @@ function serveStatic(req, res, url) {
   });
 }
 
+// Part B features (reader, franchises, reading sources) plug in through
+// backend/features/registry.js; core routes always take precedence.
+const serverFeatures = createServerFeatureHost(SERVER_FEATURES, { coreAssets: PUBLIC_ASSETS });
+for (const [route, asset] of serverFeatures.assets) PUBLIC_ASSETS.set(route, asset);
+serverFeatures.init({
+  db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta,
+  dataRoot: appDataRoot, port, root, json, readJsonBody, methodNotAllowed,
+  rejectNonLocal: localRequestRejected,
+});
+
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
     if (url.pathname.startsWith("/api/")) {
-      const handled = await handleApi(req, res, url);
+      let handled = await handleApi(req, res, url);
+      if (!handled && !res.headersSent) handled = await serverFeatures.handleApi(req, res, url);
       if (!handled) json(res, 404, { error: "API route not found" });
       return;
     }
@@ -5369,6 +6171,7 @@ async function shutdown() {
   shuttingDown = true;
   // Downloads are deleted on the way out; never hang there.
   setTimeout(() => process.exit(0), 8000).unref();
+  await serverFeatures.stop();
   for (const ffmpeg of activeTranscodes) {
     if (!ffmpeg.killed) ffmpeg.kill();
   }
@@ -5390,9 +6193,19 @@ if (STARTED_BY_LAUNCHER) {
 server.listen(port, "127.0.0.1", () => {
   console.log(`LVL running at http://127.0.0.1:${port}`);
   // Only after listening: a second copy on the same port fails to start and never gets here.
-  storage.clearOrphans()
-    .then((removed) => { if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`); })
-    .catch((error) => console.warn("Startup cleanup failed:", error.message));
+  // Dev-server hot restarts have no way to reattach their old in-memory
+  // sessions. A deliberate one-time preserve flag prevents the normal orphan
+  // cleanup from deleting their actual downloaded pieces on startup. This
+  // is NOT an automatic reattach: old folders remain intact on disk for
+  // explicit recovery, and the flag has no effect on launcher deployments.
+  if (!STARTED_BY_LAUNCHER && process.env.LVL_PRESERVE_PLAYER_DOWNLOADS_ON_STARTUP === "1") {
+    console.log("Player storage: preserving existing download folders for this development restart");
+  } else {
+    storage.clearOrphans()
+      .then((removed) => { if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`); })
+      .catch((error) => console.warn("Startup cleanup failed:", error.message));
+  }
   // Automatic recommendation updates (only when switched on in Settings).
   recs.startScheduler();
+  void serverFeatures.start();
 });

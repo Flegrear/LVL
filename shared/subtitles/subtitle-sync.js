@@ -11,6 +11,67 @@
 export const SPEECH_FRAME_MS = 10;
 export const SPEECH_SAMPLE_RATE = 16000;
 
+/**
+ * Index the adjusted subtitle cue intervals once per timing revision rather
+ * than recomputing every cue's drifting/cut-aware offset on each video frame.
+ * Preserve .find() semantics for overlaps (earliest active cue wins) and for
+ * cut models which can reorder adjusted start times.
+ */
+export function createSubtitleCueLookup(boundsForCue) {
+  const cached = new WeakMap();
+  return (track, currentMs) => {
+    const cues = track?.cues;
+    if (!Array.isArray(cues) || !cues.length || !Number.isFinite(currentMs)) return null;
+    let index = cached.get(track);
+    if (!index || index.cues !== cues || index.length !== cues.length
+      || index.first !== cues[0] || index.last !== cues.at(-1)
+      || index.anchors !== track.syncAnchors || index.anchorCount !== (track.syncAnchors?.length || 0)
+      || index.offset !== track.offsetMs || index.mode !== track.syncMode
+      || index.exact !== track.exactMedia) {
+      const starts = new Float64Array(cues.length);
+      const ends = new Float64Array(cues.length);
+      const prefixEnds = new Float64Array(cues.length);
+      let ordered = true;
+      for (let i = 0; i < cues.length; i++) {
+        const bounds = boundsForCue(cues[i], track);
+        starts[i] = bounds.startMs;
+        ends[i] = bounds.endMs;
+        prefixEnds[i] = Math.max(i ? prefixEnds[i - 1] : -Infinity, ends[i]);
+        if (i && starts[i] < starts[i - 1]) ordered = false;
+      }
+      index = { cues, length: cues.length, first: cues[0], last: cues.at(-1),
+        anchors: track.syncAnchors, anchorCount: track.syncAnchors?.length || 0,
+        offset: track.offsetMs, mode: track.syncMode, exact: track.exactMedia,
+        starts, ends, prefixEnds, ordered };
+      cached.set(track, index);
+    }
+    if (!index.ordered) {
+      for (let i = 0; i < cues.length; i++) {
+        if (index.starts[i] <= currentMs && currentMs <= index.ends[i]) return cues[i];
+      }
+      return null;
+    }
+    // Find the last cue that has started, then the earliest interval (even an
+    // overlapping one) that hasn't yet ended. Both searches are logarithmic.
+    let lo = 0;
+    let hi = cues.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (index.starts[mid] <= currentMs) lo = mid + 1;
+      else hi = mid;
+    }
+    const started = lo;
+    lo = 0;
+    hi = started;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (index.prefixEnds[mid] < currentMs) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo < started && currentMs <= index.ends[lo] ? cues[lo] : null;
+  };
+}
+
 const clamp = (value, low, high) => Math.min(high, Math.max(low, value));
 
 function percentile(values, fraction) {

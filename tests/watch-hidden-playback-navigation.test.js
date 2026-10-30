@@ -23,6 +23,7 @@ function fixture({ initialView = "watch", siteFloat = false, desktop = false, pe
     libraryPlaybackResolveController: controller,
     libraryPlaybackPendingMagnet: "magnet:?xt=test",
     clearBufferingTimer: () => actions.push("stop-buffering"),
+    stopTransferStats: () => actions.push("stop-transfer-polling"),
     cancelTranscodeStart: () => {},
     resetRecoveryDisplay: () => actions.push("reset-diagnostics"),
   });
@@ -34,11 +35,13 @@ test("Home during unresolved Watch load cancels pending work and stops invisible
   const f = fixture();
   f.run("home");
   assert.equal(f.context.playbackLoadRequestId, 13, "the original async source identity must be invalidated");
-  assert.deepEqual(f.actions, ["abort:left player without floating playback", "pause", "stop-buffering", "reset-diagnostics"]);
+  assert.deepEqual(f.actions, ["abort:left player without floating playback", "pause", "stop-buffering", "stop-transfer-polling", "reset-diagnostics"]);
   assert.equal(f.context.libraryPlaybackResolveController, null);
   assert.equal(f.context.libraryPlaybackPendingMagnet, "");
   assert.match(app, /updateFloatingPlayback\(view\);\s*stopPlaybackIfHiddenAfterNavigation\(view\);/,
     "floating visibility is decided before cancellation");
+  assert.match(app, /view === "watch" && state\.currentSource\?\.sessionId && !state\.transferStatsTimer\)\s*startTransferStats\(/,
+    "returning to Watch restarts torrent stats polling after the hidden-view stop");
   assert.match(app, /if \(loadId !== playbackLoadRequestId[^\n]*\) return false;/,
     "a pending torrent start must refuse to autoplay after the ID changes");
 });
@@ -77,6 +80,6 @@ test("An awaited source startup cannot later autoplay after Home invalidated its
   finishStorageCheck(0);
   assert.equal(await pending, false);
   assert.equal(f.context.playbackLoadRequestId, 14);
-  assert.deepEqual(f.actions, ["abort:another source selected", "pause", "stop-buffering", "reset-diagnostics"],
+  assert.deepEqual(f.actions, ["abort:another source selected", "pause", "stop-buffering", "stop-transfer-polling", "reset-diagnostics"],
     "direct play supersedes the pending Library controller before Home cancels this new generation");
 });

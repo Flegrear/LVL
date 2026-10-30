@@ -28,11 +28,14 @@ import {
 import { boundedPosterUrl, buildHomeFeed, catalogCardItem, categoryNoun, formatRuntime, heroSlideItem, largeAniListCover, libraryCategory, libraryRecommendations, logoUrl, metahubVariant, normalizeHomeCategory, posterSrcset, preferredPosterArt, sharperPoster, findSavedRandomTitle, randomPickIdentity, randomPickMatchesCategory, randomSeriesAlreadySeen, rankCatalogSearchResults, verifiedRandomCatalogMatch } from "./frontend/catalog/home-feed.js";
 import { buildMixedTest, cardMeaning, choiceQuestion, deckSummaries, gradeQuestion, listeningMeaningQuestion, quizPool, shuffle, studyDeckKey, typeAnswerDiff } from "./learning/browser/learn.js";
 import { absoluteEpisodeNumber, chapterCode, chapterFileIndex, chapterPlayOrder, chapterWatchStatus, groupChapterSources, heightFromQualityLabel, libraryFileScope, meetsSourceFloor, packChapterMap, qualityLabel, releaseVideoHeight } from "./shared/media/series-sources.js";
-import { isNonSpeechCue, offsetAt as syncOffsetAt, pairedCues, syncTrackToSpeech } from "./shared/subtitles/subtitle-sync.js";
+import { createSubtitleCueLookup, isNonSpeechCue, offsetAt as syncOffsetAt, pairedCues, syncTrackToSpeech } from "./shared/subtitles/subtitle-sync.js";
 import { EMBEDDED_WINDOW_SECONDS, completedWebVttText, embeddedExtractionError, embeddedSubtitleCovers, embeddedSubtitleCoverageEnd, embeddedSubtitleSeekStart, embeddedTrackMatchesSource, mergeSubtitleWindows, subtitleWindowStart } from "./shared/subtitles/subtitle-stream.js";
 import { defaultEmbeddedSubtitleTrack } from "./frontend/player/embedded-subtitle-default.js";
+import { torrentSeekPieceStatus } from "./frontend/player/torrent-piece-wait.js";
+import { waitForStartupMediaProbe } from "./frontend/player/media-startup.js";
+import { installPlaybackTrace } from "./frontend/player/performance-trace.js";
 import { createRecsUi, reasonGroups } from "./frontend/recommendations/recs-ui.js";
-import { ANILIST_STATUS_FILTERS, ANILIST_STATUS_LABELS, anilistProgressText, anilistRatingText, anilistStatusKey, anilistWatchedSummary, canLinkAniListTv, fillMissingAniListAverages, importedEntryId, planAniListLibrary, seriesAniList } from "./frontend/anilist/anilist-library.js";
+import { ANILIST_STATUS_FILTERS, ANILIST_STATUS_LABELS, anilistProgressText, anilistRatingText, anilistStatusKey, anilistWatchedSummary, canLinkAniListTv, fillMissingAniListAverages, importedEntryId, planAniListLibrary, seriesAniList, verifiedAniListLibraryIdentity } from "./frontend/anilist/anilist-library.js";
 import { ANILIST_MANUAL_ID_VERIFY, parseManualAniListId, planVerifiedManualAniListSeason } from "./frontend/anilist/anilist-manual-season-link.js";
 import { resolveVerifiedAniListLibraryLinks } from "./frontend/anilist/anilist-auto-association.js";
 import {
@@ -52,17 +55,36 @@ import { eligibleForPublicAnimeRating, fetchPublicAniListTitle, fetchPublicAniLi
   matchPublicAniListSeasons, verifiedPublicAniListLinks } from "./frontend/catalog/title-public-ratings.js";
 import { learningLocaleOptions, normalizeLearningLocale } from "./shared/settings/language-settings.js";
 import { selectBrowserPlaybackWithCapabilities } from "./frontend/player/browser-media.js";
+import { canUseRemuxMse, canUseEncodedH264Mse, createRemuxMseSession } from "./frontend/player/remux-mse.js";
 import { normalizeAudioMode, planCompatibleAudio } from "./shared/media/audio-policy.js";
 import { watchSidebarPicks } from "./frontend/catalog/watch-discovery.js";
 import { createCalendarView } from "./frontend/calendar/calendar-view.js";
-import { animeCatalogRootSearchNames, animeCatalogSearchNames, verifiedAnimeCatalogMatch } from "./frontend/catalog/anime-catalog-match.js";
+import { animeCatalogRootSearchNames, animeCatalogSearchNames, animeCatalogCombinedSearchNames, animeCatalogSubtitleSearchNames, verifiedAnimeCatalogMatch } from "./frontend/catalog/anime-catalog-match.js";
 import {
   changePlaybackRecoverySource, createPlaybackRecoveryState, failPlaybackRecoverySwitch,
   isPlaybackStallExpired, playbackRecoverySourceKey,
   recordPlaybackProgress, requestPlaybackRecovery, playbackRetryStrategy,
 } from "./frontend/player/playback-recovery.js";
 import { addRecoveryEvent, recoveryEpisodeCode } from "./frontend/player/playback-diagnostics.js";
-import { installUiI18n, t } from "./frontend/ui/ui-i18n.js";
+import { classifyPlaybackStreamStatus } from "./frontend/player/stream-status.js";
+import { installUiI18n, registerUiTranslations, t } from "./frontend/ui/ui-i18n.js";
+import { createClientFeatureHost } from "./frontend/features/feature-host.js";
+import { CLIENT_FEATURES } from "./frontend/features/registry.js";
+
+// Part B features (reader, franchises, reading sources) add views, nav buttons,
+// Settings tabs, Library filters, styles and strings through
+// frontend/features/registry.js. Installed here, before translation and the
+// nav/tab listeners below, so they behave like core elements.
+const clientFeatures = createClientFeatureHost(CLIENT_FEATURES);
+clientFeatures.install(document, {
+  registerTranslations: registerUiTranslations,
+  t: (...args) => t(...args),
+  switchView: (...args) => switchView(...args),
+  viewActive: (...args) => viewActive(...args),
+  fetchJson: (...args) => fetchJson(...args),
+  setToolStatus: (...args) => setToolStatus(...args),
+  escapeHtml: (...args) => escapeHtml(...args),
+});
 
 // Core releases park Learning without changing existing data or preferences.
 // Only turn this on in a Learning development checkout; there is no user-facing
@@ -262,9 +284,6 @@ const recsUi = createRecsUi({
     localStorage.removeItem(ANILIST_LIBRARY_KEY);
     return syncAniListLibrary({ status, skipAuthPull });
   },
-  refreshAniList: () => readAniListAccount(localStorage)
-    ? syncAniListAuthenticatedRatings(readAniListAccount(localStorage))
-    : postJson("/api/recs/anilist/sync", {}),
   getConnectedAniListUsername: () => readAniListAccount(localStorage)?.username || "",
   importConnectedAniList: async () => {
     const account = readAniListAccount(localStorage);
@@ -297,6 +316,7 @@ const recsUi = createRecsUi({
   },
 });
 const video = $("#video");
+const playbackMetrics = installPlaybackTrace(video);
 const frame = $("#video-frame");
 // Match the episode list to the actual video rectangle, not the full player
 // column (which extends farther down for subtitles and title details).
@@ -318,7 +338,22 @@ const persistentAppWriteTimers = new Map();
 const persistentAppWriteChains = new Map();
 const persistentAppWriteGenerations = new Map();
 const persistentAppSectionRevisions = new Map();
+// The last *confirmed* SQLite Library snapshot, not a possibly stale browser
+// cache. CAS recovery must know what was changed by this tab vs another tab.
+const persistentAppAcceptedSnapshots = new Map();
+// The confirmed SQLite snapshot that the *visible* Library was based on. A
+// later-generation edit can still be made on stale visible data while an older
+// HTTP CAS is in flight; updating acceptedSnapshots alone does not update it.
+let persistentAppLibraryViewBaseline = null;
+// Successful, still-unreflected changes authored by this tab. A newer user
+// edit can change the same item again while its previous CAS acknowledgment
+// arrives, without confusing that prior same-tab edit with a remote conflict.
+const persistentAppUnreflectedLibraryWrites = new Map();
+const persistentAppUnresolvedConflicts = new Set();
+const persistentAppConflictViewBaselines = new Map();
+const persistentAppPartialLibrarySaves = new Set();
 const PERSISTENT_CAS_SECTIONS = new Set(["cards", "known", "library", "preferences"]);
+const APP_DB_TAB_LIBRARY_PENDING_KEY = "blackline-db-library-pending-tab-v1";
 const HOME_CATALOG_REFRESH_MS = 10 * 60 * 1000;
 let homeCatalogLoadPromise = null;
 let anilistAutoTimer = 0;
@@ -332,27 +367,39 @@ let anilistAutoLastQueueSnapshot = null;
 let anilistAutoImportWarning = "";
 
 function persistentDirtySections() {
+  const withTabPending = (sections) => {
+    // A different same-origin tab may clear/replace the shared dirty marker.
+    // The current tab's sessionStorage shadow remains authoritative proof it
+    // has a pending Library save, even after that shared marker disappears.
+    try {
+      if (typeof sessionStorage !== "undefined"
+        && typeof APP_DB_TAB_LIBRARY_PENDING_KEY !== "undefined"
+        && sessionStorage.getItem(APP_DB_TAB_LIBRARY_PENDING_KEY)
+        && !sections.has("library")) sections.set("library", { mode: "replace", expectedUpdatedAt: null });
+    } catch {}
+    return sections;
+  };
   try {
     const parsed = JSON.parse(localStorage.getItem(APP_DB_DIRTY_SECTIONS_KEY) || "[]");
     if (Array.isArray(parsed)) {
-      return new Map(parsed.map((section) => {
+      return withTabPending(new Map(parsed.map((section) => {
         const name = String(section);
         return [name, { mode: name === "coachTranscripts" ? "merge" : "replace", expectedUpdatedAt: null }];
-      }));
+      })));
     }
     if (parsed && typeof parsed === "object") {
-      return new Map(Object.entries(parsed).map(([section, raw]) => {
+      return withTabPending(new Map(Object.entries(parsed).map(([section, raw]) => {
         const entry = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : { mode: raw };
         const expectedUpdatedAt = entry.expectedUpdatedAt == null ? null : Number(entry.expectedUpdatedAt);
         return [String(section), {
           mode: entry.mode === "merge" ? "merge" : "replace",
           expectedUpdatedAt: expectedUpdatedAt !== null && Number.isFinite(expectedUpdatedAt) && expectedUpdatedAt >= 0 ? expectedUpdatedAt : null,
         }];
-      }));
+      })));
     }
-    return new Map();
+    return withTabPending(new Map());
   } catch {
-    return new Map();
+    return withTabPending(new Map());
   }
 }
 
@@ -399,6 +446,145 @@ function reconcileEarlyLibraryEntries(saved, beforeHydration, afterUserEdits) {
       result.set(id, item);
   }
   return [...result.values()].slice(0, 5_000);
+}
+
+function copyPersistentLibrary(items) {
+  return JSON.parse(JSON.stringify(Array.isArray(items) ? items.slice(0, 5_000) : []));
+}
+
+function applyUnreflectedPersistentLibraryWrites(visibleBase) {
+  if (!Array.isArray(visibleBase)) return null;
+  const items = new Map(visibleBase.filter(item => item?.id != null)
+    .map(item => [String(item.id), item]));
+  for (const [id, change] of persistentAppUnreflectedLibraryWrites) {
+    if (change.deleted) items.delete(id);
+    else items.set(id, change.value);
+  }
+  return copyPersistentLibrary([...items.values()]);
+}
+
+function recordUnreflectedPersistentLibraryWrite(visibleBase, submitted, saved) {
+  // Only values the tab actually intended to change gain this exemption.
+  // Entries inserted/edited by a different tab during a 409 rebase must never
+  // be treated as this tab's own edits.
+  if (![visibleBase, submitted, saved].every(Array.isArray)) return;
+  const index = items => new Map(items.filter(item => item?.id != null)
+    .map(item => [String(item.id), item]));
+  const before = index(visibleBase);
+  const mine = index(submitted);
+  const committed = index(saved);
+  for (const id of new Set([...before.keys(), ...mine.keys()])) {
+    if (JSON.stringify(before.get(id) ?? null) === JSON.stringify(mine.get(id) ?? null)) continue;
+    if (committed.has(id))
+      persistentAppUnreflectedLibraryWrites.set(id, { value: copyPersistentLibrary([committed.get(id)])[0] });
+    else persistentAppUnreflectedLibraryWrites.set(id, { deleted: true });
+  }
+}
+
+function preservePendingLibraryForTab(items) {
+  // localStorage is shared between LVL tabs. A tab-local shadow means another
+  // tab's browser-cache write cannot erase this tab's pending Library intent.
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const previous = sessionStorage.getItem(APP_DB_TAB_LIBRARY_PENDING_KEY);
+      let prior = null;
+      try { if (previous) prior = JSON.parse(previous); } catch {}
+      // A previous ambiguous/partial shadow stays unsafe for the lifetime of
+      // this pending intent, even if another disjoint save advances SQLite's
+      // revision. Old shadows without an explicit certificate fail closed.
+      const previouslyUnsafe = Boolean(previous)
+        && (Array.isArray(prior) || prior?.safeToReplay !== true);
+      const revision = persistentAppSectionRevisions.get("library");
+      const certifiedBaseRevision = Number.isSafeInteger(revision)
+        && persistentAppAcceptedSnapshots.has("library") ? revision : null;
+      // The last accepted write may have completed while a newer edit was
+      // already queued. SQLite is then ahead of the Library still visible in
+      // this tab: a matching revision can NOT certify that stale full snapshot.
+      const visibleBaseVerified = Array.isArray(persistentAppLibraryViewBaseline)
+        && JSON.stringify(persistentAppLibraryViewBaseline)
+          === JSON.stringify(persistentAppAcceptedSnapshots.get("library"));
+      const safeToReplay = !previouslyUnsafe
+        && !persistentAppUnresolvedConflicts.has("library")
+        && !persistentAppPartialLibrarySaves.has("library")
+        && visibleBaseVerified
+        && certifiedBaseRevision !== null;
+      sessionStorage.setItem(APP_DB_TAB_LIBRARY_PENDING_KEY, JSON.stringify({
+        value: copyPersistentLibrary(items),
+        expectedUpdatedAt: revision ?? null,
+        // An exact revision match alone is NOT a replay certificate: a partial
+        // safe edit can move DB to that revision while a conflicting item stays
+        // stale in this tab's visible Library. Bind replay eligibility to the
+        // pristine tab-owned SQLite baseline, separately from its pending data.
+        certifiedBaseRevision: safeToReplay ? certifiedBaseRevision : null,
+        safeToReplay,
+      }));
+    }
+  } catch { /* SQLite and the normal local copy remain independent fallbacks. */ }
+}
+
+function invalidatePersistentLibraryReplay() {
+  persistentAppPartialLibrarySaves.add("library");
+  try {
+    if (typeof sessionStorage === "undefined") return;
+    const raw = sessionStorage.getItem(APP_DB_TAB_LIBRARY_PENDING_KEY);
+    if (!raw) return;
+    let record;
+    try { record = JSON.parse(raw); } catch { record = null; }
+    const value = Array.isArray(record) ? record : record?.value;
+    sessionStorage.setItem(APP_DB_TAB_LIBRARY_PENDING_KEY, JSON.stringify({
+      value: copyPersistentLibrary(value ?? state.library),
+      expectedUpdatedAt: record?.expectedUpdatedAt ?? null,
+      certifiedBaseRevision: null,
+      safeToReplay: false,
+    }));
+  } catch { /* Preserve the in-memory dirty Library even if storage is full. */ }
+}
+
+function clearPendingLibraryForTab() {
+  try { if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(APP_DB_TAB_LIBRARY_PENDING_KEY); } catch {}
+}
+
+function alertPersistentLibraryConflict() {
+  if (typeof document === "undefined") return;
+  const parent = document.querySelector("#view-library .lib-main");
+  if (!parent) return;
+  let alert = document.getElementById("library-persistence-conflict");
+  if (!alert) {
+    alert = document.createElement("p");
+    alert.id = "library-persistence-conflict";
+    alert.setAttribute("role", "alert");
+    alert.style.cssText = "padding:12px 16px;border:1px solid #777;color:#fff;background:#161616;margin:0 0 12px";
+    parent.prepend(alert);
+  }
+  alert.textContent = "Library changed in another tab. Some edits remain saved only here. Back them up via Library → ⋯ → Export the library before reloading. New nonconflicting changes can still be saved.";
+}
+
+function rebasePersistentLibrary(base, local, remote) {
+  // Whole-record comparisons deliberately reject simultaneous edits to the
+  // same entry, including a remote deletion. That may defer compatible field
+  // edits, but can never resurrect a removed title or replace another tab's
+  // metadata. Unrelated additions/updates/deletions are safe to replay.
+  if (![base, local, remote].every(Array.isArray)) return null;
+  const index = items => new Map(items.filter(item => item && item.id != null)
+    .map(item => [String(item.id), item]));
+  const before = index(base);
+  const current = index(local);
+  const disk = index(remote);
+  const equal = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const changes = new Map();
+  for (const id of new Set([...before.keys(), ...current.keys()])) {
+    const was = before.get(id), mine = current.get(id), theirs = disk.get(id);
+    if (equal(was, mine)) continue;
+    if (!equal(was, theirs) && !equal(mine, theirs)) return null;
+    changes.set(id, mine);
+  }
+  const updated = new Map(disk);
+  for (const [id, item] of changes) {
+    if (item === undefined) updated.delete(id);
+    else updated.set(id, item);
+  }
+  if (updated.size > 5_000) return null;
+  return copyPersistentLibrary([...updated.values()]);
 }
 const artworkFetches = new Map();
 let analysisMemo = { key: "", words: [], phrases: [] };
@@ -530,12 +716,72 @@ function persistentAppSnapshot() {
   };
 }
 
+function persistBlockedLibraryChange(section, submittedValue, generation) {
+  // Legacy/contested dirty data cannot be safely auto-merged. However, a
+  // *subsequent* user edit has a known before/after in this running tab. Replay
+  // only that new delta, and keep the older unresolved data visibly dirty.
+  const previousWrite = persistentAppWriteChains.get(section) || Promise.resolve();
+  const currentWrite = previousWrite.catch(() => {}).then(async () => {
+    if (persistentAppWriteGenerations.get(section) !== generation) return;
+    const before = persistentAppConflictViewBaselines.get(section);
+    if (!before || JSON.stringify(before) === JSON.stringify(submittedValue)) return;
+    const disk = await fetchJson("/api/app-state/library");
+    if (persistentAppWriteGenerations.get(section) !== generation) return;
+    const rebased = rebasePersistentLibrary(before, submittedValue, disk?.value);
+    if (!rebased || !Number.isSafeInteger(disk?.updatedAt)) {
+      console.warn("The new Library edit also conflicts with another tab; all unsaved changes remain in the browser.");
+      return;
+    }
+    try {
+      const result = await postJson("/api/app-state/library", {
+        value: rebased, merge: false, expectedUpdatedAt: disk.updatedAt,
+      });
+      // Even a successful disjoint delta is NOT a successful save of the
+      // contested whole Library; never certify its stale visible snapshot.
+      invalidatePersistentLibraryReplay();
+      if (Number.isFinite(Number(result?.updatedAt)))
+        persistentAppSectionRevisions.set(section, Number(result.updatedAt));
+      persistentAppAcceptedSnapshots.set(section, copyPersistentLibrary(rebased));
+      if (persistentAppWriteGenerations.get(section) === generation)
+        persistentAppConflictViewBaselines.set(section, copyPersistentLibrary(submittedValue));
+      // Do NOT clear the original conflict flag/dirty marker or replace the
+      // visible Library: its earlier unresolved edits still need attention.
+    } catch (error) {
+      if (error?.status !== 409 || error?.data?.error !== "app_state_conflict") throw error;
+      console.warn("Library changed during the safe edit retry; leaving pending local changes untouched.");
+    }
+  }).catch(error => console.warn("Library conflict recovery failed:", error))
+    .finally(() => {
+      if (persistentAppWriteChains.get(section) === currentWrite) persistentAppWriteChains.delete(section);
+    });
+  persistentAppWriteChains.set(section, currentWrite);
+}
+
 function persistAppSection(section, value, { immediate = false, merge = false } = {}) {
   const mode = merge ? "merge" : "replace";
   const generation = (persistentAppWriteGenerations.get(section) || 0) + 1;
   persistentAppWriteGenerations.set(section, generation);
+  if (section === "library" && !merge) preservePendingLibraryForTab(value);
   setPersistentSectionDirty(section, true, mode);
   if (!persistentAppStateReady) return;
+  // A contested same-title edit cannot be safely auto-resolved. Subsequent
+  // local edits remain in the browser's unsaved copy, not forced into SQLite.
+  const submittedValue = section === "library" ? copyPersistentLibrary(value) : value;
+  const libraryViewBaseAtGeneration = section === "library" && !merge
+    ? (typeof persistentAppLibraryViewBaseline !== "undefined" && Array.isArray(persistentAppLibraryViewBaseline)
+      ? copyPersistentLibrary(persistentAppLibraryViewBaseline)
+      : (typeof persistentAppAcceptedSnapshots !== "undefined"
+        && Array.isArray(persistentAppAcceptedSnapshots.get(section))
+        ? copyPersistentLibrary(persistentAppAcceptedSnapshots.get(section)) : null))
+    : null;
+  if (typeof persistentAppUnresolvedConflicts !== "undefined"
+    && persistentAppUnresolvedConflicts.has(section)) {
+    if (section === "library" && !merge) {
+      invalidatePersistentLibraryReplay();
+      persistBlockedLibraryChange(section, submittedValue, generation);
+    }
+    return;
+  }
   const previous = persistentAppWriteTimers.get(section);
   if (previous) clearTimeout(previous);
   const commit = () => {
@@ -543,19 +789,115 @@ function persistAppSection(section, value, { immediate = false, merge = false } 
     const previousWrite = persistentAppWriteChains.get(section) || Promise.resolve();
     const currentWrite = previousWrite
       .catch(() => {})
-      .then(() => {
+      .then(async () => {
+        // A newer in-tab edit supersedes this queued payload; do not replay an
+        // older generation over its newer content after another tab's update.
+        if (persistentAppWriteGenerations.get(section) !== generation
+          || (typeof persistentAppUnresolvedConflicts !== "undefined"
+            && persistentAppUnresolvedConflicts.has(section))) return null;
         const pending = persistentDirtySections().get(section);
+        // localStorage dirty metadata is shared across tabs: its revision can
+        // belong to ANOTHER writer. Only a revision verified by this tab's own
+        // read or successful CAS is safe as a replacement precondition.
         const expectedUpdatedAt = PERSISTENT_CAS_SECTIONS.has(section) && !merge
-          ? pending?.expectedUpdatedAt ?? persistentAppSectionRevisions.get(section) ?? null
+          ? persistentAppSectionRevisions.get(section) ?? null
           : undefined;
         if (PERSISTENT_CAS_SECTIONS.has(section) && !merge && expectedUpdatedAt == null)
           throw new Error(`Persistent ${section} is waiting for its SQLite base revision; replacement not sent.`);
-        return postJson(`/api/app-state/${encodeURIComponent(section)}`, { value, merge, expectedUpdatedAt });
+        const endpoint = `/api/app-state/${encodeURIComponent(section)}`;
+        const write = (payloadValue, expected) => postJson(endpoint, {
+          value: payloadValue, merge, expectedUpdatedAt: expected,
+        });
+        let candidate = submittedValue;
+        let confirmedBaseForRetry = null;
+        if (section === "library" && !merge
+          && typeof persistentAppAcceptedSnapshots !== "undefined") {
+          const confirmed = persistentAppAcceptedSnapshots.get(section);
+          // A preceding generation may have successfully rebased onto another
+          // tab's additions while our visible state still lacks those entries.
+          // Use the view's captured baseline, not the newly advanced SQLite
+          // revision, to prove what THIS generation actually changed.
+          const effectiveBase = applyUnreflectedPersistentLibraryWrites(libraryViewBaseAtGeneration);
+          if (!Array.isArray(effectiveBase) || !Array.isArray(confirmed)
+            || !(candidate = rebasePersistentLibrary(effectiveBase, submittedValue, confirmed))) {
+            persistentAppUnresolvedConflicts.add(section);
+            invalidatePersistentLibraryReplay();
+            persistentAppConflictViewBaselines.set(section, copyPersistentLibrary(submittedValue));
+            alertPersistentLibraryConflict();
+            console.warn("Library changed while an earlier save completed. The pending edit was kept without overwriting another tab.");
+            return null;
+          }
+          confirmedBaseForRetry = copyPersistentLibrary(confirmed);
+        }
+        try {
+          return { result: await write(candidate, expectedUpdatedAt), savedValue: candidate };
+        } catch (error) {
+          if (section !== "library" || merge || error?.status !== 409
+            || error?.data?.error !== "app_state_conflict") throw error;
+          // Only an exact three-way comparison can prove the replacement safe.
+          // Never treat the revision returned in 409 as permission to force-write.
+          const disk = await fetchJson("/api/app-state/library");
+          if (persistentAppWriteGenerations.get(section) !== generation) return null;
+          const baseline = confirmedBaseForRetry;
+          const rebased = rebasePersistentLibrary(baseline, candidate, disk?.value);
+          if (!rebased || !Number.isSafeInteger(disk?.updatedAt)) {
+            if (typeof persistentAppUnresolvedConflicts !== "undefined")
+              persistentAppUnresolvedConflicts.add(section);
+            invalidatePersistentLibraryReplay();
+            if (typeof persistentAppConflictViewBaselines !== "undefined")
+              persistentAppConflictViewBaselines.set(section, copyPersistentLibrary(submittedValue));
+            alertPersistentLibraryConflict();
+            console.warn("Library changed in another tab. Your unsaved changes were preserved; conflicting titles were not overwritten.");
+            return null;
+          }
+          try {
+            // Exactly one retry, atomically CAS against the snapshot compared.
+            return { result: await write(rebased, disk.updatedAt), savedValue: rebased };
+          } catch (retryError) {
+            if (retryError?.status === 409) {
+              if (typeof persistentAppUnresolvedConflicts !== "undefined")
+                persistentAppUnresolvedConflicts.add(section);
+              invalidatePersistentLibraryReplay();
+              if (typeof persistentAppConflictViewBaselines !== "undefined")
+                persistentAppConflictViewBaselines.set(section, copyPersistentLibrary(submittedValue));
+              alertPersistentLibraryConflict();
+              console.warn("Library changed again during recovery. Your unsaved changes were preserved.");
+              return null;
+            }
+            throw retryError;
+          }
+        }
       })
-      .then((result) => {
+      .then((completed) => {
+        if (!completed) return;
+        const { result, savedValue } = completed;
         if (Number.isFinite(Number(result?.updatedAt))) persistentAppSectionRevisions.set(section, Number(result.updatedAt));
-        if (persistentAppWriteGenerations.get(section) === generation) setPersistentSectionDirty(section, false);
+        if (section === "library" && typeof persistentAppAcceptedSnapshots !== "undefined")
+          persistentAppAcceptedSnapshots.set(section, copyPersistentLibrary(savedValue));
+        if (persistentAppWriteGenerations.get(section) === generation) {
+          if (section === "library") {
+            state.library = copyPersistentLibrary(savedValue);
+            if (typeof persistentAppLibraryViewBaseline !== "undefined")
+              persistentAppLibraryViewBaseline = copyPersistentLibrary(savedValue);
+            if (typeof persistentAppUnreflectedLibraryWrites !== "undefined")
+              persistentAppUnreflectedLibraryWrites.clear();
+            if (typeof storeLocalCopy === "function") storeLocalCopy("blackline-library", state.library);
+            clearPendingLibraryForTab();
+            if (typeof renderLibrary === "function" && typeof viewActive === "function" && viewActive("library"))
+              renderLibrary();
+          }
+          setPersistentSectionDirty(section, false);
+        }
         else {
+          if (section === "library") {
+            // The old ACK advances our verified DB revision but does not
+            // refresh the newer generation's stale visible Library. No
+            // subsequent crash replay may promote that view to a full-CAS
+            // snapshot, even if another save captures the new revision.
+            invalidatePersistentLibraryReplay();
+            if (typeof persistentAppUnreflectedLibraryWrites !== "undefined")
+              recordUnreflectedPersistentLibraryWrite(libraryViewBaseAtGeneration, submittedValue, savedValue);
+          }
           const pending = persistentDirtySections().get(section);
           if (pending) setPersistentSectionDirty(section, true, pending.mode, result?.updatedAt);
         }
@@ -709,6 +1051,29 @@ async function hydratePersistentAppState() {
       setPersistentSectionDirty(section, false);
     }
   }
+  // A shared-origin tab may have replaced localStorage's Library cache while
+  // this tab still owned unsaved edits. Prefer this tab's pending shadow.
+  let tabPendingRevision = null;
+  let tabPendingSafeToReplay = false;
+  let tabPendingValue = null;
+  try {
+    if (typeof sessionStorage !== "undefined") {
+      const pending = sessionStorage.getItem(APP_DB_TAB_LIBRARY_PENDING_KEY);
+      if (pending) {
+        const parsed = JSON.parse(pending);
+        const candidate = Array.isArray(parsed) ? parsed : parsed?.value;
+        if (Array.isArray(candidate)) {
+          tabPendingValue = copyPersistentLibrary(candidate);
+          tabPendingRevision = Number.isSafeInteger(parsed?.expectedUpdatedAt)
+            ? parsed.expectedUpdatedAt : null;
+          tabPendingSafeToReplay = parsed?.safeToReplay === true
+            && tabPendingRevision !== null
+            && parsed?.certifiedBaseRevision === tabPendingRevision;
+          state.library = copyPersistentLibrary(candidate);
+        }
+      }
+    }
+  } catch {}
   const localSnapshot = persistentAppSnapshot();
   // persistentAppSnapshot exposes live array references. Capture the actual
   // pre-hydration Library contents now, before a user can unshift a new title
@@ -735,6 +1100,12 @@ async function hydratePersistentAppState() {
       attemptedRecovery.add(`${section}:${mode}:${entry.expectedUpdatedAt ?? "none"}:${generation}`);
       const recoverySnapshot = persistentAppSnapshot();
       if (!Object.prototype.hasOwnProperty.call(recoverySnapshot, section)) continue;
+      if (section === "library" && mode !== "merge") {
+        // Across app restarts we have no trustworthy *pre-edit* Library base.
+        // A stale whole-section CAS must not resurrect titles another tab
+        // deleted. Keep the local snapshot dirty until a safe base is known.
+        continue;
+      }
       if (PERSISTENT_CAS_SECTIONS.has(section) && mode !== "merge" && entry.expectedUpdatedAt == null) {
         // A Library item added during this very hydration is reconciled with
         // the freshly loaded disk list below, once its CAS revision is known.
@@ -777,18 +1148,73 @@ async function hydratePersistentAppState() {
     }
     payload = await fetchJson("/api/app-state");
     applyPersistentSectionRevisions(payload?.revisions);
+    if (tabPendingValue && tabPendingSafeToReplay && tabPendingRevision !== null
+      && (persistentAppWriteGenerations.get("library") || 0) === 0
+      && Number(payload?.revisions?.library) === tabPendingRevision) {
+      // An interrupted PUT can be safely retried ONLY if SQLite still has the
+      // exact revision previously verified by this tab. A concurrent write
+      // causes 409 and is NEVER replaced with a later revision.
+      try {
+        const recovered = await postJson("/api/app-state/library", {
+          value: tabPendingValue, merge: false, expectedUpdatedAt: tabPendingRevision,
+        });
+        if (Number.isFinite(Number(recovered?.updatedAt))) {
+          payload.state.library = copyPersistentLibrary(tabPendingValue);
+          payload.revisions.library = Number(recovered.updatedAt);
+          persistentAppSectionRevisions.set("library", Number(recovered.updatedAt));
+          // A user may edit during the network round trip. Do not discard the
+          // newer generation or its tab-local shadow when the old PUT returns.
+          if ((persistentAppWriteGenerations.get("library") || 0) === 0) {
+            clearPendingLibraryForTab();
+            setPersistentSectionDirty("library", false);
+          }
+        }
+      } catch (error) {
+        // The submitted data stays in sessionStorage and the visible Library.
+        console.warn("An unsaved Library change could not be restored automatically:", error);
+      }
+    }
+    if (Array.isArray(payload?.state?.library) && typeof persistentAppAcceptedSnapshots !== "undefined")
+      persistentAppAcceptedSnapshots.set("library", copyPersistentLibrary(payload.state.library));
+    if (Array.isArray(payload?.state?.library) && typeof persistentAppLibraryViewBaseline !== "undefined")
+      persistentAppLibraryViewBaseline = copyPersistentLibrary(payload.state.library);
+    if (typeof persistentAppUnreflectedLibraryWrites !== "undefined")
+      persistentAppUnreflectedLibraryWrites.clear();
     const remainingDirty = persistentDirtySections();
     const earlySaveSections = [];
     if (remainingDirty.size && payload?.state && typeof payload.state === "object") {
       const localOverlay = persistentAppSnapshot();
       for (const [section, dirty] of remainingDirty) {
         if (!Object.prototype.hasOwnProperty.call(localOverlay, section)) continue;
-        if (section === "library" && dirty.expectedUpdatedAt == null
+        if (section === "library"
           && (persistentAppWriteGenerations.get(section) || 0) > 0
           && persistentAppSectionRevisions.has(section)) {
-          payload.state.library = reconcileEarlyLibraryEntries(payload.state.library, originalLibraryBaseline, localOverlay.library);
-          setPersistentSectionDirty(section, true, "replace", persistentAppSectionRevisions.get(section));
-          earlySaveSections.push(section);
+          const rebased = rebasePersistentLibrary(originalLibraryBaseline, localOverlay.library, payload.state.library);
+          if (rebased) {
+            payload.state.library = rebased;
+            setPersistentSectionDirty(section, true, "replace", persistentAppSectionRevisions.get(section));
+            earlySaveSections.push(section);
+          } else {
+            // Ambiguous edits during bootstrap must remain visible/unsaved;
+            // never silently submit them against the new disk revision.
+            if (typeof persistentAppUnresolvedConflicts !== "undefined")
+              persistentAppUnresolvedConflicts.add("library");
+            invalidatePersistentLibraryReplay();
+            if (typeof persistentAppConflictViewBaselines !== "undefined")
+              persistentAppConflictViewBaselines.set("library", copyPersistentLibrary(localOverlay.library));
+            alertPersistentLibraryConflict();
+            payload.state.library = localOverlay.library;
+          }
+        } else if (section === "library") {
+          // Legacy dirty data may include an item already removed by another
+          // tab. Preserve local intent without retrying an unprovable replace.
+          if (typeof persistentAppUnresolvedConflicts !== "undefined")
+            persistentAppUnresolvedConflicts.add("library");
+          invalidatePersistentLibraryReplay();
+          if (typeof persistentAppConflictViewBaselines !== "undefined")
+            persistentAppConflictViewBaselines.set("library", copyPersistentLibrary(localOverlay.library));
+          alertPersistentLibraryConflict();
+          payload.state.library = localOverlay.library;
         } else payload.state[section] = localOverlay[section];
       }
     }
@@ -2741,7 +3167,7 @@ function renderBrowserCoachStatus() {
 }
 
 let settingsStorageLoading = false;
-const SETTINGS_TABS = ["general", "coach", "library", "storage", "updates", "notifications", "recs"];
+const SETTINGS_TABS = ["general", "coach", "library", "storage", "updates", "notifications", "recs", ...clientFeatures.settingsTabIds];
 const settingsView = { tab: SETTINGS_TABS.includes(localStorage.getItem("blackline-settings-tab")) ? localStorage.getItem("blackline-settings-tab") : "general" };
 
 function renderSettingsTabs() {
@@ -2757,6 +3183,7 @@ function renderSettingsTabs() {
   if (settingsView.tab === "recs" && $("#view-settings")?.classList.contains("is-active")) recsUi.showSettings();
   if (settingsView.tab === "updates" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
   if (settingsView.tab === "notifications" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
+  clientFeatures.showSettingsTab(settingsView.tab, Boolean($("#view-settings")?.classList.contains("is-active")));
 }
 
 // The Windows launcher is the source of truth for installation and update
@@ -3068,10 +3495,13 @@ function updateStorageLimitSlider(slider) {
 }
 
 function paintStorageReport(report) {
+  remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled !== false;
   const toGB = (bytes) => String(Math.round((Number(bytes) / 1024 ** 3) * 100) / 100);
   const playerInput = $("#storage-player-gb");
   const playerSlider = $("#storage-player-slider");
   const clipInput = $("#storage-clip-gb");
+  const remuxCacheSwitch = $("#storage-remux-cache-enabled");
+  if (remuxCacheSwitch) remuxCacheSwitch.checked = report.limits.remuxCacheEnabled !== false;
   if (playerInput && document.activeElement !== playerInput) playerInput.value = toGB(report.limits.playerBytes);
   if (clipInput && document.activeElement !== clipInput) clipInput.value = toGB(report.limits.clipBytes);
   if (playerInput) { playerInput.min = toGB(report.ranges.playerBytes.min); playerInput.max = toGB(report.ranges.playerBytes.max); }
@@ -3142,6 +3572,7 @@ async function renderSettingsStorage({ report = null } = {}) {
     }
   }
   paintStorageReport(report);
+  clientFeatures.run("storage:render", { report, panel: $("#settings-panel-storage") });
 }
 
 async function saveStorageLimits(changes) {
@@ -3156,24 +3587,66 @@ async function saveStorageLimits(changes) {
       const requested = formatStorage(Number(error.data.requestedBytes) || 0);
       if (!window.confirm(`Your ${affected} saved learning clips use ${used}, more than the new ${requested} limit. Some clips may be deleted. Reduce the limit anyway?`)) {
         setToolStatus("#storage-status", "Storage limit unchanged; clips preserved.");
-        return;
+        return false;
       }
       report = await postJson("/api/storage/limits", { ...changes, confirmClipEviction: true });
     }
     playerStorageLimitCache = { value: report.limits.playerBytes, at: Date.now() };
     paintStorageReport(report);
     setToolStatus("#storage-status", "Saved");
+    return true;
   } catch (error) {
     setToolStatus("#storage-status", error.message || "Couldn't save the limit", true);
+    return false;
   }
 }
 
 // The player storage limit, for checking a video's size before playing it (kept for a minute).
 let playerStorageLimitCache = { value: 0, at: 0 };
+// Only use the optional single-fetch MSE consumer after a successful read of
+// the same Storage setting that controls the server's remux cache.
+let remuxMseCacheAllowed = false;
+let indexedSeekReady = null;
+let indexedSeekStatusAt = 0;
+let indexedSeekStatusPending = false;
+function indexedCacheStatusUrl(context = state.transcodeContext) {
+  if (!context?.sessionId || !Number.isInteger(context.fileIndex)) return null;
+  const audioIndex = Number.isInteger(context.audioIndex) ? context.audioIndex : (state.selectedAudioTrack || 0);
+  const audioMode = normalizeAudioMode(audioOutputMode);
+  return `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/indexed/status?audio=${audioIndex}&audioMode=${encodeURIComponent(audioMode)}`;
+}
+function readyIndexedVideo() {
+  const cache = indexedSeekReady, context = state.transcodeContext;
+  return Boolean(remuxMseCacheAllowed && cache?.url
+    && cache.context === context && cache.source === state.currentSource
+    && cache.audioIndex === context?.audioIndex && cache.audioMode === normalizeAudioMode(audioOutputMode));
+}
+function checkIndexedSeekCache() {
+  if (!remuxMseCacheAllowed || video.dataset.mode !== "transcode"
+    || video.dataset.indexed === "1" || !state.currentSource
+    || !state.transcodeContext || indexedSeekStatusPending
+    || Date.now() - indexedSeekStatusAt < 10000) return;
+  const context = state.transcodeContext, source = state.currentSource;
+  const audioIndex = context.audioIndex, audioMode = normalizeAudioMode(audioOutputMode);
+  const url = indexedCacheStatusUrl(context);
+  if (!url) return;
+  indexedSeekStatusAt = Date.now();
+  indexedSeekStatusPending = true;
+  void fetchJson(url, { signal: AbortSignal.timeout(4500) }).then(report => {
+    if (state.transcodeContext !== context || state.currentSource !== source
+      || !remuxMseCacheAllowed || context.audioIndex !== audioIndex
+      || normalizeAudioMode(audioOutputMode) !== audioMode) return;
+    const prefix = `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/indexed?`;
+    if (report?.status === "ready" && String(report.url || "").startsWith(prefix))
+      indexedSeekReady = { context, source, audioIndex, audioMode, url: report.url };
+    else indexedSeekReady = null;
+  }).catch(() => {}).finally(() => { indexedSeekStatusPending = false; });
+}
 async function playerStorageLimit() {
   if (Date.now() - playerStorageLimitCache.at < 60_000 && playerStorageLimitCache.value) return playerStorageLimitCache.value;
   try {
     const report = await fetchJson("/api/storage");
+    remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled !== false;
     playerStorageLimitCache = { value: Number(report.limits?.playerBytes) || 0, at: Date.now() };
   } catch {}
   return playerStorageLimitCache.value;
@@ -3198,6 +3671,36 @@ function wireStorageSettings() {
   });
   limitChange($("#storage-player-gb"), "playerGB");
   limitChange($("#storage-clip-gb"), "clipGB");
+  $("#storage-remux-cache-enabled")?.addEventListener("change", async (event) => {
+    const toggle = event.currentTarget;
+    const requested = toggle.checked;
+    toggle.disabled = true;
+    try {
+      if (!requested && video.dataset.indexed === "1") {
+        // Switch the active reader away before the server purges optional
+        // indexed cache bytes. Do not leave a playing video pointing to a
+        // file that may disappear underneath its next HTTP Range request.
+        const position = absolutePlaybackSeconds(), playing = playerIsPlaying();
+        // Purging the cache can delete the active MP4 before its pending
+        // byte-range requests finish. Wait until the native replacement has
+        // been accepted and installed before committing the destructive
+        // settings change. On failure keep the cache enabled and playing.
+        const switched = await restartTranscodeAt(position, { wasPlaying: playing, forceNative: true });
+        if (!switched) {
+          toggle.checked = true;
+          setToolStatus("#storage-status", "Could not switch playback source; cache remains enabled.");
+          return;
+        }
+      }
+      const saved = await saveStorageLimits({ remuxCacheEnabled: requested });
+      if (!saved) {
+        toggle.checked = !requested;
+        await renderSettingsStorage();
+      }
+    } finally {
+      toggle.disabled = false;
+    }
+  });
   const playerSlider = $("#storage-player-slider");
   playerSlider?.addEventListener("input", () => {
     $("#storage-player-gb").value = playerSlider.value;
@@ -3486,8 +3989,13 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
   let parsedAt = 0;
   let progressTimer = null;
   const label = embeddedSubtitleLabel(track, Number(track.order) || 0);
-  const sourceStillActive = () => embeddedSubtitleImportKey(state.currentSource || {}, Number(track.streamIndex)) === key;
-  const requestIsCurrent = () => sourceStillActive() && embeddedSubtitleImports.get(key) === controller;
+  // The same torrent/file/track can be reopened in a new playback generation
+  // (A → B → A). Its string key matches, but an old already-buffered response
+  // must never append cues to the new selection after abort.
+  const sourceStillActive = () => state.currentSource === source
+    && embeddedSubtitleImportKey(state.currentSource || {}, Number(track.streamIndex)) === key;
+  const requestIsCurrent = () => !controller.signal.aborted
+    && sourceStillActive() && embeddedSubtitleImports.get(key) === controller;
   const markWindowComplete = () => {
     if (focused) {
       // Never mark an aligned bucket complete when the beginning of that
@@ -3670,6 +4178,26 @@ function enableDefaultEmbeddedSubtitles(media, playbackSeconds = 0, { urgent = f
   });
 }
 
+// Competing far-ahead readers can delay the foreground torrent range on slow
+// swarms. Yield ONLY an optional next subtitle window while current captions
+// have enough verified coverage. Unknown video buffers fail open, and urgent
+// seeks/current-window imports are never held back by this heuristic.
+function shouldDeferSpeculativeEmbeddedLookahead({ seeked = false, coverageEnd, seconds } = {}) {
+  if (seeked || typeof video === "undefined" || video.paused || video.seeking
+    || state.pendingSeek || !Number.isFinite(coverageEnd) || coverageEnd - seconds <= 8) return false;
+  if (Number.isFinite(video.readyState) && video.readyState < 3) return true;
+  const ranges = video.buffered;
+  if (!ranges?.length || !Number.isFinite(Number(video.currentTime))) return false;
+  try {
+    const now = Number(video.currentTime);
+    for (let index = 0; index < ranges.length; index++) {
+      if (ranges.start(index) <= now + 0.05 && ranges.end(index) >= now - 0.05)
+        return ranges.end(index) - now < 3;
+    }
+  } catch {}
+  return false;
+}
+
 function loadMoreEmbeddedSubtitles({ seeked = false } = {}) {
   if (!frame.classList.contains("has-video") || !state.currentMediaProbe?.subtitleTracks?.length) return;
   const seconds = absolutePlaybackSeconds();
@@ -3681,7 +4209,9 @@ function loadMoreEmbeddedSubtitles({ seeked = false } = {}) {
       const coveredNow = embeddedSubtitleCovers(track, seconds);
       const coveredAhead = embeddedSubtitleCovers(track, seconds + 25);
       if (coveredNow && coveredAhead) return;
-      const start = coveredNow ? (embeddedSubtitleCoverageEnd(track, seconds) ?? seconds + 25) : seconds;
+      const coverageEnd = coveredNow ? embeddedSubtitleCoverageEnd(track, seconds) : null;
+      if (coveredNow && shouldDeferSpeculativeEmbeddedLookahead({ seeked, coverageEnd, seconds })) return;
+      const start = coveredNow ? (coverageEnd ?? seconds + 25) : seconds;
       // Existing aligned intervals keep using 180s windows. After a focused
       // seek, extend the covered range from its end instead of re-extracting
       // almost the same three minutes from an old bucket boundary.
@@ -3692,6 +4222,16 @@ function loadMoreEmbeddedSubtitles({ seeked = false } = {}) {
         void importEmbeddedSubtitleTrack(meta, null, { startSeconds: start, automatic: true, urgent: seeked, focused });
       }
     });
+}
+function embeddedSubtitleProbePosition(startAtSeconds = 0) {
+  // FFprobe can finish seconds after Watch starts. If the user has already
+  // sought while it was pending, extracting captions at the ORIGINAL startup
+  // position can leave a paused target silent until another timeupdate.
+  const pending = state.pendingSeek;
+  const target = pending && Number(pending.target);
+  if (pending && Number.isFinite(target) && target >= 0) return target;
+  const shown = Number(state.currentMs) / 1000;
+  return Number.isFinite(shown) && shown >= 0 ? shown : Math.max(0, Number(startAtSeconds) || 0);
 }
 
 function renderEmbeddedSubtitleControls() {
@@ -3937,6 +4477,9 @@ function setPlayerLoading(percent, title = "Loading", detail = "", { error = fal
   overlay.classList.toggle("is-recovering", recovering);
   const actions = $("#video-loading-actions");
   if (actions) actions.hidden = !failed || !currentRecoveryKey();
+  const retryAction = $("#player-retry-source");
+  if (retryAction) retryAction.textContent = typeof transcodeStartAttempt !== "undefined"
+    && transcodeStartAttempt?.awaitingUserGesture ? "Play" : "Retry";
   overlay.style.setProperty("--progress", String(value));
   if ($("#video-loading-title")) $("#video-loading-title").textContent = recovering ? "Restoring playback" : failed && recoveryDisplayPhase === "failed" ? "Playback unavailable" : title;
   renderRecoveryOverlay();
@@ -3951,7 +4494,69 @@ function updateLoadingTransferDetail(payload) {
     : "";
 }
 
+// A new episode can spend seconds resolving its torrent and codec plan. During
+// that gap the old HTMLVideoElement retains its last decoded picture even while
+// the branded loader already shows the NEW episode's artwork. Unload it before
+// any asynchronous metadata work; release visibility only for the new decoder.
+let sourceFrameGate = null;
+function preserveCurrentFrameForTranscodeSeek() {
+  const canvas = typeof document !== "undefined" ? document.getElementById("video-seek-freeze") : null;
+  if (!canvas || !canvas.hidden || video.readyState < 2 || !video.videoWidth || !video.videoHeight
+    || state.currentSource?.kind !== "torrent") return;
+  try {
+    const drawing = canvas.getContext("2d", { alpha: false });
+    if (!drawing) return;
+    drawing.fillStyle = "#000";
+    drawing.fillRect(0, 0, canvas.width, canvas.height);
+    // Preserve contain aspect ratio rather than stretching 4:3/21:9 frames.
+    const scale = Math.min(canvas.width / video.videoWidth, canvas.height / video.videoHeight);
+    const w = video.videoWidth * scale, h = video.videoHeight * scale;
+    drawing.drawImage(video, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+    canvas.hidden = false;
+  } catch { canvas.hidden = true; } // CORS/protected video: keep original black fallback.
+}
+function clearTranscodeSeekFrame() {
+  const canvas = typeof document !== "undefined" ? document.getElementById("video-seek-freeze") : null;
+  if (canvas) canvas.hidden = true;
+}
+function clearPreviousVideoFrame() {
+  clearTranscodeSeekFrame();
+  video.pause();
+  video.style.visibility = "hidden";
+  video.removeAttribute("src");
+  video.load();
+  sourceFrameGate = { src: "", source: null, loadId: null };
+}
+function expectNewVideoFrame() {
+  if (!video.src) return;
+  // Re-arm on EVERY decoder URL replacement, including retries and a same-
+  // episode MSE -> native fallback after the first loadeddata cleared the
+  // original episode-transition gate. Otherwise late errors from the old
+  // decoder can be mistaken for the new stream's priming failure.
+  video.style.visibility = "hidden";
+  frame.classList.add("source-transition");
+  sourceFrameGate = { src: video.src, source: state.currentSource, loadId: playbackLoadRequestId };
+}
+function isNewSourceFramePending() {
+  return Boolean(sourceFrameGate);
+}
+video.addEventListener("loadeddata", () => {
+  const gate = sourceFrameGate;
+  if (!gate?.src || state.currentSource !== gate.source
+    || playbackLoadRequestId !== gate.loadId || video.src !== gate.src
+    || video.currentSrc !== gate.src || video.readyState < 2) return;
+  sourceFrameGate = null;
+  // For copied keyframe seeks loadeddata can describe the preroll frame,
+  // which is still hidden until the *requested* timestamp is presented.
+  // Retain the last-picture backdrop through that hidden interval.
+  if (!state.pendingSeek?.priming) clearTranscodeSeekFrame();
+  video.style.visibility = "";
+  frame.classList.remove("source-transition");
+  if (!state.pendingSeek) finishPlayerLoading();
+});
+
 function beginSourceTransition() {
+  closeRemuxMseSession();
   cancelTranscodeStart();
   clearAutoNext();
   // A user-selected new episode is a new incident; recovery-selected sources
@@ -3959,11 +4564,13 @@ function beginSourceTransition() {
   if (!recoveryBusy) resetRecoveryDisplay();
   // The episode being left keeps where it stopped.
   if (frame.classList.contains("has-video") && video.src) recordWatchProgress({ force: true });
-  if (frame.classList.contains("has-video") && video.src) frame.classList.add("source-transition");
+  frame.classList.add("source-transition");
+  clearPreviousVideoFrame();
 }
 
 function finishPlayerLoading() {
   const overlay = $("#video-loading");
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   frame.classList.remove("source-transition");
   // A late event from the old buffered media must not conceal a recovery/error
   // panel for the newly requested source.
@@ -4039,11 +4646,97 @@ let recoveryWatchTimer = null;
 let recoveryDisplayPhase = "";
 let recoveryDisplayEvents = [];
 let recoveryDisplayEpisode = "";
+let recoveryStallDiagnosis = null;
+let streamStatusHealth = null;
+let streamStatusAt = 0;
+let streamStatusGeneration = 0;
+let streamStatusController = null;
+let latestTorrentPieceSnapshot = null;
+let waitingTorrentSeek = null;
+
+function currentTorrentSeekPieceStatus(target) {
+  const snapshot = latestTorrentPieceSnapshot;
+  if (!snapshot || snapshot.source !== state.currentSource || Date.now() - snapshot.at > 10_000) return "unknown";
+  const context = state.transcodeContext;
+  if (!context || snapshot.sessionId !== context.sessionId || snapshot.fileIndex !== context.fileIndex) return "unknown";
+  if (snapshot.verifiedComplete === true) return "verified-complete";
+  if (!snapshot.map) return "unknown";
+  try {
+    return torrentSeekPieceStatus({
+      buckets: decodeBase64Bytes(snapshot.map),
+      targetSeconds: target,
+      durationSeconds: Number(state.mediaDurationMs) / 1000 || snapshot.durationSeconds,
+      verifiedComplete: false,
+    });
+  } catch { return "unknown"; }
+}
+
+function clearWaitingTorrentSeek() {
+  waitingTorrentSeek = null;
+}
+
+function waitForMissingTorrentSeek(target, wasPlaying) {
+  // MediaError4 does not prove an HEVC decode failure: a missing BitTorrent
+  // piece may make FFmpeg finish without a usable fMP4 atom after HTTP 200.
+  // Do not repeatedly start a converter while the byte-range is still absent.
+  if (currentTorrentSeekPieceStatus(target) !== "missing") return false;
+  const source = state.currentSource;
+  const context = state.transcodeContext;
+  if (!source?.sessionId || !context) return false;
+  cancelTranscodeStart();
+  video.pause();
+  waitingTorrentSeek = { source, context, target, wasPlaying };
+  setPlayerLoading(90, "Waiting for torrent data",
+    "Video pieces near this position are still downloading. Playback will retry when available; you can also choose another source.",
+    { error: true });
+  return true;
+}
+
+function resumeWaitingTorrentSeek(payload, source) {
+  const waiting = waitingTorrentSeek;
+  if (!waiting) return;
+  if (state.currentSource !== waiting.source || source !== waiting.source
+    || state.transcodeContext !== waiting.context) {
+    clearWaitingTorrentSeek();
+    return;
+  }
+  // A verified complete file is safe immediately. Otherwise, the approximate
+  // bucket must include the target AND its preceding possible keyframe window.
+  if (currentTorrentSeekPieceStatus(waiting.target) === "missing") return;
+  if (currentTorrentSeekPieceStatus(waiting.target) === "unknown") return;
+  if (typeof clearWaitingTorrentSeek === "function") clearWaitingTorrentSeek();
+  void openTranscodeAt(waiting.target, { wasPlaying: waiting.wasPlaying, forceNative: true });
+}
+
+function invalidateStreamStatus() {
+  streamStatusGeneration += 1;
+  streamStatusController?.abort();
+  streamStatusController = null;
+  streamStatusHealth = null;
+  streamStatusAt = 0;
+}
+
+function clearStreamStatusLabel() {
+  const node = $("#media-status");
+  if (node && recoveryStallDiagnosis?.message === node.textContent) node.textContent = "READY";
+}
+
+function currentStreamDiagnosis() {
+  if (!currentRecoveryKey() || !streamStatusHealth || Date.now() - streamStatusAt > 4_500) return null;
+  const recovering = recoveryDisplayPhase === "recovering";
+  return classifyPlaybackStreamStatus(streamStatusHealth, {
+    stalled: (recovering || recoveryWaitingSince !== null) && (recovering || video.readyState < HTMLMediaElement.HAVE_FUTURE_DATA),
+    paused: video.paused && !(recovering && recoveryPlaybackRequested),
+    seeking: Boolean(state.pendingSeek || video.seeking),
+    ended: Boolean(video.ended),
+  });
+}
 
 function resetRecoveryDisplay() {
   recoveryDisplayPhase = "";
   recoveryDisplayEvents = [];
   recoveryDisplayEpisode = "";
+  recoveryStallDiagnosis = null;
   $("#video-recovery-details")?.removeAttribute("open");
 }
 
@@ -4062,12 +4755,17 @@ function renderRecoveryOverlay() {
   // During retries show only the regular LVL loading artwork, not a diagnostic
   // log. Preserve the bounded history for an actionable final failure.
   const shown = recoveryDisplayPhase === "failed";
+  const diagnosis = recoveryStallDiagnosis || currentStreamDiagnosis();
   const message = $("#video-recovery-message");
   const meta = $("#video-recovery-meta");
   const details = $("#video-recovery-details");
   if (message) {
-    message.hidden = !shown;
-    message.textContent = "Couldn't resume this episode. Recovery attempts were unsuccessful.";
+    const terminalDetail = recoveryDisplayPhase !== "failed" && $("#video-loading")?.classList.contains("is-error")
+      ? String(state.loadingDetail || "").slice(0, 240) : "";
+    message.hidden = !shown && !(recoveryDisplayPhase === "recovering" && diagnosis) && !terminalDetail;
+    message.textContent = shown
+      ? diagnosis?.message || "Couldn't resume this episode. Recovery attempts were unsuccessful."
+      : terminalDetail || diagnosis?.message || "";
   }
   if (meta) {
     meta.hidden = !shown;
@@ -4110,10 +4808,20 @@ function markPlaybackMotion() {
     recoveryWaitingSince = null;
     playbackRecovery = recordPlaybackProgress(playbackRecovery, {
       sourceKey: currentRecoveryKey(), currentTimeSeconds: position,
+      sourceGeneration: playbackLoadRequestId,
     });
-    if (advanced && recoveryDisplayPhase === "recovering" && !recoveryBusy) {
+    // A timeupdate/clock jump can advance without a decoded frame after a
+    // source replacement. On browsers with frame callbacks, require the new
+    // source's presented clock before dismissing a recovery overlay. Older
+    // browsers retain the bounded forward-progress fallback.
+    const presented = typeof video.requestVideoFrameCallback === "function"
+      ? (typeof presentedSubtitleSeconds === "function" ? presentedSubtitleSeconds() : null)
+      : position;
+    const frameProven = Number.isFinite(presented) && Math.abs(presented - position) <= 0.75;
+    if (advanced && frameProven && recoveryDisplayPhase === "recovering" && !recoveryBusy) {
       recordRecoveryDisplay("restored");
       recoveryDisplayPhase = "";
+      recoveryStallDiagnosis = null;
       renderRecoveryOverlay();
       finishPlayerLoading();
     }
@@ -4168,6 +4876,7 @@ async function forceCompatibilityTranscode() {
 
 function reloadDirectTorrentAt(seconds) {
   invalidateSubtitleFrameClock();
+  if (typeof invalidateStreamStatus === "function") invalidateStreamStatus();
   const source = state.currentSource;
   if (!source?.sessionId) return false;
   const target = Math.max(0, Number(seconds) || 0);
@@ -4211,14 +4920,16 @@ async function recoverPlayback(reason = "error") {
   }));
   const next = requestPlaybackRecovery(playbackRecovery, {
     sourceKey: key, alternateSourceKeys: alternatives.map((item) => item.key), reason,
+    sourceGeneration: playbackLoadRequestId,
   });
   playbackRecovery = next.state;
   const action = next.action;
   if (action.type === "none") return;
+  if (!recoveryStallDiagnosis) recoveryStallDiagnosis = currentStreamDiagnosis();
   if (recoveryDisplayPhase !== "recovering") {
     recoveryDisplayEvents = [];
     recoveryDisplayEpisode = "";
-    recordRecoveryDisplay("problem", reason === "error" && [3, 4].includes(video.error?.code) ? "decode" : reason);
+    recordRecoveryDisplay("problem", reason === "error" && !recoveryStallDiagnosis && [3, 4].includes(video.error?.code) ? "decode" : reason);
   }
   if (action.type === "give-up") {
     recordRecoveryDisplay("stopped", reason);
@@ -4236,7 +4947,10 @@ async function recoverPlayback(reason = "error") {
   try {
     if (action.type === "retry-source") {
       $("#media-status").textContent = "Recovering stalled video…";
-      const strategy = playbackRetryStrategy(video.dataset.mode, reason, video.error?.code);
+      // A browser may report a decode/source error after torrent starvation.
+      // Observed missing pieces cannot be fixed by changing the video codec.
+      const strategy = playbackRetryStrategy(video.dataset.mode,
+        (recoveryStallDiagnosis?.networkStarvation ? "stall" : reason), video.error?.code);
       if (strategy === "compatibility") {
         if (!await forceCompatibilityTranscode()) throw new Error("Compatibility playback could not start");
       } else if (strategy === "restart-direct") {
@@ -4249,6 +4963,7 @@ async function recoverPlayback(reason = "error") {
     } else if (action.type === "switch-source") {
       const alternate = alternatives.find((item) => item.key === action.sourceKey);
       if (!alternate) throw new Error("Alternate source no longer exists");
+      recoveryStallDiagnosis = null; // The new source has no measured stall yet.
       const at = absolutePlaybackSeconds();
       setPlayerLoading(10, "Switching source", "The current video stopped responding");
       const switched = await playLibraryEpisode(alternate.entry.id, Number(alternate.episode.fileIndex), { resumeAtSeconds: at });
@@ -4287,7 +5002,7 @@ function scheduleBufferingIndicator() {
     if (video.paused || video.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA
       || (video.seeking && isPlayerTimeBuffered(video.currentTime))) return;
     setPlayerLoading(Math.max(86, state.loadingProgress), "Buffering", formatTime(state.currentMs));
-    $("#media-status").textContent = "TORRENT - BUFFERING";
+    $("#media-status").textContent = currentStreamDiagnosis()?.message || "TORRENT - BUFFERING";
   }, 320);
 }
 
@@ -4296,24 +5011,38 @@ function absolutePlaybackSeconds() {
   return (video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0) + (Number(video.currentTime) || 0);
 }
 
-// End (absolute seconds) of the stretch that can play without waiting: the buffered range around
-// the playhead.
-function playerReadyEndSeconds() {
+// Browser-decoded/downloaded fMP4 TimeRanges are *local to the current
+// conversion window*, not the whole torrent's movie timeline. In particular,
+// do not color the gap from conversion origin to the first buffered frame, or
+// join a stale previous range to a newer non-contiguous one.
+function playerReadyRangeSeconds() {
+  // A verified completed indexed rendition is seekable for the entire episode
+  // even while the old native/MSE reader finishes playing until the first seek.
+  // readyIndexedVideo() is source/audio/Settings-generation guarded and only
+  // true after the backend has atomically published a complete Range MP4.
+  if ((video.dataset.indexed === "1" || (typeof readyIndexedVideo === "function" && readyIndexedVideo()))
+    && state.mediaDurationMs > 0)
+    return { start: 0, end: state.mediaDurationMs / 1000 };
   const ranges = video.buffered;
-  if (!ranges?.length) return 0;
+  if (!ranges?.length) return null;
   const base = video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0;
   const now = Number(video.currentTime) || 0;
   for (let index = 0; index < ranges.length; index += 1) {
-    if (ranges.start(index) <= now + 0.5 && ranges.end(index) >= now) return ranges.end(index) + base;
+    try {
+      const start = ranges.start(index), end = ranges.end(index);
+      if (Number.isFinite(start) && Number.isFinite(end)
+        && start <= now + 0.1 && end >= now)
+        return { start: start + base, end: end + base };
+    } catch { /* Range may be invalidated by a simultaneous source reset. */ }
   }
-  return ranges.end(ranges.length - 1) + base;
+  return null;
 }
 
 // Only browser-buffered frames are instant seeks. A torrent's downloaded disk
 // pieces are not necessarily available to the media element yet; a transcode
 // explicitly starts a new stream for every nontrivial seek.
 function isPlayerTimeBuffered(seconds) {
-  if (video.dataset.mode === "transcode") return false;
+  if (video.dataset.mode === "transcode" && video.dataset.indexed !== "1") return false;
   const ranges = video.buffered;
   if (!ranges || !Number.isFinite(seconds)) return false;
   const duration = Number(video.duration);
@@ -4380,47 +5109,97 @@ function formatTransferBytes(bytes) {
 }
 
 function updateTransferStats(payload = null) {
-  const down = Number(payload?.downloaded) || 0;
+  // Series/season packs contain many files. Show the selected episode's
+  // downloaded/total bytes, not the size of the entire pack. Upload accounting
+  // remains torrent-wide because WebTorrent has no per-file upload total.
+  const selectedFileIndex = Number(state.currentSource?.fileIndex);
+  const hasSelectedFile = state.currentSource?.fileIndex != null && Number.isInteger(selectedFileIndex);
+  const selectedFile = hasSelectedFile
+    ? payload?.files?.find((file) => Number(file.index) === selectedFileIndex) : null;
+  const down = Number(hasSelectedFile ? selectedFile?.downloaded : payload?.downloaded) || 0;
   const up = Number(payload?.uploaded) || 0;
-  const downRate = Number(payload?.downloadSpeed) || 0;
-  const upRate = Number(payload?.uploadSpeed) || 0;
   if ($("#player-downloaded")) $("#player-downloaded").textContent = `↓ ${formatTransferBytes(down)}`;
   if ($("#player-uploaded")) $("#player-uploaded").textContent = `↑ ${formatTransferBytes(up)}`;
+  const target = $("#player-download-target");
+  const totalBytes = Number(hasSelectedFile ? selectedFile?.length : payload?.length);
+  const hasTotal = Boolean(payload) && Number.isFinite(totalBytes) && totalBytes > 0;
+  if (target) target.textContent = `↓ ${formatTransferBytes(down)} / ${hasTotal ? formatTransferBytes(totalBytes) : "—"}`;
   const stats = $("#player-transfer-stats");
-  if (stats) {
-    stats.hidden = !payload;
-    stats.setAttribute("aria-label", payload
-      ? `Downloaded ${formatTransferBytes(down)} at ${formatTransferBytes(downRate)} per second, uploaded ${formatTransferBytes(up)} at ${formatTransferBytes(upRate)} per second, ${payload.numPeers || 0} peers`
-      : "Torrent transfer totals");
-  }
+  if (stats) stats.setAttribute("aria-label",
+    `Downloaded ${formatTransferBytes(down)}; total to download ${hasTotal ? formatTransferBytes(totalBytes) : "unknown"}`);
+  if (stats) stats.hidden = !payload;
   updateLoadingTransferDetail(payload);
 }
 
 function stopTransferStats() {
   if (state.transferStatsTimer) window.clearInterval(state.transferStatsTimer);
   state.transferStatsTimer = null;
+  latestTorrentPieceSnapshot = null;
+  if (typeof clearWaitingTorrentSeek === "function") clearWaitingTorrentSeek();
+  invalidateStreamStatus();
 }
 
 function startTransferStats(sessionId) {
   stopTransferStats();
+  if (typeof playbackMetrics !== "undefined" && playbackMetrics && sessionId && state.currentSource?.sessionId === sessionId) {
+    void playbackMetrics.trackTorrent(sessionId, state.currentSource.fileIndex);
+  }
   updateTransferStats();
   if (!sessionId) { updateTransferStats(); return; }
+  let inFlight = false;
   const refresh = async () => {
+    if (inFlight) return;
+    const source = state.currentSource;
+    const generation = streamStatusGeneration;
+    const loadGeneration = Number(video.__lvlLoadGeneration) || 0;
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(5_000)]);
+    inFlight = true;
+    streamStatusController = controller;
     try {
-      if (state.currentSource?.sessionId !== sessionId) return;
-      const fileIndex = Number(state.currentSource?.fileIndex);
+      if (source?.sessionId !== sessionId) return;
+      const fileIndex = Number(source?.fileIndex);
       const query = Number.isInteger(fileIndex) && fileIndex >= 0 ? `?file=${fileIndex}` : "";
-      const payload = await fetchJson(`/api/torrents/${encodeURIComponent(sessionId)}${query}`);
-      if (state.currentSource?.sessionId !== sessionId) return;
+      const payload = await fetchJson(`/api/torrents/${encodeURIComponent(sessionId)}${query}`, { signal });
+      if (signal.aborted || generation !== streamStatusGeneration || state.currentSource !== source
+        || (Number(video.__lvlLoadGeneration) || 0) !== loadGeneration) return;
+      const selectedFile = payload?.files?.find((item) => Number(item.index) === fileIndex);
+      latestTorrentPieceSnapshot = {
+        source, sessionId, fileIndex, at: Date.now(),
+        map: payload.fileMap?.map || null,
+        durationSeconds: Number(selectedFile?.durationSeconds) || 0,
+        verifiedComplete: selectedFile?.verifiedComplete === true,
+      };
       updateTransferStats(payload);
       drawPlayerDownloadMap(payload.fileMap || null);
-    } catch {}
+      streamStatusHealth = payload.streamHealth || null;
+      streamStatusAt = Date.now();
+      const diagnosis = currentStreamDiagnosis();
+      // Preserve a measured stall if Chromium emits pause before its error.
+      // User pauses and seeks clear it below, while a media error can reuse it
+      // to avoid mistaking network starvation for an unsupported codec.
+      if (diagnosis) recoveryStallDiagnosis = diagnosis;
+      if (recoveryDisplayPhase === "recovering" || recoveryDisplayPhase === "failed") renderRecoveryOverlay();
+      else if (diagnosis && !$("#video-loading")?.hidden)
+        $("#media-status").textContent = diagnosis.message;
+      resumeWaitingTorrentSeek(payload, source);
+    } catch {} finally {
+      if (streamStatusController === controller) streamStatusController = null;
+      inFlight = false;
+    }
   };
   void refresh();
   state.transferStatsTimer = window.setInterval(refresh, 1500);
 }
 
 function setMediaSource({ src, title, status, objectUrl = null, mode = "local", durationMs = 0, startAtSeconds = 0 }, { preserveTranscodeStart = false } = {}) {
+  if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
+  delete video.dataset.indexed;
+  if (typeof remuxMseSession !== "undefined" && remuxMseSession
+    && remuxMseSession.objectUrl !== src) closeRemuxMseSession();
+  if (typeof invalidateStreamStatus === "function") invalidateStreamStatus();
+  if (typeof playbackMetrics !== "undefined") playbackMetrics?.newSource({ playbackMode: mode, startSeconds: Number(startAtSeconds) || 0,
+    seekReopen: mode === "transcode" && Number(startAtSeconds) > 0 });
   invalidateSubtitleFrameClock();
   const loadGeneration = (Number(video.__lvlLoadGeneration) || 0) + 1;
   video.__lvlLoadGeneration = loadGeneration;
@@ -4451,6 +5230,7 @@ function setMediaSource({ src, title, status, objectUrl = null, mode = "local", 
   $("#compat-progress").value = "0";
   $("#compat-time").textContent = `00:00 / ${state.mediaDurationMs ? formatTime(state.mediaDurationMs) : "--:--"}`;
   video.src = src;
+  if (typeof expectNewVideoFrame === "function") expectNewVideoFrame();
   if (objectUrl) video.dataset.objectUrl = objectUrl;
   frame.classList.add("has-video");
   revealPlayerControls();
@@ -4475,13 +5255,17 @@ function setMediaSource({ src, title, status, objectUrl = null, mode = "local", 
 }
 
 function updateCompatControls() {
+  if (typeof checkIndexedSeekCache === "function") checkIndexedSeekCache();
   const currentMs = Math.max(0, absolutePlaybackSeconds() * 1000);
   const nativeDurationMs = Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0;
   if (video.dataset.mode !== "transcode" && nativeDurationMs && Math.abs(state.mediaDurationMs - nativeDurationMs) > 250) {
     state.mediaDurationMs = nativeDurationMs;
     refreshSubtitleTimelineFits();
   }
-  const durationMs = state.mediaDurationMs || nativeDurationMs;
+  // FFmpeg's currently streamed fragment can report a tiny 13s duration for
+  // a 24-minute movie before FFprobe metadata arrives. Never present that
+  // fragment length as the actual episode or compress its entire timeline.
+  const durationMs = state.mediaDurationMs || (video.dataset.mode === "transcode" ? 0 : nativeDurationMs);
   renderEpisodeTimelineSegments();
   const progress = $("#compat-progress");
   progress.max = String(Math.max(1, durationMs / 1000 || 1));
@@ -4493,12 +5277,11 @@ function updateCompatControls() {
   const shownMs = state.scrubbing ? Number(progress.value) * 1000 : currentMs;
   if (!state.scrubbing) progress.value = String(Math.min(currentMs / 1000, durationMs / 1000 || currentMs / 1000));
   $("#compat-time").textContent = `${formatTime(shownMs)} / ${durationMs ? formatTime(durationMs) : "--:--"}`;
-  const readyEnd = playerReadyEndSeconds();
+  const readyRange = playerReadyRangeSeconds();
   const percent = (seconds) => (durationMs ? Math.max(0, Math.min(100, (seconds * 1000 * 100) / durationMs)) : 0);
   $("#player-progress-played").style.width = `${percent(shownMs / 1000)}%`;
-  const readyStart = video.dataset.mode === "transcode" ? state.transcodeBaseOffsetSeconds : 0;
-  $("#player-progress-ready").style.left = `${percent(readyStart)}%`;
-  $("#player-progress-ready").style.width = `${Math.max(0, percent(readyEnd) - percent(readyStart))}%`;
+  $("#player-progress-ready").style.left = `${readyRange ? percent(readyRange.start) : 0}%`;
+  $("#player-progress-ready").style.width = `${readyRange ? Math.max(0, percent(readyRange.end) - percent(readyRange.start)) : 0}%`;
   const muted = (transcodeStartAttempt?.mutedForPreroll ? transcodeStartAttempt.wantedMuted : video.muted) || video.volume === 0;
   $("#player-mute")?.classList.toggle("is-muted", muted);
   $("#player-mute")?.setAttribute("aria-label", muted ? "Unmute" : "Mute");
@@ -4526,6 +5309,261 @@ function updatePlayerPreferenceButtons() {
 // the preroll, then reveal/unmute only after the requested frame is presented.
 let transcodeStartAttempt = null;
 let transcodeStartSerial = 0;
+let remuxMseSession = null;
+let indexedSeekAttempt = null;
+function cancelIndexedSeekAttempt() {
+  const attempt = indexedSeekAttempt;
+  if (!attempt) return;
+  indexedSeekAttempt = null;
+  attempt.cancel();
+  if (state.pendingSeek === attempt.pending) state.pendingSeek = null;
+}
+function openIndexedSeekAt(target, { wasPlaying = !video.paused } = {}) {
+  if (!readyIndexedVideo()) return false;
+  const cache = indexedSeekReady;
+  const source = state.currentSource, context = state.transcodeContext;
+  const loadId = playbackLoadRequestId;
+  if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
+  closeRemuxMseSession();
+  cancelTranscodeStart();
+  invalidateSubtitleFrameClock();
+  if (!video.paused) video.pause();
+  state.transcodeBaseOffsetSeconds = 0;
+  state.transcodeRequestedStartSeconds = target;
+  const pending = { target, wasPlaying, priming: true };
+  state.pendingSeek = pending;
+  const url = cache.url;
+  video.dataset.indexed = "1";
+  video.dataset.mode = "transcode";
+  state.currentMs = target * 1000;
+  setPlayerLoading(18, "Preparing seekable video", formatTime(target * 1000));
+  renderSubtitles();
+  const previousObjectUrl = video.dataset.objectUrl;
+  if (previousObjectUrl) {
+    URL.revokeObjectURL(previousObjectUrl);
+    delete video.dataset.objectUrl;
+  }
+  let watchdog = 0, frameId = null, stopped = false, prerollStarted = false;
+  const originalMute = video.muted;
+  video.muted = true; // Frame decoder must advance, never leak an early audio cue.
+  const valid = () => !stopped && indexedSeekAttempt?.pending === pending
+    && state.currentSource === source && state.transcodeContext === context
+    && playbackLoadRequestId === loadId && video.dataset.indexed === "1";
+  const cancel = () => {
+    stopped = true;
+    video.muted = originalMute;
+    window.clearTimeout(watchdog);
+    video.removeEventListener("loadedmetadata", onMetadata);
+    video.removeEventListener("loadeddata", onFrameReady);
+    video.removeEventListener("seeked", onFrameReady);
+    video.removeEventListener("error", onFailure);
+    if (frameId !== null && video.cancelVideoFrameCallback)
+      video.cancelVideoFrameCallback(frameId);
+  };
+  const fail = () => {
+    if (!valid()) return;
+    cancelIndexedSeekAttempt();
+    delete video.dataset.indexed;
+    void openTranscodeAt(target, { wasPlaying, forceNative: true });
+  };
+  const onPresentedFrame = (_now, metadata) => {
+    frameId = null;
+    if (!valid()) return;
+    if (Math.abs(Number(metadata?.mediaTime) - target) <= 0.65
+      && video.readyState >= 2 && !video.error) {
+      const resume = pending.wasPlaying;
+      cancelIndexedSeekAttempt();
+      if (!resume) video.pause();
+      clearTranscodeSeekFrame();
+      // A verified frame can arrive before the native loadeddata handler
+      // clears its source gate. Do not leave the now-proven source obscured
+      // behind the black transition/logo indefinitely.
+      // This callback is already owned by the current source, load generation
+      // and actual decoder frame. It is stronger evidence than loadeddata,
+      // which can miss or arrive before an exact requested frame. A residual
+      // transition from a different earlier decoder must not mask this video.
+      sourceFrameGate = null;
+      video.style.visibility = "";
+      frame.classList.remove("source-transition");
+      subtitlePresentedFrame = { src: video.src, base: 0, seconds: Number(metadata.mediaTime) };
+      state.currentMs = target * 1000;
+      renderSubtitles();
+      // A full indexed MP4 has just presented the exact target frame. Do not
+      // hold an unnecessary 550ms branded-loader reveal after seek completion.
+      hideLoadingForBufferedSeek();
+      schedulePresentedSubtitleFrame();
+      updateCompatControls();
+      if (resume && video.paused) void video.play().catch(error => {
+        if (error?.name !== "NotAllowedError") void recoverPlayback("error");
+      });
+      return;
+    }
+    if (valid()) frameId = video.requestVideoFrameCallback(onPresentedFrame);
+  };
+  const onFrameReady = () => {
+    if (!valid() || video.seeking || video.readyState < 2 || frameId !== null) return;
+    if (!prerollStarted) {
+      prerollStarted = true;
+      void video.play().catch(fail); // muted decode through the exact first frame
+    }
+    frameId = video.requestVideoFrameCallback(onPresentedFrame);
+  };
+  const onMetadata = () => {
+    if (!valid()) return;
+    try { video.currentTime = target; } catch { fail(); }
+    onFrameReady();
+  };
+  const onFailure = () => fail();
+  indexedSeekAttempt = { pending, cancel };
+  video.addEventListener("loadedmetadata", onMetadata);
+  video.addEventListener("loadeddata", onFrameReady);
+  video.addEventListener("seeked", onFrameReady);
+  video.addEventListener("error", onFailure);
+  watchdog = window.setTimeout(fail, 12000);
+  video.src = url;
+  if (typeof expectNewVideoFrame === "function") expectNewVideoFrame();
+  video.load();
+  updateCompatControls();
+  return true;
+}
+let remuxMseWarmSeek = null;
+
+function cancelRemuxMseWarmSeek() {
+  const warm = remuxMseWarmSeek;
+  remuxMseWarmSeek = null;
+  if (!warm) return;
+  if (warm.frameId !== null && typeof video.cancelVideoFrameCallback === "function")
+    video.cancelVideoFrameCallback(warm.frameId);
+  window.clearTimeout(warm.timer);
+  frame.classList.remove("is-sync-preroll");
+  if (warm.overlay) {
+    if (warm.previousOverlayAriaHidden === null) warm.overlay.removeAttribute("aria-hidden");
+    else warm.overlay.setAttribute("aria-hidden", warm.previousOverlayAriaHidden);
+  }
+  if (warm.pending === state.pendingSeek) state.pendingSeek = null;
+  if (warm.src === video.src) video.muted = warm.wantedMuted;
+}
+
+function closeRemuxMseSession() {
+  cancelRemuxMseWarmSeek();
+  const previous = remuxMseSession;
+  remuxMseSession = null;
+  previous?.close();
+}
+
+function fallbackActiveRemuxMseToNative({ wasPlaying = !video.paused } = {}) {
+  const mse = remuxMseSession;
+  // This is an error from the CURRENT MSE media element, not a cached seek
+  // miss, an old source, or a user-directed pause. Never reopen unrelated media.
+  if (!mse || video.dataset.mode !== "transcode" || video.src !== mse.objectUrl
+    || !state.transcodeContext?.baseUrl || state.currentSource?.kind !== "torrent") return false;
+  const position = absolutePlaybackSeconds();
+  void openTranscodeAt(position, { wasPlaying, forceNative: true });
+  return true;
+}
+
+// An idle session can expire while the browser/tab is suspended, even though
+// the old decoded frame is still displayed. Retrying its stale session ID
+// cannot repair that source. Resolve the SAME saved magnet/file only when the
+// backend specifically reports session expiry; no arbitrary 404 retries.
+function isExpiredTorrentPlaybackSession(error) {
+  return [404, 410].includes(Number(error?.httpStatus ?? error?.status))
+    && /(?:torrent session not found or expired|source session has expired)/i.test(String(error?.message || ""));
+}
+
+function reconnectExpiredTorrentPlayback(error, { source, target, isCurrent, wasPlaying, onPreflightFailure } = {}) {
+  if (!isExpiredTorrentPlaybackSession(error) || !isCurrent?.()
+    || !wasPlaying || onPreflightFailure
+    || source?.kind !== "torrent" || !Number.isInteger(Number(source.fileIndex))
+    || !libraryEntryById(source.libraryId)?.magnet) return false;
+  cancelTranscodeStart();
+  recoveryPlaybackRequested = true;
+  setPlayerLoading(18, "Reconnecting playback");
+  // playLibraryEpisode always starts a NEW load generation and obtains a
+  // current session from the saved magnet. Its own bounded error UI handles
+  // genuine lack of peers without looping through the expired ID again.
+  void playLibraryEpisode(source.libraryId, Number(source.fileIndex), { resumeAtSeconds: target });
+  return true;
+}
+
+function seekInsideRemuxMse(target) {
+  const session = remuxMseSession;
+  const base = state.transcodeBaseOffsetSeconds;
+  const local = target - base;
+  // A second drag or seek button may supersede a still-awaiting presented
+  // frame from THIS exact MSE source. It is safe to cancel that old frame
+  // callback and retarget the same SourceBuffer. A real decoder replacement
+  // or unrelated priming attempt must still take the normal restart path.
+  const currentWarm = remuxMseWarmSeek;
+  const supersedingOwnWarm = currentWarm && currentWarm.session === session
+    && currentWarm.src === video.src && state.pendingSeek === currentWarm.pending
+    && currentWarm.pending?.priming;
+  if (!session || video.dataset.mode !== "transcode" || !session.contains(local)
+    || (state.pendingSeek?.priming && !supersedingOwnWarm) || !Number.isFinite(local)) return false;
+  const wasPlaying = supersedingOwnWarm ? currentWarm.pending.wasPlaying : playerIsPlaying();
+  cancelRemuxMseWarmSeek();
+  invalidateSubtitleFrameClock();
+  const source = state.currentSource;
+  const context = state.transcodeContext;
+  const loadId = playbackLoadRequestId;
+  const src = video.src;
+  const pending = { target, wasPlaying, priming: true, streamInstalled: true };
+  const overlay = $("#subtitle-overlay");
+  const warm = { session, pending, src, frameId: null, timer: 0,
+    wantedMuted: playerWantsMuted(), overlay,
+    previousOverlayAriaHidden: overlay?.getAttribute("aria-hidden") ?? null };
+  remuxMseWarmSeek = warm;
+  state.pendingSeek = pending;
+  state.currentMs = target * 1000;
+  frame.classList.add("is-sync-preroll");
+  overlay?.setAttribute("aria-hidden", "true");
+  video.muted = true;
+  const current = () => remuxMseWarmSeek === warm && remuxMseSession === session
+    && state.pendingSeek === pending && state.currentSource === source
+    && state.transcodeContext === context && playbackLoadRequestId === loadId
+    && video.src === src;
+  const finish = mediaTime => {
+    if (!current() || video.seeking || !Number.isFinite(mediaTime)
+      || mediaTime + 0.12 < local) return false;
+    subtitlePresentedFrame = { src, base, seconds: base + mediaTime };
+    cancelRemuxMseWarmSeek();
+    state.currentMs = (base + mediaTime) * 1000;
+    renderSubtitles();
+    if (!pending.wasPlaying) video.pause();
+    finishPlayerLoading();
+    updateCompatControls();
+    schedulePresentedSubtitleFrame();
+    if (audioSync.key) scheduleAudioSync(400);
+    return true;
+  };
+  const nextFrame = () => {
+    if (!current()) return;
+    warm.frameId = video.requestVideoFrameCallback((_now, metadata) => {
+      warm.frameId = null;
+      if (!current()) return;
+      if (!finish(Number(metadata?.mediaTime))) nextFrame();
+    });
+  };
+  // This exact position is already in the MSE SourceBuffer. Frame-gate the
+  // subtitles/audio, but never show the logo for a genuine warm seek.
+  hideLoadingForBufferedSeek();
+  renderSubtitles();
+  updateCompatControls();
+  nextFrame();
+  try { video.currentTime = local; }
+  catch { cancelRemuxMseWarmSeek(); return false; }
+  warm.timer = window.setTimeout(() => {
+    if (!current()) return;
+    cancelRemuxMseWarmSeek();
+    scheduleTranscodeSeek(target, { forceNative: true });
+  }, 10_000);
+  if (pending.wasPlaying) void video.play().catch(() => {
+    if (!current()) return;
+    cancelRemuxMseWarmSeek();
+    scheduleTranscodeSeek(target, { forceNative: true });
+  });
+  return true;
+}
 
 function cancelTranscodeStart({ preservePending = false } = {}) {
   transcodeStartSerial += 1;
@@ -4538,6 +5576,7 @@ function cancelTranscodeStart({ preservePending = false } = {}) {
   if (attempt.watchdog) window.clearTimeout(attempt.watchdog);
   if (attempt.retryTimer) window.clearTimeout(attempt.retryTimer);
   if (attempt.timeupdate) video.removeEventListener("timeupdate", attempt.timeupdate);
+  if (attempt.loadeddata) video.removeEventListener("loadeddata", attempt.loadeddata);
   frame.classList.remove("is-sync-preroll");
   if (attempt.overlay) {
     if (attempt.previousOverlayAriaHidden === null) attempt.overlay.removeAttribute("aria-hidden");
@@ -4550,6 +5589,9 @@ function cancelTranscodeStart({ preservePending = false } = {}) {
 function setPlayerMutePreference(muted) {
   if (transcodeStartAttempt?.mutedForPreroll) {
     transcodeStartAttempt.wantedMuted = Boolean(muted);
+    video.muted = true;
+  } else if (remuxMseWarmSeek) {
+    remuxMseWarmSeek.wantedMuted = Boolean(muted);
     video.muted = true;
   } else video.muted = Boolean(muted);
 }
@@ -4611,12 +5653,20 @@ function schedulePresentedSubtitleFrame() {
 }
 
 function playerWantsMuted() {
-  return transcodeStartAttempt?.mutedForPreroll ? transcodeStartAttempt.wantedMuted : video.muted;
+  return transcodeStartAttempt?.mutedForPreroll ? transcodeStartAttempt.wantedMuted
+    : remuxMseWarmSeek ? remuxMseWarmSeek.wantedMuted : video.muted;
 }
 
-async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize = null, seekRetry = 0 } = {}) {
+async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize = null, seekRetry = 0,
+  onPreflightFailure = null, forceNative = false, verifySession = false } = {}) {
   const context = state.transcodeContext;
   if (!context?.baseUrl) return false;
+  if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
+  delete video.dataset.indexed;
+  if (!initialize && typeof preserveCurrentFrameForTranscodeSeek === "function")
+    preserveCurrentFrameForTranscodeSeek();
+  if (typeof clearWaitingTorrentSeek === "function") clearWaitingTorrentSeek();
+  closeRemuxMseSession();
   cancelTranscodeStart();
   transcodePauseSnapshot = null;
   const serial = transcodeStartSerial;
@@ -4626,6 +5676,16 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
   const target = Math.max(0, durationSeconds ? Math.min(Number(seconds) || 0, Math.max(0, durationSeconds - 0.25)) : Number(seconds) || 0);
   const audioIndex = Number.isInteger(context.audioIndex) ? context.audioIndex : state.selectedAudioTrack || 0;
   const query = transcodeQuery(target, audioIndex);
+  // A known HEVC Main10 SDR -> H264 stream can use a bounded MSE SourceBuffer
+  // to make frames already transcoded in THIS session genuinely seekable.
+  // Existing copy/HDR/other codec paths remain unchanged. Failed MSE startup
+  // always falls back one-way to the original native FFmpeg pipeline.
+  if (!context.copyVideo && String(state.currentMediaProbe?.video?.codec || '').toLowerCase() === 'hevc'
+    && !state.currentMediaProbe?.compatibility?.video?.hdr
+    && !state.currentMediaProbe?.compatibility?.video?.hdrKind
+    && !state.currentMediaProbe?.video?.dolbyVision && !state.currentMediaProbe?.video?.hdrKind
+    && !['smpte2084','arib-std-b67'].includes(String(state.currentMediaProbe?.video?.colorTransfer || '').toLowerCase()))
+    query.set('video', 'h264');
   const copySeek = target > 0 && query.get("video") === "copy";
   const controller = new AbortController();
   const pending = { target, wasPlaying: Boolean(wasPlaying), timer: 0, priming: true,
@@ -4650,6 +5710,10 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
   // requested playback intent, but never loop or revive an obsolete seek.
   const retryTransient = (reason, { onlyWhenBusy = false } = {}) => {
     if (!current()) return false;
+    // The audio menu must not treat a merely scheduled retry as an installed
+    // dub, or persist that choice before the preflight has succeeded. For
+    // audio switching, fail back to the old playable stream instead.
+    if (onPreflightFailure) return false;
     if (attempt.retryScheduled) return true;
     if (attempt.seekRetry >= 2) return false;
     if (onlyWhenBusy && reason?.httpStatus !== 429
@@ -4661,11 +5725,29 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
       if (!current()) return;
       void openTranscodeAt(target, {
         wasPlaying: pending.wasPlaying, initialize, seekRetry: attempt.seekRetry + 1,
+        forceNative,
       });
     }, delay);
     return true;
   };
   attempt.retryTransient = retryTransient;
+  if (verifySession && context.sessionId) {
+    try {
+      await fetchJson(`/api/torrents/${encodeURIComponent(context.sessionId)}`,
+        { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(8_000)]) });
+    } catch (error) {
+      if (!current()) return false;
+      if (reconnectExpiredTorrentPlayback(error, { source, target, isCurrent: current,
+        wasPlaying: pending.wasPlaying, onPreflightFailure })) return true;
+      // A temporary connectivity failure must not become a speculative
+      // source switch; allow the existing stream fallback to make progress.
+      if (isExpiredTorrentPlaybackSession(error)) {
+        cancelTranscodeStart();
+        setPlayerLoading(100, "Source expired", "Choose another source or retry this episode.", { error: true });
+        return false;
+      }
+    }
+  }
   let effectiveStart = target;
   if (copySeek) {
     try {
@@ -4679,7 +5761,15 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
         throw new Error("Could not verify the copied video start timestamp");
     } catch (error) {
       if (!current()) return false;
+      if (reconnectExpiredTorrentPlayback(error, { source, target, isCurrent: current,
+        wasPlaying: pending.wasPlaying, onPreflightFailure })) return true;
       if (retryTransient(error, { onlyWhenBusy: true })) return true;
+      if (!onPreflightFailure && typeof waitForMissingTorrentSeek === "function"
+        && [502, 503, 504].includes(Number(error?.httpStatus))
+        && waitForMissingTorrentSeek(target, pending.wasPlaying)) return true;
+      // Audio switching may still be able to play the prior URL. Report the
+      // latest user intent BEFORE cancelling the seek's pending state.
+      onPreflightFailure?.({ wasPlaying: pending.wasPlaying });
       cancelTranscodeStart();
       video.pause();
       setPlayerLoading(100, "Video synchronization unavailable",
@@ -4690,15 +5780,65 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
   if (!current()) return false;
   invalidateSubtitleFrameClock();
   state.transcodeBaseOffsetSeconds = effectiveStart;
-  const src = `${context.baseUrl}?${query}`;
+  let src = `${context.baseUrl}?${query}`;
+  let mse = null;
+  const mseAvailable = !forceNative && typeof remuxMseCacheAllowed !== "undefined" && remuxMseCacheAllowed;
+  const copiedMse = mseAvailable && query.get("video") === "copy"
+    && canUseRemuxMse({ video, media: state.currentMediaProbe, context });
+  const encodedMse = mseAvailable && canUseEncodedH264Mse({ video, media: state.currentMediaProbe, context, query });
+  if (copiedMse || encodedMse) {
+    mse = createRemuxMseSession({
+      // Opt-in hint for a bounded same-producer FFmpeg run-ahead buffer.
+      // It never changes the exact conversion plan or the warm cache identity.
+      // The backend independently verifies every piece is already downloaded.
+      video, url: `${src}&mse=1`,
+      windowUrl: copiedMse
+        ? `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/remux-cache/window`
+        : null,
+      allowEncodedH264: encodedMse,
+      isCurrent: () => remuxMseSession === mse && state.currentSource === source
+        && state.transcodeContext === context && playbackLoadRequestId === loadId
+        && video.src === mse?.objectUrl,
+      onFailure: () => {
+        if (remuxMseSession !== mse || state.currentSource !== source
+          || state.transcodeContext !== context || playbackLoadRequestId !== loadId) return;
+        const fallbackAt = state.pendingSeek ? target : absolutePlaybackSeconds();
+        const fallbackPlaying = playerIsPlaying();
+        void openTranscodeAt(fallbackAt, {
+          wasPlaying: fallbackPlaying, initialize, forceNative: true,
+        });
+      },
+    });
+    if (mse) {
+      remuxMseSession = mse;
+      src = mse.objectUrl;
+    }
+  }
+  // A decoder/source-buffer failure is not an FFmpeg busy retry. One-way
+  // fallback to the existing native stream, never repeat a broken MSE startup
+  // twice before showing an unrecoverable synchronization error.
+  attempt.fallbackToNative = () => {
+    if (!mse || remuxMseSession !== mse || !current()) return false;
+    void openTranscodeAt(target, {
+      wasPlaying: pending.wasPlaying, initialize, forceNative: true,
+    });
+    return true;
+  };
   if (initialize) {
     // setMediaSource clears any earlier pending seek; restore this attempt's
     // marker before its media events can release the branded loading overlay.
-    setMediaSource({ ...initialize, src, mode: "transcode", startAtSeconds: target },
+    setMediaSource({ ...initialize, src, objectUrl: mse?.objectUrl || null,
+      mode: "transcode", startAtSeconds: target },
       { preserveTranscodeStart: true });
     state.pendingSeek = pending;
   } else {
+    if (video.dataset.objectUrl) {
+      URL.revokeObjectURL(video.dataset.objectUrl);
+      delete video.dataset.objectUrl;
+    }
     video.src = src;
+    if (typeof expectNewVideoFrame === "function") expectNewVideoFrame();
+    if (mse) video.dataset.objectUrl = mse.objectUrl;
     video.load();
   }
   // Keyframe preflight runs while the previous fragment is still attached to
@@ -4716,6 +5856,7 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
       subtitlePresentedFrame = { src: video.src, base: effectiveStart, seconds: effectiveStart + presentedMediaTime };
     }
     cancelTranscodeStart();
+    clearTranscodeSeekFrame();
     state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
     renderSubtitles();
     updateCompatControls();
@@ -4724,27 +5865,119 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
     schedulePresentedSubtitleFrame();
     if (audioSync.key) scheduleAudioSync(400);
   };
-  if (prerollSeconds <= 0.025) {
-    if (!pending.wasPlaying) {
-      complete();
+  // Autoplay policy denial isn't corrupt video. Keep the verified media window
+  // and ask for a *synchronous* user gesture, instead of spawning 3 fresh
+  // FFmpeg streams (and eventually misreporting video synchronization).
+  const deferBlockedPlay = (error, { afterUserClick = false } = {}) => {
+    if (error?.name !== "NotAllowedError" || !current()) return false;
+    if (attempt.watchdog) window.clearTimeout(attempt.watchdog);
+    attempt.watchdog = 0;
+    // Chromium/Brave may reject sound autoplay when the initial Library click
+    // has already been consumed by asynchronous torrent/FFprobe work. Muted
+    // playback is permitted: first keep the SAME stream and start silently,
+    // rather than forcing a second Play click or relaunching FFmpeg. Never
+    // silently undo a user's intentional mute preference.
+    if (!afterUserClick && pending.wasPlaying && !video.muted && !attempt.mutedAutoplayTried) {
+      attempt.mutedAutoplayTried = true;
+      video.muted = true;
+      updateCompatControls();
+      setPlayerLoading(18, "Starting muted playback");
+      Promise.resolve(video.play()).then(() => {
+        if (!current()) return;
+        if (prerollSeconds <= 0.025) complete();
+        else attempt.armWatchdog?.();
+        toast("Your browser blocked automatic sound. Video is playing muted; use the speaker control to enable audio.", { timeout: 5500 });
+      }).catch((mutedError) => {
+        if (!current()) return;
+        if (deferBlockedPlay(mutedError)) return;
+        if (attempt.fallbackToNative?.() || retryTransient(mutedError)) return;
+        cancelTranscodeStart();
+        video.pause();
+        setPlayerLoading(100, "Video synchronization unavailable",
+          mutedError?.message || "Could not begin playback", { error: true });
+      });
       return true;
     }
+    attempt.awaitingUserGesture = true;
+    attempt.resumeAfterGesture = () => {
+      if (!current() || !attempt.awaitingUserGesture) return false;
+      attempt.awaitingUserGesture = false;
+      setPlayerLoading(18, "Starting playback");
+      // video.play() must run inside the Retry/Play button's click call stack;
+      // a fresh asynchronous Library torrent resolution loses user activation.
+      const playing = video.play();
+      Promise.resolve(playing).then(() => {
+        if (!current()) return;
+        if (prerollSeconds <= 0.025) complete();
+        else attempt.armWatchdog?.();
+      }).catch((nextError) => {
+        if (!current() || deferBlockedPlay(nextError, { afterUserClick: true })) return;
+        if (attempt.fallbackToNative?.() || retryTransient(nextError)) return;
+        cancelTranscodeStart();
+        video.pause();
+        setPlayerLoading(100, "Video synchronization unavailable",
+          nextError?.message || "Could not begin playback", { error: true });
+      });
+      return true;
+    };
+    const mediaErrorCode = Number(video.error?.code) || 0;
+    setPlayerLoading(100, afterUserClick ? "Playback could not start" : "Playback needs a click",
+      afterUserClick
+        ? `Play was rejected again${mediaErrorCode ? ` (media error ${mediaErrorCode})` : ""}. The video may be unavailable, or the browser may be blocking playback. Try another source if it persists.`
+        : "Your browser blocked automatic playback. Select Play to continue.", { error: true });
+    return true;
+  };
+  if (prerollSeconds <= 0.025) {
     // An exact-keyframe start has no hidden GOP to consume, but the new
     // fragment can still be rejected (notably when a previous FFmpeg job
     // has not relinquished its slot). Do not declare it loaded while play()
     // is still pending or silently swallow that rejection.
-    attempt.watchdog = window.setTimeout(() => {
+    attempt.armWatchdog = () => { attempt.watchdog = window.setTimeout(() => {
       if (!current() || attempt.retryScheduled) return;
+      if (attempt.fallbackToNative()) return;
       if (retryTransient(new Error("Video is still preparing"))) return;
       cancelTranscodeStart();
       video.pause();
       setPlayerLoading(100, "Video synchronization unavailable",
         "The new video stream did not become ready.", { error: true });
-    }, 45_000);
+    }, 45_000); };
+    if (!pending.wasPlaying) {
+      // Setting src and calling load() does not establish that the requested
+      // frame has decoded. A paused seek can otherwise clear its priming
+      // error handler before media bytes arrive, then report opaque error 4
+      // when Play is pressed later. Wait for this source's actual loadeddata.
+      const assignedSrc = video.src;
+      attempt.loadeddata = () => {
+        if (!current() || video.currentSrc !== assignedSrc || video.readyState < 2) return;
+        if (!pending.wasPlaying) {
+          complete();
+          return;
+        }
+        // The user may press Play while that paused seek was still loading.
+        // Honor that newer intent without losing source/error ownership.
+        void Promise.resolve().then(() => video.play()).then(() => {
+          if (current()) complete();
+        }).catch((error) => {
+          if (!current() || deferBlockedPlay(error)) return;
+          if (attempt.fallbackToNative?.() || retryTransient(error)) return;
+          cancelTranscodeStart();
+          video.pause();
+          setPlayerLoading(100, "Video synchronization unavailable",
+            error?.message || "Could not begin playback", { error: true });
+        });
+      };
+      video.addEventListener("loadeddata", attempt.loadeddata);
+      attempt.armWatchdog();
+      if (video.readyState >= 2 && video.currentSrc === assignedSrc) attempt.loadeddata();
+      return true;
+    }
+    attempt.armWatchdog();
     try {
       await video.play();
     } catch (error) {
       if (!current()) return false;
+      if (deferBlockedPlay(error)) return true;
+      if (attempt.fallbackToNative()) return true;
       if (retryTransient(error)) return true;
       cancelTranscodeStart();
       video.pause();
@@ -4787,16 +6020,20 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
   }
   // A missing torrent keyframe must never leave a silent hidden player stuck
   // indefinitely or release its preroll into visible/audible playback.
-  attempt.watchdog = window.setTimeout(() => {
+  attempt.armWatchdog = () => { attempt.watchdog = window.setTimeout(() => {
     if (!current()) return;
+    if (attempt.fallbackToNative()) return;
     if (retryTransient(new Error("Video is still preparing"))) return;
     cancelTranscodeStart();
     video.pause();
     setPlayerLoading(100, "Video synchronization unavailable",
       "Couldn't reach the requested frame. Retry the seek when more video is available.", { error: true });
-  }, 45_000);
+  }, 45_000); };
+  attempt.armWatchdog();
   void video.play().catch((error) => {
     if (!current()) return;
+    if (deferBlockedPlay(error)) return;
+    if (attempt.fallbackToNative()) return;
     if (retryTransient(error)) return;
     cancelTranscodeStart();
     setPlayerLoading(100, "Video synchronization unavailable",
@@ -4805,28 +6042,88 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
   return true;
 }
 
-async function restartTranscodeAt(seconds, { wasPlaying = !video.paused } = {}) {
-  return openTranscodeAt(seconds, { wasPlaying });
+async function restartTranscodeAt(seconds, { wasPlaying = !video.paused,
+  forceNative = false, verifySession = false } = {}) {
+  return openTranscodeAt(seconds, { wasPlaying, forceNative, verifySession });
 }
 
 // A converted stream is re-opened at the new time. Seeks that arrive close together (holding the
 // ±10 s button, dragging) are merged into one restart, so the player doesn't bounce between them.
-function scheduleTranscodeSeek(target) {
+function bufferedRemuxSeekTarget(target) {
+  // Only shorten the input debounce for a *ready, currently decoded* copy-video
+  // fragment. Its TimeRanges are local to the verified copy keyframe origin,
+  // not absolute movie seconds. We still reopen FFmpeg and reverify the
+  // destination keyframe; fMP4 does not support dependable native seeks.
+  if (video.dataset.mode !== "transcode" || !state.transcodeContext?.copyVideo
+    || state.transcodeContext.forceH264 || video.readyState < 3
+    || video.seeking || state.scrubbing || state.pendingSeek) return false;
+  const local = Number(target) - Number(state.transcodeBaseOffsetSeconds);
+  if (!Number.isFinite(local) || local < 0) return false;
+  const ranges = video.buffered;
+  if (!ranges?.length) return false;
+  try {
+    for (let i = 0; i < ranges.length; i += 1) {
+      // Do not treat edge-of-buffer / almost-expired fragments as warm.
+      if (local >= ranges.start(i) + 0.1 && local <= ranges.end(i) - 0.25) return true;
+    }
+  } catch {}
+  return false;
+}
+
+function scheduleTranscodeSeek(target, { forceNative = false } = {}) {
+  if (typeof clearWaitingTorrentSeek === "function") clearWaitingTorrentSeek();
+  if (typeof invalidateStreamStatus === "function") invalidateStreamStatus();
+  const warmCopySeek = bufferedRemuxSeekTarget(target);
   const wasPlaying = state.pendingSeek ? state.pendingSeek.wasPlaying : !video.paused;
+  const source = state.currentSource;
+  const context = state.transcodeContext;
+  const mse = remuxMseSession;
+  mse?.cancelRestore();
+  const mayRestoreMseWindow = !forceNative && mse
+    && target >= state.transcodeBaseOffsetSeconds;
+  // Capture before pause/debounce: waiting until the cold source replacement
+  // can lose the old frame (readyState, expired producer, or GPU backing).
+  // Warm MSE restores have their own decoder and should never show a freeze.
+  if (!mayRestoreMseWindow && typeof preserveCurrentFrameForTranscodeSeek === "function")
+    preserveCurrentFrameForTranscodeSeek();
+  const audioIndex = context?.audioIndex;
+  const loadId = playbackLoadRequestId;
   cancelTranscodeStart();
   window.clearTimeout(state.pendingSeek?.timer);
   // Set before pausing, so the old stream's pause event knows a seek is waiting.
   state.pendingSeek = { target, wasPlaying, timer: 0 };
+  const queued = state.pendingSeek;
   if (!video.paused) video.pause();
   state.currentMs = target * 1000;
-  setPlayerLoading(18, "Seeking", formatTime(target * 1000));
+  if (mayRestoreMseWindow) hideLoadingForBufferedSeek();
+  else setPlayerLoading(18, "Seeking", formatTime(target * 1000));
   renderSubtitles();
   updateCompatControls();
-  state.pendingSeek.timer = window.setTimeout(() => {
-    const pending = state.pendingSeek;
+  queued.timer = window.setTimeout(async () => {
+    if (state.pendingSeek !== queued) return;
+    // A newer Watch source, audio selection or navigation can supersede this
+    // timer without a second seek event. Never restart their newer stream.
+    if (state.currentSource !== source || state.transcodeContext !== context
+      || context?.audioIndex !== audioIndex || playbackLoadRequestId !== loadId) {
+      if (state.pendingSeek === queued) state.pendingSeek = null;
+      return;
+    }
+    if (mayRestoreMseWindow && remuxMseSession === mse) {
+      let restored = false;
+      try { restored = await mse.restoreWindow(queued.target, state.transcodeBaseOffsetSeconds); }
+      catch { restored = false; }
+      if (state.pendingSeek !== queued || state.currentSource !== source
+        || state.transcodeContext !== context || playbackLoadRequestId !== loadId) return;
+      if (restored && seekInsideRemuxMse(queued.target)) return;
+    }
+    if (state.pendingSeek !== queued) return;
     state.pendingSeek = null;
-    if (pending) void restartTranscodeAt(pending.target, { wasPlaying: pending.wasPlaying });
-  }, 280);
+    if (mayRestoreMseWindow) setPlayerLoading(18, "Seeking", formatTime(queued.target * 1000));
+    if (forceNative) void openTranscodeAt(queued.target, {
+      wasPlaying: queued.wasPlaying, forceNative: true,
+    });
+    else void restartTranscodeAt(queued.target, { wasPlaying: queued.wasPlaying });
+  }, warmCopySeek ? 180 : 280);
 }
 
 // While a seek is waiting, the player counts as playing if it will play once the seek lands.
@@ -4841,10 +6138,31 @@ function playerIsPlaying() {
 // directly buffered/local files untouched and preserve the selected audio track.
 let transcodePauseSnapshot = null;
 function noteTranscodePause() {
-  transcodePauseSnapshot = video.dataset.mode === "transcode" && !state.pendingSeek && state.transcodeContext?.baseUrl
+  transcodePauseSnapshot = video.dataset.mode === "transcode" && video.dataset.indexed !== "1"
+    && !state.pendingSeek && state.transcodeContext?.baseUrl
     ? { at: Date.now(), src: video.src, position: absolutePlaybackSeconds() } : null;
 }
+function nativeTranscodeHasBufferedContinuation() {
+  // Native fragmented MP4 can still have several decoded/buffered seconds
+  // available after a long pause. A 30-second wall clock timeout alone is NOT
+  // evidence that these frames expired or that the decoder needs replacing.
+  // MSE producers are managed separately because a stale SourceBuffer can
+  // report buffered TimeRanges even after its producer has ended.
+  if ((typeof remuxMseSession !== "undefined" && remuxMseSession)
+    || video.dataset.mode !== "transcode" || video.seeking
+    || video.error || video.readyState < 3 || !Number.isFinite(video.currentTime)) return false;
+  const buffered = video.buffered;
+  if (!buffered?.length) return false;
+  try {
+    for (let i = 0; i < buffered.length; i += 1) {
+      if (video.currentTime >= buffered.start(i) - 0.05
+        && video.currentTime + 0.75 < buffered.end(i)) return true;
+    }
+  } catch {}
+  return false;
+}
 function resyncTranscodeAfterLongPause() {
+  if (video.dataset.indexed === "1") return false;
   const snapshot = transcodePauseSnapshot;
   if (!snapshot) return false;
   transcodePauseSnapshot = null;
@@ -4853,7 +6171,16 @@ function resyncTranscodeAfterLongPause() {
   const position = absolutePlaybackSeconds();
   // Never rewind to an earlier position if the user sought while paused.
   if (!Number.isFinite(position) || Math.abs(position - snapshot.position) > 0.5) return false;
-  void restartTranscodeAt(position, { wasPlaying: true });
+  const mse = typeof remuxMseSession !== "undefined" ? remuxMseSession : null;
+  const expiredProducer = Boolean(mse?.ended || mse?.needsResumeRefresh);
+  if (mse?.contains(position - state.transcodeBaseOffsetSeconds) && !expiredProducer)
+    return false; // A LIVE MSE still retains this exact decoded timeline.
+  if (!mse && nativeTranscodeHasBufferedContinuation()) return false;
+  // A SourceBuffer TimeRange is NOT proof the FFmpeg producer survived a long
+  // idle pause. Stale/ended MSE must reopen one-way in native playback.
+  void restartTranscodeAt(position, {
+    wasPlaying: true, forceNative: expiredProducer, verifySession: true,
+  });
   return true;
 }
 
@@ -4864,13 +6191,23 @@ function resumePlayback() {
     updateCompatControls();
     return;
   }
-  if (resyncTranscodeAfterLongPause()) return;
   // A failed play() promise can reject before a media 'play' event fires.
   // The user still requested Resume; let the resulting media error enter the
   // bounded recovery path instead of treating it as an idle paused player.
   recoveryPauseSerial += 1;
   recoveryPlaybackRequested = true;
-  video.play().catch(() => {});
+  if (resyncTranscodeAfterLongPause()) return;
+  const source = state.currentSource;
+  const loadId = playbackLoadRequestId;
+  const src = video.src;
+  video.play().catch((error) => {
+    if (state.currentSource !== source || playbackLoadRequestId !== loadId
+      || video.src !== src || !recoveryPlaybackRequested) return;
+    // A buffered but disconnected MSE can reject Play without emitting a
+    // media error; prefer its one-way native fallback to a dead source.
+    if (fallbackActiveRemuxMseToNative({ wasPlaying: true })) return;
+    if (error?.name !== "NotAllowedError") void recoverPlayback("error");
+  });
 }
 
 function togglePlayback() {
@@ -4890,6 +6227,34 @@ function togglePlayback() {
 function seekPlayerTo(seconds) {
   const durationSeconds = state.mediaDurationMs > 0 ? state.mediaDurationMs / 1000 : (Number.isFinite(video.duration) ? video.duration : 0);
   const target = Math.max(0, durationSeconds ? Math.min(seconds, durationSeconds) : seconds);
+  if (video.dataset.indexed === "1" && !remuxMseCacheAllowed) {
+    delete video.dataset.indexed;
+    void restartTranscodeAt(target, { wasPlaying: playerIsPlaying(), forceNative: true });
+    return true;
+  }
+  if (video.dataset.indexed === "1" && Math.abs(target - absolutePlaybackSeconds()) > 0.2) {
+    if (!state.pendingSeek) {
+      // Indexed faststart MP4 supports standard HTTP byte-range seeking even
+      // outside video.buffered; the browser fetches the needed moov/mdat.
+      video.currentTime = target;
+      state.currentMs = target * 1000;
+      loadMoreEmbeddedSubtitles({ seeked: true });
+      renderSubtitles();
+      updateCompatControls();
+      return true;
+    }
+  }
+  if (video.dataset.mode === "transcode" && Math.abs(target - absolutePlaybackSeconds()) > 0.2
+    && typeof readyIndexedVideo === "function" && readyIndexedVideo()
+    && openIndexedSeekAt(target, { wasPlaying: playerIsPlaying() })) {
+    loadMoreEmbeddedSubtitles({ seeked: true });
+    return true;
+  }
+  if (video.dataset.mode === "transcode" && Math.abs(target - absolutePlaybackSeconds()) > 0.2
+    && typeof seekInsideRemuxMse === "function" && seekInsideRemuxMse(target)) {
+    loadMoreEmbeddedSubtitles({ seeked: true });
+    return true;
+  }
   // Fragmented transcodes are intentionally treated as timestamped windows,
   // not as one ever-growing seekable file. Native seeking inside a generated
   // fragment is browser-dependent and was the source of the broken +/-10s
@@ -5035,7 +6400,16 @@ function preferredAudioTrackIndex(media, source = state.currentSource) {
       && (!saved.language || track.language === saved.language));
     if (exact >= 0) return exact;
     if (saved.language) {
-      const matching = identities.map((track, index) => track.language === saved.language ? index : -1).filter((index) => index >= 0);
+      // A dubbed dialogue track can disappear between episodes while an
+      // English commentary/descriptive track occupies the former stream index.
+      // Language-only fallback is valid when labels are absent, but never
+      // silently change an ordinary dub into ancillary narration (or vice
+      // versa). Explicit user selections can still choose either track.
+      const ancillary = (title) => /\b(?:commentary|descriptive|description|narration|visual[- ]impair(?:ed|ment))\b/i.test(String(title || ""));
+      const savedAncillary = saved.title ? ancillary(saved.title) : null;
+      const matching = identities.map((track, index) => track.language === saved.language
+        && (savedAncillary === null || !track.title || ancillary(track.title) === savedAncillary)
+        ? index : -1).filter((index) => index >= 0);
       if (matching.includes(saved.index)) return saved.index;
       if (matching.length) return matching[0];
       // Never fall back to the same index in a different language.
@@ -5069,6 +6443,15 @@ function transcodeQuery(startSeconds, audioIndex = state.selectedAudioTrack || 0
   if (codec === "hevc" && state.transcodeContext?.copyVideo) {
     const supported = video.canPlayType(bitDepth > 8 ? 'video/mp4; codecs="hvc1.2.4.L153.B0"' : 'video/mp4; codecs="hvc1.1.6.L120.B0"');
     if (supported) { params.set("video", "copy"); params.set("hevc", "1"); }
+    else if (!state.currentMediaProbe?.compatibility?.video?.hdr
+      && !state.currentMediaProbe?.compatibility?.video?.hdrKind
+      && !state.currentMediaProbe?.video?.dolbyVision) {
+      // A missing client HEVC opt-in makes server.js encode H264 even if this
+      // request says video=copy. Keep the client seek clock in the SAME mode
+      // as the real encoder; otherwise it waits for nonexistent GOP preroll
+      // after accurate input seeking and can end in native MediaError4.
+      state.transcodeContext.forceH264 = true;
+    }
   }
   if (codec === "av1" && state.transcodeContext?.copyVideo && video.canPlayType(bitDepth > 8 ? 'video/mp4; codecs="av01.0.12M.10"' : 'video/mp4; codecs="av01.0.12M.08"')) {
     params.set("video", "copy"); params.set("av1", "1");
@@ -5188,6 +6571,8 @@ function cuePlaybackBounds(cue, track) {
   };
 }
 
+const indexedActiveSubtitleCue = createSubtitleCueLookup(cuePlaybackBounds);
+
 function cueNearPlaybackMs(track, playbackMs, toleranceMs = 1200) {
   if (!track?.cues?.length || !Number.isFinite(Number(playbackMs))) return null;
   let nearest = null;
@@ -5206,10 +6591,7 @@ function cueNearPlaybackMs(track, playbackMs, toleranceMs = 1200) {
 }
 
 function getActiveCue(track, currentMs = state.currentMs) {
-  return track.cues.find((cue) => {
-    const bounds = cuePlaybackBounds(cue, track);
-    return currentMs >= bounds.startMs && currentMs <= bounds.endMs;
-  }) || null;
+  return indexedActiveSubtitleCue(track, currentMs);
 }
 
 function comparisonCueForTrack(track, primaryTrack, primaryCue) {
@@ -5433,7 +6815,7 @@ async function alignCurrentSubtitleSet() {
 const AUDIO_SYNC_WINDOW_S = 45;
 const AUDIO_SYNC_MIN_WINDOW_S = 20;
 const AUDIO_SYNC_MAX_WINDOWS = 24;
-const audioSync = { key: "", windows: [], caches: new Map(), pending: false, timer: 0, timerDueAt: 0, failures: 0, lastCheckMs: -Infinity };
+const audioSync = { key: "", generation: 0, windows: [], caches: new Map(), pending: false, timer: 0, timerDueAt: 0, failures: 0, lastCheckMs: -Infinity };
 let playerSyncChipTimer = 0;
 let playerSyncChipState = "";
 
@@ -5476,7 +6858,7 @@ function resetAudioSync() {
     pairedCueMemo.clear();
     subtitleRenderMemo.key = "";
   }
-  Object.assign(audioSync, { key: nextKey, windows: [], caches: new Map(), pending: false, timer: 0, timerDueAt: 0, failures: 0, lastCheckMs: -Infinity });
+  Object.assign(audioSync, { key: nextKey, generation: audioSync.generation + 1, windows: [], caches: new Map(), pending: false, timer: 0, timerDueAt: 0, failures: 0, lastCheckMs: -Infinity });
   state.tracks.forEach((track) => { delete track.syncFollowsId; });
   playerSyncChipState = "";
   updatePlayerSyncStatus();
@@ -5678,6 +7060,9 @@ async function runAudioSyncStep() {
   const key = audioSyncKey(source);
   if (audioSync.key !== key) resetAudioSync();
   if (audioSync.pending || !audioSyncTracks().length) return;
+  // Resetting for a new audio dub releases the old slot. A stale async step
+  // must not release or alter the newer dub's in-flight sync request.
+  const generation = audioSync.generation;
   const durationMs = Number(state.mediaDurationMs) || 0;
   if (!durationMs || !$("#video-loading")?.hidden) {
     scheduleAudioSync(3000);
@@ -5687,10 +7072,10 @@ async function runAudioSyncStep() {
   let slot = null;
   try {
     const ranges = await audioReadyRanges(source);
-    if (audioSyncKey() !== key) return;
+    if (audioSync.generation !== generation || audioSyncKey() !== key) return;
     slot = nextAudioSyncWindow(ranges, durationMs);
   } finally {
-    audioSync.pending = false;
+    if (audioSync.generation === generation) audioSync.pending = false;
   }
   if (!slot) {
     // A valid audio range may not exist yet. Don't show "Syncing" forever
@@ -5720,13 +7105,13 @@ async function runAudioSyncStep() {
     const response = await fetch(`/api/torrents/${encodeURIComponent(source.sessionId)}/files/${source.fileIndex}/speech?${params}`, { signal: AbortSignal.timeout(52_000) });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw Object.assign(new Error(data.error || `Audio analysis failed (${response.status})`), { status: response.status });
-    if (audioSyncKey() !== key) return;
+    if (audioSync.generation !== generation || audioSyncKey() !== key) return;
     audioSync.windows.push({ startMs: Number(data.startMs) || 0, durationMs: Number(data.durationMs) || 0, activity: decodeBase64Bytes(data.activity) });
     audioSync.failures = 0;
     applyAudioSync();
     scheduleAudioSync(2500);
   } catch (error) {
-    if (audioSyncKey() !== key) return;
+    if (audioSync.generation !== generation || audioSyncKey() !== key) return;
     audioSync.failures += 1;
     // No playable audio or a timed-out torrent cannot be fixed by immediately
     // repeating the same expensive FFmpeg request. Surface an actionable state.
@@ -5741,7 +7126,7 @@ async function runAudioSyncStep() {
       renderTracks();
     }
   } finally {
-    audioSync.pending = false;
+    if (audioSync.generation === generation) audioSync.pending = false;
   }
 }
 
@@ -6246,8 +7631,15 @@ function renderSubtitles() {
     recordCueExposure(targetPair.track, targetPair.cue);
     if (state.wordColoring && !["loading", "ready", "fallback"].includes(targetPair.track.learningProcessState)) void ensureProcessedTrackTokens(targetPair.track);
   }
-  const renderKey = `${state.subtitlesVisible}|${state.targetLanguage}|${state.wordColoring}|${learningRevision}|${rendered.map(({ track, cue }) => `${track.id}:${cue?.id || "-"}:${cue?.romanizedText || ""}`).join("|")}`;
+  const renderKey = `${state.subtitlesVisible}|${state.targetLanguage}|${state.subtitleStyle.romanization}|${state.wordColoring}|${learningRevision}|${rendered.map(({ track, cue }) => `${track.id}:${cue?.id || "-"}:${cue?.romanizedText || ""}`).join("|")}`;
   if (subtitleRenderMemo.key === renderKey) return;
+  if (typeof playbackMetrics !== "undefined" && playbackMetrics) playbackMetrics.record("subtitle-cue-change", {
+    playbackSeconds: absolutePlaybackSeconds(),
+    visibleTracks: visibleTracks.length,
+    activeCues: rendered.filter(({ cue }) => Boolean(cue)).length,
+    selectedTrackOffsetMs: Number.isFinite(Number(selectedTrack?.offsetMs)) ? Number(selectedTrack.offsetMs) : null,
+    presentedClockSeconds: presentedSubtitleSeconds(),
+  });
   subtitleRenderMemo.key = renderKey;
   overlay.innerHTML = "";
   rendered.forEach(({ track, cue }) => {
@@ -8715,7 +10107,7 @@ const calendarUi = createCalendarView({
 });
 $("#calendar-root")?.addEventListener("calendar-open-request", () => switchView("calendar"));
 
-const VIEW_ROUTES = Object.freeze({ home: "/home", watch: "/watch", library: "/library", calendar: "/calendar", study: "/study", review: "/review", test: "/test", settings: "/settings", title: "/title" });
+const VIEW_ROUTES = Object.freeze({ home: "/home", watch: "/watch", library: "/library", calendar: "/calendar", study: "/study", review: "/review", test: "/test", settings: "/settings", title: "/title", ...clientFeatures.viewRoutes });
 const ROUTE_VIEWS = Object.freeze(Object.fromEntries(Object.entries(VIEW_ROUTES).map(([view, route]) => [route, view])));
 const LAST_WATCH_SELECTION_KEY = "lvl-last-watch-selection-v1";
 let watchRestoreReady = false;
@@ -9026,6 +10418,7 @@ function stopPlaybackIfHiddenAfterNavigation(destination) {
   libraryPlaybackPendingMagnet = "";
   video.pause();
   clearBufferingTimer();
+  stopTransferStats();
   resetRecoveryDisplay();
 }
 
@@ -9042,6 +10435,11 @@ function switchView(view, { historyMode = "push", restoreScroll = false } = {}) 
   if (!VIEW_ROUTES[view]) view = "home";
   updateFloatingPlayback(view);
   stopPlaybackIfHiddenAfterNavigation(view);
+  // The hidden, paused Watch view must not keep refreshing the torrent's
+  // 30-minute server TTL. Resume the heartbeat only while Watch is visible;
+  // floating playback is deliberately exempt from the hidden-page pause.
+  if (view === "watch" && state.currentSource?.sessionId && !state.transferStatsTimer)
+    startTransferStats(state.currentSource.sessionId);
   if (view !== "watch") {
     clearAutoNext();
     closePlayerPopovers();
@@ -9053,7 +10451,7 @@ function switchView(view, { historyMode = "push", restoreScroll = false } = {}) 
   }
   $$(".view").forEach((element) => element.classList.toggle("is-active", element.id === `view-${view}`));
   const topbarLabel = $("#app-topbar-view-label");
-  if (topbarLabel) topbarLabel.textContent = t(({ home: "Home", watch: "Watch", library: "Library", calendar: "Calendar", study: "Study", review: "Review", test: "Tests", settings: "Settings", title: "Library" })[view]);
+  if (topbarLabel) topbarLabel.textContent = t(({ home: "Home", watch: "Watch", library: "Library", calendar: "Calendar", study: "Study", review: "Review", test: "Tests", settings: "Settings", title: "Library" })[view] || clientFeatures.viewLabel(view));
   if ($(".app-shell")?.classList.contains("sidebar-expanded")) setSidebarExpanded(false, { persist: false });
   if (view !== "title") $$(".nav-btn").forEach((button) => button.classList.toggle("is-active", button.dataset.view === view));
   const route = view === "title" ? `${VIEW_ROUTES.title}${window.location.search}` : VIEW_ROUTES[view];
@@ -9080,6 +10478,7 @@ function switchView(view, { historyMode = "push", restoreScroll = false } = {}) 
   }
   if (view === "calendar") calendarUi.activate();
   else calendarUi.deactivate();
+  clientFeatures.showView(view);
   if (view === "settings") {
     renderSettings();
     if (learningEnabled) {
@@ -9134,9 +10533,13 @@ function setLearningEnabled(enabled) {
 }
 
 async function handleSubtitleFiles(files) {
+  const sourceAtSelection = state.currentSource;
   let duplicates = 0;
   for (const file of files) {
     const text = await file.text();
+    // File.text() can finish after the player opens a different episode.
+    // Never attach the old episode's captions to the new current source.
+    if (state.currentSource !== sourceAtSelection) return;
     const label = file.name.replace(/\.(srt|vtt)$/i, "");
     const result = addSubtitleText(text, label);
     if (!result.added) duplicates += 1;
@@ -9924,6 +11327,7 @@ async function switchAudioTrack(index, { force = false, remember = false } = {})
     syncRejected: track.syncRejected,
   }));
   const generation = ++audioTrackSwitchGeneration;
+  let rollbackPlayIntent = null;
   state.selectedAudioTrack = index;
   preferredAudioLanguage = String(tracks[index].language || "").trim().toLowerCase();
   const baseUrl = `/api/torrents/${encodeURIComponent(source.sessionId)}/files/${source.fileIndex}/transcode`;
@@ -9934,7 +11338,10 @@ async function switchAudioTrack(index, { force = false, remember = false } = {})
   video.dataset.mode = "transcode";
   setPlayerLoading(22, "Switching audio", audioTrackLabel(tracks[index], index).title);
   resetAudioSync();
-  const opened = await openTranscodeAt(target, { wasPlaying });
+  const opened = await openTranscodeAt(target, {
+    wasPlaying,
+    onPreflightFailure: (failure) => { rollbackPlayIntent = failure.wasPlaying; },
+  });
   // Verification can fail before the old media URL changes (for example a
   // copied HDR seek whose source clock cannot be proven). Keep the actual
   // audible dub in the menu and the next-seek transcode context. A stale
@@ -9959,6 +11366,16 @@ async function switchAudioTrack(index, { force = false, remember = false } = {})
     subtitleRenderMemo.key = "";
     renderSubtitles();
     updatePlayerSyncStatus();
+    // The attempted stream was never installed: drop its fatal loader and
+    // restore the original stream only if the user still wants it playing.
+    const overlay = $("#video-loading");
+    if (overlay) {
+      overlay.classList.remove("is-error");
+      overlay.hidden = true;
+    }
+    stopPlayerLoadingAnimation();
+    state.loadingProgress = 100;
+    if (rollbackPlayIntent === true && video.paused) resumePlayback();
   }
   if (opened && remember && generation === audioTrackSwitchGeneration
     && state.currentSource === source && state.selectedAudioTrack === index)
@@ -10049,6 +11466,7 @@ function watchEpisodeStatus(series, chapter) {
 function markWatchEpisodeUnwatched(series, code) {
   const normalized = String(code || "").toUpperCase();
   if (!series || !/^S\d{2}E\d{2,4}$/.test(normalized)) return false;
+  if (typeof invalidateAutoNextAfterEpisodeEdit === "function") invalidateAutoNextAfterEpisodeEdit(series, normalized);
   explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
   const entries = state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key);
   const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
@@ -10060,8 +11478,10 @@ function markWatchEpisodeUnwatched(series, code) {
     }
     for (const episode of entry.episodes || []) {
       if (String(episode.code || "").toUpperCase() !== normalized || !episode.progress) continue;
-      // Removing a watched mark is not a request to erase the resume point.
-      episode.progress = { ...episode.progress, finished: false, updatedAt: Date.now() };
+      // Explicitly marking a chapter not watched resets its replay position.
+      // A watched→unwatched toggle must never resume seconds before the end
+      // and silently trip the pending Up Next countdown again.
+      episode.progress = { ...episode.progress, positionMs: 0, finished: false, updatedAt: Date.now() };
     }
   }
   // An explicit false flag prevents stale AniList imports from immediately
@@ -10070,6 +11490,12 @@ function markWatchEpisodeUnwatched(series, code) {
   persistAniListQueue(anilistStoredQueue().filter((row) =>
     !(row.seriesKey === series.key && row.code === normalized)));
   saveLibrary();
+  const current = state.currentSource;
+  const selected = entries.find((entry) => entry.id === current?.libraryId)
+    ?.episodes?.find((episode) => Number(episode.fileIndex) === Number(current?.fileIndex));
+  if (String(selected?.code || "").toUpperCase() === normalized
+    && typeof viewActive === "function" && viewActive("watch")
+    && typeof seekPlayerTo === "function") seekPlayerTo(0);
   return true;
 }
 
@@ -10213,6 +11639,7 @@ function toggleEpisodeWatched(series, code, saved = null) {
 function markWatchEpisodeWatched(series, code, saved = null) {
   const normalized = String(code || "").toUpperCase();
   if (!series || !/^S\d{2}E\d{2,4}$/.test(normalized)) return false;
+  if (typeof invalidateAutoNextAfterEpisodeEdit === "function") invalidateAutoNextAfterEpisodeEdit(series, normalized);
   explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
   const entries = state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key);
   const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
@@ -10587,6 +12014,19 @@ function cancelAutoNext() {
   clearAutoNext();
 }
 
+function invalidateAutoNextAfterEpisodeEdit(series, code) {
+  const source = state.currentSource;
+  if (!source?.libraryId || source.fileIndex == null) return;
+  const entry = libraryEntryById(source.libraryId);
+  if (!entry || (entry.seriesKey || librarySeriesKey(entry.title)) !== series?.key) return;
+  const selected = entry.episodes?.find((episode) => Number(episode.fileIndex) === Number(source.fileIndex));
+  if (String(selected?.code || "").toUpperCase() !== String(code || "").toUpperCase()) return;
+  // A watched-state edit is a new user intent, even if it does not replace
+  // the media URL. Stop both an armed timer and an already-in-flight lookup.
+  cancelAutoNext();
+  manualCatalogPlaybackId += 1;
+}
+
 function playAutoNextNow() {
   if (!autoNextSource || autoNextSourceId() !== autoNextSource) return clearAutoNext();
   clearAutoNext();
@@ -10598,13 +12038,26 @@ function startAutoNext() {
   const key = autoNextSourceId();
   if (!key || key === autoNextDismissedSource || autoNextInterval !== null || !viewActive("watch")) return;
   const catalog = currentCatalogNeighbors();
-  const next = catalog?.next || currentChapterNavigation().next?.episode;
+  const nextNav = currentChapterNavigation().next;
+  const next = catalog?.next || nextNav?.episode;
   if (!next || adjacentChapterBusy) return;
   autoNextSource = key;
   autoNextRemaining = AUTO_NEXT_SECONDS;
   const label = next.code || (Number.isInteger(next.season) && Number.isInteger(next.episode)
     ? chapterCode(next.season, next.episode) : next.episodeTitle || "Next episode");
-  $("#player-up-next-title").textContent = `Next: ${label}`;
+  const title = String(next.name || next.episodeTitle || next.title || "").trim();
+  $("#player-up-next-title").textContent = title ? `${label} · ${title}` : label;
+  const preview = $("#player-up-next-image");
+  if (preview) {
+    const fallbackTitle = state.currentSource?.title || "Next episode";
+    const fallback = artworkFallback(fallbackTitle, { ratio: "wide", label });
+    const thumbnail = String(next.thumbnail || next.image || nextNav?.episode?.thumbnail || "").trim();
+    preview.onerror = () => {
+      preview.onerror = null;
+      preview.src = fallback;
+    };
+    preview.src = thumbnail || fallback;
+  }
   const update = () => { $("#player-up-next-countdown").textContent = `Playing in ${autoNextRemaining} second${autoNextRemaining === 1 ? "" : "s"}`; };
   update();
   $("#player-up-next").hidden = false;
@@ -10651,24 +12104,49 @@ function checkedSkipInterval(value, duration, type) {
   return { start, end: Math.min(end, duration), match: value.match };
 }
 
+function currentEmbeddedChapterSkips(duration) {
+  const probe = state.currentMediaProbe;
+  const actualDuration = Number(probe?.durationSeconds);
+  // The container's own chapters can be exact only for the same file/cut.
+  // A stale probe or different selected output duration must never authorize
+  // automatic seeking (rounding allows the duration displayed in whole seconds).
+  if (!Number.isFinite(actualDuration) || actualDuration <= 0 ||
+    !Number.isFinite(duration) || Math.abs(actualDuration - duration) > 1.1) {
+    return { intro: null, outro: null };
+  }
+  const chapters = probe?.embeddedSkipMarkers;
+  return {
+    intro: checkedSkipInterval(chapters?.intro, duration, "intro"),
+    outro: checkedSkipInterval(chapters?.outro, duration, "outro"),
+  };
+}
+
 function currentEpisodeSkipIdentity() {
   if (!viewActive("watch") || watchPendingSelection) return null;
   const source = state.currentSource;
   if (source?.kind !== "torrent" || source.fileIndex === null || source.fileIndex === undefined) return null;
   const entry = libraryEntryById(source.libraryId);
   const catalogId = String(entry?.catalogId || source.catalogId || "");
-  if (!/^tt\d{5,12}$/.test(catalogId) || entry?.catalogType === "movie" || source.catalogType === "movie") return null;
   const episode = entry?.episodes?.find((item) => Number(item.fileIndex) === Number(source.fileIndex));
   // Library chapter labels are authoritative for a pack whose filenames are
   // numbered across seasons. Accept both S1E3 and zero-padded S01E03 codes.
   const code = entry?.chapterLabels?.[String(source.fileIndex)]?.code || episode?.code || source.episode?.code || "";
   const match = String(code).match(/^S(\d{1,2})E(\d{1,4})$/i);
   const duration = Math.round(state.mediaDurationMs / 1000);
-  if (!match || duration < 300 || duration > 18_000) return null;
+  if (duration < 300 || duration > 18_000) return null;
+  const hasProviderIdentity = Boolean(match && /^tt\d{5,12}$/.test(catalogId)
+    && entry?.catalogType !== "movie" && source.catalogType !== "movie");
+  // Explicit OP/ED chapters originate from this exact selected file, so they
+  // also work when an IMDb episode match is unavailable. Never transfer them
+  // from an old media probe: source transitions clear currentMediaProbe.
+  const chapters = currentEmbeddedChapterSkips(duration);
+  if (!hasProviderIdentity && !chapters.intro && !chapters.outro) return null;
   return {
-    key: `${source.libraryId}:${source.fileIndex}|${catalogId}|${match[0]}|${duration}`,
-    imdbId: catalogId,
-    season: Number(match[1]), episode: Number(match[2]), duration,
+    key: `${source.libraryId}:${source.sessionId || ""}:${source.fileIndex}:${source.sourceTag || ""}|${hasProviderIdentity ? catalogId : "chapter"}|${hasProviderIdentity ? match[0] : ""}|${duration}`,
+    imdbId: hasProviderIdentity ? catalogId : null,
+    season: hasProviderIdentity ? Number(match[1]) : null,
+    episode: hasProviderIdentity ? Number(match[2]) : null,
+    duration,
   };
 }
 
@@ -10756,16 +12234,20 @@ function applyEpisodeAutoSkips() {
 function refreshEpisodeSkipOptions() {
   const identity = currentEpisodeSkipIdentity();
   const key = identity?.key || "";
+  const chapters = identity ? currentEmbeddedChapterSkips(identity.duration) : { intro: null, outro: null };
   if (key !== episodeSkipKey) {
     episodeSkipController?.abort();
     episodeSkipController = null;
     episodeSkipKey = key;
-    episodeSkipTimes = { intro: null, outro: null };
-    episodeSkipFetchState = identity ? "loading" : "idle";
+    episodeSkipTimes = chapters;
+    // Two verified local markers require no community lookup, so their
+    // controls are immediately ready rather than left in a false loading state.
+    episodeSkipFetchState = !identity ? "idle"
+      : identity.imdbId && (!chapters.intro || !chapters.outro) ? "loading" : "loaded";
     renderEpisodeTimelineSegments();
     episodeAutoSkip.attemptedIntro = "";
     episodeAutoSkip.attemptedOutro = "";
-    if (identity) {
+    if (identity?.imdbId && (!chapters.intro || !chapters.outro)) {
       const controller = new AbortController();
       episodeSkipController = controller;
       const query = new URLSearchParams({
@@ -10778,9 +12260,10 @@ function refreshEpisodeSkipOptions() {
         if (controller.signal.aborted || episodeSkipKey !== key
           || currentEpisodeSkipIdentity()?.key !== key) return;
         episodeSkipFetchState = payload ? "loaded" : "unavailable";
+        const latestChapters = currentEmbeddedChapterSkips(identity.duration);
         episodeSkipTimes = {
-          intro: checkedSkipInterval(payload?.segments?.intro, identity.duration, "intro"),
-          outro: checkedSkipInterval(payload?.segments?.outro, identity.duration, "outro"),
+          intro: latestChapters.intro || checkedSkipInterval(payload?.segments?.intro, identity.duration, "intro"),
+          outro: latestChapters.outro || checkedSkipInterval(payload?.segments?.outro, identity.duration, "outro"),
         };
         renderEpisodeTimelineSegments();
         renderEpisodeSkipOptions();
@@ -10792,6 +12275,18 @@ function refreshEpisodeSkipOptions() {
       }); // Missing service or unsupported episode leaves controls inactive.
     }
   }
+  // An asynchronous probe can reveal a verified chapter after the provider
+  // request began. Prefer that same-file marker without issuing another API
+  // request or displacing a previously valid provider interval.
+  let chapterChanged = false;
+  for (const kind of ["intro", "outro"]) {
+    if (!chapters[kind]) continue;
+    if (episodeSkipTimes[kind]?.start !== chapters[kind].start ||
+      episodeSkipTimes[kind]?.end !== chapters[kind].end ||
+      episodeSkipTimes[kind]?.match !== chapters[kind].match) chapterChanged = true;
+    episodeSkipTimes[kind] = chapters[kind];
+  }
+  if (chapterChanged) renderEpisodeTimelineSegments();
   renderEpisodeSkipOptions();
   applyEpisodeAutoSkips();
 }
@@ -11975,6 +13470,7 @@ function renderTitlePage() {
   const relatedChanged = setTitlePart(related, "related", titleRelatedMoviesMarkup(movies));
   const aboutChanged = setTitlePart(about, "about", titleAboutMarkup(subject, info));
   if (heroChanged || mainChanged || relatedChanged || aboutChanged) refreshImages($("#view-title"));
+  clientFeatures.run("title:render", { subject, info, meta, view: $("#view-title") });
 }
 
 async function openRelatedAnimeMovie(id) {
@@ -12360,7 +13856,7 @@ const libraryView = (() => {
   let saved = {};
   try { saved = JSON.parse(localStorage.getItem(LIBRARY_VIEW_KEY) || "{}") || {}; } catch {}
   return {
-    filter: ["all", "series", "movie", "anime"].includes(saved.filter) ? saved.filter : "all",
+    filter: ["all", "series", "movie", "anime", ...clientFeatures.libraryFilterIds].includes(saved.filter) ? saved.filter : "all",
     sort: ["recent", "added", "title", "title-desc", "watched", "unfinished", "progress"].includes(saved.sort) ? saved.sort : "recent",
     status: ["any", ...ANILIST_STATUS_FILTERS, "REPEATING"].includes(saved.status) ? saved.status : "any",
     query: "",
@@ -12662,6 +14158,8 @@ function renderLibrary() {
   const counts = { all: all.length, series: groups.series.length, movie: groups.movie.length, anime: groups.anime.length };
   document.querySelectorAll("[data-library-count]").forEach((node) => { node.textContent = counts[node.dataset.libraryCount] ? String(counts[node.dataset.libraryCount]) : ""; });
   setActiveTab($("#library-filter"), libraryView.filter);
+  // A Part B filter (Manga, Books…) fills the list itself.
+  if (typeof clientFeatures !== "undefined" && clientFeatures.showLibraryFilter(libraryView.filter, list)) return;
   const sort = $("#library-sort");
   if (sort && sort.value !== libraryView.sort) sort.value = libraryView.sort;
   const status = libraryView.status;
@@ -12994,9 +14492,11 @@ function resolveAnimeBrowserCatalog(media) {
   const key = Number(media.id);
   const cached = animeBrowserTitleCache.get(key);
   if (cached && cached.until > Date.now()) return cached.promise;
-  const local = animeBrowserExactCatalogMatch(media, [
+  const linkedLibrary = buildLibrarySeries();
+  const local = verifiedAnimeLibraryCatalogMatch(media, linkedLibrary)
+    || animeBrowserExactCatalogMatch(media, [
     ...homeTitleIndex.values(),
-    ...buildLibrarySeries().filter((series) => series.catalogId).map((series) => ({
+    ...linkedLibrary.filter((series) => series.catalogId).map((series) => ({
       id: series.catalogId, name: series.title,
       type: series.type === "movie" ? "movie" : "series",
     })),
@@ -13024,6 +14524,16 @@ function resolveAnimeBrowserCatalog(media) {
       try { return await searchNames(roots); }
       catch (rootError) {
         originalError.errors = [...(originalError.errors || []), ...(rootError.errors || [])];
+      }
+    }
+    // Cross-language combinations and shortened romanized subtitles can
+    // retrieve the original IMDb series when provider token matching fails.
+    // Neither search expression becomes a trusted identity alias.
+    const alternateQueries = [...animeCatalogSubtitleSearchNames(media), ...animeCatalogCombinedSearchNames(media)];
+    if (alternateQueries.length) {
+      try { return await searchNames(alternateQueries); }
+      catch (alternateError) {
+        originalError.errors = [...(originalError.errors || []), ...(alternateError.errors || [])];
       }
     }
     if ((originalError?.errors || []).some((item) => item.message !== "no-exact-match")) {
@@ -13069,7 +14579,7 @@ function renderAnimeBrowserResults() {
   status.textContent = animeBrowser.error || (animeBrowser.loading ? "Loading anime from AniList…" : animeBrowser.loaded ? `${animeBrowser.items.length} anime` : "");
   status.classList.toggle("is-error", Boolean(animeBrowser.error));
   grid.innerHTML = animeBrowser.items.map((item) => `<button class="anime-browser-card" type="button" data-anime-id="${item.id}">
-    <span class="anime-browser-art"><img src="${escapeHtml(item.cover)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(item.title)}" /></span>
+    <span class="anime-browser-art"><img src="${escapeHtml(item.cover || artworkFallback(item.title))}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(item.title)}"${item.coverFallback && item.coverFallback !== item.cover ? ` data-fallback-src="${escapeHtml(item.coverFallback)}"` : ""} /></span>
     <strong>${escapeHtml(item.title)}</strong>
     <span>${escapeHtml([item.year, item.season && item.season[0] + item.season.slice(1).toLowerCase(), item.format, Number(item.score) > 0 && Number(item.score) <= 100 ? `${(Number(item.score) / 10).toFixed(1)}/10` : ""].filter(Boolean).join(" - "))}</span>
   </button>`).join("") || (animeBrowser.loaded && !animeBrowser.loading ? '<p class="anime-browser-empty">No anime matched these filters.</p>' : "");
@@ -14133,7 +15643,11 @@ function wireAniListAutoSettings() {
     renderAniListAutoSettings();
   });
   $("#anilist-auto-sync")?.addEventListener("click", () => {
-    void syncAniListAuto({ manual: true }).then((result) => result?.ok && anilistScoreSyncEnabled()
+    // Refresh authenticated season identities and import their watched count
+    // before reconciling the local watch queue. This works even if automatic
+    // uploads and two-way score syncing are disabled.
+    void syncAniListLibrary({ quiet: true }).then(() => syncAniListAuto({ manual: true }))
+      .then((result) => result?.ok && anilistScoreSyncEnabled()
       ? syncAniListLibrary({ quiet: true }).then(async () => {
         const account = readAniListAccount(localStorage);
         if (!account) return;
@@ -14219,15 +15733,37 @@ function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = false }
   const account = readAniListAccount(localStorage);
   anilistLibraryRun = Promise.resolve()
     .then(() => account && !skipAuthPull ? syncAniListAuthenticatedRatings(account) : null)
-    .then(() => {
+    .then(async (authenticated) => {
       if (account && readAniListAccount(localStorage)?.token !== account.token)
         throw new Error("AniList account changed during import; Library was not modified.");
-      return fetchJson("/api/recs/anilist/library");
+      const data = await fetchJson("/api/recs/anilist/library");
+      return { data, authenticatedAt: Number(authenticated?.settings?.anilist?.syncedAt) || 0 };
     })
-    .then((data) => {
+    .then(({ data, authenticatedAt }) => {
       if (account && readAniListAccount(localStorage)?.token !== account.token)
         throw new Error("AniList account changed during import; Library was not modified.");
-      const result = applyAniListLibrary(Array.isArray(data.shows) ? data.shows : []);
+      // This is the same authenticated snapshot only if its server revision
+      // still matches the just-verified Viewer import. Public username data,
+      // stale snapshots and concurrent account changes remain display-only.
+      const ownerId = account && authenticatedAt > 0 && Number(data.syncedAt) === authenticatedAt
+        ? account.userId : null;
+      const shows = Array.isArray(data.shows) ? data.shows : [];
+      const result = applyAniListLibrary(shows, { accountUserId: ownerId });
+      if (ownerId) {
+        // The authenticated import already contains exact, account-owned
+        // episode counts. Apply them locally now, even when outbound automatic
+        // progress writes are off. Never change playback positions or upload.
+        const remote = new Map();
+        for (const show of shows) for (const part of show.seasons || []) {
+          const id = Number(part.anilistId);
+          if (!Number.isSafeInteger(id) || id <= 0 || !Number.isInteger(part.progress)
+            || part.progress < 0 || !Number.isInteger(part.episodes)
+            || part.episodes < 1 || part.progress > part.episodes) continue;
+          if (remote.has(id)) remote.set(id, { progressKnown: false });
+          else remote.set(id, { mediaId: id, progress: part.progress, status: part.status });
+        }
+        applyAniListRemoteWatchHistory(remote, ownerId);
+      }
       recsUi.invalidateRatings();
       localStorage.setItem(ANILIST_LIBRARY_KEY, String(Number(data.syncedAt) || Date.now()));
       const text = result.added
@@ -14260,9 +15796,13 @@ function maybeSyncAniListLibrary(overview) {
   void syncAniListLibrary({ quiet: true }).catch(() => {});
 }
 
-function applyAniListLibrary(shows) {
+function applyAniListLibrary(shows, { accountUserId = null } = {}) {
   const plan = planAniListLibrary({ series: buildLibrarySeries(), shows, keyOf: librarySeriesKey });
+  const ownerId = Number.isSafeInteger(accountUserId) && accountUserId > 0 ? accountUserId : null;
+  const showsById = new Map(shows.map((show) => [show.showId, show]));
   for (const { series, info } of plan.annotate) {
+    info.accountUserId = ownerId && verifiedAniListLibraryIdentity(series, showsById.get(info.showId))
+      ? ownerId : null;
     series.sources.forEach((entry) => {
       entry.anilist = info;
       if (!entry.anilistId) entry.anilistId = info.anilistId;
@@ -14270,6 +15810,9 @@ function applyAniListLibrary(shows) {
   }
   let added = 0;
   for (const { show, info } of plan.add) {
+    // A newly imported title is directly identified by the authenticated
+    // AniList media ID; no unrelated local title was matched by name.
+    info.accountUserId = ownerId;
     const isNew = !libraryEntryById(importedEntryId(show));
     const entry = addCatalogPlaceholder({
       id: show.imdbId || "",
@@ -15424,7 +16967,9 @@ function setCurrentTorrentSource(session, file) {
     catalogType: entry?.catalogType || "",
   };
   rememberWatchSelection(state.currentSource.libraryId, file.index);
-  playbackRecovery = changePlaybackRecoverySource(playbackRecovery, currentRecoveryKey());
+  playbackRecovery = changePlaybackRecoverySource(playbackRecovery, currentRecoveryKey(), {
+    sourceGeneration: playbackLoadRequestId,
+  });
   applyLanguagePreferencesToTracks();
   resetAudioSync();
   updatePlayerIdentity(collectionTitle, episode);
@@ -15472,23 +17017,28 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
   ].filter(Boolean).join(" ");
   const filenameNeedsAudioTranscode = releaseNeedsAudioTranscode(audioReleaseHint);
   let probedMedia = null;
+  const metadataUrl = file.metadataUrl || `/api/torrents/${encodeURIComponent(session.id)}/files/${file.index}/metadata`;
+  const metadataRequest = fetchJson(metadataUrl);
   setPlayerLoading(Math.max(68, state.loadingProgress), "Reading media");
   try {
-    probedMedia = await fetchJson(file.metadataUrl || `/api/torrents/${encodeURIComponent(session.id)}/files/${file.index}/metadata`);
+    probedMedia = await waitForStartupMediaProbe(metadataRequest);
     if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return false;
-    state.currentMediaProbe = probedMedia;
-    state.selectedAudioTrack = preferredAudioTrackIndex(probedMedia);
-    // Resume/next-chapter playback can begin late inside a 180s bucket.
-    // Extract near that actual playhead instead of scanning unavailable old pieces.
-    enableDefaultEmbeddedSubtitles(probedMedia, startAtSeconds, { urgent: startAtSeconds >= 12 });
-    renderSubtitleStyleControls();
-    const resolvedDurationMs = Number(probedMedia.durationMs) || Math.round(Number(probedMedia.durationSeconds || 0) * 1000);
-    if (resolvedDurationMs) {
-      file.durationMs = resolvedDurationMs;
-      file.durationSeconds = resolvedDurationMs / 1000;
-      state.mediaDurationMs = resolvedDurationMs;
-      refreshSubtitleTimelineFits();
-      updateCompatControls();
+    if (probedMedia) {
+      state.currentMediaProbe = probedMedia;
+      state.selectedAudioTrack = preferredAudioTrackIndex(probedMedia);
+      // Resume/next-chapter playback can begin late inside a 180s bucket.
+      // Extract near that actual playhead instead of scanning unavailable old pieces.
+      enableDefaultEmbeddedSubtitles(probedMedia, startAtSeconds, { urgent: startAtSeconds >= 12 });
+      renderSubtitleStyleControls();
+      const resolvedDurationMs = Number(probedMedia.durationMs) || Math.round(Number(probedMedia.durationSeconds || 0) * 1000);
+      if (resolvedDurationMs) {
+        file.durationMs = resolvedDurationMs;
+        file.durationSeconds = resolvedDurationMs / 1000;
+        state.mediaDurationMs = resolvedDurationMs;
+        refreshSubtitleTimelineFits();
+        refreshEpisodeSkipOptions();
+        updateCompatControls();
+      }
     }
     setPlayerLoading(Math.max(78, state.loadingProgress), "Starting playback");
   } catch (error) {
@@ -15503,6 +17053,8 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
   // The fallback conversion exists for HEVC/HDR files when the OS lacks the
   // decoder; native play is preferable when Edge advertises compatible support.
   const needsTranscode = !playbackDecision.direct || (filenameNeedsAudioTranscode && !probedMedia);
+  if (typeof playbackMetrics !== "undefined") playbackMetrics?.selection({ playbackMode: needsTranscode ? (playbackDecision.mode === "remux" ? "remux" : "transcode") : "direct",
+    playbackReason: filenameNeedsAudioTranscode && !probedMedia ? "audio-unknown" : playbackDecision.reason });
   const action = needsTranscode ? "transcode" : "stream";
   const baseUrl = `/api/torrents/${encodeURIComponent(session.id)}/files/${file.index}/${action}`;
   state.transcodeContext = needsTranscode ? { baseUrl, sessionId: session.id, fileIndex: file.index, audioIndex: state.selectedAudioTrack, copyVideo: playbackDecision.mode === "remux" } : null;
@@ -15528,17 +17080,39 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
   updatePlayerIdentity(state.currentSource.title, episode);
   // The player no longer reads the previous torrent: free its slot (the server allows 4 sessions).
   if (previousSessionId && previousSessionId !== session.id) void releaseTorrentSession(previousSessionId);
-  if (!needsTranscode) video.play().catch(() => {});
+  if (!needsTranscode) {
+    void video.play().catch((error) => {
+      if (error?.name !== "NotAllowedError" || video.muted
+        || loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id
+        || video.dataset.mode !== "torrent-direct") return;
+      // Same browser policy, but the direct torrent path has no FFmpeg attempt.
+      video.muted = true;
+      updateCompatControls();
+      void video.play().then(() => {
+        if (loadId === playbackLoadRequestId)
+          toast("Your browser blocked automatic sound. Video is playing muted; use the speaker control to enable audio.", { timeout: 5500 });
+      }).catch(() => {});
+    });
+  }
   window.setTimeout(async () => {
     try {
-      const media = probedMedia || await fetchJson(file.metadataUrl || `/api/torrents/${encodeURIComponent(session.id)}/files/${file.index}/metadata`);
+      // Reuse the still-running probe rather than starting another 20s FFprobe
+      // simply because the foreground grace period elapsed.
+      const media = probedMedia || await metadataRequest.catch(() => fetchJson(metadataUrl));
       if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return;
       state.currentMediaProbe = media;
-      enableDefaultEmbeddedSubtitles(media, startAtSeconds, { urgent: startAtSeconds >= 12 });
+      const subtitlePosition = typeof embeddedSubtitleProbePosition === "function"
+        ? embeddedSubtitleProbePosition(startAtSeconds) : startAtSeconds;
+      enableDefaultEmbeddedSubtitles(media, subtitlePosition,
+        { urgent: subtitlePosition >= 12 });
       if (!probedMedia && state.selectedAudioTrack === 0) {
         const wantedIndex = preferredAudioTrackIndex(media);
         if (wantedIndex > 0) await switchAudioTrack(wantedIndex);
       }
+      // A pending audio-track switch can yield while the user changes titles.
+      // Never let late metadata from source A replace B's duration/skip marks.
+      if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id
+        || Number(state.currentSource?.fileIndex) !== Number(file.index)) return;
       renderSubtitleStyleControls();
       const resolvedDurationMs = Number(media.durationMs) || Math.round(Number(media.durationSeconds || 0) * 1000);
       if (resolvedDurationMs) {
@@ -15547,6 +17121,7 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
         state.mediaDurationMs = resolvedDurationMs;
         refreshSubtitleTimelineFits();
       }
+      refreshEpisodeSkipOptions();
       renderPlayerAudioMenu();
       if (!probedMedia && video.dataset.mode === "transcode" && state.transcodeContext && !state.transcodeContext.copyVideo && !state.transcodeContext.forceH264) {
         const refined = await selectBrowserPlaybackWithCapabilities({
@@ -15822,6 +17397,10 @@ function populateSubtitleSearchFromCurrentSource() {
   return defaults;
 }
 
+// Search results belong to the episode that requested them, even when a
+// slower provider response arrives after a source change or another search.
+let webSubtitleSearchRevision = 0;
+let webSubtitleResultsSource = null;
 function subtitleReleaseScore(result, sourceName) {
   const normalizedSource = normalizeCollectionTitle(sourceName || "").toLowerCase();
   const sourceTokens = new Set(normalizedSource
@@ -15860,6 +17439,8 @@ function bestSubtitleIndexesByLanguage(results, languageList) {
 }
 
 async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {}) {
+  const sourceAtSearch = state.currentSource;
+  const searchRevision = ++webSubtitleSearchRevision;
   const apiKey = state.subdlKey;
   const query = $("#subtitle-query").value.trim();
   const selected = parseSubtitleFinderLanguages($("#subtitle-language").value);
@@ -15897,8 +17478,10 @@ async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {
       animeFallback: type === "tv" && Boolean(aliases.length),
       forceBroad,
     });
+    if (state.currentSource !== sourceAtSearch || searchRevision !== webSubtitleSearchRevision) return;
     const sourceName = state.currentSource?.fileName || state.currentSource?.title || "";
     state.webSubtitleResults = (data.results || []).slice().sort((a, b) => subtitleReleaseScore(b, sourceName) - subtitleReleaseScore(a, sourceName));
+    webSubtitleResultsSource = sourceAtSearch;
     const count = state.webSubtitleResults.length;
     setToolStatus("#subtitle-web-status", count ? "" : "No subtitles found");
     renderWebSubtitleResults(state.webSubtitleResults);
@@ -15916,7 +17499,8 @@ async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {
       if (added.length) setToolStatus("#subtitle-web-status", `Added ${added.map(languageName).join(" and ")} subtitles`);
     }
   } catch (error) {
-    setToolStatus("#subtitle-web-status", error.message, true);
+    if (state.currentSource === sourceAtSearch && searchRevision === webSubtitleSearchRevision)
+      setToolStatus("#subtitle-web-status", error.message, true);
   }
 }
 
@@ -15937,6 +17521,8 @@ async function openSubtitleSearch({ auto = false } = {}) {
 }
 
 async function importWebSubtitle(index, button = null, { quiet = false } = {}) {
+  const sourceAtSelection = state.currentSource;
+  if (webSubtitleResultsSource !== sourceAtSelection) return false;
   const result = state.webSubtitleResults[index];
   if (!result) return false;
   const apiKey = state.subdlKey;
@@ -15947,6 +17533,11 @@ async function importWebSubtitle(index, button = null, { quiet = false } = {}) {
   }
   try {
     const data = await postJson("/api/subtitles/download", { apiKey, url: result.url, label: result.label });
+    if (state.currentSource !== sourceAtSelection || webSubtitleResultsSource !== sourceAtSelection
+      || state.webSubtitleResults[index] !== result) {
+      if (button) { button.disabled = false; button.textContent = previous; }
+      return false;
+    }
     const label = (data.filename || result.label || "Web subtitle").replace(/\.(srt|vtt)$/i, "");
     const added = addSubtitleText(data.text, label, data.language || result.language, {
       origin: "web",
@@ -15968,7 +17559,7 @@ async function importWebSubtitle(index, button = null, { quiet = false } = {}) {
       button.disabled = false;
       button.textContent = previous;
     }
-    if (!quiet) setToolStatus("#subtitle-web-status", error.message, true);
+    if (!quiet && state.currentSource === sourceAtSelection) setToolStatus("#subtitle-web-status", error.message, true);
     return false;
   }
 }
@@ -15984,6 +17575,13 @@ function escapeHtml(value) {
 $("#video-input").addEventListener("change", (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
+  const abandonedSessionId = state.currentSource?.sessionId;
+  // Local selection supersedes any torrent resolve/metadata response that
+  // could otherwise install the old source after the file is chosen.
+  playbackLoadRequestId += 1;
+  libraryPlaybackResolveController?.abort("local file selected");
+  libraryPlaybackResolveController = null;
+  libraryPlaybackPendingMagnet = "";
   setWatchTheaterMode(false);
   watchPendingSelection = null;
   event.target.value = "";
@@ -15991,6 +17589,10 @@ $("#video-input").addEventListener("change", (event) => {
   const title = normalizeCollectionTitle(file.name);
   setPlayerLoadingTitle(null, title);
   state.currentSource = { kind: "local", title, sourceTag: title, libraryId: null, fileIndex: null };
+  state.currentMediaProbe = null;
+  state.selectedAudioTrack = 0;
+  resetAudioSync();
+  if (abandonedSessionId) void releaseTorrentSession(abandonedSessionId);
   stopTransferStats();
   updateTransferStats();
   applyLanguagePreferencesToTracks();
@@ -16078,7 +17680,8 @@ function previewLastRandomReason() {
 }
 function randomActiveCategory() {
   if (viewActive("home")) return homeBrowseCategory;
-  if (viewActive("library")) return libraryView.filter === "series" ? "tv" : libraryView.filter;
+  if (viewActive("library")) return libraryView.filter === "series" ? "tv"
+    : clientFeatures.libraryFilterIds.includes(libraryView.filter) ? "all" : libraryView.filter;
   if (viewActive("title")) {
     if (titleRoute().id && titleRoute().id === randomTitleScope.id) return randomTitleScope.category;
     const subject = titleSubject();
@@ -16973,12 +18576,19 @@ $("#watch-chapters-body")?.addEventListener("click", (event) => {
   if (!action) return;
   if (action.current) {
     switchView("watch");
+    const code = action.catalog?.code || action.best?.episode?.code || button.dataset.watchEpisode;
+    const series = action.series;
+    const selectedEpisode = currentLibraryEpisode()?.episode;
+    if (explicitlyUnwatchedChapter(series, code) && selectedEpisode?.progress?.positionMs === 0) {
+      seekPlayerTo(0);
+    }
     if (video.paused) resumePlayback();
     return;
   }
   if (action.best) {
+    const code = action.catalog?.code || action.best.episode.code;
     const resume = chapterWatchStatus(action.catalog?.stored?.sources || [action.best]).resume;
-    const resumeAtSeconds = resume ? Math.max(0, (resume.positionMs - 5000) / 1000) : 0;
+    const resumeAtSeconds = chapterResumeMs(resume, action.series, code) / 1000;
     void playLibraryEpisode(action.best.entry.id, Number(action.best.episode.fileIndex), { resumeAtSeconds });
   } else if (action.catalog && action.list) {
     void playCatalogNeighbor({ entry: action.entry, list: action.list }, action.catalog);
@@ -17081,7 +18691,7 @@ $("#subtitle-preview-rotate")?.addEventListener("click", () => {
   });
   bindTabs($("#library-filter"), {
     onChange: (value) => {
-      libraryView.filter = ["series", "movie", "anime"].includes(value) ? value : "all";
+      libraryView.filter = ["series", "movie", "anime", ...clientFeatures.libraryFilterIds].includes(value) ? value : "all";
       saveLibraryView();
       renderLibrary();
     },
@@ -17425,6 +19035,7 @@ frame.addEventListener("click", (event) => {
 });
 
 video.addEventListener("timeupdate", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   // Preserve frame-accurate subtitles during decoder stalls; recover from a
   // stale frame only on explicit pause/resume and caption interactions.
   state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
@@ -17454,8 +19065,10 @@ video.addEventListener("timeupdate", () => {
   recordWatchProgress();
 });
 video.addEventListener("ended", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   if (state.pendingSeek?.priming) {
     if (!state.pendingSeek.streamInstalled) return;
+    if (typeof transcodeStartAttempt !== "undefined" && transcodeStartAttempt?.fallbackToNative?.()) return;
     cancelTranscodeStart();
     video.pause();
     setPlayerLoading(100, "Video synchronization unavailable",
@@ -17469,6 +19082,7 @@ video.addEventListener("ended", () => {
   // stream EOF is not the end of the actual movie.
   const duration = state.mediaDurationMs / 1000;
   if (duration > 0 && absolutePlaybackSeconds() < duration - Math.max(3, duration * 0.002)) {
+    if (typeof fallbackActiveRemuxMseToNative === "function" && fallbackActiveRemuxMseToNative()) return;
     void recoverPlayback("early-eof");
     return;
   }
@@ -17477,6 +19091,10 @@ video.addEventListener("ended", () => {
   startAutoNext();
 });
 video.addEventListener("seeking", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
+  if (typeof clearStreamStatusLabel === "function") clearStreamStatusLabel();
+  if (typeof invalidateStreamStatus === "function") invalidateStreamStatus();
+  if (typeof recoveryDisplayPhase !== "undefined" && recoveryDisplayPhase !== "recovering") recoveryStallDiagnosis = null;
   invalidateSubtitleFrameClock();
   // Native seeking while paused can dispatch no timeupdate. The subtitle
   // timeline must jump to the new playhead immediately.
@@ -17503,13 +19121,23 @@ video.addEventListener("durationchange", updateCompatControls);
 video.addEventListener("durationchange", refreshEpisodeSkipOptions);
 video.addEventListener("progress", updateCompatControls);
 video.addEventListener("canplay", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   schedulePresentedSubtitleFrame();
   markPlaybackMotion();
   clearBufferingTimer();
+  if (video.dataset.indexed === "1" && !state.pendingSeek && video.readyState >= 3) {
+    frame.classList.remove("source-transition");
+    hideLoadingForBufferedSeek();
+  }
   if (!state.pendingSeek) finishPlayerLoading();
   updateCompatControls();
 });
 video.addEventListener("playing", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
+  if (typeof clearStreamStatusLabel === "function") clearStreamStatusLabel();
+  if (typeof invalidateStreamStatus === "function") invalidateStreamStatus();
+  recoveryStallDiagnosis = null;
+  if (recoveryDisplayPhase === "recovering") renderRecoveryOverlay();
   schedulePresentedSubtitleFrame();
   if (!state.pendingSeek?.priming) {
     refreshSubtitleClockForInteraction();
@@ -17520,14 +19148,20 @@ video.addEventListener("playing", () => {
   if (currentRecoveryKey() && recoveryWatchTimer === null) beginRecoveryWatch();
   clearBufferingTimer();
   markPlaybackMotion();
+  if (video.dataset.indexed === "1" && !state.pendingSeek && video.readyState >= 3) {
+    frame.classList.remove("source-transition");
+    hideLoadingForBufferedSeek();
+  }
   recoveryWaitingSince = null;
   if (!state.pendingSeek) finishPlayerLoading();
   if (video.dataset.mode === "transcode") $("#media-status").textContent = "TORRENT - TRANSCODE PLAYING";
+  else if (video.dataset.mode === "torrent-direct") $("#media-status").textContent = "TORRENT - PLAYING";
   updateCompatControls();
   scheduleAudioSync(1500);
   if (learningEnabled) scheduleClipStep(5000);
 });
 video.addEventListener("play", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   recoveryPauseSerial += 1;
   recoveryPlaybackRequested = true;
   // Also cover browser media-key or native play calls bypassing resumePlayback.
@@ -17543,6 +19177,10 @@ video.addEventListener("play", () => {
   resyncTranscodeAfterLongPause();
 });
 video.addEventListener("pause", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
+  if (!recoveryPlaybackRequested && typeof clearStreamStatusLabel === "function") clearStreamStatusLabel();
+  if (typeof invalidateStreamStatus === "function") invalidateStreamStatus();
+  if (!recoveryPlaybackRequested) recoveryStallDiagnosis = null;
   if (!state.pendingSeek?.priming) {
     refreshSubtitleClockForInteraction();
     renderSubtitles();
@@ -17562,7 +19200,14 @@ video.addEventListener("pause", () => {
   // it after a short grace period for the matching error event to arrive.
   const pauseSerial = ++recoveryPauseSerial;
   if (!video.error && recoveryPlaybackRequested) window.setTimeout(() => {
-    if (pauseSerial === recoveryPauseSerial && video.paused && !video.error) recoveryPlaybackRequested = false;
+    if (pauseSerial === recoveryPauseSerial && video.paused && !video.error
+      && !state.pendingSeek) {
+      recoveryPlaybackRequested = false;
+      if (recoveryDisplayPhase !== "recovering") {
+        if (typeof clearStreamStatusLabel === "function") clearStreamStatusLabel();
+        recoveryStallDiagnosis = null;
+      }
+    }
   }, 1000);
   noteTranscodePause();
   clearBufferingTimer();
@@ -17574,23 +19219,80 @@ video.addEventListener("pause", () => {
   updateCompatControls();
 });
 video.addEventListener("waiting", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   if (currentRecoveryKey() && recoveryWaitingSince === null) recoveryWaitingSince = Date.now();
   if (video.dataset.mode === "transcode" || video.dataset.mode === "torrent-direct") scheduleBufferingIndicator();
 });
 video.addEventListener("stalled", () => {
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   if (currentRecoveryKey() && recoveryWaitingSince === null) recoveryWaitingSince = Date.now();
   scheduleBufferingIndicator();
 });
 video.addEventListener("error", () => {
+  // Unloading A while B resolves can dispatch an old media error after the
+  // branded B loader is already visible. New B errors are still handled once
+  // B's assigned currentSrc is actively loading.
+  if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending() && (!sourceFrameGate?.src
+    || video.currentSrc !== sourceFrameGate.src || !video.error)) return;
   if (state.pendingSeek?.priming) {
     if (!state.pendingSeek.streamInstalled) return;
+    if (typeof transcodeStartAttempt !== "undefined" && transcodeStartAttempt?.fallbackToNative?.()) return;
+    // MediaError hides HTTP statuses from <video>. Resource Timing may expose
+    // the same-origin status of its *existing* request; inspect it without
+    // launching another FFmpeg conversion or replaying a stale source URL.
+    const mediaCode = Number(video.error?.code) || 0;
+    const mediaKind = video.currentSrc?.startsWith("blob:") ? "MSE" : "native";
+    let responseStatus = 0;
+    try {
+      if (typeof performance !== "undefined" && /^https?:\/\//.test(String(video.currentSrc || ""))) {
+        const matches = performance.getEntriesByName(video.currentSrc, "resource");
+        const latest = matches?.at(-1);
+        const observed = Number(latest?.responseStatus);
+        if (Number.isInteger(observed) && observed >= 100 && observed <= 599) responseStatus = observed;
+      }
+    } catch { /* Timing details are optional; never affect playback. */ }
+    if (typeof waitForMissingTorrentSeek === "function"
+      && mediaKind === "native" && mediaCode === 4
+      && (!responseStatus || responseStatus === 200)
+      && waitForMissingTorrentSeek(Number(state.pendingSeek.target) || 0,
+        Boolean(state.pendingSeek.wasPlaying))) return;
+    // A device can advertise HEVC/AV1 support but reject its actual remuxed
+    // fMP4 after a seek. If Resource Timing confirms a successful HTTP 200,
+    // do not waste two FFmpeg slots retrying the same unsupported codec.
+    // When the HTTP status is unavailable, retain bounded transient retries
+    // before ONE compatibility fallback. Never silently tone-map HDR, repeat
+    // a downgrade, or disguise an observed HTTP 429/5xx as a decoder issue.
+    const probeVideo = state.currentMediaProbe?.video || {};
+    const probeCompatibility = state.currentMediaProbe?.compatibility?.video || {};
+    const inputCodec = String(probeVideo.codec || "").toLowerCase();
+    const failedCopy = state.transcodeContext?.copyVideo
+      && !state.transcodeContext?.forceH264 && mediaKind === "native";
+    const isHdr = Boolean(probeCompatibility.hdr || probeCompatibility.hdrKind
+      || probeVideo.dolbyVision || ["smpte2084", "arib-std-b67"].includes(String(probeVideo.colorTransfer || "").toLowerCase()));
+    const tryCompatibleVideoFallback = ({ requireHttpSuccess = false } = {}) => {
+      if (mediaCode !== 4 || !failedCopy || isHdr
+        || !["hevc", "h265", "av1"].includes(inputCodec)
+        || (responseStatus !== 0 && responseStatus !== 200)
+        || (requireHttpSuccess && responseStatus !== 200)) return false;
+      const target = Number(state.pendingSeek.target) || 0;
+      const wasPlaying = Boolean(state.pendingSeek.wasPlaying);
+      state.transcodeContext.forceH264 = true;
+      void openTranscodeAt(target, { wasPlaying, forceNative: true });
+      return true;
+    };
+    if (tryCompatibleVideoFallback({ requireHttpSuccess: true })) return;
     if (transcodeStartAttempt?.retryTransient?.(video.error || new Error("The media window closed"))) return;
+    if (tryCompatibleVideoFallback()) return;
+    const details = ["The converted stream failed before the requested frame.",
+      mediaCode ? `Media error ${mediaCode} (${mediaKind}).` : "",
+      responseStatus ? `HTTP ${responseStatus}.` : ""].filter(Boolean).join(" ");
     cancelTranscodeStart();
     video.pause();
     setPlayerLoading(100, "Video synchronization unavailable",
-      "The converted stream failed before the requested frame.", { error: true });
+      details, { error: true });
     return;
   }
+  if (typeof fallbackActiveRemuxMseToNative === "function" && fallbackActiveRemuxMseToNative()) return;
   if (video.paused && state.loadingProgress >= 100 && !state.pendingSeek && !recoveryPlaybackRequested) return;
   if (currentRecoveryKey() && !recoveryBusy) {
     void recoverPlayback("error");
@@ -17675,6 +19377,7 @@ if (autoNextInline) {
   autoNextInline.addEventListener("click", () => setAutoplayNextEnabled(!autoNextEnabled));
 }
 $("#player-retry-source")?.addEventListener("click", () => {
+  if (transcodeStartAttempt?.awaitingUserGesture && transcodeStartAttempt.resumeAfterGesture?.()) return;
   const source = state.currentSource;
   if (source?.kind !== "torrent") return;
   const at = absolutePlaybackSeconds();
@@ -17890,6 +19593,7 @@ document.addEventListener("keydown", (event) => {
   if (document.querySelector("dialog[open]")) return;
   const tag = event.target?.tagName?.toLowerCase();
   const typing = ["input", "textarea", "select"].includes(tag) || event.target?.isContentEditable;
+  if (!typing && clientFeatures.handleKey(event)) return;
   if (learningEnabled && !typing && handleStudyKey(event)) return;
   if (learningEnabled && !typing && handleQuizKey(event)) return;
   if (learningEnabled && handleTestKey(event, typing)) return;
@@ -17949,7 +19653,10 @@ void hydratePersistentAppState().then(() => {
   if (anilistOAuthResponse) void completeAniListAuthorization();
   else if (readAniListAccount(localStorage)) {
     scheduleAniListAutoSync(1500);
-    if (anilistScoreSyncEnabled()) void syncAniListLibrary({ quiet: true }).catch(() => {});
+    // A connected AniList account can have watched progress from another app
+    // even when this LVL instance has never watched the title or opted in to
+    // outbound writes. Import owner-verified history on startup in either case.
+    void syncAniListLibrary({ quiet: true }).catch(() => {});
   }
 }).catch((error) => {
   showAniListAutoStatus("Waiting for LVL Library hydration before AniList sync.", true);

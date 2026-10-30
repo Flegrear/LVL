@@ -46,7 +46,7 @@ function fixture({ lookup = null, rejectPlay = false } = {}) {
     window: { setTimeout(fn, ms) { const id = ++nextTimer; timers.set(id, { fn, ms }); return id; },
       clearTimeout(id) { timers.delete(id); } },
     AbortController, AbortSignal, URLSearchParams,
-    playbackLoadRequestId: 1, transcodePauseSnapshot: null,
+    playbackLoadRequestId: 1, transcodePauseSnapshot: null, remuxMseCacheAllowed: false,
     fetchJson: async (url, options) => {
       const request = { url, options };
       lookups.push(request);
@@ -58,6 +58,7 @@ function fixture({ lookup = null, rejectPlay = false } = {}) {
     setPlayerLoading: (...args) => loading.push(args),
     formatTime: (milliseconds) => String(milliseconds),
     renderSubtitles() {}, updateCompatControls() {}, finishPlayerLoading() {},
+    clearTranscodeSeekFrame() {},
     audioSync: { key: "" }, scheduleAudioSync() {},
     setMediaSource() { throw new Error("initialization branch is not under test"); },
   });

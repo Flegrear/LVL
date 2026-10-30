@@ -85,7 +85,7 @@ test("Branded loading progresses in small frames and creeps ahead of stage estim
       "#video-loading-actions": { hidden: true },
       "#video-loading-title": { textContent: "" },
     })[selector],
-    currentRecoveryKey: () => null,
+    currentRecoveryKey: () => null, isNewSourceFramePending: () => false,
     frame: { classList: { remove() {} } },
   });
   vm.runInContext(slice("let playerLoadingHideTimer = 0;", "\nfunction updateLoadingTransferDetail(")
@@ -156,6 +156,7 @@ test("Logo color wipes independently from stage progress and never finishes befo
     $: (key) => ({ "#video-loading": overlay, "#video-loading-brand": brand,
       "#video-loading-actions": { hidden: true }, "#video-loading-title": { textContent: "" } })[key],
     frame: { classList: { remove() {} } }, currentRecoveryKey: () => null,
+    isNewSourceFramePending: () => false,
   });
   vm.runInContext(slice("let playerLoadingHideTimer = 0;", "\nfunction updateLoadingTransferDetail(")
     + slice("function finishPlayerLoading() {", "\nfunction clearPlayerControlsHideTimer()"), context);

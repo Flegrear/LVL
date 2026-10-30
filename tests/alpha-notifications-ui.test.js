@@ -57,6 +57,50 @@ test("Settings has independent Updates and Notifications tabs with linked tabpan
     "both Updates and Notifications must be independently navigable Settings views");
 });
 
+test("Settings begins with its tabs, and Updates omits frequency selection and redundant explanations", () => {
+  const settings = html.slice(html.indexOf('<section id="view-settings"'), html.indexOf('<div id="settings-panel-general"'));
+  assert.ok(settings.indexOf('id="settings-tabs"') > 0);
+  assert.doesNotMatch(settings, /<h1[^>]*>Settings<\/h1>|<header class="learn-head">/,
+    "Settings no longer reserves space for an oversized page title");
+  assert.match(css, /\.settings-page\s*\{[^}]*padding-top:clamp\(10px,2vw,20px\)/,
+    "Settings tabs use compact top spacing instead of the Learning page's title spacing");
+  const updates = html.slice(html.indexOf('id="settings-panel-updates"'), html.indexOf('id="settings-panel-notifications"'));
+  assert.match(updates, /Update LVL automatically/);
+  assert.match(updates, /Checks daily and installs verified updates automatically/);
+  assert.match(updates, /id="settings-app-updates-check"/);
+  assert.match(updates, /id="settings-app-updates-changelog-details"/);
+  assert.doesNotMatch(updates, /Check frequency|settings-app-updates-interval|Every 7 days|Every 30 days|Check for updates finds the next available version/);
+  assert.doesNotMatch(app, /This source checkout uses port 4173|settings-app-updates-interval/,
+    "source-mode status is no longer populated with a port explanation or a removed control");
+});
+
+test("automatic updates use one preset daily cadence, independent of old launcher settings", async () => {
+  const start = app.indexOf("async function changeAppUpdateSettings() {");
+  const end = app.indexOf("\nfunction wireAppUpdateSettings()", start);
+  assert.ok(start > 0 && end > start);
+  const payloads = [];
+  const status = [];
+  const auto = { checked: true };
+  const context = vm.createContext({
+    AUTO_UPDATE_INTERVAL_DAYS: 1,
+    appUpdateSettingsBusy: false,
+    manualAppUpdateCheck: false,
+    appUpdateSettingsSnapshot: { installed: true, automatic: false, intervalDays: 30 },
+    $: (selector) => selector === "#settings-app-updates-auto" ? auto : null,
+    postJson: async (url, payload) => { payloads.push({ url, payload }); return { installed: true, automatic: payload.automatic }; },
+    paintAppUpdateSettings() {},
+    setToolStatus: (_selector, text) => status.push(text),
+  });
+  vm.runInContext(app.slice(start, end), context);
+  await vm.runInContext("changeAppUpdateSettings()", context);
+  assert.equal(payloads[0].url, "/api/app-updates/settings");
+  assert.deepEqual(JSON.parse(JSON.stringify(payloads[0].payload)), { automatic: true, intervalDays: 1 });
+  assert.match(status[0], /checks daily/i);
+  auto.checked = false;
+  await vm.runInContext("changeAppUpdateSettings()", context);
+  assert.deepEqual(JSON.parse(JSON.stringify(payloads[1].payload)), { automatic: false, intervalDays: 1 });
+});
+
 test("notification popup is solid black and Notification settings show only heading and toggle label", () => {
   const panel = html.slice(html.indexOf('id="settings-panel-notifications"'),
     html.indexOf('id="settings-panel-recs"'));
@@ -251,7 +295,7 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   const parse = vm.runInNewContext(server.slice(start, end) + "\nparseLocalChangelog");
   const history = parse(read("CHANGELOG.md"));
   const names = Array.from(history.entries, (entry) => entry.version || "Unreleased");
-  assert.deepEqual(names, ["0.1.13", "0.1.12", "0.1.11", "0.1.1", "0.1.0"], "bundled release history lists the newest supported version first");
+  assert.deepEqual(names, ["0.1.14", "0.1.13", "0.1.12", "0.1.11", "0.1.1", "0.1.0"], "bundled release history lists the newest supported version first");
 
   const f = clientFixture({ changelog: history });
   f.paint({ installed: true, available: true, availableVersion: "0.2.5", automatic: true });
@@ -273,12 +317,8 @@ test("bell opens keyboard accessible pending notices, update notice opens full c
   assert.equal(dialog.open, true);
   assert.equal(f.node("app-notifications-popover").hidden, true);
   const sections = f.node("app-changelog-history").children;
-  assert.equal(sections.length, history.entries.length, "full release history is available in the dialog");
-  assert.match(sections[0].children[0].textContent, /0\.1\.13/);
-  assert.match(sections[1].children[0].textContent, /0\.1\.12/);
-  assert.match(sections[2].children[0].textContent, /0\.1\.11/);
-  assert.match(sections[3].children[0].textContent, /0\.1\.1/);
-  assert.match(sections[4].children[0].textContent, /0\.1\.0/);
+  assert.equal(sections.length, names.length, "full release history is available in the dialog");
+  assert.deepEqual(sections.map(section => section.children[0].textContent.match(/\d+\.\d+\.\d+/)?.[0]), names);
   assert.deepEqual(f.requests.filter((item) => item.method === "GET").map(({ url }) => url),
     ["/api/app-updates/changelog"], "read only bundled local release history");
   f.node("app-changelog-close").click();

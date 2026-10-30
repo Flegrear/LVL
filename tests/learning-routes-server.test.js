@@ -148,11 +148,22 @@ test("Storage limits, app state, coach and torrent routes only answer this app; 
     assert.equal(report.status, 200, report.text);
     assert.equal(report.json.limits.playerBytes, 20 * GB);
     assert.equal(report.json.limits.clipBytes, 2 * GB);
+    assert.equal(report.json.limits.remuxCacheEnabled, true, 'new installs keep playback cache enabled');
     assert.equal((await request(port, "POST", "/api/storage/limits", { headers: otherSite, body: { playerGB: 50 } })).status, 403);
+    assert.equal((await request(port, "POST", "/api/storage/limits", { headers: own, body: { remuxCacheEnabled: 'false' } })).status, 400,
+      'cache option only accepts a JSON boolean, never an accidentally truthy string');
+    const disabled = await request(port, "POST", "/api/storage/limits", { headers: own, body: { remuxCacheEnabled: false } });
+    assert.equal(disabled.status, 200, disabled.text);
+    assert.equal(disabled.json.limits.remuxCacheEnabled, false, 'toggle-off is stored and reflected by the server');
+    assert.equal((await request(port, "GET", "/api/storage")).json.limits.remuxCacheEnabled, false);
     const saved = await request(port, "POST", "/api/storage/limits", { headers: own, body: { playerGB: 5000, clipGB: 0.01 } });
     assert.equal(saved.status, 200, saved.text);
     assert.equal(saved.json.limits.playerBytes, 1000 * GB, "player storage is capped at 1000 GB");
     assert.equal(saved.json.limits.clipBytes, Math.round(0.25 * GB), "saved lines keep at least 0.25 GB");
+    assert.equal(saved.json.limits.remuxCacheEnabled, false, 'editing budgets cannot silently re-enable cache');
+    const enabled = await request(port, "POST", "/api/storage/limits", { headers: own, body: { remuxCacheEnabled: true } });
+    assert.equal(enabled.status, 200, enabled.text);
+    assert.equal(enabled.json.limits.remuxCacheEnabled, true);
     assert.equal((await request(port, "POST", "/api/storage/clear-leftovers", { headers: { Origin: "http://127.0.0.1:5173" } })).status, 403);
 
     // App state: other sites can't write (even with merge, which skips the revision check),

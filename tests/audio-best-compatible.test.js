@@ -110,3 +110,116 @@ test("FFmpeg seek-sync flags, chosen track mapping and output metadata remain ex
   assert.equal(vm.runInContext('preferredAudioTrackIndex({audioTracks:[{language:"eng"}]})', context), 0,
     "unavailable preferred language must fall back rather than select the wrong index");
 });
+
+test("selected dub persists across reload and next chapter, even when audio stream order changes", () => {
+  const start = app.indexOf('const SERIES_AUDIO_PREFERENCES_KEY =');
+  const end = app.indexOf("\nfunction transcodeQuery(", start);
+  assert.ok(start >= 0 && end > start, "real per-series audio preference helpers are present");
+  const disk = new Map();
+  const storage = { getItem: (key) => disk.get(key) || null,
+    setItem: (key, value) => disk.set(key, String(value)) };
+  function session(seriesKey) {
+    const state = { currentSource: { seriesKey, fileIndex: 0 }, currentMediaProbe: null };
+    const ctx = vm.createContext({ state, localStorage: storage, preferredAudioLanguage: "", console });
+    vm.runInContext(app.slice(start, end), ctx);
+    return { state, ctx, select: (tracks) => {
+      state.currentMediaProbe = { audioTracks: tracks };
+      return vm.runInContext("preferredAudioTrackIndex(state.currentMediaProbe)", ctx);
+    }, remember: (index) => vm.runInContext(`rememberSeriesAudioTrack(state.currentMediaProbe.audioTracks[${index}], ${index})`, ctx) };
+  }
+  const originalFirst = [{ language: "jpn", title: "Japanese Original" },
+    { language: "eng", title: "English Dub" }];
+  const englishFirst = [{ language: "en", title: "English Dub" },
+    { language: "ja", title: "Japanese Original" }];
+  const first = session("apothecary-diaries");
+  assert.equal(first.select(originalFirst), 0);
+  first.remember(1);
+  assert.equal(first.select(originalFirst), 1, "same episode honors the explicit dub choice");
+  const afterReload = session("apothecary-diaries");
+  assert.equal(afterReload.select(originalFirst), 1, "a new browser page restores the saved dub");
+  afterReload.state.currentSource.fileIndex = 1;
+  assert.equal(afterReload.select(englishFirst), 0, "next chapter matches English dub by language/title, not old index");
+  assert.equal(afterReload.select([{ language: "ja", title: "Japanese Original" }]), 0,
+    "a missing preferred language safely falls back to the episode's available audio");
+  assert.equal(session("different-series").select(originalFirst), 0,
+    "the dub preference is for this series, not every unrelated show");
+  afterReload.select(englishFirst);
+  afterReload.remember(1);
+  assert.equal(session("apothecary-diaries").select(originalFirst), 0,
+    "changing back to Original is also remembered on future visits");
+});
+
+test("audio preferences distinguish two same-language tracks and safely fall back when metadata is unknown", () => {
+  const start = app.indexOf('const SERIES_AUDIO_PREFERENCES_KEY =');
+  const end = app.indexOf("\nfunction transcodeQuery(", start);
+  const disk = new Map();
+  const state = { currentSource: { seriesKey: "two-english-tracks" }, currentMediaProbe: { audioTracks: [
+    { language: "eng", title: "Original English" }, { language: "eng", title: "English Commentary" },
+  ] } };
+  const ctx = vm.createContext({ state, localStorage: {
+    getItem: (key) => disk.get(key) || null, setItem: (key, value) => disk.set(key, String(value)),
+  }, preferredAudioLanguage: "", console });
+  vm.runInContext(app.slice(start, end), ctx);
+  vm.runInContext("rememberSeriesAudioTrack(state.currentMediaProbe.audioTracks[1], 1)", ctx);
+  state.currentMediaProbe.audioTracks.reverse();
+  assert.equal(vm.runInContext("preferredAudioTrackIndex(state.currentMediaProbe)", ctx), 0,
+    "exact title wins over a reused audio index for two streams with the same language");
+  state.currentMediaProbe.audioTracks = [{ language: "jpn" }, { language: "eng" }];
+  assert.equal(vm.runInContext("preferredAudioTrackIndex(state.currentMediaProbe)", ctx), 1,
+    "language alone is preferred when title metadata isn't available");
+});
+
+test("a remembered English dub cannot silently become English commentary after an episode switch", () => {
+  const start = app.indexOf('const SERIES_AUDIO_PREFERENCES_KEY =');
+  const end = app.indexOf("\nfunction transcodeQuery(", start);
+  const disk = new Map();
+  const state = { currentSource: { seriesKey: 'changing-language-tracks' },
+    currentMediaProbe: { audioTracks: [
+      { language: 'jpn', title: 'Japanese Original' },
+      { language: 'eng', title: 'English Dub' },
+    ] } };
+  const ctx = vm.createContext({ state, localStorage: {
+    getItem: key => disk.get(key) || null,
+    setItem: (key, value) => disk.set(key, String(value)),
+  }, preferredAudioLanguage: '', console });
+  vm.runInContext(app.slice(start, end), ctx);
+  vm.runInContext('rememberSeriesAudioTrack(state.currentMediaProbe.audioTracks[1],1)', ctx);
+  state.currentMediaProbe.audioTracks[1] = { language: 'eng', title: 'English Commentary' };
+  assert.equal(vm.runInContext('preferredAudioTrackIndex(state.currentMediaProbe)', ctx), 0,
+    'a changed/removed dub must not automatically turn on director commentary at its old index');
+});
+
+test("the actual audio menu persists an explicit click on the already-playing Original track", () => {
+  const start = app.indexOf("function renderPlayerAudioMenu() {");
+  const end = app.indexOf("\nlet audioTrackSwitchGeneration = 0;", start);
+  assert.ok(start >= 0 && end > start);
+  const handlers = new Map();
+  const menu = { hidden: false, innerHTML: "",
+    querySelector() { return null; },
+    querySelectorAll(selector) {
+      assert.equal(selector, "[data-audio-index]");
+      return [0, 1].map((index) => ({ dataset: { audioIndex: String(index) },
+        addEventListener(type, listener) { handlers.set(index, listener); } }));
+    },
+  };
+  const tracks = [{ language: "jpn", title: "Original" }, { language: "eng", title: "Dub" }];
+  const state = { selectedAudioTrack: 0, currentMediaProbe: { audioTracks: tracks } };
+  const remembered = [], switched = [];
+  const ctx = vm.createContext({ state, audioOutputMode: "auto", audioTrackLabel: (track) => ({ title: track.title, meta: track.language }),
+    renderAudioPlaybackDetails: () => "", escapeHtml: String,
+    $: (selector) => selector === "#player-audio-menu" ? menu : { setAttribute() {} },
+    rememberSeriesAudioTrack: (track, index) => remembered.push({ track, index }),
+    switchAudioTrack: (index, options) => switched.push({ index, options }),
+  });
+  vm.runInContext(app.slice(start, end), ctx);
+  vm.runInContext("renderPlayerAudioMenu()", ctx);
+  handlers.get(0)();
+  assert.equal(menu.hidden, true);
+  assert.deepEqual(remembered, [{ track: tracks[0], index: 0 }],
+    "clicking already-playing Original records intent, even without switching streams");
+  assert.equal(switched.length, 0, "do not restart the existing audio stream");
+  menu.hidden = false;
+  handlers.get(1)();
+  assert.equal(switched[0].index, 1);
+  assert.equal(switched[0].options.remember, true, "a new dub is committed only after a successful switch");
+});

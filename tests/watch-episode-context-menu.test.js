@@ -68,8 +68,8 @@ test("unwatch clears all saved copies and leaves explicit false until the user r
   assert.equal(entries[0].watchedChapters.S01E03, false);
   assert.equal(a.progress.finished, false);
   assert.equal(b.progress.finished, false);
-  assert.equal(a.progress.positionMs, 20000, "Unwatch must preserve the resume point");
-  assert.equal(b.progress.positionMs, 20000, "Every saved source keeps its resume point");
+  assert.equal(a.progress.positionMs, 0, "Explicit unwatch resets the selected chapter replay to its beginning");
+  assert.equal(b.progress.positionMs, 0, "All saved sources for that chapter reset together");
   assert.equal(harness.status(series, chapter).watched, false);
   assert.equal(harness.mark(series, "S01E03", chapter.stored), true);
   assert.equal(harness.status(series, chapter).watched, true);

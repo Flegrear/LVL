@@ -75,6 +75,18 @@ export function isAniListImport(entry = {}) {
   return Boolean(entry.anilistImported) || (entry.externalSource === "ANILIST" && /^anilist:\d+$/.test(String(entry.id || "")));
 }
 
+/** A username/title match is display-only. Authenticated progress is owned
+ * by the saved title only after its catalog or explicit AniList ID agrees.
+ */
+export function verifiedAniListLibraryIdentity(series, show) {
+  const catalog = String(show?.imdbId || "");
+  if (/^tt\d{5,12}$/.test(catalog) && catalog === String(series?.catalogId || "")) return true;
+  const mediaId = Number(show?.anilistId);
+  return Number.isSafeInteger(mediaId) && mediaId > 0 && (series?.sources || []).some((entry) =>
+    String(entry.externalSource || "").toUpperCase() === "ANILIST"
+    && Number(entry.externalId) === mediaId);
+}
+
 /**
  * series: the Library's titles ({ key, catalogId, aliases, sources: entries }); shows: the server's
  * list; keyOf: the Library's name → key rule. Returns { add: [{ show, info }], annotate: [{ series, info }],

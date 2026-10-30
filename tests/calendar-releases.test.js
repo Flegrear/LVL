@@ -24,11 +24,15 @@ test("Air dates preserve UTC instants so the browser can place shows in its time
   const tv = normalizeTvmazeAiring({
     id: 93, name: "Night release", season: 2, number: 1,
     airstamp: "2026-10-20T01:00:00Z",
-    show: { id: 40, name: "Example Show", externals: { imdb: "tt1234567" } },
+    show: { id: 40, name: "Example Show", premiered: "2022-04-01", externals: { imdb: "tt1234567" } },
   });
   assert.equal(tv.catalogId, "tt1234567");
   assert.equal(tv.timestamp, Date.parse("2026-10-20T01:00:00Z"));
   assert.equal(tv.code, "S02E01");
+  assert.equal(tv.premiereYear, 2022, "the original show year is distinct from its latest episode year");
+  assert.equal(normalizeAniListAiring({ id: 202, episode: 2, airingAt: 1792467000,
+    media: { id: 77, seasonYear: 2025, title: { english: "Ongoing Anime" } },
+  }).premiereYear, 2025);
   assert.equal(normalizeTvmazeAiring({ id: 11, airdate: "not-a-date", show: { name: "X" } }), null);
 });
 
@@ -145,6 +149,67 @@ test("Busy monthly schedules fetch provider pages with bounded concurrency", asy
   assert.equal(result.events.length, 14);
   assert.equal(result.coverage.AniList.status, "ok");
   assert.equal(result.coverage.TMDb.status, "ok");
+});
+
+test("A failing later TMDb page keeps other valid movie premieres and reports partial coverage", async () => {
+  const service = createReleaseCalendarService({
+    getTmdbKey: () => "a".repeat(32),
+    fetchImpl: async (request, options = {}) => {
+      const url = String(request);
+      if (url.includes("tvmaze")) return { ok: true, json: async () => [] };
+      if (url.includes("anilist")) return { ok: true, json: async () => ({ data: { Page: {
+        pageInfo: { hasNextPage: false }, airingSchedules: [],
+      } } }) };
+      const page = Number(new URL(url).searchParams.get("page"));
+      if (page === 2) return { ok: false, status: 503 };
+      return { ok: true, json: async () => ({ total_pages: 3, results: [
+        { id: page, title: `Film ${page}`, release_date: "2026-10-26" },
+      ] }) };
+    },
+  });
+  const result = await service.releases("2026-10-26", "2026-10-27");
+  assert.deepEqual(result.events.filter((event) => event.source === "TMDb").map((event) => event.title),
+    ["Film 1", "Film 3"]);
+  assert.equal(result.coverage.TMDb.status, "partial");
+});
+
+test("Malformed successful provider responses never claim complete release coverage", async () => {
+  const service = createReleaseCalendarService({
+    getTmdbKey: () => "a".repeat(32),
+    fetchImpl: async (request) => {
+      const url = String(request);
+      if (url.includes("tvmaze")) return { ok: true, json: async () => [] };
+      if (url.includes("anilist")) return { ok: true, json: async () => ({ data: { Page: {
+        pageInfo: { hasNextPage: false },
+      } } }) };
+      return { ok: true, json: async () => ({ total_pages: 1 }) };
+    },
+  });
+  const result = await service.releases("2026-10-26", "2026-10-27");
+  assert.equal(result.coverage.AniList.status, "unavailable");
+  assert.equal(result.coverage.TMDb.status, "unavailable");
+});
+
+test("Manual refresh bypasses six-hour TVmaze snapshot without losing read-only cache on ordinary visits", async () => {
+  let calls = 0;
+  const service = createReleaseCalendarService({
+    getTmdbKey: () => "",
+    fetchImpl: async (request, options) => {
+      const url = String(request);
+      if (url.includes("tvmaze")) return { ok: true, json: async () => [
+        { id: 100 + ++calls, name: "Fresh episode", airstamp: "2026-10-26T15:00:00Z",
+          season: 1, number: calls, show: { id: 77, name: "Fresh show" } },
+      ] };
+      return { ok: true, json: async () => ({ data: { Page: { pageInfo: { hasNextPage: false }, airingSchedules: [] } } }) };
+    },
+  });
+  const first = await service.releases("2026-10-26", "2026-10-27");
+  await service.releases("2026-10-26", "2026-10-28");
+  assert.equal(calls, 1, "ordinary navigation reuses six-hour provider snapshot");
+  const refreshed = await service.releases("2026-10-26", "2026-10-27", { force: true });
+  assert.equal(calls, 2, "refresh fetches new release dates now");
+  assert.notDeepEqual(first.events.filter((row) => row.source === "TVmaze").map((row) => row.id),
+    refreshed.events.filter((row) => row.source === "TVmaze").map((row) => row.id));
 });
 
 test("Global AniList stops when pages end even if page one reports a bogus lastPage", async () => {

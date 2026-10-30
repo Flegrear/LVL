@@ -24,8 +24,9 @@ function setup({ onRemoveSession = null } = {}) {
   const meta = new Map();
   const live = new Map();
   const removed = [];
-  const manager = createStorageManager({
-    appDatabase: { getMeta: (key) => meta.get(key) ?? null, setMeta: (key, value) => meta.set(key, value) },
+  const appDatabase = { getMeta: (key) => meta.get(key) ?? null, setMeta: (key, value) => meta.set(key, value) };
+  const createManager = () => createStorageManager({
+    appDatabase,
     sessionsRoot: own,
     sharedRoot: shared,
     sessions: () => [...live.values()],
@@ -38,7 +39,8 @@ function setup({ onRemoveSession = null } = {}) {
     clipStore: { stats: () => ({ card: { count: 2, bytes: 3 * MB }, dictation: { count: 5, bytes: 1 * MB } }), collectGarbage: () => ({ demoted: 0, removed: 0 }) },
     ankiStore: { listDecks: () => [{ id: "d", mediaBytes: 7 * MB }] },
   });
-  return { shared, own, meta, live, removed, manager, cleanup: () => fs.rmSync(shared, { recursive: true, force: true }) };
+  const manager = createManager();
+  return { shared, own, meta, live, removed, manager, createManager, cleanup: () => fs.rmSync(shared, { recursive: true, force: true }) };
 }
 
 test("limits default to 20 GB and 2 GB, are kept in the database and stay within their ranges", () => {
@@ -46,7 +48,8 @@ test("limits default to 20 GB and 2 GB, are kept in the database and stay within
   try {
     assert.equal(STORAGE_DEFAULTS.playerBytes, 20 * GB);
     assert.equal(STORAGE_DEFAULTS.clipBytes, 2 * GB);
-    assert.deepEqual(manager.limits(), { playerBytes: 20 * GB, clipBytes: 2 * GB });
+    assert.equal(STORAGE_DEFAULTS.remuxCacheEnabled, true);
+    assert.deepEqual(manager.limits(), { playerBytes: 20 * GB, clipBytes: 2 * GB, remuxCacheEnabled: true });
     manager.setLimits({ playerBytes: 50 * GB });
     assert.equal(manager.limits().playerBytes, 50 * GB);
     assert.equal(manager.limits().clipBytes, 2 * GB, "the other limit is unchanged");
@@ -56,6 +59,30 @@ test("limits default to 20 GB and 2 GB, are kept in the database and stay within
     assert.equal(manager.limits().clipBytes, 200 * GB, "lowered to the maximum");
     manager.setLimits({ clipBytes: "not a number" });
     assert.equal(manager.limits().clipBytes, 200 * GB, "invalid input keeps the current value");
+  } finally {
+    cleanup();
+  }
+});
+
+test("remux cache can be disabled, persists across managers, and remains disabled when budgets change", async () => {
+  const { manager, createManager, meta, cleanup } = setup();
+  try {
+    const disabled = manager.setLimits({ remuxCacheEnabled: false });
+    assert.deepEqual(disabled, { playerBytes: 20 * GB, clipBytes: 2 * GB, remuxCacheEnabled: false });
+    assert.equal(JSON.parse(meta.get("storage_limits")).remuxCacheEnabled, false, "the off setting is stored in app metadata");
+
+    const reopened = createManager();
+    assert.equal(reopened.limits().remuxCacheEnabled, false, "a fresh manager honors the persisted off setting");
+    const allowance = await reopened.playerCacheAllowance({ additionalBytes: 1 });
+    assert.equal(allowance.allowed, false, "disabled caching never authorizes extra remux writes");
+    assert.equal(allowance.availableBytes, 0, "disabled caching exposes no write allowance");
+
+    reopened.setLimits({ playerBytes: 35 * GB });
+    assert.equal(reopened.limits().remuxCacheEnabled, false, "updating the shared budget does not reset the toggle");
+    reopened.setLimits({ remuxCacheEnabled: "true" });
+    assert.equal(reopened.limits().remuxCacheEnabled, false, "non-boolean values cannot accidentally re-enable caching");
+    reopened.setLimits({ remuxCacheEnabled: true });
+    assert.equal(createManager().limits().remuxCacheEnabled, true, "re-enabling persists across fresh managers");
   } finally {
     cleanup();
   }
@@ -223,7 +250,7 @@ test("the report adds up player, clip and deck usage", async () => {
     assert.equal(report.clips.cardCount, 2);
     assert.equal(report.clips.dictationCount, 5);
     assert.equal(report.decks.mediaBytes, 7 * MB);
-    assert.deepEqual(report.limits, { playerBytes: 20 * GB, clipBytes: 2 * GB });
+    assert.deepEqual(report.limits, { playerBytes: 20 * GB, clipBytes: 2 * GB, remuxCacheEnabled: true });
   } finally {
     cleanup();
   }

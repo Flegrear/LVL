@@ -9,13 +9,17 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 const GB = 1024 ** 3;
-export const STORAGE_DEFAULTS = Object.freeze({ playerBytes: 20 * GB, clipBytes: 2 * GB });
+export const STORAGE_DEFAULTS = Object.freeze({ playerBytes: 20 * GB, clipBytes: 2 * GB, remuxCacheEnabled: true });
 export const STORAGE_RANGES = Object.freeze({
   playerBytes: { min: 2 * GB, max: 1000 * GB },
   clipBytes: { min: 0.25 * GB, max: 200 * GB },
 });
 const UUID_DIR = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const LEFTOVER_IDLE_MS = 30 * 60 * 1000;
+// Space checks are advisory while separate FFmpeg cache writers and torrent
+// stores can grow concurrently. Keep a small unallocated budget margin rather
+// than claiming bytes another in-flight writer may already be committing.
+const PLAYER_CACHE_INFLIGHT_MARGIN_BYTES = 32 * 1024 ** 2;
 
 /** Bytes and newest modification time of everything under a folder (missing folder: zero). */
 export async function folderUsage(folder) {
@@ -94,6 +98,7 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     return {
       playerBytes: clampLimit("playerBytes", saved.playerBytes, STORAGE_DEFAULTS.playerBytes),
       clipBytes: clampLimit("clipBytes", saved.clipBytes, STORAGE_DEFAULTS.clipBytes),
+      remuxCacheEnabled: typeof saved.remuxCacheEnabled === "boolean" ? saved.remuxCacheEnabled : STORAGE_DEFAULTS.remuxCacheEnabled,
     };
   }
 
@@ -102,6 +107,7 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     const next = {
       playerBytes: changes.playerBytes === undefined ? current.playerBytes : clampLimit("playerBytes", changes.playerBytes, current.playerBytes),
       clipBytes: changes.clipBytes === undefined ? current.clipBytes : clampLimit("clipBytes", changes.clipBytes, current.clipBytes),
+      remuxCacheEnabled: typeof changes.remuxCacheEnabled === "boolean" ? changes.remuxCacheEnabled : current.remuxCacheEnabled,
     };
     appDatabase.setMeta("storage_limits", JSON.stringify(next));
     return next;
@@ -120,6 +126,35 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
       rows.push({ id: name, bytes: usage.bytes, live: Boolean(session), busy: Boolean(session?.busy), name: session?.name || "", lastUsedAt: session?.lastUsedAt || usage.newest });
     }
     return { usedBytes, sessions: rows };
+  }
+
+  /**
+   * Advisory, conservative space gate for a progressive remux writer. Cached
+   * browser-playable fragments live inside sessionsRoot and are therefore
+   * counted in EXACTLY the same cap as WebTorrent's original pieces. Never
+   * reserve the last 256 MiB of physical disk for optional remux cache work.
+   * Concurrent torrent downloads can grow between checks; the writer must
+   * re-check periodically and stop cleanly when the allowance reaches zero.
+   * reservedSourceBytes protects the not-yet-downloaded parts of videos that
+   * are actively streaming, so optional remux output cannot consume space
+   * needed for the original torrent to finish downloading.
+   */
+  async function playerCacheAllowance({ additionalBytes = 0, reservedSourceBytes = 0 } = {}) {
+    const max = limits();
+    const requested = Number(additionalBytes);
+    const reserved = Number(reservedSourceBytes);
+    if (!Number.isSafeInteger(requested) || requested < 0 || !Number.isSafeInteger(reserved) || reserved < 0)
+      return { allowed: false, availableBytes: 0, usedBytes: 0, limitBytes: max.playerBytes };
+    const [usage, drive] = await Promise.all([playerUsage(), diskSpace(sharedRoot)]);
+    const budgetFree = Math.max(0, max.playerBytes - usage.usedBytes - reserved - PLAYER_CACHE_INFLIGHT_MARGIN_BYTES);
+    const diskFree = drive ? Math.max(0, drive.freeBytes - 256 * 1024 ** 2) : 0;
+    const availableBytes = max.remuxCacheEnabled ? Math.max(0, Math.min(budgetFree, diskFree)) : 0;
+    return {
+      allowed: max.remuxCacheEnabled && requested <= availableBytes && availableBytes > 0,
+      availableBytes,
+      usedBytes: usage.usedBytes,
+      limitBytes: max.playerBytes,
+    };
   }
 
   // Only legacy UUID folders are eligible for orphan cleanup. Another port's
@@ -252,5 +287,5 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     };
   }
 
-  return { limits, setLimits, playerUsage, leftovers, clearLeftovers, clearOrphans, enforcePlayer, clearPlayer, enforceClips, report };
+  return { limits, setLimits, playerUsage, playerCacheAllowance, leftovers, clearLeftovers, clearOrphans, enforcePlayer, clearPlayer, enforceClips, report };
 }

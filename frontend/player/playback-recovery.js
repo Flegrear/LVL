@@ -20,6 +20,19 @@ function sourceKey(value) {
   return String(value ?? "").trim();
 }
 
+function sourceGeneration(value) {
+  if (typeof value === "number") return Number.isSafeInteger(value) && value >= 0 ? value : null;
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function hasGeneration(options) {
+  return options?.sourceGeneration !== undefined;
+}
+
+function isStaleGeneration(state, options) {
+  return hasGeneration(options) && sourceGeneration(options.sourceGeneration) !== state.sourceGeneration;
+}
+
 function finiteNonNegative(value, fallback) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : fallback;
@@ -56,10 +69,11 @@ export function playbackRecoverySourceKey(libraryId, fileIndex) {
   return `${id}:${index}`;
 }
 
-export function createPlaybackRecoveryState(currentSourceKey = "") {
+export function createPlaybackRecoveryState(currentSourceKey = "", currentSourceGeneration = null) {
   const key = sourceKey(currentSourceKey);
   return {
     sourceKey: key,
+    sourceGeneration: sourceGeneration(currentSourceGeneration),
     pendingSourceKey: "",
     retryCount: 0,
     sourceSwitches: 0,
@@ -71,21 +85,25 @@ export function createPlaybackRecoveryState(currentSourceKey = "") {
   };
 }
 
-export function resetPlaybackRecovery(state, currentSourceKey = state?.sourceKey || "") {
-  return createPlaybackRecoveryState(currentSourceKey);
+export function resetPlaybackRecovery(state, currentSourceKey = state?.sourceKey || "", options = {}) {
+  return createPlaybackRecoveryState(currentSourceKey,
+    hasGeneration(options) ? options.sourceGeneration : state?.sourceGeneration);
 }
 
 // A requested recovery switch is remembered in pendingSourceKey. Confirming that exact source
 // preserves the incident history so a bad pair of sources cannot bounce back and forth forever.
 // Any other source change is treated as an explicit/new playback choice and starts fresh.
-export function changePlaybackRecoverySource(state, currentSourceKey) {
+export function changePlaybackRecoverySource(state, currentSourceKey, options = {}) {
   const current = state || createPlaybackRecoveryState();
   const key = sourceKey(currentSourceKey);
-  if (key === current.sourceKey && !current.pendingSourceKey) return current;
+  const generation = hasGeneration(options) ? sourceGeneration(options.sourceGeneration) : current.sourceGeneration;
+  if (key === current.sourceKey && !current.pendingSourceKey
+    && generation === current.sourceGeneration) return current;
   if (key && key === current.pendingSourceKey) {
     return {
       ...current,
       sourceKey: key,
+      sourceGeneration: generation,
       pendingSourceKey: "",
       retryCount: 0,
       progressAnchorSeconds: null,
@@ -94,7 +112,9 @@ export function changePlaybackRecoverySource(state, currentSourceKey) {
       exhausted: false,
     };
   }
-  return createPlaybackRecoveryState(key);
+  // Without an explicit load generation, an unrelated source starts unbound.
+  // The previous episode's generation must not identify this new episode.
+  return createPlaybackRecoveryState(key, hasGeneration(options) ? generation : null);
 }
 
 // A recovery-selected alternate can fail before it ever becomes the active source (for example,
@@ -114,11 +134,13 @@ export function cancelPlaybackRecovery(state) {
 
 export function recordPlaybackProgress(state, {
   sourceKey: currentSourceKey = state?.sourceKey || "",
+  sourceGeneration: currentSourceGeneration,
   currentTimeSeconds,
   seeking = false,
   policy,
 } = {}) {
   let current = state || createPlaybackRecoveryState();
+  if (isStaleGeneration(current, { sourceGeneration: currentSourceGeneration })) return current;
   const key = sourceKey(currentSourceKey);
   if (key !== current.sourceKey) current = changePlaybackRecoverySource(current, key);
   const seconds = Number(currentTimeSeconds);
@@ -127,14 +149,19 @@ export function recordPlaybackProgress(state, {
   const normalized = normalizePolicy(policy);
   const previous = current.lastProgressSeconds === null ? Number.NaN : Number(current.lastProgressSeconds);
   const movedBackward = Number.isFinite(previous) && seconds + 0.25 < previous;
+  // A discontinuity can arrive outside a `seeking` event, especially after a
+  // source reload. One timestamp jump is not sustained decoded playback and
+  // must not replenish a bounded recovery budget.
+  const jumpedForward = Number.isFinite(previous)
+    && seconds - previous > Math.max(15, normalized.progressResetSeconds * 3);
   const anchor = current.progressAnchorSeconds === null ? Number.NaN : Number(current.progressAnchorSeconds);
-  if (!Number.isFinite(anchor) || movedBackward) {
+  if (!Number.isFinite(anchor) || movedBackward || jumpedForward) {
     return { ...current, progressAnchorSeconds: seconds, lastProgressSeconds: seconds };
   }
 
   if (seconds - anchor >= normalized.progressResetSeconds) {
     return {
-      ...createPlaybackRecoveryState(key),
+      ...createPlaybackRecoveryState(key, current.sourceGeneration),
       cancelled: current.cancelled,
       progressAnchorSeconds: seconds,
       lastProgressSeconds: seconds,
@@ -145,11 +172,15 @@ export function recordPlaybackProgress(state, {
 
 export function requestPlaybackRecovery(state, {
   sourceKey: currentSourceKey = state?.sourceKey || "",
+  sourceGeneration: currentSourceGeneration,
   alternateSourceKeys = [],
   reason = "error",
   policy,
 } = {}) {
   let current = state || createPlaybackRecoveryState();
+  if (isStaleGeneration(current, { sourceGeneration: currentSourceGeneration })) {
+    return { state: current, action: { type: "none", reason: "stale-source-generation", sourceKey: current.sourceKey } };
+  }
   const key = sourceKey(currentSourceKey);
   if (key !== current.sourceKey) current = changePlaybackRecoverySource(current, key);
   if (!key) return { state: { ...current, exhausted: true }, action: { type: "give-up", reason, sourceKey: "" } };

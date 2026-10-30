@@ -19,7 +19,7 @@ function fixture({ frames = true, response, start = 5.37, initialMute = false, p
   let aborted = 0;
   let deferredResolve;
   let preflightIndex = 0;
-  let remainingPlayFailures = playRejects === "once" ? 1 : playRejects ? Infinity : 0;
+  let remainingPlayFailures = playRejects === "once" || playRejects === "not-allowed-once" ? 1 : playRejects ? Infinity : 0;
   const result = response === undefined
     ? { verified: true, requestedStartSeconds: start, effectiveStartSeconds: 4, prerollSeconds: start - 4 }
     : response;
@@ -31,20 +31,34 @@ function fixture({ frames = true, response, start = 5.37, initialMute = false, p
     removeAttribute: (name) => overlayAttributes.delete(name),
   };
   const video = {
-    paused: true, muted: initialMute, volume: 0.62, currentTime: 0,
+    paused: true, muted: initialMute, volume: 0.62, currentTime: 0, readyState: 0, currentSrc: "prior.mp4",
     dataset: { mode: "transcode" }, src: "prior.mp4",
-    play() { calls.push("play"); this.paused = false; return remainingPlayFailures-- > 0
-      ? Promise.reject(new Error("temporary media stream failure")) : Promise.resolve(); },
+    play() {
+      calls.push("play");
+      const failed = playRejects === "not-allowed-unmuted" ? !this.muted : remainingPlayFailures-- > 0;
+      this.paused = failed;
+      if (!failed) return Promise.resolve();
+      return Promise.reject(playRejects === "not-allowed" || playRejects === "not-allowed-once" || playRejects === "not-allowed-unmuted"
+        ? Object.assign(new Error("play() blocked"), { name: "NotAllowedError" })
+        : new Error("temporary media stream failure"));
+    },
     pause() { calls.push("pause"); this.paused = true; },
-    load() { calls.push(["load", this.src]); this.currentTime = 0; },
-    addEventListener(type, fn) { if (type === "timeupdate") this.timeupdate = fn; if (type === "error") this.errorHandler = fn; },
-    removeEventListener(type, fn) { if (this.timeupdate === fn) this.timeupdate = null; },
+    load() { calls.push(["load", this.src]); this.currentTime = 0; this.currentSrc = this.src; this.readyState = 0; },
+    addEventListener(type, fn) {
+      if (type === "timeupdate") this.timeupdate = fn;
+      if (type === "error") this.errorHandler = fn;
+      if (type === "loadeddata") this.loadeddata = fn;
+    },
+    removeEventListener(type, fn) {
+      if (this.timeupdate === fn) this.timeupdate = null;
+      if (this.loadeddata === fn) this.loadeddata = null;
+    },
     ...(frames ? {
       requestVideoFrameCallback(fn) { const id = ++nextId; callbackQueue.set(id, fn); return id; },
       cancelVideoFrameCallback(id) { callbackQueue.delete(id); },
     } : {}),
   };
-  const source = { kind: "torrent", sessionId: "abcdef00", fileIndex: 2 };
+  const source = { kind: "torrent", sessionId: "abcdef00", libraryId: "known-source", fileIndex: 2 };
   const state = {
     currentSource: source, selectedAudioTrack: 2, currentMs: 0,
     transcodeBaseOffsetSeconds: 0, transcodeContext: {
@@ -86,10 +100,17 @@ function fixture({ frames = true, response, start = 5.37, initialMute = false, p
     renderSubtitles: () => { calls.push(["subtitles", state.currentMs]); },
     updateCompatControls: () => calls.push(["controls", state.currentMs]),
     finishPlayerLoading: () => calls.push("ready"),
+    clearTranscodeSeekFrame: () => calls.push("frame-cleared"),
+    toast: (...args) => calls.push(["toast", ...args]),
     scheduleAudioSync: () => calls.push("audio-sync"),
     audioSync: { key: "session:2:2" },
     formatTime: (ms) => String(ms),
     setMediaSource: (args) => { video.src = args.src; video.load(); },
+    libraryEntryById: (id) => id === "known-source" ? { magnet: "magnet:?xt=urn:btih:source" } : null,
+    recoveryPlaybackRequested: false,
+    playLibraryEpisode: (id, index, options) => {
+      calls.push(["reopen-library", id, index, options.resumeAtSeconds]); return Promise.resolve(true);
+    },
   });
   vm.runInContext(code, ctx);
   const run = (expression) => vm.runInContext(expression, ctx);
@@ -108,6 +129,10 @@ function fixture({ frames = true, response, start = 5.37, initialMute = false, p
       callbackQueue.delete(id);
       video.currentTime = mediaTime;
       cb(0, { mediaTime });
+    },
+    loadedData() {
+      video.readyState = 2;
+      video.loadeddata?.();
     },
     async open(seconds = start, options = { wasPlaying: true }) {
       return run("openTranscodeAt")(seconds, options);
@@ -212,6 +237,21 @@ test("zero-second or re-encoded transcode starts without an extra keyframe looku
   assert.equal(f.frameClasses.has("is-sync-preroll"), false);
 });
 
+test("paused copied seek at an exact keyframe does not finish before decoder loadeddata", async () => {
+  const start = 8;
+  const f = fixture({ start, response: {
+    verified: true, requestedStartSeconds: start, effectiveStartSeconds: start, prerollSeconds: 0,
+  } });
+  assert.equal(await f.open(start, { wasPlaying: false }), true);
+  assert.equal(f.state.pendingSeek?.priming, true, "a URL assignment alone is not a decoded frame");
+  assert.equal(f.calls.includes("ready"), false, "keep branded loading while paused source buffers");
+  assert.equal(f.video.paused, true);
+  f.loadedData();
+  assert.equal(f.state.pendingSeek, null, "a current decoded frame releases the paused seek");
+  assert.equal(f.calls.filter((entry) => entry === "ready").length, 1);
+  assert.equal(f.video.paused, true, "loadeddata must never autoplay an intentionally paused source");
+});
+
 test("a copied seek landing precisely on a keyframe retries a rejected Play before hiding the logo", async () => {
   const start = 8;
   const f = fixture({ start, playRejects: "once", response: {
@@ -248,6 +288,81 @@ test("no-preroll Play rejection exhausts at most two automatic retries and becom
   f.advance(45_000);
   await tick();
   assert.equal(f.calls.filter((entry) => entry === "play").length, 3, "failed request is not restarted forever");
+});
+
+test("browser user-gesture denial never retries FFmpeg, and one direct Play resumes the exact window", async () => {
+  const f = fixture({ start: 0, initialMute: true, playRejects: "not-allowed-once" });
+  assert.equal(await f.open(0), true);
+  assert.equal(f.calls.filter(c => c === "play").length, 1);
+  assert.equal(f.calls.some(c => Array.isArray(c) && c[0] === "loader" && c[2] === "Video synchronization unavailable"), false);
+  assert.equal(f.run("transcodeStartAttempt.awaitingUserGesture"), true);
+  f.advance(45_000);
+  assert.equal(f.calls.filter(c => c === "play").length, 1, "autoplay rejection is not a seek stall");
+  assert.equal(f.run("transcodeStartAttempt.resumeAfterGesture()"), true);
+  await tick();
+  assert.equal(f.calls.filter(c => c === "play").length, 2);
+  assert.ok(f.calls.includes("ready"));
+  assert.equal(f.state.pendingSeek, null);
+});
+
+test("sound-autoplay rejection automatically starts the SAME media stream muted, without a second click", async () => {
+  const f = fixture({ start: 0, playRejects: "not-allowed-unmuted" });
+  assert.equal(await f.open(0), true);
+  await tick();
+  assert.equal(f.video.muted, true, "mute just the current decoder, not the user's site preferences");
+  assert.equal(f.calls.filter(c => c === "play").length, 2);
+  assert.equal(f.calls.filter(c => Array.isArray(c) && c[0] === "preflight").length, 0);
+  assert.equal(f.state.pendingSeek, null, "finish playback startup after the muted play resolves");
+  assert.ok(f.calls.includes("ready"));
+  assert.equal(f.video.paused, false);
+  assert.equal(f.calls.some(c => Array.isArray(c) && c[0] === "loader" && c[2] === "Playback needs a click"), false);
+});
+
+test("true autoplay prohibition even while already muted still requires a real user click", async () => {
+  const f = fixture({ start: 0, initialMute: true, playRejects: "not-allowed" });
+  assert.equal(await f.open(0), true);
+  await tick();
+  assert.equal(f.calls.filter(c => c === "play").length, 1);
+  assert.equal(f.run("transcodeStartAttempt.awaitingUserGesture"), true);
+  assert.ok(f.calls.some(c => Array.isArray(c) && c[0] === "loader" && c[2] === "Playback needs a click"));
+});
+
+test("preroll waits for explicit Play after NotAllowedError and preserves muted GOP protection", async () => {
+  const f = fixture({ playRejects: "not-allowed-once" });
+  assert.equal(await f.open(), true);
+  await tick();
+  assert.equal(f.run("transcodeStartAttempt.awaitingUserGesture"), true);
+  assert.equal(f.video.muted, true);
+  assert.equal(f.frameClasses.has("is-sync-preroll"), true);
+  assert.equal(f.run("transcodeStartAttempt.resumeAfterGesture()"), true);
+  await tick();
+  f.frame(1.37);
+  assert.equal(f.state.currentMs, 5370);
+  assert.equal(f.video.muted, false);
+  assert.equal(f.state.pendingSeek, null);
+  assert.equal(f.calls.filter(c => c === "play").length, 2);
+});
+
+test("gesture replay cannot revive a previous episode or retry a repeated browser policy denial", async () => {
+  const stale = fixture({ start: 0, initialMute: true, playRejects: "not-allowed" });
+  await stale.open(0);
+  const directPlay = stale.run("transcodeStartAttempt.resumeAfterGesture");
+  stale.state.currentSource = { kind: "torrent", sessionId: "replacement", fileIndex: 3 };
+  assert.equal(directPlay(), false);
+  assert.equal(stale.calls.filter(c => c === "play").length, 1);
+
+  const repeatedlyDenied = fixture({ start: 0, initialMute: true, playRejects: "not-allowed" });
+  await repeatedlyDenied.open(0);
+  assert.equal(repeatedlyDenied.run("transcodeStartAttempt.resumeAfterGesture()"), true);
+  await tick();
+  assert.equal(repeatedlyDenied.run("transcodeStartAttempt.awaitingUserGesture"), true);
+  assert.ok(repeatedlyDenied.calls.some(c => Array.isArray(c) && c[0] === "loader"
+    && c[2] === "Playback could not start"),
+  "a second denial after the user's click must not misleadingly ask for the first click again");
+  repeatedlyDenied.advance(45_000);
+  await tick();
+  assert.equal(repeatedlyDenied.calls.filter(c => c === "play").length, 2);
+  assert.equal(repeatedlyDenied.calls.filter(c => Array.isArray(c) && c[0] === "loader" && c[2] === "Video synchronization unavailable").length, 0);
 });
 
 test("busy copied-seek origin retries automatically with the brand loader, then preserves exact HDR timestamp", async () => {
@@ -322,4 +437,48 @@ test("only a current priming error is retried; an intentional pause preserves re
   f.frame(1.37);
   assert.equal(f.video.paused, true, "a paused seek must not autoplay after recovery");
   assert.equal(f.calls.some((entry) => entry[0] === "loader" && entry[1] === 100), false);
+});
+
+test("expired 30-minute torrent session reacquires the SAME saved episode instead of terminal synchronization error", async () => {
+  const expired = new Error("Torrent session not found or expired");
+  expired.httpStatus = 404;
+  const f = fixture({ response: expired });
+  assert.equal(await f.open(5.37, { wasPlaying: true, verifySession: true }), true);
+  assert.deepEqual(f.calls.filter(call => Array.isArray(call) && call[0] === "reopen-library"),
+    [["reopen-library", "known-source", 2, 5.37]]);
+  assert.equal(f.state.pendingSeek, null, "obsolete FFmpeg seek is cancelled before the new Library session");
+  assert.equal(f.video.src, "prior.mp4", "expired URL must never be loaded");
+  assert.equal(f.calls.some(call => Array.isArray(call) && call[0] === "loader" && call[1] === 100), false,
+    "do not show a synchronization failure when the source can be recreated");
+});
+
+test("copy keyframe preflight 410 also reacquires an expired current source once", async () => {
+  const expired = new Error("Source session has expired");
+  expired.httpStatus = 410;
+  const f = fixture({ response: expired });
+  assert.equal(await f.open(5.37, { wasPlaying: true }), true);
+  assert.equal(f.calls.filter(call => Array.isArray(call) && call[0] === "reopen-library").length, 1);
+  assert.equal(f.calls.some(call => Array.isArray(call) && call[0] === "loader" && call[1] === 100), false);
+});
+
+test("session expiry cannot autoplay an intentionally paused seek, a different source, or a non-expiry 404", async () => {
+  const expired = new Error("Torrent session not found or expired");
+  expired.httpStatus = 404;
+  const paused = fixture({ response: expired });
+  assert.equal(await paused.open(5.37, { wasPlaying: false }), false);
+  assert.equal(paused.calls.some(call => Array.isArray(call) && call[0] === "reopen-library"), false);
+
+  const unrelated = new Error("Metadata not found");
+  unrelated.httpStatus = 404;
+  const other = fixture({ response: unrelated });
+  assert.equal(await other.open(), false);
+  assert.equal(other.calls.some(call => Array.isArray(call) && call[0] === "reopen-library"), false);
+
+  const stale = fixture({ response: "deferred" });
+  const pending = stale.open(5.37, { wasPlaying: true });
+  await tick();
+  stale.state.currentSource = { ...stale.state.currentSource, sessionId: "new-episode" };
+  stale.resolve({ verified: true, requestedStartSeconds: 5.37, effectiveStartSeconds: 4 });
+  assert.equal(await pending, false);
+  assert.equal(stale.calls.some(call => Array.isArray(call) && call[0] === "reopen-library"), false);
 });

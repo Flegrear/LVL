@@ -225,7 +225,7 @@ export function picksShelfMarkup(overview, { place = "home", category = "all" } 
  *          homeCategory, onHomeChange, onTitleChange }
  */
 export function createRecsUi(hooks) {
-  const { $, fetchJson, postJson, setToolStatus, openTitlePage, openSettings, isViewActive, homeCategory, onHomeChange, onTitleChange, showHomePicks = () => {}, onAniListChange = () => {}, onOverview = () => {}, refreshAniList = () => postJson("/api/recs/anilist/sync", {}), getConnectedAniListUsername = () => "", importConnectedAniList = null, getAniListScoreSyncState = () => ({ enabled: false }), getAniListScorePending = () => null, onRatingSaved = async () => "" } = hooks;
+  const { $, fetchJson, postJson, setToolStatus, openTitlePage, openSettings, isViewActive, homeCategory, onHomeChange, onTitleChange, showHomePicks = () => {}, onAniListChange = () => {}, onOverview = () => {}, getConnectedAniListUsername = () => "", importConnectedAniList = null, getAniListScoreSyncState = () => ({ enabled: false }), getAniListScorePending = () => null, onRatingSaved = async () => "" } = hooks;
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const openPicks = () => { void Promise.resolve(showHomePicks()).catch(() => {}); };
   let overview = null;
@@ -495,16 +495,6 @@ export function createRecsUi(hooks) {
         busy: useViewer ? "Importing your connected AniList list into the Library…" : "Reading AniList and importing titles into the Library…",
         done: (data) => `Linked and imported: ${plural(data.settings.anilist?.count, "anime", "anime")}` });
     });
-    $("#recs-anilist-sync")?.addEventListener("click", (event) => void act(event.currentTarget, async () => {
-      const data = await refreshAniList();
-      await onAniListChange(true, ratingsStatus, { skipAuthPull: true });
-      return data;
-    }, { status: ratingsStatus, busy: "Refreshing AniList titles in your Library…", done: "AniList Library synced" }));
-    $("#recs-anilist-unlink")?.addEventListener("click", (event) => {
-      if (!window.confirm("Unlink AniList? Its ratings leave this app, and so do its titles in your Library unless you added videos to them. Nothing changes on AniList.")) return;
-      void act(event.currentTarget, () => postJson("/api/recs/anilist/unlink", {}), { status: ratingsStatus, done: "AniList unlinked" })
-        .then((data) => { if (data) onAniListChange(false, ratingsStatus); });
-    });
     $("#recs-letterboxd-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
       const username = $("#recs-letterboxd-name")?.value.trim() || "";
@@ -642,7 +632,7 @@ export function createRecsUi(hooks) {
         + '>' + STATUS_LABELS[value] + '</option>').join("");
     return '<select data-rating-status aria-label="Watch status for ' + escapeHtml(subject.title || 'this title')
       + '" title="LVL watch status; AniList status is shown when no local status is set">'
-      + '<option value=""' + (!status ? ' selected' : '') + '>Watch status</option>' + options + '</select>';
+      + '<option value="" disabled hidden' + (!status ? ' selected' : '') + '>Status</option>' + options + '</select>';
   }
 
   function paintTitleLvlBadge(subject, record) {

@@ -15,6 +15,16 @@ function sourceBetween(start, end) {
 test("failed audio-track preflight must not advertise a dub that never became audible", async () => {
   const previousUrl = "http://localhost/transcode?audio=0&start=30";
   const video = { dataset: { mode: "transcode" }, src: previousUrl, paused: false };
+  const subtitle = { id: "external", visible: true, exactMedia: false,
+    syncSource: "audio", syncMode: "constant", offsetMs: 0,
+    syncAnchors: [{ atMs: 30_000, offsetMs: 4_000 }],
+    cues: [{ startMs: 25_000, endMs: 27_000, text: "Subtitle still here" }],
+    audioSync: { status: "synced", windows: 2 }, syncFollowsId: "master" };
+  const initialSync = structuredClone(subtitle);
+  const painted = [];
+  const remembered = [];
+  const overlay = { hidden: false, classList: { removed: [], remove(name) { this.removed.push(name); } } };
+  let resumed = 0;
   const state = {
     currentSource: { sessionId: "session1", fileIndex: 0 },
     currentMediaProbe: { audioTracks: [
@@ -24,24 +34,117 @@ test("failed audio-track preflight must not advertise a dub that never became au
     selectedAudioTrack: 0,
     transcodeContext: { baseUrl: "/api/torrents/session1/files/0/transcode",
       sessionId: "session1", fileIndex: 0, audioIndex: 0, copyVideo: true },
+    tracks: [subtitle],
   };
   const ctx = vm.createContext({
     state, video, preferredAudioLanguage: "jpn",
     playerIsPlaying: () => true, absolutePlaybackSeconds: () => 30,
     setPlayerLoading() {}, audioTrackLabel: () => ({ title: "English" }),
-    resetAudioSync() {}, renderPlayerAudioMenu() {}, scheduleAudioSync() {},
-    currentSourceTracks: () => [], subtitleRenderMemo: { key: "" },
-    renderSubtitles() {}, updatePlayerSyncStatus() {},
+    $: () => overlay, stopPlayerLoadingAnimation() {},
+    resumePlayback() { resumed += 1; video.paused = false; },
+    currentSourceTracks: () => state.tracks,
+    // Simulate production's invalidation of audio-derived timing when a dub changes.
+    resetAudioSync() {
+      subtitle.syncSource = "";
+      subtitle.syncAnchors = [];
+      subtitle.audioSync = { status: "waiting", windows: 0 };
+      delete subtitle.syncFollowsId;
+    },
+    subtitleRenderMemo: { key: "cached" },
+    renderSubtitles() {
+      const offset = subtitle.syncAnchors[0]?.offsetMs || 0;
+      painted.push(subtitle.cues.filter((cue) => 30_000 >= cue.startMs + offset && 30_000 <= cue.endMs + offset).map((cue) => cue.text));
+    },
+    updatePlayerSyncStatus() {}, renderPlayerAudioMenu() {}, scheduleAudioSync() {},
+    rememberSeriesAudioTrack: (...args) => remembered.push(args),
     // An unsupported keyframe timeline can fail closed, correctly leaving the old video URL.
-    openTranscodeAt: async () => false,
+    openTranscodeAt: async (_target, options) => {
+      video.paused = true;
+      options.onPreflightFailure({ wasPlaying: true });
+      return false;
+    },
   });
   vm.runInContext(sourceBetween("let audioTrackSwitchGeneration = 0;", "\nfunction updateChapterButtons("), ctx);
-  await vm.runInContext("switchAudioTrack(1)", ctx);
+  await vm.runInContext("switchAudioTrack(1, { remember: true })", ctx);
   assert.equal(video.src, previousUrl, "rejected transcode preflight retains the old audio stream");
   assert.equal(state.selectedAudioTrack, 0,
     "audio menu and synchronized subtitle model must reflect the audio actually playing");
   assert.equal(state.transcodeContext.audioIndex, 0,
     "subsequent seeks must not silently change to an audio dub the user never heard");
+  assert.equal(subtitle.syncSource, initialSync.syncSource, "failed preflight restores original subtitle sync type");
+  assert.deepEqual(JSON.parse(JSON.stringify(subtitle.syncAnchors)), initialSync.syncAnchors, "failed preflight restores prior subtitle timing");
+  assert.equal(subtitle.syncFollowsId, initialSync.syncFollowsId, "follow relationship survives rollback");
+  assert.equal(subtitle.audioSync.status, "synced");
+  assert.deepEqual(painted.at(-1), ["Subtitle still here"], "old playback immediately repaints its visible cue");
+  assert.equal(remembered.length, 0, "an unsuccessful manual dub selection must not be saved");
+  assert.equal(resumed, 1, "an interrupted, previously playing video must be resumed after rollback");
+  assert.equal(video.paused, false);
+  assert.equal(overlay.hidden, true, "preflight's terminal loader must not cover restored playback");
+  assert.ok(overlay.classList.removed.includes("is-error"));
+});
+
+test("audio rollback never resumes after the user explicitly paused during preflight", async () => {
+  const video = { dataset: { mode: "transcode" }, src: "http://localhost/previous", paused: false };
+  const source = { sessionId: "source", fileIndex: 0 };
+  const state = { currentSource: source, selectedAudioTrack: 0, currentMediaProbe: {
+    audioTracks: [{ language: "jpn" }, { language: "eng" }],
+  }, transcodeContext: { baseUrl: "previous", copyVideo: true } };
+  let resumes = 0;
+  const ctx = vm.createContext({ state, video, preferredAudioLanguage: "jpn",
+    absolutePlaybackSeconds: () => 22, playerIsPlaying: () => true,
+    currentSourceTracks: () => [], resetAudioSync() {},
+    setPlayerLoading() {}, audioTrackLabel: () => ({ title: "English" }),
+    $: () => ({ hidden: false, classList: { remove() {} } }),
+    stopPlayerLoadingAnimation() {}, resumePlayback() { resumes++; },
+    renderSubtitles() {}, updatePlayerSyncStatus() {}, renderPlayerAudioMenu() {}, scheduleAudioSync() {},
+    subtitleRenderMemo: { key: "" },
+    openTranscodeAt: async (_target, options) => {
+      video.paused = true;
+      options.onPreflightFailure({ wasPlaying: false });
+      return false;
+    },
+  });
+  vm.runInContext(sourceBetween("let audioTrackSwitchGeneration = 0;", "\nfunction updateChapterButtons("), ctx);
+  await vm.runInContext("switchAudioTrack(1)", ctx);
+  assert.equal(state.selectedAudioTrack, 0);
+  assert.equal(resumes, 0);
+  assert.equal(video.paused, true);
+});
+
+test("audio-track preflight never reports a scheduled busy retry as a completed dub switch", () => {
+  const start = app.indexOf("async function openTranscodeAt(");
+  const end = app.indexOf("\nfunction playerIsPlaying()", start);
+  assert.ok(start > 0 && end > start);
+  assert.match(app.slice(start, end), /const retryTransient[\s\S]*?if \(onPreflightFailure\) return false;/,
+    "audio switches should retain their old playable stream instead of committing an unresolved retry");
+});
+
+test("only a successfully started explicit audio selection is saved for the current series", async () => {
+  const source = { sessionId: "session-a", fileIndex: 7, seriesKey: "apothecary-diaries" };
+  const state = { currentSource: source, selectedAudioTrack: 0,
+    currentMediaProbe: { audioTracks: [
+      { language: "jpn", title: "Original" }, { language: "eng", title: "Dub" },
+    ] }, transcodeContext: null };
+  const video = { dataset: { mode: "torrent-direct" }, src: "/api/video" };
+  const saved = [];
+  const ctx = vm.createContext({
+    state, video, preferredAudioLanguage: "", playerIsPlaying: () => true,
+    absolutePlaybackSeconds: () => 12, setPlayerLoading() {},
+    audioTrackLabel: () => ({ title: "Dub" }), resetAudioSync() {},
+    renderPlayerAudioMenu() {}, scheduleAudioSync() {},
+    currentSourceTracks: () => [], subtitleRenderMemo: { key: "" },
+    rememberSeriesAudioTrack: (track, index, selectedSource) => saved.push({ track, index, selectedSource }),
+    openTranscodeAt: async () => true,
+  });
+  vm.runInContext(sourceBetween("let audioTrackSwitchGeneration = 0;", "\nfunction updateChapterButtons("), ctx);
+  await vm.runInContext("switchAudioTrack(1, { remember: true })", ctx);
+  assert.equal(saved.length, 1);
+  assert.equal(saved[0].index, 1);
+  assert.equal(saved[0].selectedSource, source, "manual choice is tied to the series being watched");
+  await vm.runInContext("switchAudioTrack(0, { force: true })", ctx);
+  assert.equal(saved.length, 1, "automatic playback refinement must never replace a user preference");
+  assert.match(app, /switchAudioTrack\(index, \{ remember: true \}\)/,
+    "the actual audio menu marks user selections as persistent");
 });
 
 test("changing audio output during a pending playing seek must retain play intent", () => {
@@ -102,6 +205,7 @@ test("an ended event from the old transcode during a debounced seek must not adv
     paused: true, dataset: { mode: "transcode" } };
   const ctx = vm.createContext({
     state, video, cancelTranscodeStart() {}, setPlayerLoading() {},
+    isNewSourceFramePending: () => false,
     stopRecoveryWatch() {}, recordWatchProgress() {},
     startAutoNext() { advanced++; },
     absolutePlaybackSeconds: () => state.pendingSeek?.target ?? 0,
@@ -126,6 +230,7 @@ test("a failed switch from direct torrent playback restores its direct clock and
     state, video, preferredAudioLanguage: "jpn",
     playerIsPlaying: () => true, absolutePlaybackSeconds: () => 42,
     setPlayerLoading() {}, audioTrackLabel: () => ({ title: "English" }),
+    $: () => null, stopPlayerLoadingAnimation() {},
     resetAudioSync() {}, renderPlayerAudioMenu() {}, scheduleAudioSync() {},
     currentSourceTracks: () => [], subtitleRenderMemo: { key: "" },
     renderSubtitles() {}, updatePlayerSyncStatus() {},
@@ -192,6 +297,7 @@ test("watch resume position must not freeze at stale presented frame while backg
   assert.ok(start >= 0 && end > start && clockStart >= 0 && clockEnd > clockStart);
   const ctx = vm.createContext({
     state, video, learningEnabled: false, Date: { now: () => 100_000 },
+    isNewSourceFramePending: () => false,
     watchProgressSavedAt: 0,
     explicitUnwatchCompletionArmed: new Set(),
     currentLibraryEpisode: () => ({ entry, episode }),
@@ -207,7 +313,8 @@ test("watch resume position must not freeze at stale presented frame while backg
   vm.runInContext(app.slice(start, end), ctx);
   vm.runInContext(app.slice(clockStart, clockEnd), ctx);
   handlers.get("timeupdate")();
-  assert.equal(state.currentMs, 5_000, "captions intentionally remain on the last shown frame");
+  assert.equal(state.currentMs, 5_000,
+    "ordinary playback keeps the last presented frame while its decoder stalls");
   assert.equal(episode.progress?.positionMs, 63_000,
     "background playback progress must use the actual media position, not a stale subtitle frame");
 });
@@ -227,6 +334,7 @@ test("old video ended during copied-seek preflight must not cancel the new seek"
   };
   vm.runInNewContext(app.slice(from, to), {
     state, video, cancelTranscodeStart() { cancelled++; },
+    isNewSourceFramePending: () => false,
     setPlayerLoading(...args) { loading.push(args); },
     recoverPlayback() {}, stopRecoveryWatch() {},
     absolutePlaybackSeconds: () => 120, recordWatchProgress() {}, startAutoNext() {},
@@ -254,7 +362,7 @@ test("old video media error during copied-seek preflight must not consume bounde
   let retries = 0;
   let cancelled = 0;
   vm.runInNewContext(app.slice(from, to), {
-    state, video, transcodeStartAttempt: {
+    state, video, isNewSourceFramePending: () => false, transcodeStartAttempt: {
       retryTransient() { retries++; return true; },
     },
     cancelTranscodeStart() { cancelled++; },

@@ -37,7 +37,7 @@ test("paused native seeking across an embedded subtitle window boundary starts l
 
 test("speed changes and floating/PiP views retain media clock seconds, not wall-time-scaled subtitle offsets", () => {
   const start = app.indexOf("function absolutePlaybackSeconds() {");
-  const end = app.indexOf("\nfunction playerReadyEndSeconds()", start);
+  const end = app.indexOf("\nfunction playerReadyRangeSeconds()", start);
   assert.ok(start >= 0 && end > start);
   const video = { currentTime: 35.25, playbackRate: 1, dataset: { mode: "transcode" } };
   const state = { pendingSeek: null, transcodeBaseOffsetSeconds: 180 };
@@ -55,4 +55,45 @@ test("speed changes and floating/PiP views retain media clock seconds, not wall-
     "queued seek is already an absolute movie timestamp, including while paused");
   assert.match(app, /document\.pictureInPictureElement === video/,
     "native PiP retains the same media element instead of a second video clock");
+});
+
+test("a stale presented frame after pause/audio switch cannot strand newly enabled captions", () => {
+  const start = app.indexOf("function visibleSubtitleClockSeconds() {");
+  const end = app.indexOf("\nfunction schedulePresentedSubtitleFrame()", start);
+  const renderStart = app.indexOf("function renderSubtitles() {");
+  const renderEnd = app.indexOf("\nfunction trackLanguageName(", renderStart);
+  assert.ok(start >= 0 && end > start && renderStart >= 0 && renderEnd > renderStart);
+  const state = { currentMs: 2_000, subtitlesVisible: true, baseLanguage: "EN", targetLanguage: "EN",
+    wordColoring: false, subtitleStyle: { romanization: false } };
+  const track = { id: "english", language: "EN", visible: true,
+    cues: [{ id: "at-resume", text: "Captions survive resume", startMs: 19_000, endMs: 23_000 }] };
+  const overlay = { lines: [], set innerHTML(_text) { this.lines = []; },
+    append(line) { this.lines.push(line); } };
+  const memo = { key: "old frame" };
+  let movieTime = 21;
+  let displayedFrame = 2;
+  const ctx = vm.createContext({ state, subtitleRenderMemo: memo,
+    absolutePlaybackSeconds: () => movieTime, presentedSubtitleSeconds: () => displayedFrame,
+    preferredSourceTracks: () => [track], activeTrack: () => track,
+    getActiveCue: (item) => item.cues.find((cue) => state.currentMs >= cue.startMs && state.currentMs <= cue.endMs) || null,
+    comparisonCueForTrack: (item) => item.cues.find((cue) => state.currentMs >= cue.startMs && state.currentMs <= cue.endMs) || null,
+    $: () => overlay, video: { paused: true }, learningEnabled: false, learningRevision: 0,
+    normalizeTrackLanguage: (language) => language, isRomanizableLanguage: () => false,
+    document: { createElement: () => ({}) },
+  });
+  vm.runInContext(app.slice(start, end) + app.slice(renderStart, renderEnd), ctx);
+  vm.runInContext("refreshSubtitleClockForInteraction(); renderSubtitles()", ctx);
+  assert.equal(state.currentMs, 21_000);
+  assert.deepEqual(overlay.lines.map((line) => line.textContent), ["Captions survive resume"]);
+  state.subtitlesVisible = false;
+  vm.runInContext("renderSubtitles()", ctx);
+  assert.equal(overlay.lines.length, 0);
+  state.subtitlesVisible = true;
+  vm.runInContext("refreshSubtitleClockForInteraction(); renderSubtitles()", ctx);
+  assert.deepEqual(overlay.lines.map((line) => line.textContent), ["Captions survive resume"],
+    "hide/show while paused must immediately repaint the current cue");
+  displayedFrame = 21.15;
+  movieTime = 21.5;
+  assert.equal(vm.runInContext("visibleSubtitleClockSeconds()", ctx), 21.15,
+    "a fresh presented frame still takes priority over audio currentTime");
 });

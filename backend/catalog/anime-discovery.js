@@ -98,6 +98,11 @@ export function createAnimeDiscoveryService({ fetchImpl = fetch, endpoint = "htt
           id: m.id, title: m.title?.english || m.title?.romaji || `Anime ${m.id}`,
           titleAlt: m.title?.romaji && m.title.romaji !== m.title?.english ? m.title.romaji : "",
           cover: m.coverImage?.extraLarge || m.coverImage?.large || "",
+          // ExtraLarge art for newly published entries is occasionally absent
+          // on the CDN despite a valid large version. Keep that distinct URL
+          // as a browser error fallback instead of giving up on real artwork.
+          coverFallback: m.coverImage?.extraLarge && m.coverImage?.large
+            && m.coverImage.extraLarge !== m.coverImage.large ? m.coverImage.large : "",
           format: m.format || "", season: m.season || "", year: m.seasonYear || null,
           episodes: m.episodes || null, score: m.averageScore || null,
           popularity: m.popularity || 0, genres: m.genres || [], status: m.status || "",

@@ -190,6 +190,126 @@ test("Missing SkipDB data preserves a simple user preference label without seeki
   assert.deepEqual(h.calls, [], "a saved preference cannot seek without verified timing");
 });
 
+test("explicit same-file MKV OP chapter works without IMDb identification or external request", () => {
+  const h = fixture();
+  h.entry.catalogId = "";
+  h.entry.episodes = [];
+  h.state.currentMediaProbe = { durationSeconds: 1440, embeddedSkipMarkers: {
+    intro: { ...confirmed(60, 150), source: "embedded-chapter" }, outro: null,
+  } };
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(h.requests.length, 0, "local chapter metadata never triggers a community API lookup");
+  assert.match(h.nodes["#player-timeline-summary"].textContent, /Opening: 1:00 to 2:30/);
+  h.run('setEpisodeAutoSkip("intro", true)');
+  assert.deepEqual(h.calls, [["seek", 150]], "explicit OP is actionable on the same file");
+  h.state.currentSource.fileIndex = 3;
+  h.state.currentMediaProbe = null;
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(h.nodes["#player-timeline-summary"].textContent, "", "old file chapters never leak to a new source");
+});
+
+test("verified embedded chapter takes precedence over delayed provider timing without a second fetch", async () => {
+  const h = fixture();
+  h.setPosition(80);
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(h.requests.length, 1);
+  h.state.currentMediaProbe = { durationSeconds: 1440, embeddedSkipMarkers: {
+    intro: { ...confirmed(70, 155), source: "embedded-chapter" }, outro: null,
+  } };
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(h.requests.length, 1, "late local probe should not duplicate remote lookup");
+  await h.complete({ intro: confirmed(60, 150), outro: confirmed(1310, 1370) });
+  h.run('setEpisodeAutoSkip("intro", true)');
+  assert.deepEqual(h.calls, [["seek", 155]], "same-file OP overrides remote cut marker");
+});
+
+test("a different selected torrent file cannot inherit a previous file's chapters or late community response", async () => {
+  const h = fixture();
+  h.state.currentSource.sessionId = "session-a";
+  h.setPosition(80);
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(h.requests.length, 1, "first file makes only its own identified-episode request");
+  const obsolete = h.requests[0];
+
+  // This is the real source-switch discipline: the player clears its media
+  // probe *before* accepting metadata for the new session/file index.
+  h.state.currentSource = { kind: "torrent", libraryId: "source-a", sessionId: "session-b", fileIndex: 3 };
+  h.entry.episodes.push({ fileIndex: 3, code: "S01E04" });
+  h.state.currentMediaProbe = null;
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(obsolete.options.signal.aborted, true, "old provider lookup is aborted on source switch");
+  assert.equal(h.requests.length, 2, "new source gets one separate lookup");
+  assert.equal(h.nodes["#player-timeline-summary"].textContent, "", "old file does not retain timeline markers");
+
+  h.state.currentMediaProbe = {
+    durationSeconds: 1440, embeddedSkipMarkers: { intro: { ...confirmed(90, 165), source: "embedded-chapter" }, outro: null },
+  };
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(h.requests.length, 2, "new file's chapter metadata needs no additional lookup");
+  await h.complete({ intro: confirmed(60, 150), outro: confirmed(1310, 1370) }, 0);
+  assert.equal(h.nodes["#player-timeline-summary"].textContent, "Opening: 1:30 to 2:45",
+    "late response from a different file cannot replace B's own chapter marker");
+  await h.complete({ intro: confirmed(60, 150), outro: confirmed(1300, 1380) }, 1);
+  assert.equal(h.nodes["#player-timeline-summary"].textContent,
+    "Opening: 1:30 to 2:45; Ending: 21:40 to 23:00", "new provider may only fill the missing ending");
+  h.setPosition(100);
+  h.run('setEpisodeAutoSkip("intro", true)');
+  assert.deepEqual(h.calls, [["seek", 165]], "only the new session's verified OP can trigger a seek");
+});
+
+test("local chapters replace earlier community timestamps and survive subsequent provider errors", async () => {
+  const h = fixture();
+  h.setPosition(80);
+  h.video.paused = true;
+  h.run('setEpisodeAutoSkip("intro", true)');
+  h.run("refreshEpisodeSkipOptions");
+  await h.complete({ intro: confirmed(60, 150), outro: confirmed(1310, 1370) });
+  assert.equal(h.nodes["#player-timeline-summary"].textContent,
+    "Opening: 1:00 to 2:30; Ending: 21:50 to 22:50");
+  h.state.currentMediaProbe = {
+    durationSeconds: 1440, durationMs: 1_440_000,
+    embeddedSkipMarkers: { intro: { ...confirmed(70, 155), source: "embedded-chapter" }, outro: null },
+  };
+  h.run("refreshEpisodeSkipOptions");
+  assert.equal(h.requests.length, 1);
+  assert.equal(h.nodes["#player-timeline-summary"].textContent,
+    "Opening: 1:10 to 2:35; Ending: 21:50 to 22:50", "same-file chapter supersedes older community OP");
+  assert.deepEqual(h.calls, [], "arriving metadata never initiates a seek while paused");
+  h.video.paused = false;
+  h.run("refreshEpisodeSkipOptions");
+  assert.deepEqual(h.calls, [["seek", 155]]);
+
+  const missing = fixture();
+  missing.state.currentMediaProbe = {
+    durationSeconds: 1440, embeddedSkipMarkers: { intro: { ...confirmed(60, 150), source: "embedded-chapter" }, outro: null },
+  };
+  missing.video.paused = true;
+  missing.run("refreshEpisodeSkipOptions");
+  assert.equal(missing.requests.length, 1);
+  missing.requests[0].resolve({ ok: false });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(missing.nodes["#player-timeline-summary"].textContent, "Opening: 1:00 to 2:30",
+    "failed provider response must not erase valid same-file OP");
+});
+
+test("embedded timestamp acceptance is bound to the actual FFprobe duration, not just an apparently valid playback clock", () => {
+  const h = fixture();
+  h.entry.catalogId = "";
+  h.entry.episodes = [];
+  h.state.currentMediaProbe = {
+    durationSeconds: 1440,
+    embeddedSkipMarkers: { intro: { ...confirmed(60, 150), source: "embedded-chapter" }, outro: null },
+  };
+  h.state.mediaDurationMs = 1_800_000; // Different cut (30m vs probed 24m).
+  h.setPosition(80);
+  h.run('setEpisodeAutoSkip("intro", true)');
+  h.run("refreshEpisodeSkipOptions");
+  assert.deepEqual(h.calls, [], "a same-file chapter must not auto-seek an incompatible-duration player source");
+  assert.equal(h.nodes["#player-timeline-summary"].textContent, "",
+    "do not display misleading chapters from a different cut");
+  assert.equal(h.requests.length, 0, "duration mismatch cannot trigger an external lookup without IMDb episode identity");
+});
+
 test("Timeline delimiters show only opening and ending without covering seek input", async () => {
   const h = fixture();
   h.run("refreshEpisodeSkipOptions");

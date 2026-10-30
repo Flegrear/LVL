@@ -45,6 +45,9 @@ test("switching to a separately timed audio dub invalidates prior audio-derived 
     "the old dub's alignment cannot remain labeled 'synced' before analysis of the newly selected dub");
   assert.notEqual(track.syncSource, "audio",
     "old audio-derived anchors must not be treated as newly verified for an unrelated audio track");
+  assert.equal(track.syncSource, "provisional", "old dub's alignment remains explicitly unverified");
+  assert.equal(track.syncAnchors[0].offsetMs, 4_000,
+    "keep caption locations visible until the new dub has a verified alignment");
   assert.equal(track.offsetMs, -1_500, "the user's manual SRT offset is independent of selected audio dub");
   assert.equal(embedded.syncSource, "embedded", "exact embedded-video subtitles are not invalidated by audio changes");
   assert.deepEqual(embedded.syncAnchors, []);
@@ -62,4 +65,40 @@ test("a saved subtitle model for audio track 0 cannot silently validate audio tr
   const accepted = vm.runInContext("applySavedSubtitleSync", ctx)(track);
   assert.equal(accepted, false, "a previously verified model belongs to another audio track");
   assert.notEqual(track.syncSource, "audio");
+});
+
+test("returning to an earlier audio dub restores its saved per-dub subtitle alignment", () => {
+  const models = {
+    "external-srt:audio:0": { audioIndex: 0, mode: "constant", anchors: [{ atMs: 8_000, offsetMs: 4000 }] },
+    "external-srt:audio:1": { audioIndex: 1, mode: "constant", anchors: [{ atMs: 8_000, offsetMs: -2500 }] },
+  };
+  const track = { fingerprint: "external-srt", visible: true, exactMedia: false,
+    syncSource: "audio", syncMode: "constant", syncAnchors: [{ atMs: 8_000, offsetMs: 4000 }],
+    audioSync: { status: "synced" }, offsetMs: -1500 };
+  const embedded = { exactMedia: true, syncSource: "embedded", syncAnchors: [], visible: true };
+  const state = { selectedAudioTrack: 0, tracks: [track, embedded] };
+  const audioSync = { key: "session:0:0", windows: [], caches: new Map(), timer: 0 };
+  const ctx = vm.createContext({ state, audioSync,
+    window: { clearTimeout() {} },
+    audioSyncKey: () => `session:0:${state.selectedAudioTrack}`,
+    currentSourceTracks: () => state.tracks,
+    pairedCueMemo: new Map(), subtitleRenderMemo: { key: "cached" },
+    updatePlayerSyncStatus() {}, trackSyncKey: () => track.fingerprint,
+    currentLibraryEpisode: () => ({ episode: { subtitleSync: models } }),
+    playerSyncChipState: "Synced",
+  });
+  vm.runInContext(functionSlice("function applySavedSubtitleSync(", "\nfunction saveSubtitleSync("), ctx);
+  vm.runInContext(functionSlice("function resetAudioSync()", "\nfunction scheduleAudioSync("), ctx);
+  state.selectedAudioTrack = 1;
+  vm.runInContext("resetAudioSync()", ctx);
+  assert.equal(track.audioSync.status, "synced");
+  assert.equal(track.syncSource, "audio");
+  assert.equal(track.syncAnchors[0].offsetMs, -2500);
+  assert.equal(track.offsetMs, -1500, "manual offset remains unchanged");
+  state.selectedAudioTrack = 0;
+  vm.runInContext("resetAudioSync()", ctx);
+  assert.equal(track.syncAnchors[0].offsetMs, 4000);
+  assert.equal(track.audioSync.saved, true);
+  assert.equal(embedded.syncSource, "embedded");
+  assert.deepEqual(embedded.syncAnchors, []);
 });

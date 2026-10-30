@@ -27,6 +27,8 @@ function finderHarness() {
   const storage = new Map();
   const payloads = [];
   const context = vm.createContext({
+    webSubtitleSearchRevision: 0,
+    webSubtitleResultsSource: null,
     state: { subdlKey: "", wyzieKey: "", subsourceKey: "", currentSource: { catalogId: "tt222", fileName: "Frieren.S01E04.mkv" } },
     $: (key) => elements.get(key),
     $$: () => [],
@@ -108,6 +110,6 @@ test("episode play area is integrated into the card without a separately outline
   assert.match(render, /\$\{icon\("play"\)\}<\/button>/, "The currently playing episode still uses the same visible play glyph");
   assert.doesNotMatch(render, /icon\("volume-2"\)/, "Unknown icon name must not cause an empty current-episode play area");
   const clicks = between('$("#watch-chapters-body")?.addEventListener("click"', '$$("[data-study-category]")');
-  assert.match(clicks, /if \(action\.current\) \{\s*switchView\("watch"\);\s*if \(video\.paused\) resumePlayback\(\);\s*return;/,
-    "Current episode play must return to its player or resume without restarting its stream");
+  assert.match(clicks, /if \(action\.current\) \{\s*switchView\("watch"\);[\s\S]*?if \(video\.paused\) resumePlayback\(\);\s*return;/,
+    "Current episode play remains on its own source, with explicit unwatch allowed to rewind");
 });

@@ -55,6 +55,7 @@ function fixture({ initialTrack = true } = {}) {
     preferredLanguagePair: () => ["EN"],
     normalizeTrackLanguage: () => "EN",
     absolutePlaybackSeconds: () => state.currentMs / 1000,
+    visibleSubtitleClockSeconds: () => state.currentMs / 1000,
     presentedSubtitleSeconds: () => null,
     currentSourceTracks: () => state.tracks,
     embeddedSubtitleLabel: () => "Embedded English",
@@ -112,6 +113,67 @@ function fixture({ initialTrack = true } = {}) {
     advance(ms) { now += ms; },
   };
 }
+
+test("selecting a still-loading embedded subtitle stream keeps extraction alive and paints its cues", async () => {
+  const f = fixture({ initialTrack: false });
+  f.enable(5);
+  assert.equal(f.requests.length, 1, "default extraction started before manual selection");
+  const running = f.requests[0];
+  f.state.subtitlesVisible = false;
+  const promise = vm.runInContext("importEmbeddedSubtitleTrack", f.ctx)(
+    f.state.currentMediaProbe.subtitleTracks[0], null, { automatic: false });
+  assert.equal(await promise, true, "manual selection joins the pending extraction");
+  assert.equal(running.signal.aborted, false, "the user's selected stream is not aborted");
+  assert.equal(f.requests.length, 1, "no redundant extraction request");
+  assert.equal(f.state.subtitlesVisible, true, "manual selection enables captions globally");
+  f.complete(running, "Selected subtitle now appears");
+  await tick();
+  assert.equal(f.state.tracks.length, 1);
+  assert.equal(f.state.tracks[0].visible, true);
+  assert.equal(f.lastPaint, "Selected subtitle now appears");
+  f.expire(running);
+  await tick();
+});
+
+test("late embedded extraction never overrides Hide All after manual selection", async () => {
+  const f = fixture({ initialTrack: false });
+  const select = vm.runInContext("importEmbeddedSubtitleTrack", f.ctx);
+  const pending = select(f.state.currentMediaProbe.subtitleTracks[0], null, { automatic: false });
+  const job = f.requests[0];
+  assert.equal(f.state.subtitlesVisible, true);
+  // The user explicitly hides captions while the download still has no cues.
+  vm.runInContext("noteSubtitleVisibilityIntent()", f.ctx);
+  f.state.subtitlesVisible = false;
+  f.complete(job, "Do not resurrect this subtitle");
+  await tick();
+  assert.equal(f.state.subtitlesVisible, false, "a late response cannot undo Hide All");
+  assert.equal(f.state.tracks[0].visible, false, "a dismissed stream stays disabled");
+  f.expire(job);
+  await pending;
+  // Selecting the embedded track again must still reactivate it on demand.
+  await select(f.state.currentMediaProbe.subtitleTracks[0], null, { automatic: false });
+  assert.equal(f.state.subtitlesVisible, true);
+  assert.equal(f.state.tracks[0].visible, true);
+});
+
+test("switching to an external subtitle mid-extraction cannot resurrect the old embedded stream", async () => {
+  const f = fixture({ initialTrack: false });
+  const select = vm.runInContext("importEmbeddedSubtitleTrack", f.ctx);
+  const pending = select(f.state.currentMediaProbe.subtitleTracks[0], null, { automatic: false });
+  const job = f.requests[0];
+  vm.runInContext("noteSubtitleVisibilityIntent()", f.ctx); // User selects a different caption provider.
+  f.state.tracks.push({ id: "external", visible: true, origin: "external", cues: [
+    { id: "external-cue", startMs: 0, endMs: 10_000, text: "Explicit external selection" },
+  ] });
+  f.state.tracks.forEach((track) => { if (track.origin === "embedded") track.visible = false; });
+  f.complete(job, "Old embedded track");
+  await tick();
+  assert.equal(f.state.tracks.find((track) => track.origin === "embedded")?.visible, false,
+    "old extraction does not steal visibility after a newer subtitle selection");
+  assert.equal(f.state.tracks.find((track) => track.id === "external")?.visible, true);
+  f.expire(job);
+  await pending;
+});
 
 test("large forward seek preempts a still-open earlier subtitle extraction, without losing previous cues", async () => {
   const f = fixture();

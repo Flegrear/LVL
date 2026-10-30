@@ -577,6 +577,9 @@ namespace LanguageVideoLearner
         {
             if (!url.Equals(ReleasesUrl, StringComparison.Ordinal) && !ValidAssetUrl(url))
                 throw new InvalidOperationException("Invalid LVL update URL");
+            // .NET Framework can cache an HTTPS service point's TLS settings at
+            // WebRequest.Create. Opt in to TLS 1.2 before creating that request.
+            ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "GET";
             request.UserAgent = "LVL-Windows-Launcher/0.1";
@@ -584,7 +587,6 @@ namespace LanguageVideoLearner
             request.Timeout = 12000;
             request.ReadWriteTimeout = 12000;
             request.AutomaticDecompression = DecompressionMethods.Deflate | DecompressionMethods.GZip;
-            ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
             using (WebResponse response = request.GetResponse())
             using (Stream remote = response.GetResponseStream())
             using (MemoryStream output = new MemoryStream())
@@ -603,6 +605,7 @@ namespace LanguageVideoLearner
         private static void DownloadInstaller(string url, string destination, bool isPatch)
         {
             if (!ValidAssetUrl(url)) throw new InvalidOperationException("Invalid LVL setup URL");
+            ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.UserAgent = "LVL-Windows-Launcher/0.1";
             request.Timeout = 20000;

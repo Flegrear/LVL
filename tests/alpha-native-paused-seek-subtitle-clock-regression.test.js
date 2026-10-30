@@ -18,7 +18,7 @@ test("native seek while paused repaints subtitles at the new absolute playback c
   };
   const renders = [];
   const context = vm.createContext({
-    state, video,
+    state, video, isNewSourceFramePending: () => false,
     frame: { classList: { contains: () => true } },
     $: () => ({ hidden: true }),
     isPlayerTimeBuffered: () => true,

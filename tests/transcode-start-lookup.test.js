@@ -49,7 +49,7 @@ for (const fixture of [
       "-threads", "2", "-g", "100", "-keyint_min", "100", ...fixture.settings, input]);
     const result = await probeCopiedSeekOrigin({ source: input, requestedStartSeconds: 5.37, executable: ffprobeStatic.path });
     assert.deepEqual(result, { requestedStartSeconds: 5.37, effectiveStartSeconds: 4, prerollSeconds: 1.37, verified: true });
-  } finally { fs.rmSync(folder, { recursive: true, force: true }); }
+  } finally { fs.rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 });
 
 test("abort rejects before spawning a slow probe", async () => {
@@ -110,5 +110,9 @@ test("resource bounds reject overlarge FFprobe output or abort during probe", { 
       executable: ffprobeStatic.path, signal: controller.signal });
     controller.abort();
     await assert.rejects(pending, (error) => error.statusCode === 499);
-  } finally { fs.rmSync(folder, { recursive: true, force: true }); }
+  } finally {
+    // On Windows the aborted FFprobe can still be closing its source handle
+    // when the promise rejects; retry only this disposable fixture cleanup.
+    fs.rmSync(folder, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+  }
 });

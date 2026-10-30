@@ -27,6 +27,7 @@ const asDay = (dateKey) => {
   return new Date(year, month - 1, date, 12);
 };
 const chapterCode = (season, episode) => `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
+const episodeNumber = (code) => Number(/^(?:EP\s+|S\d{2,3}E)(\d+)$/i.exec(String(code || ""))?.[1]) || 0;
 const episodeWatched = (series, code) => {
   const marks = (series.sources || []).map((entry) => entry.watchedChapters?.[code]);
   if (marks.includes(false)) return false; // Manual undo has priority.
@@ -120,7 +121,7 @@ export function calendarMatchLibrary(events = [], library = []) {
       || (event.source === "AniList" && byAnime.get(String(event.providerId)))
       || (family.length === 1 && family[0])
       || (event.source === "TMDb" && byTmdb.get(String(event.providerId)))
-      || byTitleYear.get(`${event.type === "movie" ? "movie" : "series"}:${event.date.slice(0, 4)}:${comparableTitle(event.title)}`);
+      || byTitleYear.get(`${event.type === "movie" ? "movie" : "series"}:${event.premiereYear || event.date.slice(0, 4)}:${comparableTitle(event.title)}`);
     const compatible = match && (event.type === "movie" ? match.type === "movie"
       : match.type !== "movie" && (event.type !== "anime" || match.mediaKind === "anime"));
     if (!compatible) return { ...event, inMyList: false };
@@ -246,7 +247,7 @@ export function createCalendarView({
   const lists = new Map();
   const rebuildMerged = () => {
     const matchedLocal = new Set();
-    const sourced = calendarMatchLibrary(publicEvents, librarySeries)
+    const mapped = calendarMatchLibrary(publicEvents, librarySeries)
       .filter((event) => event.inMyList)
       .map((event) => {
         const dated = event.timestamp ? { ...event, date: calendarDateKey(new Date(event.timestamp)) } : event;
@@ -260,6 +261,35 @@ export function createCalendarView({
         matchedLocal.add(chapter.id);
         return { ...dated, code: chapter.code, episodeTitle: chapter.episodeTitle || dated.episodeTitle };
       });
+    // Two schedule providers can report the same saved anime chapter with
+    // different numbering (EP 4 vs S01E04). Collapse only an unambiguous pair;
+    // never conflate two different episodes released on the same day.
+    const sameNumberCount = new Map();
+    for (const event of mapped) {
+      const episode = episodeNumber(event.code);
+      if (!event.seriesKey || !episode) continue;
+      const key = `${event.seriesKey}:${event.date}:${episode}`;
+      sameNumberCount.set(key, (sameNumberCount.get(key) || 0) + 1);
+    }
+    const sourced = [];
+    for (const event of mapped) {
+      const episode = episodeNumber(event.code);
+      const matchIndex = sourced.findIndex((previous) => {
+        if (!event.seriesKey || previous.seriesKey !== event.seriesKey || previous.date !== event.date
+          || previous.type !== event.type) return false;
+        if (/^S\d{2,3}E\d{2,4}$/i.test(event.code) && previous.code === event.code) return true;
+        const crossProvider = (event.source === "AniList" && previous.source === "TVmaze")
+          || (event.source === "TVmaze" && previous.source === "AniList");
+        return crossProvider && event.type === "anime" && episode > 0
+          && episode === episodeNumber(previous.code)
+          && sameNumberCount.get(`${event.seriesKey}:${event.date}:${episode}`) === 2;
+      });
+      if (matchIndex < 0) { sourced.push(event); continue; }
+      const prior = sourced[matchIndex];
+      const priority = (item) => (item.timestamp ? 2 : 0)
+        + (item.type === "anime" && item.source === "AniList" ? 1 : 0);
+      if (priority(event) > priority(prior)) sourced[matchIndex] = event;
+    }
     const seen = new Set(sourced.map((event) => `${comparableTitle(event.title)}:${event.code}:${event.date}`));
     const local = realEvents.filter((event) => {
       if (matchedLocal.has(event.id)) return false;
@@ -322,7 +352,7 @@ export function createCalendarView({
     return { from, to, first: calendarDateKey(from), last: calendarDateKey(to) };
   };
   const inRange = (event, value = range()) => event.date >= value.first && event.date <= value.last;
-  const refreshReal = ({ limit = 128 } = {}) => {
+  const refreshReal = ({ limit = Infinity } = {}) => {
     librarySeries = getSeries();
     const series = librarySeries.filter((item) => item.type !== "movie" && /^tt\d{5,12}$/.test(item.catalogId || ""));
     trackedSeriesCount = series.length;

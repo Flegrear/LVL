@@ -1,5 +1,13 @@
 # LVL Changelog
 
+## 0.1.14 — 2026-10-30
+
+- Add full-episode indexed seeking for fully verified compatible H.264 and HEVC SDR torrents, with disk-safe cache, accurate presented frames, and a default-on Settings switch.
+- Improve fast local seeking, pause/resume, source switching, recovery messages, FFmpeg cleanup, and truthful playback progress and duration.
+- Improve selected dub and channel handling, embedded subtitle priority, seek synchronization, ASS text fidelity, and chapter detection.
+- Fix newer Jujutsu Kaisen seasons linking to the original Library series; add missing anime cover fallback, safer Library/calendar updates, and Watch/Settings UI refinements.
+- Improve diagnostic safety, playback telemetry, and Windows updater TLS initialization.
+
 ## 0.1.13 — 2026-10-26
 
 - Stabilize subtitles and remember audio choices across episodes.

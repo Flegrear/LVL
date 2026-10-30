@@ -166,7 +166,8 @@ test("Learning routes, cue rendering, exposure and keyboard shortcuts are gated,
   assert.match(app, /if \(!audioSyncSource\(\) \|\| !audioSyncTracks\(\)\.length\) return/);
   assert.match(app, /function scheduleClipStep\(delayMs = 6000\) \{\s*if \(!learningEnabled\) return/);
   assert.match(app, /async function runAudioSyncStep\(\) \{\s*const source = audioSyncSource\(\)/);
-  assert.match(app, /const ranges = await audioReadyRanges\(source\);\s*if \(audioSyncKey\(\) !== key\) return/);
+  assert.match(app, /const ranges = await audioReadyRanges\(source\);\s*if \(audioSync\.generation !== generation \|\| audioSyncKey\(\) !== key\) return/,
+    "a completed audio probe must not mutate state from a newer audio-dub generation");
   assert.match(app, /if \(learningEnabled && state\.loopLine && !video\.paused\)/);
   assert.match(app, /if \(learningEnabled && key === "g"\)/);
   assert.match(app, /recordWatchProgress\(\);/);

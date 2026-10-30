@@ -60,6 +60,15 @@ test("missing/ambiguous mapping, existing AniList score, and disabled opt-in cau
   }
 });
 
+test("Two local 7.5 season ratings cannot silently overwrite a listed 8.9 score or invent an unreleased sequel", async () => {
+  const { run, calls } = fixture({ existingScore: 8.9, score: 7.5,
+    extraRatings: [{ source: "app", season: 2, score: 7.5 }] });
+  const result = await run();
+  assert.equal(result.sent, 0);
+  assert.equal(result.skipped, 2);
+  assert.deepEqual(calls, [], "only explicit re-edits with a verified destination may replace existing AniList scores");
+});
+
 test("manual backfill rejects colliding AniList destinations across titles and season scopes", async () => {
   for (const options of [
     { duplicateTitle: true },
