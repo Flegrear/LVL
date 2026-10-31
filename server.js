@@ -58,6 +58,7 @@ import { pipeRemuxAhead } from "./backend/media/remux-run-ahead.js";
 import { isTorrentFileFullyVerified } from "./backend/media/verified-torrent-file.js";
 import { evaluateEncodedH264CacheEligibility } from "./backend/media/transcode-cache-eligibility.js";
 import { createIndexedVideoCache } from "./backend/media/indexed-video-cache.js";
+import { createUpdatePolicy } from "./backend/app-updates/update-policy.js";
 import {
   COACH_LIVE_IDLE_TIMEOUT_MS,
   buildVoiceCoachRepairPrompt,
@@ -399,6 +400,7 @@ const PUBLIC_ASSETS = new Map([
   ["/frontend/player/stream-status.js", { file: "frontend/player/stream-status.js", cacheControl: "no-cache" }],
   ["/frontend/player/progressive-seek.js", { file: "frontend/player/progressive-seek.js", cacheControl: "no-cache" }],
   ["/frontend/player/torrent-piece-wait.js", { file: "frontend/player/torrent-piece-wait.js", cacheControl: "no-cache" }],
+  ["/frontend/updates/update-view.js", { file: "frontend/updates/update-view.js", cacheControl: "no-cache" }],
   ["/learning/browser/vocabulary-meanings.js", { file: "learning/browser/vocabulary-meanings.js", cacheControl: "no-cache" }],
 ]);
 
@@ -3629,6 +3631,15 @@ function requestNativeUpdate(action, fields = {}) {
   });
 }
 
+// Automatic updates wait until no video is open; see backend/app-updates/update-policy.js.
+const updatePolicy = UPDATE_BRIDGE ? createUpdatePolicy({
+  request: requestNativeUpdate,
+  prefsFile: path.join(appDataRoot, "app-update-policy.json"),
+  isBusy: () => torrentSessions.size > 0 || activeTranscodes.size > 0,
+  patchCapable: () => fs.existsSync(path.join(root, "runtime", "update-apply.mjs")),
+  log: (message) => console.log(`Updates: ${message}`),
+}) : null;
+
 async function appUpdatesEndpoint(req, res, url) {
   if (url.pathname === "/api/app-updates/changelog")
     return localChangelogEndpoint(req, res, url);
@@ -3694,7 +3705,7 @@ async function appUpdatesEndpoint(req, res, url) {
     }
   }
   try {
-    json(res, 200, await requestNativeUpdate(route[1], fields));
+    json(res, 200, await updatePolicy.handle(route[1], fields));
   } catch (error) {
     json(res, error.statusCode || 503, { error: error.message || "Updater unavailable" });
   }
@@ -6556,5 +6567,9 @@ server.listen(port, "127.0.0.1", () => {
     .catch((error) => console.warn("Startup cleanup failed:", error.message));
   // Automatic recommendation updates (only when switched on in Settings).
   recs.startScheduler();
+  if (updatePolicy) {
+    setTimeout(() => { void updatePolicy.tick(); }, 5_000).unref?.();
+    setInterval(() => { void updatePolicy.tick(); }, 30_000).unref?.();
+  }
   void serverFeatures.start();
 });

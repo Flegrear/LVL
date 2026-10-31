@@ -1,5 +1,14 @@
 # LVL Changelog
 
+## 0.1.16 — 2026-10-31
+
+- Show a progress bar while an update downloads and installs.
+- Show a notice when an update is ready, with Install now and Later, and confirm it after LVL restarts.
+- Open Settings › Updates from the update notification in the bell menu.
+- Make automatic updates wait until no video is open.
+- Fix the error message and stuck "Installing…" button shown while LVL restarts after an update.
+- Fix later parts of a paused video not becoming ready to seek until playback resumed.
+
 ## 0.1.15 — 2026-10-31
 
 - Install every update in the background, without the Setup wizard; LVL restarts and reloads its window on its own.

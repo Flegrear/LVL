@@ -92,6 +92,22 @@
         <div id="app-notifications-list" class="app-notifications-list" aria-live="polite"><p>No notifications</p></div>
         <button id="app-notifications-settings" class="app-notifications-settings" type="button">Notification settings</button>
       </div>
+      <section id="app-update-card" class="app-update-card" role="status" aria-live="polite" aria-labelledby="app-update-card-title" hidden>
+        <div class="app-update-card__head">
+          <strong id="app-update-card-title"></strong>
+          <button id="app-update-card-close" class="app-update-card__close" type="button" aria-label="Close update notice">×</button>
+        </div>
+        <p id="app-update-card-detail" class="app-update-card__detail"></p>
+        <div id="app-update-card-progress" class="app-update-progress" hidden>
+          <div class="app-update-progress__track" role="progressbar" aria-label="Update progress" aria-valuemin="0" aria-valuemax="100"><span class="app-update-progress__bar"></span></div>
+        </div>
+        <div class="app-update-card__actions">
+          <button id="app-update-card-install" class="ui-btn ui-btn--primary ui-btn--sm" type="button" hidden>Install now</button>
+          <button id="app-update-card-retry" class="ui-btn ui-btn--primary ui-btn--sm" type="button" hidden>Try again</button>
+          <button id="app-update-card-notes" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" hidden>What's new</button>
+          <button id="app-update-card-later" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" hidden>Later</button>
+        </div>
+      </section>
 
       <main class="app-main">
         <!-- Home has its own browsing header; every other section uses the
@@ -831,11 +847,15 @@
                   <input id="settings-app-updates-auto" type="checkbox" disabled>
                   <span class="ui-switch__track" aria-hidden="true"></span>
                   <span class="settings-learning-copy"><strong>Update LVL automatically</strong>
-                    <small>Checks daily and installs verified updates automatically.</small></span>
+                    <small>Checks daily and installs updates when no video is open.</small></span>
                 </label>
                 <div class="settings-actions">
                   <button id="settings-app-updates-check" class="ui-btn ui-btn--primary ui-btn--sm" type="button" disabled>Check for updates</button>
                   <button id="settings-app-updates-install" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" hidden>Install available update…</button>
+                </div>
+                <div id="settings-app-updates-progress" class="app-update-progress" hidden>
+                  <div class="app-update-progress__track" role="progressbar" aria-label="Update progress" aria-valuemin="0" aria-valuemax="100"><span class="app-update-progress__bar"></span></div>
+                  <span class="app-update-progress__label"></span>
                 </div>
                 <p id="settings-app-updates-status" class="tool-status settings-status" role="status" aria-live="polite">Reading updater settings…</p>
                 <details id="settings-app-updates-changelog-details" class="settings-guide">
