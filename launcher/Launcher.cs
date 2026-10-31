@@ -60,9 +60,9 @@ namespace LanguageVideoLearner
         private static int Main(string[] args)
         {
             Options options = Options.Parse(args);
-            // A NEW app identity: never send a Quit or Open signal to the private
-            // Alpha v0.2 launcher, even though both apps use port 4273.
-            // Keep this identity stable across future public LVL updates.
+            // LVL's own signal identity: never send a Quit or Open signal to
+            // another program's launcher, even one using port 4273.
+            // Keep this identity stable across LVL updates.
             string prefix = "Local\\LVL-Public-" + options.Port;
             string root = FindRoot();
             if (root == null)
@@ -71,9 +71,8 @@ namespace LanguageVideoLearner
                 return 1;
             }
             bool installed = File.Exists(Path.Combine(root, "installed-app.json"));
-            // Never honor an inherited private Alpha v0.2 data-root override
-            // for the public installed application. Fresh public LVL data is
-            // always isolated from the old project's user profile.
+            // Never honor an inherited data-root override for the installed
+            // application. Installed LVL data always lives in its own folder.
             string dataRoot = installed
                 ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LVL", "data")
                 : Environment.GetEnvironmentVariable("LANGUAGE_VIDEO_LEARNER_DATA_ROOT");
@@ -384,8 +383,6 @@ namespace LanguageVideoLearner
             {
                 updater = new PackagedUpdater(root, log, invoker, Notify);
                 updater.AddTo(menu);
-                // The isolated alpha build substitutes AlphaUpdater at compile time.
-                // The ordinary packaged launcher has no bridge and is unaffected.
                 MethodInfo bridgeMethod = updater.GetType().GetMethod("BeginBridge",
                     BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
                 if (bridgeMethod != null)
@@ -627,6 +624,32 @@ namespace LanguageVideoLearner
             });
         }
 
+        // Brave writes a cache file next to an unpacked theme. Load a copy from
+        // %LOCALAPPDATA%\LVL\window-theme so the install folder holds only the
+        // installed files. A changed manifest replaces the copy and its cache.
+        private static string CopyWindowTheme(string source)
+        {
+            try
+            {
+                string manifest = Path.Combine(source, "manifest.json");
+                if (!File.Exists(manifest)) return null;
+                string copy = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LVL", "window-theme");
+                string copiedManifest = Path.Combine(copy, "manifest.json");
+                Directory.CreateDirectory(copy);
+                if (!File.Exists(copiedManifest) || File.ReadAllText(copiedManifest) != File.ReadAllText(manifest))
+                {
+                    string cache = Path.Combine(copy, "Cached Theme.pak");
+                    if (File.Exists(cache)) File.Delete(cache);
+                    File.Copy(manifest, copiedManifest, true);
+                }
+                return copy;
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
         private void OpenWindow(bool tab)
         {
             BrowserChoice browser = tab ? null : Browsers.AppCapable();
@@ -647,7 +670,7 @@ namespace LanguageVideoLearner
                 // into the user's normal browser profile or another browser.
                 string nativeFrameTheme = Environment.GetEnvironmentVariable("LANGUAGE_VIDEO_LEARNER_BROWSER_THEME_DIR");
                 if (string.IsNullOrWhiteSpace(nativeFrameTheme) && File.Exists(Path.Combine(root, "installed-app.json")))
-                    nativeFrameTheme = Path.Combine(root, "assets", "platform", "alpha-window-theme");
+                    nativeFrameTheme = CopyWindowTheme(Path.Combine(root, "assets", "platform", "alpha-window-theme"));
                 if (browser != null && browser.Name == "brave.exe" &&
                     !string.IsNullOrWhiteSpace(isolatedProfile) &&
                     !string.IsNullOrWhiteSpace(nativeFrameTheme) &&
@@ -800,9 +823,9 @@ namespace LanguageVideoLearner
             try
             {
                 string response = Get(url + "api/health", 1500);
-                // Never adopt a private Alpha 0.2.x server sharing port 4273.
-                // The public installation has an explicit identity, stable
-                // across its own 0.1, 0.2 and later public version families.
+                // Never adopt another LVL build's server sharing port 4273.
+                // The installed app has an explicit identity, stable across
+                // all its versions.
                 bool publicInstall = File.Exists(Path.Combine(root, "installed-app.json"));
                 return response.Contains("\"app\":\"language-video-learner\"") &&
                     (publicInstall ? response.Contains("\"appId\":\"lvl-public\"")

@@ -10,10 +10,10 @@ LVL is a **local-first video player and media Library** for series, anime, and m
 - **Discover:** rate titles, get personalized daily recommendations, and connect AniList or import Letterboxd ratings.
 - **Keep control:** save your Library locally, with in-app update and notification settings.
 
-**Alpha (`0.1.0`)** is LVL's first release, focused on playback and Library reliability. Learning, flashcards, Review, and Coach are deferred.
+**LVL is in alpha**, focused on playback and Library reliability. Learning, flashcards, Review, and Coach are deferred.
 
 ## Getting started
 
-Download **LVL-Setup.exe** from the [Alpha 0.1 release](https://github.com/Flegrear/LVL/releases/tag/v0.1.0). The installed app uses **127.0.0.1:4273** for its desktop window and browser tabs, sharing one Library.
+Download **LVL-Setup.exe** from the [latest release](https://github.com/Flegrear/LVL/releases/latest). It installs the newest version, and LVL updates itself from then on. The installed app uses **127.0.0.1:4273** for its desktop window and browser tabs, sharing one Library.
 
 LVL stores application data locally; catalog, subtitle, and torrent services may be contacted when used.

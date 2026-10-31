@@ -133,6 +133,21 @@ $developmentFiles = @(Get-ChildItem -LiteralPath $modulesDir -File -Recurse -For
 foreach ($file in $developmentFiles) {
   if (Test-Path -LiteralPath $file.FullName) { Remove-Item -LiteralPath $file.FullName -Force }
 }
+# Install only what runs: no package docs, type definitions, TypeScript
+# sources or source maps (licence and notice files stay), and native
+# prebuilds for Windows x64 only. installer/verify.mjs fails the build if
+# any of these remain.
+$documentationFiles = @(Get-ChildItem -LiteralPath $modulesDir -File -Recurse -Force -ErrorAction SilentlyContinue |
+  Where-Object { ($_.Name -match '\.(?:md|markdown|map|d\.[cm]?ts|[cm]?ts)$') -and ($_.Name -notmatch '^(?:licen[sc]e|copying|copyright|notice)(?:[._-].*)?$') })
+foreach ($file in $documentationFiles) {
+  if (Test-Path -LiteralPath $file.FullName) { Remove-Item -LiteralPath $file.FullName -Force }
+}
+$otherPlatformBuilds = @(Get-ChildItem -LiteralPath $modulesDir -Directory -Recurse -Force -ErrorAction SilentlyContinue |
+  Where-Object { $_.Name -eq 'prebuilds' } | ForEach-Object { Get-ChildItem -LiteralPath $_.FullName -Directory -Force } |
+  Where-Object { $_.Name -ne 'win32-x64' })
+foreach ($dir in $otherPlatformBuilds) {
+  if (Test-Path -LiteralPath $dir.FullName) { Remove-Item -LiteralPath $dir.FullName -Recurse -Force }
+}
 
 $nodeCache = Join-Path $cacheRoot "node-v$nodeVersion-win-x64.exe"
 $licenseCache = Join-Path $cacheRoot "node-v$nodeVersion-LICENSE.txt"

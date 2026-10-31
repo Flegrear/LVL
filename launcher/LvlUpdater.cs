@@ -1,6 +1,6 @@
 // Native update companion for the installed public LVL launcher.
 // Compile alongside Launcher.cs, referencing System.Web.Extensions.dll.
-// Never uses the private Language Video Learner releases, folders or registry keys.
+// Uses only LVL's own GitHub releases.
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -22,6 +22,10 @@ namespace LanguageVideoLearner
         private const string ReleaseAssetsPrefix = "https://github.com/Flegrear/LVL/releases/download/";
         private const int MaxJsonBytes = 524288;
         private const int AutomaticCheckIntervalDays = 1;
+        // Every update installs without the Setup wizard and restarts LVL afterwards.
+        private const string SilentSetupArguments = "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LVLRestart=1";
+        // Each download goes to %TEMP%\LVL-update-<Guid "N">; nothing else matches.
+        private static readonly Regex UpdateFolderName = new Regex(@"\ALVL-update-[0-9a-f]{32}\z", RegexOptions.CultureInvariant);
         private readonly object gate = new object();
         private readonly string root;
         private readonly string preferencesFile;
@@ -43,6 +47,8 @@ namespace LanguageVideoLearner
         private string error;
         private Release available;
         private readonly System.Threading.Timer recurringChecks;
+        private System.Threading.Timer leftoverRetry;
+        private string activeUpdateFolder;
 
         private sealed class Release
         {
@@ -87,11 +93,60 @@ namespace LanguageVideoLearner
 
         public void CheckOnStartup()
         {
+            ScheduleLeftoverCleanup();
             lock (gate)
             {
                 if (!automatic || lastCheckedUtc.AddDays(intervalDays) > DateTime.UtcNow) return;
             }
             StartCheck(false);
+        }
+
+        // Runs at startup, again 3 minutes later (the setup that restarted LVL
+        // may still be closing) and hourly with the update check.
+        private void ScheduleLeftoverCleanup()
+        {
+            ThreadPool.QueueUserWorkItem(delegate { CleanUpdateLeftovers(); });
+            lock (gate)
+            {
+                if (leftoverRetry != null) return;
+                leftoverRetry = new System.Threading.Timer(delegate { CleanUpdateLeftovers(); }, null,
+                    TimeSpan.FromMinutes(3), TimeSpan.FromMilliseconds(-1));
+            }
+        }
+
+        private void CleanUpdateLeftovers()
+        {
+            string keep;
+            lock (gate) keep = activeUpdateFolder;
+            int removed = RemoveUpdateLeftovers(Path.GetTempPath(), keep, DateTime.UtcNow.AddMinutes(-2));
+            if (removed > 0) log.Write("updater", "Removed " + removed + " finished update download folder(s)");
+        }
+
+        // Deletes finished update downloads directly inside tempRoot. Only exact
+        // LVL-update-<32 hex> folders, never links, never the one in use or one
+        // changed after olderThanUtc. A folder a running setup still holds fails
+        // to delete and is retried on the next pass.
+        private static int RemoveUpdateLeftovers(string tempRoot, string keep, DateTime olderThanUtc)
+        {
+            int removed = 0;
+            string[] folders;
+            try { folders = Directory.GetDirectories(tempRoot); }
+            catch (Exception) { return 0; }
+            foreach (string folder in folders)
+            {
+                if (!UpdateFolderName.IsMatch(Path.GetFileName(folder))) continue;
+                try
+                {
+                    if (keep != null && string.Equals(Path.GetFullPath(folder), Path.GetFullPath(keep), StringComparison.OrdinalIgnoreCase)) continue;
+                    DirectoryInfo info = new DirectoryInfo(folder);
+                    if ((info.Attributes & FileAttributes.ReparsePoint) != 0) continue;
+                    if (info.LastWriteTimeUtc > olderThanUtc) continue;
+                    info.Delete(true);
+                    removed++;
+                }
+                catch (Exception) { }
+            }
+            return removed;
         }
 
         // Exposed only over 127.0.0.1 with an unpredictable per-launch secret.
@@ -302,24 +357,17 @@ namespace LanguageVideoLearner
                 error = null;
             }
             RefreshMenu();
-            OnUi(delegate
-            {
-                if (!autoApply && !selected.IsPatch && MessageBox.Show("Download and install LVL " + selected.Version + "? The installer will ask for confirmation.",
-                    "LVL Update", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
-                {
-                    lock (gate) downloading = false;
-                    RefreshMenu();
-                    return;
-                }
-                ThreadPool.QueueUserWorkItem(delegate { DownloadAndRun(selected, autoApply); });
-            });
+            // Pressing Install (or an automatic update) is the confirmation:
+            // patches and full setups both install without further prompts.
+            ThreadPool.QueueUserWorkItem(delegate { DownloadAndRun(selected); });
             return true;
         }
 
-        private void DownloadAndRun(Release release, bool autoApply)
+        private void DownloadAndRun(Release release)
         {
             string folder = Path.Combine(Path.GetTempPath(), "LVL-update-" + Guid.NewGuid().ToString("N"));
             string setupPath = Path.Combine(folder, release.SetupName);
+            lock (gate) activeUpdateFolder = folder;
             try
             {
                 Directory.CreateDirectory(folder);
@@ -357,28 +405,25 @@ namespace LanguageVideoLearner
                         else
                         {
                             // Full setup is only needed for launcher/runtime/
-                            // dependency changes. In an explicitly opted-in
-                            // automatic update run silently, stop only this
-                            // public launcher, then restart the new app.
-                            string flags = autoApply
-                                ? "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LVLRestart=1"
-                                : "";
-                            Process.Start(new ProcessStartInfo(setupPath, flags) { UseShellExecute = true });
+                            // dependency changes. It runs silently, stops only
+                            // this public launcher, then restarts the new app.
+                            Process.Start(new ProcessStartInfo(setupPath, SilentSetupArguments) { UseShellExecute = true });
                         }
                         lock (gate) noticePending = false;
                         log.Write("updater", "Launched verified LVL update " + release.Version);
                     }
                     catch (Exception issue)
                     {
-                        lock (gate) error = "Could not open the verified installer: " + issue.Message;
+                        lock (gate) { error = "Could not open the verified installer: " + issue.Message; activeUpdateFolder = null; }
                         notify("LVL update could not start. Check the launcher log.");
+                        try { Directory.Delete(folder, true); } catch (Exception) { }
                     }
                     finally { lock (gate) downloading = false; RefreshMenu(); }
                 });
             }
             catch (Exception issue)
             {
-                lock (gate) { error = issue.Message; downloading = false; }
+                lock (gate) { error = issue.Message; downloading = false; activeUpdateFolder = null; }
                 log.Write("updater", "Could not download and validate LVL update: " + issue.Message);
                 OnUi(delegate { notify("LVL update download failed. See the launcher log."); RefreshMenu(); });
                 try { Directory.Delete(folder, true); } catch (Exception) { }

@@ -23,7 +23,7 @@ jobs:
           cache: npm
       - name: Install release build dependencies
         run: npm ci --no-audit --no-fund
-      - name: Validate release tag and installer contracts
+      - name: Validate release tag
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -32,9 +32,6 @@ jobs:
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
           if ($tag -cne "v$version") { throw "Tag $tag must match committed package.json version $version" }
           node --version
-          # Source tests are kept locally by developers and are not in this repository.
-          node --test installer/packaging.test.mjs
-          if ($LASTEXITCODE -ne 0) { throw 'Installer contract tests failed' }
       - name: Build source patch or select full bootstrap
         id: update
         shell: pwsh

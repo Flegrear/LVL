@@ -1,5 +1,10 @@
 # LVL Changelog
 
+## 0.1.15 — 2026-10-31
+
+- Install every update in the background, without the Setup wizard; LVL restarts and reloads its window on its own.
+- Remove downloaded update files and files left over from older versions after updating.
+
 ## 0.1.14 — 2026-10-31
 
 - Seek instantly in compatible videos, including the parts of an episode that have already downloaded. The timeline shows which parts are ready. Turn it off in Settings › Storage.
@@ -11,28 +16,27 @@
 
 ## 0.1.13 — 2026-10-26
 
-- Stabilize subtitles and remember audio choices across episodes.
-- Simplify Settings and improve daily update checks.
+- Make subtitles more stable, and remember your audio choice across episodes.
+- Simplify Settings and improve the daily update check.
 
 ## 0.1.12 — 2026-10-26
 
-- Fix subtitles disappearing when switching audio tracks by restoring saved, dub-specific subtitle timing.
-- Preserve the previous subtitle alignment when an audio-track change fails to start.
-- Keep embedded subtitle extraction active when its track is selected while still loading.
+- Fix subtitles disappearing when you switch audio tracks; each dub keeps its own subtitle timing.
+- Keep subtitles in sync when an audio track fails to switch.
+- Fix built-in subtitles stopping when you pick them while they're still loading.
 
 ## 0.1.11 — 2026-10-26
 
-- Updater fixes: separate manual update checking from the Install action.
-- Clarify the difference between incremental ZIP updates and full setup upgrades in Settings.
-- Exercise the verified, in-place incremental update path from LVL Alpha 0.1.1 without downloading another setup.
+- Separate checking for updates from installing them.
+- Show in Settings whether an update installs inside the app or needs the full installer.
+- Update from 0.1.1 inside the app, without downloading the installer again.
 
 ## 0.1.1 — 2026-10-26
 
-- Updater test: verify that installed LVL Alpha 0.1.0 detects and installs a tagged release from GitHub.
-- Deliver a complete in-place installer update to exercise the initial upgrade path.
-- Replace the placeholder changelog with release notes shown inside LVL.
+- Test the updater: LVL 0.1.0 finds this release and installs it over the current version.
+- Show release notes inside LVL.
 
 ## 0.1.0 — 2026-10-26
 
-- Initial public LVL Alpha release with local video playback, subtitle customization, Library and discovery features.
-- Introduce update settings and support for future incremental releases.
+- First public alpha: video playback, customizable subtitles, the Library and discovery.
+- Add update settings, and support for small updates installed inside the app.

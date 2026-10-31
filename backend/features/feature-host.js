@@ -1,5 +1,5 @@
-// Server extension seam. Features that live on their own lane (roadmap Part B:
-// reader, franchises, reading sources) register in ./registry.js instead of
+// Server extension seam. Optional features (reader, franchises, reading
+// sources) register in ./registry.js instead of
 // editing server.js. server.js asks this host for extra static assets, API
 // routes and start/stop hooks. Core routes always win: features are only asked
 // about requests that core did not handle, and every feature route is local-only.

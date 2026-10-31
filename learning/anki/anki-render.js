@@ -1,6 +1,6 @@
 // anki-render.js: renders Anki card templates to HTML the way Anki does, for decks stored in the
 // app (imports, AnkiWeb downloads, presets). Pure JavaScript (no DOM, no Node APIs): server.js
-// renders cards with it and tests/anki-render.test.js checks it.
+// renders cards with it.
 //
 // Covered: {{Field}}, filters (text, furigana, kana, kanji, hint, type, cloze, tts: skipped),
 // {{#Field}} / {{^Field}} sections, special fields (FrontSide, Tags, Type, Deck, Subdeck, Card),

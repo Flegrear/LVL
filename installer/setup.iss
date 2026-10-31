@@ -12,7 +12,7 @@
 #define LauncherName "LVL.exe"
 
 [Setup]
-; First public release identity. Do not reuse the private alpha-v0.2 AppId.
+; LVL's installation identity. Every release keeps this exact AppId.
 AppId={{D3C04C52-7A8E-4DC7-9B0A-1EAF4B4A8B8B}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -36,15 +36,25 @@ CloseApplications=no
 RestartApplications=no
 UsePreviousAppDir=yes
 UsePreviousGroup=no
-DisableDirPage=no
+; The folder is chosen on the first install only; updates reuse it silently.
+DisableDirPage=auto
 ; User data and browser profiles live outside the installation and survive uninstall.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [InstallDelete]
-; Future installs remove obsolete development-only folders from THIS public
-; app directory, regardless of what an older public package installed.
+; Replace the app folders completely, so files dropped from LVL never stay
+; behind after an update. User data and the browser profile live in
+; %LOCALAPPDATA%\LVL, never here. Earlier development folders go too.
+Type: filesandordirs; Name: "{app}\assets"
+Type: filesandordirs; Name: "{app}\backend"
+Type: filesandordirs; Name: "{app}\frontend"
+Type: filesandordirs; Name: "{app}\learning"
+Type: filesandordirs; Name: "{app}\shared"
+Type: filesandordirs; Name: "{app}\node_modules"
+Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\.lvl-patch-transaction"
 Type: filesandordirs; Name: "{app}\tests"
 Type: filesandordirs; Name: "{app}\devtools"
 Type: filesandordirs; Name: "{app}\docs"
@@ -59,6 +69,7 @@ Type: filesandordirs; Name: "{app}\frontend"
 Type: filesandordirs; Name: "{app}\learning"
 Type: filesandordirs; Name: "{app}\shared"
 Type: filesandordirs; Name: "{app}\.lvl-patch-transaction"
+Type: filesandordirs; Name: "{localappdata}\LVL\window-theme"
 
 [Files]
 ; build.ps1 constructs this directory from scripts/release-inputs.mjs;
@@ -71,19 +82,38 @@ Name: "{autodesktop}\LVL"; Filename: "{app}\{#LauncherName}"; Parameters: "--por
 
 [Run]
 Filename: "{app}\{#LauncherName}"; Parameters: "--port 4273"; Description: "{cm:LaunchProgram,LVL}"; Flags: nowait postinstall skipifsilent unchecked
-; Only an updater-invoked silent in-place setup passes /LVLRestart=1.
-; Start the replacement public launcher AFTER files are installed and the
-; previous public launcher has exited; never open another/private instance.
+; Every update setup runs silently and passes /LVLRestart=1 (see [Code]).
+; Start the replacement launcher AFTER files are installed and the previous
+; launcher has exited; never open another instance.
 Filename: "{app}\{#LauncherName}"; Parameters: "--background --port 4273"; Flags: nowait runhidden; Check: RestartAfterAutomaticUpgrade
 
 [Code]
+const
+  // Same AppId as [Setup]; a per-user install registers it under HKCU.
+  InstalledKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D3C04C52-7A8E-4DC7-9B0A-1EAF4B4A8B8B}_is1';
+  SilentUpdateArguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LVLRestart=1';
+
+// Updating an installed LVL never shows the wizard, whoever started this
+// setup (the updater, an older updater that passes no options, or the user):
+// start this same setup again silently, in the same folder with LVL restarted
+// afterwards, and close this copy. A first install keeps the normal wizard.
+function InitializeSetup(): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := True;
+  if WizardSilent() or not RegKeyExists(HKCU, InstalledKey) then
+    exit;
+  if Exec(ExpandConstant('{srcexe}'), SilentUpdateArguments, '', SW_SHOWNORMAL, ewNoWait, ResultCode) then
+    Result := False;
+end;
+
 function RestartAfterAutomaticUpgrade(): Boolean;
 begin
   Result := ExpandConstant('{param:LVLRestart|0}') = '1';
 end;
 
-// On an in-place PUBLIC update, only stop this install's exact executable.
-// Never contact the private v0.2 launcher, installation or user profile.
+// On an in-place update, only stop this install's exact executable.
 function PsSingleQuote(const Value: string): string;
 begin
   Result := Value;

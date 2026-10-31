@@ -1,5 +1,5 @@
-// Browser extension seam. Features that live on their own lane (roadmap Part B:
-// reader, franchises, reading sources) register in ./registry.js instead of
+// Browser extension seam. Optional features (reader, franchises, reading
+// sources) register in ./registry.js instead of
 // editing index.html and app.js. app.js asks this host for extra views, nav
 // buttons, Settings tabs, Library filters, styles, translations, keyboard
 // handling and render hooks. A failing feature is logged and skipped; it never

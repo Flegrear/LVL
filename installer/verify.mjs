@@ -22,6 +22,9 @@ const forbiddenTop = new Set([
 const privateFile = /(?:\.sqlite(?:3)?(?:-(?:shm|wal))?|\.db(?:-(?:shm|wal))?|\.log|\.pem|\.p12|\.pfx)$/i;
 const dependencyTestFile = /^(?:test(?:[-_.].*)?|.*\.(?:test|spec)\.(?:[cm]?js|tsx?|jsx)|vitest\.config\.[cm]?js)$/i;
 const dependencyDevelopmentDir = new Set(['test', 'tests', '__tests__', 'devtools', 'docs', 'benchmarks', 'examples', 'coverage', '.github', '.history']);
+// Package docs, type definitions, TypeScript sources and source maps never run.
+const dependencyDocumentation = /\.(?:md|markdown|map|d\.[cm]?ts|[cm]?ts)$/i;
+const licenceFile = /^(?:licen[sc]e|copying|copyright|notice)(?:[._-].*)?$/i;
 
 function walk(folder, root, files = []) {
   for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
@@ -49,6 +52,9 @@ export function validatePayload(payload, { checkRuntime = false } = {}) {
         `Developer-only npm dependency directory in setup: ${relative}`);
       assert.ok(!dependencyTestFile.test(file), `Dependency test file in setup: ${relative}`);
       assert.ok(!privateFile.test(relative), `Private dependency file in setup: ${relative}`);
+      assert.ok(!dependencyDocumentation.test(file) || licenceFile.test(file), `Dependency documentation or typings in setup: ${relative}`);
+      const prebuild = segments.indexOf('prebuilds');
+      assert.ok(prebuild < 0 || segments[prebuild + 1] === 'win32-x64', `Native build for another platform in setup: ${relative}`);
       continue;
     }
     assert.ok(!privateFile.test(relative), `Private payload file: ${relative}`);

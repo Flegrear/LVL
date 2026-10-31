@@ -24,7 +24,9 @@ const MAX_MANIFEST_BYTES = 512 * 1024;
 // modules, generated executables or unreviewed developer fixtures.
 const unsafeFile = /\.(?:exe|dll|sys|node|msi|msp|msix|appx|bat|cmd|ps1|vbs|wsf|com|scr|so|dylib|jar|zip|7z|rar|tar|tgz|gz)$/i;
 const developerFile = /(?:^|\/)(?:__tests__|tests?|specs?|fixtures?|devtools|docs|examples|benchmarks|coverage)(?:\/|$)|(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/i;
-const safeToIgnore = /^(?:README(?:\.[^/]*)?|\.gitignore|\.gitattributes|\.editorconfig|LICENSE(?:\.[^/]*)?|docs\/.*|tests\/.*|devtools\/.*)$/i;
+// Repository, CI and release tooling that is never installed. Changing it
+// doesn't touch the installed app, so it never forces the full installer.
+const notInstalled = /^(?:README(?:\.[^/]*)?|LICENSE(?:\.[^/]*)?|\.gitignore|\.gitattributes|\.editorconfig|\.github\/.+|scripts\/.+|docs\/.+|tests\/.+|devtools\/.+|learning\/build-presets\.mjs)$/i;
 const windowsReserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 function versionParts(value) {
@@ -132,9 +134,12 @@ function changedEntries(repoRoot, oldCommit) {
       throw new Error(`Unsupported Git diff status: ${status}`);
     const from = data[i++];
     if (from === undefined) throw new Error("Truncated Git diff paths");
-    validatePatchPath(from);
     const to = /^[RC]/.test(status) ? data[i++] : null;
     if (/^[RC]/.test(status) && to === undefined) throw new Error("Truncated Git rename/copy");
+    // Never-installed files may use dot folders (.github); skip them before
+    // the strict path check that installed files must pass.
+    if (notInstalled.test(from) && (to === null || notInstalled.test(to))) continue;
+    validatePatchPath(from);
     if (to !== null) validatePatchPath(to);
     changes.push({ status, from, to });
     if (changes.length > MAX_FILE_COUNT * 4) throw new Error("Too many changed paths for an incremental patch");
@@ -143,9 +148,9 @@ function changedEntries(repoRoot, oldCommit) {
 }
 
 function inspectChangedPath(relative, change) {
-  if (safeToIgnore.test(relative)) return "ignore";
+  if (notInstalled.test(relative)) return "ignore";
   if (/^package-lock\.json$/i.test(relative)) return "lockfile";
-  if (/^(?:launcher|installer|runtime|node_modules|scripts|\.github|build|dist)\//i.test(relative)
+  if (/^(?:launcher|installer|runtime|node_modules|build|dist)\//i.test(relative)
     || /^installed-app\.json$/i.test(relative) || /^THIRD_PARTY_NOTICES\.txt$/i.test(relative))
     throw new Error(`Full installer required: ${relative} changed (${change}). Launcher, runtime, packaging and dependencies cannot be patched.`);
   if (developerFile.test(relative)) return "ignore";

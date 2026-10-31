@@ -101,8 +101,8 @@ const UPDATE_BRIDGE = (() => {
   const bridgePort = match ? Number(match[1]) : 0;
   return bridgePort > 1024 && bridgePort <= 65535 ? { port: bridgePort, secret: match[2] } : null;
 })();
-// Public LVL has its own temporary torrent namespace, independent of the
-// predecessor's private alpha install. Both may use port 4273 at different
+// Installed LVL has its own temporary torrent namespace, independent of other
+// LVL builds. Both may use port 4273 at different
 // times; neither may clear the other's stale/downloaded torrent pieces.
 // Within LVL, separate ports still have separate session directories.
 const torrentShareRoot = path.join(os.tmpdir(), "lvl-public-torrents");
@@ -2730,7 +2730,7 @@ function runFfprobe(sourceUrl, file, { includeChapters = false } = {}) {
     "-analyzeduration", "3000000",
     // Chapter enumeration is OPTIONAL and may seek into the missing tail of
     // an unfinished MKV. Never make cold-swarm *playback metadata* depend on
-    // this Opus enhancement; inspect chapters only for hash-verified files.
+    // this optional chapter lookup; inspect chapters only for hash-verified files.
     ...(includeChapters ? ["-show_chapters"] : []),
     "-show_entries", "format=duration,format_name,bit_rate:stream=index,codec_type,codec_name,profile,pix_fmt,bits_per_raw_sample,width,height,avg_frame_rate,r_frame_rate,duration,channels,channel_layout,sample_rate,bit_rate,color_range,color_space,color_transfer,color_primaries:stream_disposition=default,forced:stream_side_data_list=side_data_type,dv_profile,dv_bl_signal_compatibility_id:stream_tags=language,title"
       + (includeChapters ? ":chapter=start_time,end_time:chapter_tags=title" : ""),
@@ -6495,7 +6495,7 @@ function serveStatic(req, res, url) {
   });
 }
 
-// Part B features (reader, franchises, reading sources) plug in through
+// Optional features (reader, franchises, reading sources) plug in through
 // backend/features/registry.js; core routes always take precedence.
 const serverFeatures = createServerFeatureHost(SERVER_FEATURES, { coreAssets: PUBLIC_ASSETS });
 for (const [route, asset] of serverFeatures.assets) PUBLIC_ASSETS.set(route, asset);

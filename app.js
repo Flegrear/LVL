@@ -71,9 +71,9 @@ import { installUiI18n, registerUiTranslations, t } from "./frontend/ui/ui-i18n.
 import { createClientFeatureHost } from "./frontend/features/feature-host.js";
 import { CLIENT_FEATURES } from "./frontend/features/registry.js";
 
-// The private backend can remain running with its pre-progressive static-route
-// allowlist while an active torrent is pinned. A mandatory ESM import from an
-// as-yet-unserved /frontend/player/progressive-seek.js would prevent the WHOLE
+// An older server that is still running may lack the static route for
+// /frontend/player/progressive-seek.js. A mandatory ESM import of an unserved
+// module would prevent the WHOLE
 // Watch/Library SPA from booting (black page). Only enable the optional cache
 // when the module itself was actually served; otherwise fail closed to native
 // playback until a non-destructive backend activation is possible.
@@ -91,7 +91,7 @@ const createProgressiveSeekController = progressiveSeekModule?.createProgressive
 const createStandaloneProgressiveMseLoader = progressiveSeekModule?.createStandaloneProgressiveMseLoader
   ?? (() => null);
 
-// Part B features (reader, franchises, reading sources) add views, nav buttons,
+// Optional features (reader, franchises, reading sources) add views, nav buttons,
 // Settings tabs, Library filters, styles and strings through
 // frontend/features/registry.js. Installed here, before translation and the
 // nav/tab listeners below, so they behave like core elements.
@@ -3288,7 +3288,7 @@ function paintAppUpdateSettings(report) {
   if (installed) {
     if (report.downloading) message = "Downloading and validating the update in the Windows launcher…";
     else if (report.checking) message = "Checking the update feed…";
-    else if (report.available) message = `LVL ${report.availableVersion} is available. Select Install to apply the verified update; full installers may need confirmation.`;
+    else if (report.available) message = `LVL ${report.availableVersion} is available. Select Install to update; LVL restarts on its own.`;
     else if (report?.error && manualAppUpdateCheck) message = `Update check failed: ${report.error}`;
     else if (report.lastCheckedAt) message = "No newer version found at the last check.";
     else message = "No checks completed yet. Check now, or enable automatic checks.";
@@ -3349,7 +3349,7 @@ function wireAppUpdateSettings() {
     appUpdateSettingsBusy = true;
     try {
       paintAppUpdateSettings(await postJson("/api/app-updates/install", {}));
-      setToolStatus("#settings-app-updates-status", "Preparing the verified update. Incremental updates apply without a setup wizard; full installers may ask for confirmation.");
+      setToolStatus("#settings-app-updates-status", "Installing the update. LVL restarts on its own when it's done.");
     } catch (error) {
       setToolStatus("#settings-app-updates-status", error.message || "Couldn't start the verified update", true);
     } finally {
@@ -3363,6 +3363,22 @@ function wireAppUpdateSettings() {
   }, 2500);
 }
 wireAppUpdateSettings();
+
+// An update restarts the server with the new version while this window still
+// runs the old page. Reload once the server answers with a different version;
+// a server that is only restarting (no answer) is left alone.
+let loadedServerVersion = null;
+async function reloadAfterAppUpdate() {
+  try {
+    const health = await fetchJson("/api/health", { signal: AbortSignal.timeout(5000) });
+    const version = String(health?.version || "");
+    if (!version) return;
+    if (loadedServerVersion === null) loadedServerVersion = version;
+    else if (version !== loadedServerVersion) window.location.reload();
+  } catch {}
+}
+void reloadAfterAppUpdate();
+setInterval(() => { void reloadAfterAppUpdate(); }, 10_000);
 
 // Update notifications are deliberately scoped to *verified available app
 // versions*. No generic alerts, speculative remote releases or demo messages.
@@ -3751,7 +3767,7 @@ function readyProgressiveWindow(target) {
   return findProgressiveReadySegment(selection.snapshot, target);
 }
 function checkProgressiveSeekCache() {
-  // An older still-running private server may serve app.js but not this new
+  // An older still-running server may serve app.js but not this new
   // optional frontend module. Never poll unsupported endpoints or paint ready
   // ranges when the decoder helper could not load.
   if (!progressiveSeekAvailable) return;
@@ -14040,7 +14056,7 @@ function titleMovieMarkup(subject, info, meta = null) {
     : "";
   const sources = info.id ? `<section class="title-block" id="title-sources" aria-labelledby="title-sources-heading">${titleMovieSourcesMarkup(info)}</section>` : "";
   const movie = saved + sources || emptyMarkup({ compact: true, title: "No sources saved" });
-  // Part B sections (Comics…): a chip row like a series' seasons, "Movie" first.
+  // Feature sections (Comics…): a chip row like a series' seasons, "Movie" first.
   const chips = typeof clientFeatures !== "undefined" ? clientFeatures.titleSectionChips(titleMovieSectionPayload(subject, info, meta)) : [];
   if (!chips.length) return movie;
   const open = chips.some((chip) => chip.id === titleView.featureSection) ? titleView.featureSection : "";
@@ -15006,7 +15022,7 @@ function renderLibrary() {
   const counts = { all: all.length, series: groups.series.length, movie: groups.movie.length, anime: groups.anime.length };
   document.querySelectorAll("[data-library-count]").forEach((node) => { node.textContent = counts[node.dataset.libraryCount] ? String(counts[node.dataset.libraryCount]) : ""; });
   setActiveTab($("#library-filter"), libraryView.filter);
-  // A Part B filter (Manga, Books…) fills the list itself. data-feature-filter
+  // A feature filter (Manga, Books…) fills the list itself. data-feature-filter
   // lets its stylesheet hide video-only parts (Continue watching, picks).
   const libraryPage = $("#view-library");
   const featureOptions = { query: libraryView.query, sort: libraryView.sort, status: libraryView.status };
@@ -15051,7 +15067,7 @@ function renderLibrary() {
     const key = libraryStatus(series);
     if (Object.hasOwn(statuses, key)) statuses[key] += 1;
   }
-  // Part B groups (Comics…) join the "All" view and its status counts.
+  // Feature groups (Comics…) join the "All" view and its status counts.
   const featureGroups = libraryView.filter === "all" && typeof clientFeatures !== "undefined" ? clientFeatures.libraryAllGroups(featureOptions) : [];
   for (const group of featureGroups) {
     for (const [key, value] of Object.entries(group.statuses)) if (Object.hasOwn(statuses, key)) statuses[key] += Number(value) || 0;
@@ -15561,7 +15577,7 @@ function renderHome() {
   setActiveTab($("#home-tabs"), homeBrowseCategory);
   $("#home-panel")?.setAttribute("aria-labelledby", `home-tab-${homeBrowseCategory}`);
   $("#home-topbar")?.classList.toggle("is-solid", window.scrollY > 24);
-  // A Part B category (Comics…) renders its own hero and rows, without the video catalog.
+  // A feature category (Comics…) renders its own hero and rows, without the video catalog.
   const homePage = $("#view-home");
   if (typeof clientFeatures !== "undefined" && clientFeatures.homeCategoryIds.includes(homeBrowseCategory)) {
     homeHeroController?.destroy();
@@ -17120,7 +17136,7 @@ function renderTitleChapters({ focusSelector = "" } = {}) {
   const packOpen = Boolean(view.packsActive);
   const packPanelId = `catalog-season-packs-${current.season}`;
   const packButton = `<button class="ui-chip catalog-season-pack-toggle" type="button" aria-pressed="${packOpen}" aria-controls="${packPanelId}">${icon("library")}<span>Packs</span>${packState?.status === "ready" ? `<span class="ui-chip__count">${packState.rows.length}</span>` : ""}</button>`;
-  // Part B sections (Manga…) sit with the seasons; the feature fills the list area itself.
+  // Feature sections (Manga…) sit with the seasons; the feature fills the list area itself.
   const hasFeatures = typeof clientFeatures !== "undefined";
   const sectionPayload = hasFeatures ? { meta, subject: titleSubject() } : { meta };
   const featureChips = hasFeatures ? clientFeatures.titleSectionChips(sectionPayload) : [];

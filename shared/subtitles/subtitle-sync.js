@@ -1,6 +1,6 @@
 // subtitle-sync.js: sync subtitle tracks to the speech in the playing video, and pair lines across
 // tracks. Pure JavaScript with no DOM or Node APIs: the server uses speechActivityFromPcm() on
-// decoded audio, the browser (app.js) runs the correlation, and tests/subtitle-sync.test.js checks it.
+// decoded audio and the browser (app.js) runs the correlation.
 //
 // Idea: a subtitle track says when people speak (cue intervals); the audio says when they
 // actually do (speech activity). Sliding one over the other and finding the best match gives the

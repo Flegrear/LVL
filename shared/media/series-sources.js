@@ -1,5 +1,5 @@
-// series-sources.js: pure helpers for a series' per-chapter sources. Used by app.js (browser)
-// and tests/series-sources.test.js (Node); no DOM access.
+// series-sources.js: pure helpers for a series' per-chapter sources. Used by app.js (browser);
+// no DOM access.
 //
 // A provider result for one chapter is either an *episode file* (the torrent holds only this
 // chapter) or a *pack* (a season, an episode range or the whole series, where this chapter is one

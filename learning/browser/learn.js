@@ -1,5 +1,5 @@
 // learn.js: pure helpers for Study (decks), Review (quick quiz with instant answers) and Tests
-// (scored mixed tests). No DOM: app.js renders, tests/learn.test.js checks the logic.
+// (scored mixed tests). No DOM: app.js renders the results.
 import { primaryMeaning } from "./vocabulary-meanings.js";
 
 /* ---------------------------------------------------------------- decks */
