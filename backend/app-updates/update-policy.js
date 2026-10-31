@@ -15,7 +15,11 @@ const VERSION = /^\d{1,4}\.\d{1,4}\.\d{1,4}$/;
 const DOWNLOAD_FOLDER = /^LVL-update-[0-9a-f]{32}$/;
 const RELEASE_API = "https://api.github.com/repos/Flegrear/LVL/releases/tags/v";
 const MAX_RELEASE_JSON = 512 * 1024;
-const DAY_MS = 24 * 60 * 60_000;
+// Automatic mode looks for a new release every hour. A daily check made a
+// release wait up to a day (0.1.16 was released at 12:41; the last daily
+// check had run at 01:2x). One small GitHub request per hour is well inside
+// its 60 per hour limit for unauthenticated clients.
+const CHECK_INTERVAL_MS = 60 * 60_000;
 export const IDLE_BEFORE_INSTALL_MS = 2 * 60_000;
 // After a failed automatic install, wait this long before trying the same version again.
 export const AUTO_RETRY_MS = 6 * 60 * 60_000;
@@ -218,7 +222,7 @@ export function createUpdatePolicy({
   }
 
   // Runs every 30 s: moves the automatic preference over from the launcher,
-  // checks once a day, and installs when no video has been open for 2 minutes.
+  // checks every hour, and installs when no video has been open for 2 minutes.
   async function tick() {
     if (ticking) return;
     ticking = true;
@@ -234,7 +238,7 @@ export function createUpdatePolicy({
       if (native.automatic) native = await request("settings", { automatic: false, intervalDays: 1 });
       if (!automatic || native.checking || native.downloading || download || launched) return;
       const lastChecked = Date.parse(native.lastCheckedAt || "") || 0;
-      if (now() - lastChecked >= DAY_MS) {
+      if (now() - lastChecked >= CHECK_INTERVAL_MS) {
         await request("check", { apply: false });
         return;
       }

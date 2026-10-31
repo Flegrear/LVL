@@ -3444,7 +3444,7 @@ async function changeAppUpdateSettings() {
   try {
     paintAppUpdateSettings(await postJson("/api/app-updates/settings", { automatic, intervalDays: AUTO_UPDATE_INTERVAL_DAYS }));
     setToolStatus("#settings-app-updates-status", automatic
-      ? "Automatic updates on. LVL checks daily and installs updates when no video is open."
+      ? "Automatic updates on. LVL checks every hour and installs updates when no video is open."
       : "Automatic update checks disabled. You can still check manually.");
   } catch (error) {
     setToolStatus("#settings-app-updates-status", error.message || "Couldn't change update settings", true);
@@ -4103,12 +4103,14 @@ function continueProgressiveOrRecover({ force = false, fromEnded = false } = {})
       || (!fromEnded && position < endNow - 0.15)) return;
     const target = Math.max(0, Math.min(position,
       Math.max(0, state.mediaDurationMs / 1000 - 0.05)));
+    if (typeof beginQuietSourceSwitch === "function") beginQuietSourceSwitch();
     if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying }))
       void restartTranscodeAt(target, { wasPlaying, forceNative: true });
   }).catch(() => {
     if (!current()) return;
     if (!fromEnded && video.paused) return;
     const target = Math.max(0, Number(video.currentTime) || 0);
+    if (typeof beginQuietSourceSwitch === "function") beginQuietSourceSwitch();
     if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying }))
       void restartTranscodeAt(target, { wasPlaying, forceNative: true });
   }).finally(() => {
@@ -4120,7 +4122,9 @@ function indexedCacheStatusUrl(context = state.transcodeContext) {
   if (!context?.sessionId || !Number.isInteger(context.fileIndex)) return null;
   const audioIndex = Number.isInteger(context.audioIndex) ? context.audioIndex : (state.selectedAudioTrack || 0);
   const audioMode = normalizeAudioMode(audioOutputMode);
-  return `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/indexed/status?audio=${audioIndex}&audioMode=${encodeURIComponent(audioMode)}`;
+  // sections=1: playback runs from prepared sections, so the server keeps preparing them.
+  const sections = video.dataset.progressive === "1" ? "&sections=1" : "";
+  return `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/indexed/status?audio=${audioIndex}&audioMode=${encodeURIComponent(audioMode)}${sections}`;
 }
 function readyIndexedVideo() {
   const cache = indexedSeekReady, context = state.transcodeContext;
@@ -4152,16 +4156,18 @@ function checkIndexedSeekCache() {
       indexedSeekReady = { context, source, audioIndex, audioMode, url: report.url };
     else indexedSeekReady = null;
     // A verified FULL indexed MP4 is more reliable than stitching tiny
-    // independently verified progressive GOPs. As soon as it is available,
-    // migrate the same selected source at the current movie clock, keeping the
-    // user's play/pause intent. Without this, an already-ready full MP4 stays
-    // unused while playback reaches intermittent GOP edges or empty ranges.
+    // independently verified progressive GOPs. Switching to it reloads the
+    // video, which shows as a short pause with the loader, so do it now only
+    // while paused. During playback the switch waits for the next seek or
+    // section boundary, where the player changes source anyway.
     if (readyIndexedVideo() && video.dataset.mode === "transcode"
       && video.dataset.indexed !== "1" && !state.pendingSeek
-      && !state.scrubbing && !video.ended) {
+      && !state.scrubbing && !video.ended && video.paused) {
       const at = absolutePlaybackSeconds();
-      if (Number.isFinite(at) && at >= 0 && at < state.mediaDurationMs / 1000)
-        openIndexedSeekAt(at, { wasPlaying: playerIsPlaying() });
+      if (Number.isFinite(at) && at >= 0 && at < state.mediaDurationMs / 1000) {
+        if (typeof beginQuietSourceSwitch === "function") beginQuietSourceSwitch();
+        openIndexedSeekAt(at, { wasPlaying: false });
+      }
     }
   }).catch(() => {}).finally(() => { indexedSeekStatusPending = false; });
 }
@@ -4631,11 +4637,33 @@ async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds 
     // A complete window may contain no dialogue. Preserve captions loaded from
     // earlier windows and remember this empty window instead of flagging the
     // entire track as partial (which makes auto-loading retry it forever).
-    if (!windowCueCount && !partial && /NOTE LVL-EXTRACT-COMPLETE/.test(received) && imported?.cues?.length) {
+    // A track picked by hand is added even when this part of the episode has
+    // no lines in it (an opening, a quiet scene); later parts load as it plays.
+    if (!windowCueCount && !partial && /NOTE LVL-EXTRACT-COMPLETE/.test(received) && (imported || !automatic)) {
+      if (!imported) {
+        imported = addSubtitleText("", label, normalizeTrackLanguage(track.language), {
+          origin: "embedded", exactMedia: true, provider: "Embedded", release: source.fileName || "", allowEmpty: true,
+        }).track;
+        imported.embeddedStreamIndex = Number(track.streamIndex);
+        imported.exactMedia = true;
+        imported.offsetMs = 0;
+        imported.syncAnchors = [];
+        imported.syncSource = "embedded";
+        imported.timelineMismatch = false;
+        if (controller.visibilityRevision === subtitleVisibilityRevision) {
+          state.subtitlesVisible = true;
+          imported.visible = true;
+          syncSelectedTrackForSource();
+        }
+        subtitleRenderMemo.key = "";
+        renderSubtitles();
+      }
       imported.embeddedImportPartial = false;
       markWindowComplete();
       saveCurrentEpisodeAnalysis();
-      if (!automatic) $("#media-status").textContent = "No new embedded subtitle lines near this playback position";
+      if (!automatic) $("#media-status").textContent = imported.cues?.length
+        ? "No new embedded subtitle lines near this playback position"
+        : "This track has no lines in this part of the episode. They appear as it plays.";
       renderSubtitleWorkspace();
       return true;
     }
@@ -4981,6 +5009,18 @@ function updatePlayerLoadingAnimation({ reset = false, error = false } = {}) {
     playerLoadingVisualFrame = window.requestAnimationFrame(animatePlayerLoadingProgress);
 }
 function setPlayerLoading(percent, title = "Loading", detail = "", { error = false } = {}) {
+  if (!error && Date.now() < quietSwitchUntil && $("#video-loading")?.hidden) {
+    quietSwitchLoading = [percent, title, detail];
+    if (!quietSwitchTimer) quietSwitchTimer = window.setTimeout(() => {
+      quietSwitchTimer = 0;
+      const args = quietSwitchLoading;
+      quietSwitchLoading = null;
+      if (args && state.pendingSeek) setPlayerLoading(...args);
+    }, Math.max(0, quietSwitchUntil - Date.now()));
+    return;
+  }
+  quietSwitchUntil = 0;
+  quietSwitchLoading = null;
   window.clearTimeout(playerLoadingHideTimer);
   playerLoadingHideTimer = 0;
   const previousStage = Number(state.loadingProgress) || 0;
@@ -5010,6 +5050,18 @@ function setPlayerLoading(percent, title = "Loading", detail = "", { error = fal
   renderRecoveryOverlay();
   updatePlayerLoadingAnimation({ reset, error: failed });
 }
+// Automatic switches between sources of the same video (the next prepared
+// section is missing, or the whole-episode file became ready) usually finish
+// within a moment. During one, setPlayerLoading waits QUIET_SWITCH_MS and shows
+// the loader only if the switch is still going, so a quick one doesn't flash it.
+const QUIET_SWITCH_MS = 900;
+let quietSwitchUntil = 0;
+let quietSwitchTimer = 0;
+let quietSwitchLoading = null;
+function beginQuietSourceSwitch() {
+  quietSwitchUntil = Date.now() + QUIET_SWITCH_MS;
+}
+
 
 function updateLoadingTransferDetail(payload) {
   const peers = Number(payload?.numPeers) || 0;
@@ -8510,11 +8562,16 @@ function renderSubtitles() {
   rendered.forEach(({ track, cue }) => {
     if (!cue) return;
     const line = document.createElement("div");
+    // Learning shows the target-language line as the one being studied (full
+    // size, word tools, romanized) and other languages smaller. Without
+    // Learning, every shown line uses the size and settings from Appearance,
+    // so switching or adding a track never changes how subtitles look.
     const isTarget = normalizeTrackLanguage(track.language) === state.targetLanguage;
-    line.className = `subtitle-line${isTarget ? "" : " secondary"}`;
+    const isMain = !learningEnabled || isTarget;
+    line.className = `subtitle-line${isMain ? "" : " secondary"}`;
     if (isTarget && learningEnabled) appendLearningCue(line, cue, track); else line.textContent = cue.text;
     overlay.append(line);
-    if (isTarget && state.subtitleStyle.romanization !== false && isRomanizableLanguage(track.language)) {
+    if (isMain && state.subtitleStyle.romanization !== false && isRomanizableLanguage(track.language)) {
       if (!cue.romanizedText && track.romanizationState !== "loading") void ensureTrackRomanization(track);
       if (cue.romanizedText && cue.romanizedText !== cue.text) {
         const romanized = document.createElement("div");
@@ -8564,7 +8621,7 @@ function renderTracks() {
         <label class="ui-switch track-switch" title="Toggle this subtitle track"><span class="track-visibility-label">${trackShown ? "Showing" : track.visible ? "Captions off" : "Hidden"}</span><input class="track-visible" type="checkbox" ${track.visible ? "checked" : ""} aria-label="${track.visible ? "Hide" : "Show"} ${label} on the video"><span class="ui-switch__track" aria-hidden="true"></span></label>
       </div>
       <div class="track-meta">
-        <span>${track.cues.length.toLocaleString()} lines</span>
+        <span class="track-line-count">${track.cues.length.toLocaleString()} lines</span>
         <button type="button" class="track-sync-state ui-tip-text${syncing ? " is-busy" : ""}" data-ui-tip="${escapeHtml(trackTipId(track))}" aria-describedby="${escapeHtml(trackTipId(track))}">${escapeHtml(trackSyncSummary(track))}</button>
         <span id="${escapeHtml(trackTipId(track))}" class="ui-tip-content" hidden>${trackSyncExplanation(track)}</span>
       </div>
@@ -11427,13 +11484,15 @@ async function handleSubtitleFiles(files) {
 function addSubtitleText(text, label, language = "", options = {}) {
   const id = `track-${crypto.randomUUID()}`;
   const cues = parseSubtitle(text, id);
-  if (!cues.length) throw new Error("No SRT/VTT cues were found in that subtitle file.");
+  // An embedded track can have no lines in the part read so far (an opening,
+  // a quiet scene); options.allowEmpty adds it anyway and later parts fill it.
+  if (!cues.length && !options.allowEmpty) throw new Error("No SRT/VTT cues were found in that subtitle file.");
   const inferredLanguage = label.match(/(?:^|[._ -])(en|es|fr|de|it|pt|ja|jp|ko|zh)(?:$|[._ -])/i)?.[1] || "";
   const languageGuess = normalizeTrackLanguage(language) || normalizeTrackLanguage(inferredLanguage) || `T${state.tracks.length + 1}`;
   const source = state.currentSource ? structuredClone(state.currentSource) : null;
   const sourceTag = source?.sourceTag || label;
   const fingerprint = subtitleFingerprint(cues);
-  const duplicate = currentSourceTracks().find((track) => {
+  const duplicate = cues.length && currentSourceTracks().find((track) => {
     if (String(track.language || "").toUpperCase() !== languageGuess) return false;
     return (track.fingerprint || subtitleFingerprint(track.cues)) === fingerprint;
   });
@@ -11462,7 +11521,7 @@ function addSubtitleText(text, label, language = "", options = {}) {
     romanizationState: "idle",
   });
   const addedTrack = state.tracks.find((track) => track.id === id);
-  if (!timelineFit.severeMismatch && currentSourceTracks().some((track) => track.id !== id && track.cues?.length)) {
+  if (cues.length && !timelineFit.severeMismatch && currentSourceTracks().some((track) => track.id !== id && track.cues?.length)) {
     syncTrackToBestReference(addedTrack, { initial: true });
   }
   applySavedSubtitleSync(addedTrack);

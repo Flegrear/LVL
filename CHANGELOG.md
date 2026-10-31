@@ -1,5 +1,15 @@
 # LVL Changelog
 
+## 0.1.17 — 2026-10-31
+
+- Make the whole episode seekable about a minute after it finishes downloading, instead of several minutes later.
+- Fix short pauses with the loader during playback when LVL switched to a better copy of the video.
+- Keep subtitle size and romanized text the same when switching or adding subtitle tracks during a video.
+- Add a subtitle track from the video even when the current part of the episode has no lines; they appear as it plays.
+- Remove the line count from subtitle tracks; it belongs to the Learning section.
+- Block peers that send damaged data, so downloads don't keep fetching the same parts again.
+- Check for updates every hour when automatic updates are on, so new versions arrive the same day.
+
 ## 0.1.16 — 2026-10-31
 
 - Show a progress bar while an update downloads and installs.

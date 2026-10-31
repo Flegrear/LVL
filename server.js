@@ -48,6 +48,7 @@ import { normalizeEmbeddedChapterMarkers } from "./shared/media/embedded-chapter
 import { detectHardwareH264Encoder, hardwareVideoEncodingArgs } from "./backend/media/hardware-transcode.js";
 import { createPlaybackTrace } from "./backend/media/performance-trace.js";
 import { createStreamHealth } from "./backend/media/stream-health.js";
+import { attachPeerManager } from "./backend/media/peer-manager.js";
 import { createInternalReaderRoles } from "./backend/media/internal-reader-roles.js";
 import { createRemuxSegmentCache } from "./backend/media/remux-segment-cache.js";
 import { createProgressiveIndexCache } from "./backend/media/progressive-index-cache.js";
@@ -57,7 +58,7 @@ import { pruneExitedTranscodes } from "./backend/media/transcode-slot-lifecycle.
 import { pipeRemuxAhead } from "./backend/media/remux-run-ahead.js";
 import { isTorrentFileFullyVerified } from "./backend/media/verified-torrent-file.js";
 import { evaluateEncodedH264CacheEligibility } from "./backend/media/transcode-cache-eligibility.js";
-import { createIndexedVideoCache } from "./backend/media/indexed-video-cache.js";
+import { createIndexedVideoCache, indexedCacheEligibility } from "./backend/media/indexed-video-cache.js";
 import { createUpdatePolicy } from "./backend/app-updates/update-policy.js";
 import {
   COACH_LIVE_IDLE_TIMEOUT_MS,
@@ -516,7 +517,7 @@ const progressiveStarts = new Map();
 const progressiveIslandStarts = new Map();
 function startProgressiveWhenNewPieces(params, status) {
   if (storage.limits().remuxCacheEnabled !== true || !status?.identityKey
-    || activeTranscodes.size >= MAX_TRANSCODE_JOBS
+    || activeTranscodes.size >= MAX_TRANSCODE_JOBS || fullIndexFirstActive(params)
     || !['waiting','partial'].includes(status.status)) return false;
   const size = status.sourceFullyVerified === true
     && Number.isSafeInteger(status.sourceFileBytes) && status.sourceFileBytes > 0
@@ -566,6 +567,45 @@ function startProgressiveWhenNewPieces(params, status) {
     return true;
   }
   return false;
+}
+// Once a file is fully downloaded and verified, video that is copied (not
+// re-encoded) becomes seekable from start to end in one FFmpeg pass: about
+// 30 s for a 24-minute 1080p episode. Preparing the same episode section by
+// section takes about 9 minutes, because every section gets its own check
+// and index update. So a complete, copyable source builds the whole-episode
+// file first; sections already prepared stay usable meanwhile. If that build
+// hasn't started within 20 s (quota, a busy converter), or the player starts
+// playing from sections, the section job is started again: a stopped job on a
+// complete file doesn't restart by itself.
+const fullIndexFirst = new Map(); // `${sessionId}:${fileIndex}` -> { since, gaveUp, stopped, ... }
+const FULL_INDEX_FIRST_GRACE_MS = 20_000;
+function fullIndexFirstChoice(params) {
+  if (storage.limits().remuxCacheEnabled !== true) return null;
+  const key = `${params.session?.id}:${params.fileIndex}`;
+  const known = fullIndexFirst.get(key);
+  if (known) return known.gaveUp ? null : known;
+  const info = indexedCacheEligibility({ ...params, enabled: true });
+  if (!info.eligible || info.identity?.videoStrategy !== 'copy') return null;
+  if (fullIndexFirst.size >= 64) fullIndexFirst.delete(fullIndexFirst.keys().next().value);
+  const entry = { since: Date.now(), gaveUp: false };
+  fullIndexFirst.set(key, entry);
+  return entry;
+}
+function fullIndexFirstActive(params) {
+  const entry = fullIndexFirst.get(`${params.session?.id}:${params.fileIndex}`);
+  return Boolean(entry && !entry.gaveUp && !entry.playerUsesSections);
+}
+function giveUpFullIndexFirst(entry, params) {
+  entry.gaveUp = true;
+  resumeStoppedSections(entry, params);
+}
+// The section cache skips sections it already has, so this continues where it stopped.
+function resumeStoppedSections(entry, params) {
+  if (!entry.stopped) return;
+  entry.stopped = false;
+  for (const [key, value] of progressiveStarts) if (value.sessionId === params.session?.id) progressiveStarts.delete(key);
+  const inputPath = localVerifiedTorrentInputPath(params.session, params.fileIndex);
+  if (inputPath) void progressiveIndexCache.start({ ...params, inputPath });
 }
 function emitProgressiveReady(event) {
   const clients = progressiveReadyListeners.get(event?.identityKey);
@@ -1869,6 +1909,7 @@ async function removeTorrentSession(id) {
   invalidateSpeechWindowSession(session);
   streamHealth.clear(session);
   internalReaderRoles.clear(session);
+  session.peerManager?.stop();
   dropSpeechTapes(id);
   for (const key of mediaProbeCache.keys()) {
     if (key.startsWith(`${id}:`)) mediaProbeCache.delete(key);
@@ -1937,6 +1978,7 @@ function sessionPayload(session) {
     downloadSpeed: Number(torrent.downloadSpeed) || 0,
     uploadSpeed: Number(torrent.uploadSpeed) || 0,
     streamHealth: streamHealth.snapshot(session, { torrent }),
+    peerChanges: session.peerManager?.stats() || null,
     safety: session.safety || null,
     files: (torrent.files || []).map((file, index) => {
       const ext = path.extname(file.name).toLowerCase();
@@ -2070,6 +2112,8 @@ async function createTorrentSession(req, res) {
     preferredFileIndex,
     expiryTimer: null,
     slowTimer: null,
+    // Slow-peer turnover, playhead backup requests and bad-data blocking.
+    peerManager: attachPeerManager(torrent, { maxConns: () => torrentClient.maxConns }),
   };
   torrentSessions.set(id, session);
   scheduleSessionExpiry(session);
@@ -2209,7 +2253,30 @@ async function serveIndexedSeek(req, res, session, fileIndex, url, statusOnly = 
   const params = { session, fileIndex, media, audioIndex,
     audioMode: equivalentIndexedAudioMode(media,audioIndex,audioMode) };
   let startFullIndex = statusOnly && req.method === "GET";
-  if (startFullIndex && storage.limits().remuxCacheEnabled === true) {
+  const first = startFullIndex ? fullIndexFirstChoice(params) : null;
+  if (first) {
+    // The player sends sections=1 while it plays from prepared sections; then
+    // it needs them to keep coming, and both jobs run side by side instead.
+    first.playerUsesSections = url.searchParams.get("sections") === "1";
+    const full = await indexedVideoCache.status(params, { start: false });
+    if (full.status === "ready") {
+      if (!first.readyLogged) {
+        first.readyLogged = true;
+        console.log(`Seek cache: whole episode seekable ${Math.round((Date.now() - first.since) / 1000)} s after the download finished`);
+      }
+    } else if (full.status !== "building" && Date.now() - first.since > FULL_INDEX_FIRST_GRACE_MS) {
+      giveUpFullIndexFirst(first, params);
+      console.log(`Seek cache: the whole-episode file didn't start (${full.status}; ${activeTranscodes.size} converters running, ${activeForegroundTranscodeCount()} for playback); preparing sections again`);
+    } else if (first.playerUsesSections) {
+      resumeStoppedSections(first, params);
+    } else {
+      // Free the converter slot the section job holds; its ready sections stay.
+      if (!first.stopLogged) { first.stopLogged = true; console.log("Seek cache: download finished; making the whole episode seekable first"); }
+      first.stopped = true;
+      await progressiveIndexCache.stopSession(session.id);
+    }
+  }
+  if (startFullIndex && !fullIndexFirstActive(params) && storage.limits().remuxCacheEnabled === true) {
     // SERVER-SIDE priority matters: merely ordering two async fetch() calls
     // in the browser cannot guarantee the progressive worker claims the spare
     // FFmpeg slot first. A full-episode builder can occupy that slot until
