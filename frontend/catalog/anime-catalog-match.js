@@ -38,7 +38,15 @@ export function verifiedAnimeCatalogMatch(media, candidates = []) {
   const exact = results.filter((item) => names.has(normalizeAnimeCatalogName(item.name)));
   // A season-specific exact name is more reliable than a series-wide root.
   if (exact.length === 1 || new Set(exact.map((item) => item.id)).size === 1) return exact[0] || null;
-  if (exact.length > 1) return null;
+  if (exact.length > 1) {
+    // Several titles share the exact name (One Piece: the 1999 anime and the 2023
+    // live-action series). The anime's start year picks one, but only when
+    // exactly one of them starts within a year of it; otherwise stay unresolved.
+    const startYear = Number(media?.year);
+    if (!Number.isInteger(startYear) || startYear < 1900) return null;
+    const near = exact.filter((item) => { const year = catalogYear(item); return year !== null && Math.abs(year - startYear) <= 1; });
+    return new Set(near.map((item) => item.id)).size === 1 ? near[0] : null;
+  }
   if (type === "movie" || !roots.size) return null;
 
   const releaseYear = Number(media.year);

@@ -193,7 +193,7 @@ test("preroll reaching an early EOF fails closed without autoplaying the next ch
   let recorded = 0;
   const errors = [];
   const state = { pendingSeek: { priming: true, streamInstalled: true }, mediaDurationMs: 15_000 };
-  const video = { paused: false, pause() { this.paused = true; }, addEventListener(event, handler) { if (event === "ended") endHandler = handler; } };
+  const video = { dataset: {}, paused: false, pause() { this.paused = true; }, addEventListener(event, handler) { if (event === "ended") endHandler = handler; } };
   vm.runInNewContext(app.slice(from, to), {
     state, video,
     cancelTranscodeStart() { state.pendingSeek = null; },

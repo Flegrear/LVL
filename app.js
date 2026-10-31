@@ -71,6 +71,26 @@ import { installUiI18n, registerUiTranslations, t } from "./frontend/ui/ui-i18n.
 import { createClientFeatureHost } from "./frontend/features/feature-host.js";
 import { CLIENT_FEATURES } from "./frontend/features/registry.js";
 
+// The private backend can remain running with its pre-progressive static-route
+// allowlist while an active torrent is pinned. A mandatory ESM import from an
+// as-yet-unserved /frontend/player/progressive-seek.js would prevent the WHOLE
+// Watch/Library SPA from booting (black page). Only enable the optional cache
+// when the module itself was actually served; otherwise fail closed to native
+// playback until a non-destructive backend activation is possible.
+const progressiveSeekModule = await import("./frontend/player/progressive-seek.js")
+  .catch(() => null);
+const progressiveSeekAvailable = Boolean(progressiveSeekModule);
+const normalizeProgressiveSeekStatus = progressiveSeekModule?.normalizeProgressiveSeekStatus
+  ?? (() => null);
+const progressiveReadyRanges = progressiveSeekModule?.progressiveReadyRanges
+  ?? (() => []);
+const findProgressiveReadySegment = progressiveSeekModule?.findProgressiveReadySegment
+  ?? (() => null);
+const createProgressiveSeekController = progressiveSeekModule?.createProgressiveSeekController
+  ?? (() => null);
+const createStandaloneProgressiveMseLoader = progressiveSeekModule?.createStandaloneProgressiveMseLoader
+  ?? (() => null);
+
 // Part B features (reader, franchises, reading sources) add views, nav buttons,
 // Settings tabs, Library filters, styles and strings through
 // frontend/features/registry.js. Installed here, before translation and the
@@ -84,6 +104,46 @@ clientFeatures.install(document, {
   fetchJson: (...args) => fetchJson(...args),
   setToolStatus: (...args) => setToolStatus(...args),
   escapeHtml: (...args) => escapeHtml(...args),
+  preferences: () => ({
+    interfaceLanguage: state.interfaceLanguage, baseLanguage: state.baseLanguage, targetLanguage: state.targetLanguage,
+  }),
+  refreshLibrary: () => { if (viewActive("library")) renderLibrary(); },
+  // Feature chips changed (a section became available): series redraw their chapter area;
+  // movie pages redraw the main part (unchanged markup isn't touched).
+  refreshTitle: () => {
+    if (!viewActive("title")) return;
+    if (catalogSeriesView) renderTitleChapters();
+    else if (titleView.type === "movie") renderTitlePage();
+  },
+  // A catalog title page (series or movie, "tt…" id) with a feature section open first.
+  openVideoTitle: ({ id, type = "series", section = "", historyMode = "push" } = {}) => {
+    if (!/^tt\d{5,12}$/.test(String(id || ""))) return false;
+    openTitlePage({ id: String(id), type: type === "movie" ? "movie" : "series", section: /^[a-z][a-z0-9-]{1,31}$/.test(section) ? section : "" },
+      { historyMode: historyMode === "replace" ? "replace" : "push" });
+    return true;
+  },
+  // Opens the video title page for an AniList anime through the same verified
+  // catalog match the Home Anime browser uses. Rejects when no exact match exists.
+  // section: a feature section to open first ("manga"). year: the anime's start year,
+  // which picks between titles with the same name (One Piece anime vs live action).
+  openAnimeTitle: async ({ anilistId, title, titleAlt = "", year = null, section = "", historyMode = "push" } = {}) => {
+    const match = await resolveAnimeBrowserCatalog({ id: Number(anilistId), title: String(title || ""), titleAlt: String(titleAlt || ""), year: Number(year) || null });
+    openTitlePage({ id: match.id, type: match.type, meta: match, section: /^[a-z][a-z0-9-]{1,31}$/.test(section) ? section : "" }, { historyMode: historyMode === "replace" ? "replace" : "push" });
+    return match;
+  },
+  // The same match, without opening the page: { id, type }.
+  findAnimeTitle: async ({ anilistId, title, titleAlt = "", year = null } = {}) => {
+    const match = await resolveAnimeBrowserCatalog({ id: Number(anilistId), title: String(title || ""), titleAlt: String(titleAlt || ""), year: Number(year) || null });
+    return { id: match.id, type: match.type };
+  },
+  // A title page a feature owns (titleSubjects), e.g. a manga with no anime.
+  openFeatureTitle: ({ feature, item, section = "", historyMode = "push" } = {}) => openTitlePage({ feature, item, section }, { historyMode }),
+  refreshTitlePage: () => refreshTitlePage(),
+  // Video titles in the Library, by catalog id and by AniList id (for features that join theirs to them).
+  libraryTitleIds: () => libraryTitleIds(),
+  // The signed-in AniList account (token included) and the user's sync choices; null when not connected.
+  anilistAccount: () => readAniListAccount(localStorage),
+  anilistSync: () => ({ progress: readAniListPreference(localStorage).enabled, scores: anilistScoreSyncEnabled() }),
 });
 
 // Core releases park Learning without changing existing data or preferences.
@@ -277,7 +337,7 @@ const recsUi = createRecsUi({
   },
   isViewActive: (name) => viewActive(name),
   homeCategory: () => homeBrowseCategory,
-  onHomeChange: () => renderHome(),
+  onHomeChange: () => { if (!clientFeatures.homeCategoryIds.includes(homeBrowseCategory)) renderHome(); },
   onTitleChange: () => refreshTitlePage(),
   onAniListChange: (linked, status, { skipAuthPull = false } = {}) => {
     if (!linked) return removeAniListLibrary();
@@ -601,7 +661,10 @@ let exposureMediaKey = "";
 let learningExposureSaveTimer = null;
 let learningExposureDirty = false;
 let libraryContextSeriesKey = null;
-let homeBrowseCategory = normalizeHomeCategory(localStorage.getItem("blackline-home-filter"));
+let homeBrowseCategory = (() => {
+  const saved = localStorage.getItem("blackline-home-filter");
+  return clientFeatures.homeCategoryIds.includes(saved) ? saved : normalizeHomeCategory(saved);
+})();
 let homeTitleIndex = new Map();
 let homeHeroController = null;
 let homeCatalogError = "";
@@ -3495,13 +3558,15 @@ function updateStorageLimitSlider(slider) {
 }
 
 function paintStorageReport(report) {
-  remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled !== false;
+  remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled === true;
+  if (!remuxMseCacheAllowed && typeof closeProgressiveEventStream === "function")
+    closeProgressiveEventStream();
   const toGB = (bytes) => String(Math.round((Number(bytes) / 1024 ** 3) * 100) / 100);
   const playerInput = $("#storage-player-gb");
   const playerSlider = $("#storage-player-slider");
   const clipInput = $("#storage-clip-gb");
   const remuxCacheSwitch = $("#storage-remux-cache-enabled");
-  if (remuxCacheSwitch) remuxCacheSwitch.checked = report.limits.remuxCacheEnabled !== false;
+  if (remuxCacheSwitch) remuxCacheSwitch.checked = report?.limits?.remuxCacheEnabled === true;
   if (playerInput && document.activeElement !== playerInput) playerInput.value = toGB(report.limits.playerBytes);
   if (clipInput && document.activeElement !== clipInput) clipInput.value = toGB(report.limits.clipBytes);
   if (playerInput) { playerInput.min = toGB(report.ranges.playerBytes.min); playerInput.max = toGB(report.ranges.playerBytes.max); }
@@ -3609,6 +3674,277 @@ let remuxMseCacheAllowed = false;
 let indexedSeekReady = null;
 let indexedSeekStatusAt = 0;
 let indexedSeekStatusPending = false;
+let progressiveSeekReady = null;
+let progressiveSeekStatusAt = 0;
+let progressiveSeekStatusPending = false;
+let progressiveIndexStatus = "unknown";
+let progressiveWaitingSince = 0;
+let progressiveEventStream = null;
+let progressiveEventKey = "";
+let progressiveRefreshAfterPending = false;
+let progressiveSeekController = null;
+let progressiveMseLoader = null;
+let progressiveSeekOriginalMute = null;
+let progressiveContinueController = null;
+let progressiveBoundaryAttempt = null;
+let progressiveTimelineKey = "";
+let progressiveTimelineRangesFingerprint = "";
+let progressiveTimelineVersion = 0;
+function closeProgressiveEventStream() {
+  progressiveEventStream?.close();
+  progressiveEventStream = null;
+  progressiveEventKey = "";
+  progressiveRefreshAfterPending = false;
+}
+function ensureProgressiveEventStream(report, expected, context, source) {
+  if (typeof window.EventSource !== "function" || !remuxMseCacheAllowed
+    || !/^[a-f0-9]{64}$/i.test(String(report?.identityKey || ""))
+    || !["waiting", "building", "partial-ready"].includes(report?.status)) {
+    closeProgressiveEventStream(); return;
+  }
+  const key = `${report.identityKey}:${expected.generation}:${expected.sourceKey}:${expected.audioIndex}:${expected.audioMode}`;
+  if (progressiveEventStream && progressiveEventKey === key) return;
+  closeProgressiveEventStream();
+  const url = `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/progressive/events?audio=${expected.audioIndex}&audioMode=${encodeURIComponent(expected.audioMode)}`;
+  const stream = new window.EventSource(url);
+  progressiveEventStream = stream;
+  progressiveEventKey = key;
+  stream.addEventListener("ready", () => {
+    const live = progressiveSeekContext();
+    if (progressiveEventStream !== stream
+      || state.currentSource !== source || state.transcodeContext !== context
+      || !live || live.generation !== expected.generation
+      || live.audioIndex !== expected.audioIndex || live.audioMode !== expected.audioMode) {
+      if (progressiveEventStream === stream) closeProgressiveEventStream();
+      return;
+    }
+    // The SSE message is only an invalidation notification. Always refetch
+    // atomically verified status rather than trusting event-supplied intervals.
+    progressiveSeekStatusAt = 0;
+    if (progressiveSeekStatusPending) progressiveRefreshAfterPending = true;
+    else checkProgressiveSeekCache();
+  });
+}
+function progressiveSeekContext() {
+  const context = state.transcodeContext;
+  if (!context?.sessionId || !Number.isInteger(context.fileIndex)
+    || !(state.mediaDurationMs > 0) || !state.currentSource) return null;
+  return {
+    sourceKey: `torrent:${context.sessionId}:${context.fileIndex}`,
+    generation: Number(playbackLoadRequestId) || 0,
+    audioIndex: Number(context.audioIndex) || 0,
+    audioMode: normalizeAudioMode(audioOutputMode),
+    durationSeconds: state.mediaDurationMs / 1000,
+    mediaToken: state.currentSource,
+    mime: progressiveSeekReady?.report?.mime || '',
+  };
+}
+function readyProgressiveWindow(target) {
+  const selection = progressiveSeekReady;
+  const expected = progressiveSeekContext();
+  if (!remuxMseCacheAllowed || !expected || !selection?.snapshot
+    || selection.context !== state.transcodeContext
+    || selection.source !== state.currentSource
+    || selection.generation !== expected.generation
+    || selection.audioIndex !== expected.audioIndex
+    || selection.audioMode !== expected.audioMode) return null;
+  return findProgressiveReadySegment(selection.snapshot, target);
+}
+function checkProgressiveSeekCache() {
+  // An older still-running private server may serve app.js but not this new
+  // optional frontend module. Never poll unsupported endpoints or paint ready
+  // ranges when the decoder helper could not load.
+  if (!progressiveSeekAvailable) return;
+  // Server-sent `ready` events invalidate this cache immediately. Keep a much
+  // slower safety poll only while that authenticated stream is OPEN; otherwise
+  // use the bounded 3s fallback. This avoids stat'ing thousands of completed
+  // GOP files on every timer tick for a 58-minute episode.
+  const intervalMs = progressiveEventStream?.readyState === 1 ? 30000 : 3000;
+  if (!remuxMseCacheAllowed || !state.currentSource || !state.transcodeContext
+    || video.dataset.mode !== "transcode" || video.dataset.indexed === "1"
+    || progressiveSeekStatusPending || Date.now() - progressiveSeekStatusAt < intervalMs)
+    return;
+  const context = state.transcodeContext, source = state.currentSource;
+  const expected = progressiveSeekContext();
+  if (!expected) return;
+  const url = `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/progressive/status?audio=${expected.audioIndex}&audioMode=${encodeURIComponent(expected.audioMode)}&generation=${expected.generation}`;
+  progressiveSeekStatusAt = Date.now();
+  progressiveSeekStatusPending = true;
+  void fetchJson(url, { signal: AbortSignal.timeout(4500) }).then(report => {
+    const current = progressiveSeekContext();
+    if (state.transcodeContext !== context || state.currentSource !== source
+      || !current || !remuxMseCacheAllowed || current.generation !== expected.generation
+      || current.audioIndex !== expected.audioIndex
+      || current.audioMode !== expected.audioMode) return;
+    const nextStatus = report?.kind === "indexed-video-segments"
+      ? String(report.status || "unavailable") : "unavailable";
+    progressiveWaitingSince = nextStatus === "waiting"
+      ? (progressiveIndexStatus === "waiting" && progressiveWaitingSince
+        ? progressiveWaitingSince : Date.now()) : 0;
+    progressiveIndexStatus = nextStatus;
+    // An async response is not proof of a new source: bind the response to
+    // exactly the selected episode/audio and its load generation.
+    const scoped = report && { ...report, mediaToken: source };
+    const snapshot = normalizeProgressiveSeekStatus(scoped, current);
+    progressiveSeekReady = snapshot
+      ? { report: scoped, snapshot, context, source, generation: expected.generation,
+        audioIndex: expected.audioIndex, audioMode: expected.audioMode }
+      : null;
+    const fingerprint = JSON.stringify(snapshot ? progressiveReadyRanges(snapshot) : []);
+    if (fingerprint !== progressiveTimelineRangesFingerprint) {
+      progressiveTimelineRangesFingerprint = fingerprint;
+      progressiveTimelineVersion += 1;
+    }
+    if (typeof ensureProgressiveEventStream === "function")
+      ensureProgressiveEventStream(report,expected,context,source);
+    renderProgressiveSeekableRanges();
+  }).catch(() => {
+    if (state.transcodeContext === context && state.currentSource === source)
+      progressiveIndexStatus = "unavailable";
+  }).finally(() => {
+    progressiveSeekStatusPending = false;
+    if (progressiveRefreshAfterPending) {
+      progressiveRefreshAfterPending = false;
+      progressiveSeekStatusAt = 0;
+      checkProgressiveSeekCache();
+    }
+  });
+}
+function renderProgressiveSeekableRanges() {
+  const layer = $("#player-progress-progressive");
+  if (!layer) return;
+  const expected = progressiveSeekContext();
+  // A verified FULL indexed MP4 is seekable across the entire episode. Its
+  // authoritative ready overlay already paints the whole bar; don't leave
+  // the narrower standalone-GOP safety gaps striped on top of that proof.
+  const fullIndexedReady = video.dataset.indexed === "1" || readyIndexedVideo();
+  const ranges = !fullIndexedReady && expected && readyProgressiveWindow
+    ? (progressiveSeekReady?.context === state.transcodeContext
+      && progressiveSeekReady?.source === state.currentSource
+      && progressiveSeekReady?.generation === expected.generation
+      && progressiveSeekReady?.audioIndex === expected.audioIndex
+      && progressiveSeekReady?.audioMode === expected.audioMode
+      ? progressiveReadyRanges(progressiveSeekReady.snapshot) : []) : [];
+  const duration = expected?.durationSeconds || 0;
+  const width = Math.max(1,Math.min(16384,
+    Math.ceil((layer.getBoundingClientRect?.().width || layer.clientWidth || 600)
+      * Math.min(3,window.devicePixelRatio || 1))));
+  // The entire disjoint interval map is fingerprinted ONCE per verified
+  // status response; ordinary timeupdate repaint checks use only its version.
+  // A changed or revoked *interior* island must never remain falsely bright.
+  const key = `${progressiveTimelineVersion}:${width}:${duration}:${fullIndexedReady}:`
+    + String(progressiveSeekReady?.report?.identityKey || '');
+  if (progressiveTimelineKey === key) return;
+  progressiveTimelineKey = key;
+  // Canvas keeps a 58-minute timeline with ~1,700 individually indexed GOPs
+  // from allocating/reflowing thousands of span elements every status update.
+  // The paint is intentionally only for independently verified *seekable*
+  // positions, never torrent download percentages or unverified gap bytes.
+  layer.width = width;
+  layer.height = 2;
+  const painter = layer.getContext?.('2d');
+  if (!painter || !duration) return;
+  painter.clearRect(0,0,width,2);
+  painter.fillStyle = 'rgba(255,255,255,.4)';
+  for (const {start,end} of ranges) {
+    if (end <= start) continue;
+    painter.fillRect(Math.max(0,start / duration * width),0,
+      Math.max(0,(end-start) / duration * width),2);
+  }
+}
+async function extendProgressivePlayback({ force = false } = {}) {
+  const loader = progressiveMseLoader, win = loader?.currentWindow;
+  const selection = progressiveSeekReady, context = progressiveSeekContext();
+  if (progressiveContinueController || !win || !context || !selection?.snapshot
+    || video.dataset.progressive !== "1" || state.pendingSeek
+    || selection.source !== state.currentSource
+    || selection.context !== state.transcodeContext
+    || selection.generation !== context.generation
+    || selection.audioIndex !== context.audioIndex
+    || selection.audioMode !== context.audioMode) return false;
+  const seconds = Number(video.currentTime);
+  if (!force && (!Number.isFinite(seconds) || win.endSeconds - seconds > 1.5))
+    return false;
+  // Only a specifically verified NEXT GOP from the same source and exact init
+  // may be appended; a downloaded hole or different audio/source is never
+  // treated as continuous media. Keep the MSE buffer bounded.
+  const next = selection.snapshot.segments.find(item => item.id !== win.id
+    && item.initHash === win.initHash
+    && item.startSeconds >= win.endSeconds - 0.15
+    && item.startSeconds <= win.endSeconds + 0.15
+    && item.endSeconds > win.endSeconds + 0.1);
+  if (!next) return false;
+  const controller = new AbortController();
+  progressiveContinueController = controller;
+  const source = state.currentSource, transcode = state.transcodeContext;
+  const loadId = playbackLoadRequestId;
+  const current = () => !controller.signal.aborted
+    && progressiveMseLoader === loader && video.dataset.progressive === "1"
+    && state.currentSource === source && state.transcodeContext === transcode
+    && playbackLoadRequestId === loadId && remuxMseCacheAllowed;
+  try {
+    return await loader.appendNext({segment:next,
+      context:{...context,mime:selection.report.mime},
+      signal:controller.signal,isCurrent:current});
+  } finally {
+    if (progressiveContinueController === controller) progressiveContinueController = null;
+  }
+}
+function progressiveBufferEndAroundCurrent() {
+  // MSE may expose fewer buffered frames than the verified GOP metadata end
+  // (audio/video timestamp rounding and demux trimming). Recovery must use
+  // what the browser can actually play, not a theoretical final timestamp.
+  const movieEnd = Number(progressiveMseLoader?.currentWindow?.endSeconds);
+  const now = Number(video.currentTime);
+  if (!Number.isFinite(movieEnd) || !Number.isFinite(now)) return null;
+  try {
+    for (let i = 0; i < (video.buffered?.length || 0); i += 1) {
+      const start = video.buffered.start(i), end = video.buffered.end(i);
+      if (start <= now + 0.1 && end >= now - 0.2) {
+        return Math.min(movieEnd, end);
+      }
+    }
+  } catch { /* SourceBuffer might be removed while its video source changes. */ }
+  // No actual TimeRange covers the playhead. Metadata's GOP end is NOT
+  // evidence that an unbuffered seek can be played from this SourceBuffer.
+  return null;
+}
+function continueProgressiveOrRecover({ force = false, fromEnded = false } = {}) {
+  if (progressiveBoundaryAttempt || video.dataset.progressive !== "1"
+    || state.pendingSeek || state.scrubbing || !progressiveMseLoader) return false;
+  const at = Number(video.currentTime);
+  const end = progressiveBufferEndAroundCurrent() ?? (force || fromEnded ? at : NaN);
+  if (!Number.isFinite(end) || !Number.isFinite(at)
+    || (!force && end - at > 1.5) || (!fromEnded && video.paused)) return false;
+  const source = state.currentSource, transcode = state.transcodeContext;
+  const loadId = playbackLoadRequestId, loader = progressiveMseLoader;
+  const wasPlaying = fromEnded || playerIsPlaying();
+  const attempt = { source, transcode, loadId, loader };
+  progressiveBoundaryAttempt = attempt;
+  const current = () => progressiveBoundaryAttempt === attempt
+    && state.currentSource === source && state.transcodeContext === transcode
+    && playbackLoadRequestId === loadId && progressiveMseLoader === loader
+    && video.dataset.progressive === "1" && !state.pendingSeek;
+  void extendProgressivePlayback({ force: true }).then(continued => {
+    if (continued || !current()) return;
+    const endNow = progressiveBufferEndAroundCurrent() ?? (force || fromEnded ? at : NaN);
+    const position = Number(video.currentTime);
+    if (!Number.isFinite(endNow) || !Number.isFinite(position)
+      || (!fromEnded && position < endNow - 0.15)) return;
+    const target = Math.max(0, Math.min(position,
+      Math.max(0, state.mediaDurationMs / 1000 - 0.05)));
+    if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying }))
+      void restartTranscodeAt(target, { wasPlaying });
+  }).catch(() => {
+    if (!current()) return;
+    const target = Math.max(0, Number(video.currentTime) || 0);
+    if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying }))
+      void restartTranscodeAt(target, { wasPlaying });
+  }).finally(() => {
+    if (progressiveBoundaryAttempt === attempt) progressiveBoundaryAttempt = null;
+  });
+  return true;
+}
 function indexedCacheStatusUrl(context = state.transcodeContext) {
   if (!context?.sessionId || !Number.isInteger(context.fileIndex)) return null;
   const audioIndex = Number.isInteger(context.audioIndex) ? context.audioIndex : (state.selectedAudioTrack || 0);
@@ -3622,6 +3958,10 @@ function readyIndexedVideo() {
     && cache.audioIndex === context?.audioIndex && cache.audioMode === normalizeAudioMode(audioOutputMode));
 }
 function checkIndexedSeekCache() {
+  // The server now atomically arbitrates the encoder slot in favor of
+  // independently seekable GOP preparation before admitting the full-MP4
+  // builder. Do not suppress ordinary indexed discovery here: paused players
+  // may have no further timeupdate to revive a missed full-index request.
   if (!remuxMseCacheAllowed || video.dataset.mode !== "transcode"
     || video.dataset.indexed === "1" || !state.currentSource
     || !state.transcodeContext || indexedSeekStatusPending
@@ -3640,13 +3980,27 @@ function checkIndexedSeekCache() {
     if (report?.status === "ready" && String(report.url || "").startsWith(prefix))
       indexedSeekReady = { context, source, audioIndex, audioMode, url: report.url };
     else indexedSeekReady = null;
+    // A verified FULL indexed MP4 is more reliable than stitching tiny
+    // independently verified progressive GOPs. As soon as it is available,
+    // migrate the same selected source at the current movie clock, keeping the
+    // user's play/pause intent. Without this, an already-ready full MP4 stays
+    // unused while playback reaches intermittent GOP edges or empty ranges.
+    if (readyIndexedVideo() && video.dataset.mode === "transcode"
+      && video.dataset.indexed !== "1" && !state.pendingSeek
+      && !state.scrubbing && !video.ended) {
+      const at = absolutePlaybackSeconds();
+      if (Number.isFinite(at) && at >= 0 && at < state.mediaDurationMs / 1000)
+        openIndexedSeekAt(at, { wasPlaying: playerIsPlaying() });
+    }
   }).catch(() => {}).finally(() => { indexedSeekStatusPending = false; });
 }
 async function playerStorageLimit() {
   if (Date.now() - playerStorageLimitCache.at < 60_000 && playerStorageLimitCache.value) return playerStorageLimitCache.value;
   try {
     const report = await fetchJson("/api/storage");
-    remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled !== false;
+    // Missing/malformed Settings responses cannot authorize disk-backed
+    // conversion or falsely paint any progressive section as seek-ready.
+    remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled === true;
     playerStorageLimitCache = { value: Number(report.limits?.playerBytes) || 0, at: Date.now() };
   } catch {}
   return playerStorageLimitCache.value;
@@ -3676,7 +4030,7 @@ function wireStorageSettings() {
     const requested = toggle.checked;
     toggle.disabled = true;
     try {
-      if (!requested && video.dataset.indexed === "1") {
+      if (!requested && (video.dataset.indexed === "1" || video.dataset.progressive === "1")) {
         // Switch the active reader away before the server purges optional
         // indexed cache bytes. Do not leave a playing video pointing to a
         // file that may disappear underneath its next HTTP Range request.
@@ -4957,7 +5311,17 @@ async function recoverPlayback(reason = "error") {
         if (!reloadDirectTorrentAt(absolutePlaybackSeconds())) throw new Error("Direct playback could not restart");
       }
       else if (strategy === "restart-transcode" && video.dataset.mode === "transcode") {
-        if (!await restartTranscodeAt(absolutePlaybackSeconds(), { wasPlaying: true }))
+        const at = absolutePlaybackSeconds();
+        // A progressive GOP is a short standalone MSE, not a resumable long
+        // FFmpeg producer. After a long pause or MediaError4, don't re-enter
+        // the same optional remux-MSE failure path. Prefer the separately
+        // verified complete MP4; otherwise recover one-way through native.
+        const fullIndexed = video.dataset.progressive === "1"
+          && typeof readyIndexedVideo === "function" && readyIndexedVideo()
+          && openIndexedSeekAt(at, { wasPlaying: true });
+        if (!fullIndexed && !await restartTranscodeAt(at, {
+          wasPlaying: true, forceNative: video.dataset.progressive === "1",
+        }))
           throw new Error("Converted playback could not restart");
       }
     } else if (action.type === "switch-source") {
@@ -5042,13 +5406,18 @@ function playerReadyRangeSeconds() {
 // pieces are not necessarily available to the media element yet; a transcode
 // explicitly starts a new stream for every nontrivial seek.
 function isPlayerTimeBuffered(seconds) {
-  if (video.dataset.mode === "transcode" && video.dataset.indexed !== "1") return false;
+  if (video.dataset.mode === "transcode" && video.dataset.indexed !== "1"
+    && video.dataset.progressive !== "1") return false;
   const ranges = video.buffered;
   if (!ranges || !Number.isFinite(seconds)) return false;
   const duration = Number(video.duration);
   const lookAhead = Number.isFinite(duration) && seconds >= duration - 0.35 ? 0 : 0.25;
+  // Sparse progressive MSE is NOT buffered even 0.01s before a new island's
+  // first decoded frame. Do not seek into that gap using the old ±100ms slack.
+  const startTolerance = video.dataset.progressive === "1" ? 0 : 0.1;
   for (let index = 0; index < ranges.length; index += 1) {
-    if (ranges.start(index) <= seconds + 0.1 && ranges.end(index) >= seconds + lookAhead) return true;
+    if (ranges.start(index) <= seconds + startTolerance
+      && ranges.end(index) >= seconds + lookAhead) return true;
   }
   return false;
 }
@@ -5194,7 +5563,18 @@ function startTransferStats(sessionId) {
 
 function setMediaSource({ src, title, status, objectUrl = null, mode = "local", durationMs = 0, startAtSeconds = 0 }, { preserveTranscodeStart = false } = {}) {
   if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
+  progressiveSeekController?.cancel();
+  progressiveContinueController?.abort();
+  closeProgressiveEventStream();
+  progressiveMseLoader?.close?.();
+  progressiveSeekController = null;
+  progressiveMseLoader = null;
+  if (progressiveSeekOriginalMute !== null) {
+    video.muted = progressiveSeekOriginalMute;
+    progressiveSeekOriginalMute = null;
+  }
   delete video.dataset.indexed;
+  delete video.dataset.progressive;
   if (typeof remuxMseSession !== "undefined" && remuxMseSession
     && remuxMseSession.objectUrl !== src) closeRemuxMseSession();
   if (typeof invalidateStreamStatus === "function") invalidateStreamStatus();
@@ -5218,6 +5598,14 @@ function setMediaSource({ src, title, status, objectUrl = null, mode = "local", 
   state.pendingSeek = null;
   state.scrubbing = false;
   drawPlayerDownloadMap(null);
+  progressiveSeekReady = null;
+  progressiveSeekStatusAt = 0;
+  progressiveIndexStatus = "unknown";
+  progressiveWaitingSince = 0;
+  progressiveTimelineKey = "";
+  progressiveTimelineRangesFingerprint = "";
+  progressiveTimelineVersion += 1;
+  renderProgressiveSeekableRanges();
   if (mode !== "transcode") {
     state.transcodeBaseOffsetSeconds = 0;
     state.transcodeRequestedStartSeconds = 0;
@@ -5255,6 +5643,7 @@ function setMediaSource({ src, title, status, objectUrl = null, mode = "local", 
 }
 
 function updateCompatControls() {
+  if (typeof checkProgressiveSeekCache === "function") checkProgressiveSeekCache();
   if (typeof checkIndexedSeekCache === "function") checkIndexedSeekCache();
   const currentMs = Math.max(0, absolutePlaybackSeconds() * 1000);
   const nativeDurationMs = Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0;
@@ -5282,6 +5671,7 @@ function updateCompatControls() {
   $("#player-progress-played").style.width = `${percent(shownMs / 1000)}%`;
   $("#player-progress-ready").style.left = `${readyRange ? percent(readyRange.start) : 0}%`;
   $("#player-progress-ready").style.width = `${readyRange ? Math.max(0, percent(readyRange.end) - percent(readyRange.start)) : 0}%`;
+  renderProgressiveSeekableRanges();
   const muted = (transcodeStartAttempt?.mutedForPreroll ? transcodeStartAttempt.wantedMuted : video.muted) || video.volume === 0;
   $("#player-mute")?.classList.toggle("is-muted", muted);
   $("#player-mute")?.setAttribute("aria-label", muted ? "Unmute" : "Mute");
@@ -5311,6 +5701,7 @@ let transcodeStartAttempt = null;
 let transcodeStartSerial = 0;
 let remuxMseSession = null;
 let indexedSeekAttempt = null;
+let indexedGapSeekRequest = null;
 function cancelIndexedSeekAttempt() {
   const attempt = indexedSeekAttempt;
   if (!attempt) return;
@@ -5318,12 +5709,30 @@ function cancelIndexedSeekAttempt() {
   attempt.cancel();
   if (state.pendingSeek === attempt.pending) state.pendingSeek = null;
 }
+function closeProgressiveForIndexedSeek() {
+  // Full indexed MP4 owns the video element after this point. A former MSE
+  // window, its append request, and the muted progressive rVFC callback must
+  // never race the newly installed indexed source or leave playback muted.
+  progressiveContinueController?.abort();
+  progressiveContinueController = null;
+  progressiveBoundaryAttempt = null;
+  progressiveSeekController?.close();
+  progressiveSeekController = null;
+  progressiveMseLoader?.close?.();
+  progressiveMseLoader = null;
+  if (progressiveSeekOriginalMute !== null) {
+    video.muted = progressiveSeekOriginalMute;
+    progressiveSeekOriginalMute = null;
+  }
+  delete video.dataset.progressive;
+}
 function openIndexedSeekAt(target, { wasPlaying = !video.paused } = {}) {
   if (!readyIndexedVideo()) return false;
   const cache = indexedSeekReady;
   const source = state.currentSource, context = state.transcodeContext;
   const loadId = playbackLoadRequestId;
   if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
+  closeProgressiveForIndexedSeek();
   closeRemuxMseSession();
   cancelTranscodeStart();
   invalidateSubtitleFrameClock();
@@ -5424,6 +5833,204 @@ function openIndexedSeekAt(target, { wasPlaying = !video.paused } = {}) {
   if (typeof expectNewVideoFrame === "function") expectNewVideoFrame();
   video.load();
   updateCompatControls();
+  return true;
+}
+function seekGapViaVerifiedIndexedOrNative(target, { wasPlaying = playerIsPlaying() } = {}) {
+  // A target outside standalone GOPs is NOT an MSE seek. Before starting a
+  // fresh native FFmpeg (which can compete with optional index producers),
+  // refresh the COMPLETE MP4 status. The existing 10s poll may not yet have
+  // discovered an already-committed Range MP4, even after torrent completion.
+  const context = state.transcodeContext, source = state.currentSource;
+  if (video.dataset.mode !== "transcode" || video.dataset.progressive !== "1"
+    || !context?.sessionId
+    || !state.currentSource || !remuxMseCacheAllowed) return false;
+  const url = indexedCacheStatusUrl(context);
+  if (!url) return false;
+  indexedGapSeekRequest?.controller.abort();
+  const audioIndex = context.audioIndex, audioMode = normalizeAudioMode(audioOutputMode);
+  const loadId = playbackLoadRequestId;
+  const controller = new AbortController();
+  const pending = { target, wasPlaying: Boolean(wasPlaying), gapIndexedLookup: true };
+  const attempt = { controller, pending };
+  indexedGapSeekRequest = attempt;
+  window.clearTimeout(state.pendingSeek?.timer);
+  state.pendingSeek = pending;
+  if (!video.paused) video.pause();
+  state.currentMs = target * 1000;
+  setPlayerLoading(18, "Finding verified seekable video", formatTime(state.currentMs));
+  renderSubtitles();
+  updateCompatControls();
+  const current = () => indexedGapSeekRequest === attempt && !controller.signal.aborted
+    && playbackLoadRequestId === loadId && state.currentSource === source
+    && state.transcodeContext === context && state.pendingSeek === pending
+    && context.audioIndex === audioIndex && normalizeAudioMode(audioOutputMode) === audioMode;
+  const nativeFallback = () => {
+    if (!current()) return;
+    // Clear only our own queued lookup, leaving the user's play/pause intent
+    // intact for the existing bounded native seek/retry pathway.
+    scheduleTranscodeSeek(target, { forceNative: true });
+  };
+  void fetchJson(url, { signal: AbortSignal.any([controller.signal, AbortSignal.timeout(4000)]) })
+    .then(report => {
+      if (!current()) return;
+      const prefix = `/api/torrents/${encodeURIComponent(context.sessionId)}/files/${context.fileIndex}/indexed?`;
+      if (report?.status === "ready" && String(report.url || "").startsWith(prefix)) {
+        indexedSeekReady = { context, source, audioIndex, audioMode, url: report.url };
+        if (readyIndexedVideo() && openIndexedSeekAt(target, { wasPlaying: pending.wasPlaying })) {
+          loadMoreEmbeddedSubtitles({ seeked: true });
+          return;
+        }
+      }
+      nativeFallback();
+    }).catch(() => nativeFallback()).finally(() => {
+      if (indexedGapSeekRequest === attempt) indexedGapSeekRequest = null;
+    });
+  return true;
+}
+function openProgressiveSeekAt(target, { wasPlaying = !video.paused } = {}) {
+  const section = readyProgressiveWindow(target);
+  const snapshot = progressiveSeekReady;
+  const context = progressiveSeekContext();
+  if (!section || !snapshot || !context
+    || !window.MediaSource?.isTypeSupported?.(snapshot.report.mime)
+    || typeof video.requestVideoFrameCallback !== "function") return false;
+  const previousUserMute = progressiveSeekOriginalMute;
+  progressiveSeekController?.close();
+  progressiveContinueController?.abort();
+  progressiveMseLoader?.close?.();
+  if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
+  closeRemuxMseSession();
+  cancelTranscodeStart();
+  invalidateSubtitleFrameClock();
+  const source = state.currentSource, transcode = state.transcodeContext;
+  const loadId = playbackLoadRequestId;
+  const oldMute = previousUserMute === null ? video.muted : previousUserMute;
+  progressiveSeekOriginalMute = oldMute;
+  video.pause();
+  video.muted = true;
+  video.style.visibility = "";
+  state.transcodeBaseOffsetSeconds = 0;
+  state.transcodeRequestedStartSeconds = target;
+  state.currentMs = target * 1000;
+  const pending = { target, wasPlaying, priming: true, streamInstalled: true };
+  state.pendingSeek = pending;
+  video.dataset.progressive = "1";
+  video.dataset.mode = "transcode";
+  setPlayerLoading(18, "Seeking verified video section", formatTime(target * 1000));
+  const current = () => state.currentSource === source
+    && state.transcodeContext === transcode
+    && playbackLoadRequestId === loadId && state.pendingSeek === pending
+    && video.dataset.progressive === "1";
+  const sameProgressiveSource = () => state.currentSource === source
+    && state.transcodeContext === transcode && playbackLoadRequestId === loadId
+    && video.dataset.progressive === "1"
+    && (!state.pendingSeek || state.pendingSeek === pending);
+  const requestWindow = async ({ segment, context: selected, signal }) => {
+    if (!sameProgressiveSource() || selected.sourceKey !== context.sourceKey
+      || selected.generation !== context.generation || signal.aborted)
+      throw Error("Progressive source changed");
+    const url = `/api/torrents/${encodeURIComponent(transcode.sessionId)}/files/${transcode.fileIndex}/progressive/window/${segment.id}?audio=${context.audioIndex}&audioMode=${encodeURIComponent(context.audioMode)}`;
+    const response = await fetch(url, { signal, cache: "no-store" });
+    const bytes = Number(response.headers.get("Content-Length"));
+    if (!response.ok || response.headers.get("Content-Type") !== "video/mp4"
+      || response.headers.get("X-LVL-Progressive-Source") !== transcode.sessionId
+      || bytes !== segment.bytes || bytes > 64 * 1024 * 1024)
+      throw Error("Verified section unavailable");
+    const start = Number(response.headers.get("X-LVL-Progressive-Start-Seconds"));
+    const end = Number(response.headers.get("X-LVL-Progressive-End-Seconds"));
+    if (Math.abs(start - segment.startSeconds) > 0.003
+      || Math.abs(end - segment.endSeconds) > 0.003)
+      throw Error("Section timeline changed");
+    const buffer = new Uint8Array(await response.arrayBuffer());
+    if (!sameProgressiveSource() || signal.aborted || buffer.byteLength !== bytes)
+      throw Error("Incomplete indexed section");
+    return { segmentId: segment.id, sourceKey: context.sourceKey,
+      generation: context.generation, audioIndex: context.audioIndex,
+      audioMode: context.audioMode, startSeconds: start, endSeconds: end,
+      // Standalone fMP4 fragment timestamps are the original movie clock.
+      mediaStartSeconds: segment.mediaStartSeconds ?? segment.startSeconds,
+      initHash: segment.initHash, contentType: selected.mime,
+      complete: true, verified: true, initVerified: true, bytes: buffer };
+  };
+  const loader = createStandaloneProgressiveMseLoader({ video, requestWindow });
+  const controller = createProgressiveSeekController({
+    video, getContext: progressiveSeekContext, loadWindow: loader,
+    isVisible: () => video.style.visibility !== "hidden",
+    // Begin muted decode ONLY after the verified new MSE source/section has
+    // been attached; priming the old media before the window GET completed
+    // could leave the new SourceBuffer paused with no presented-frame event.
+    seekVideo: async ({ video: element, localSeconds, signal }) => {
+      if (signal.aborted) throw Error("Progressive seek cancelled");
+      element.currentTime = localSeconds;
+      await element.play();
+    },
+  });
+  progressiveMseLoader = loader;
+  progressiveSeekController = controller;
+  void controller.seek(snapshot.report, target).then(result => {
+    if (!current() || progressiveSeekController !== controller) {
+      // A different title/source can be selected before its new video URL is
+      // installed. Never leave the outgoing muted preroll poisoning that next
+      // source. Do not change a successor's pendingSeek or playback intent.
+      if (progressiveSeekController === controller && video.dataset.progressive === "1") {
+        controller.close(); loader.close();
+        progressiveSeekController = null; progressiveMseLoader = null;
+        delete video.dataset.progressive;
+        if (progressiveSeekOriginalMute !== null) {
+          video.muted = progressiveSeekOriginalMute;
+          progressiveSeekOriginalMute = null;
+        }
+      }
+      return;
+    }
+    if (!result?.ok) {
+      controller.close(); loader.close();
+      progressiveSeekController = null; progressiveMseLoader = null;
+      video.muted = oldMute;
+      progressiveSeekOriginalMute = null;
+      if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying: pending.wasPlaying }))
+        void openTranscodeAt(target, { wasPlaying: pending.wasPlaying, forceNative: true });
+      return;
+    }
+    state.pendingSeek = null;
+    state.currentMs = target * 1000;
+    video.muted = oldMute;
+    progressiveSeekOriginalMute = null;
+    sourceFrameGate = null;
+    video.style.visibility = "";
+    frame.classList.remove("source-transition");
+    clearTranscodeSeekFrame();
+    subtitlePresentedFrame = { src: video.src, base: 0, seconds: result.absoluteSeconds };
+    hideLoadingForBufferedSeek();
+    renderSubtitles();
+    schedulePresentedSubtitleFrame();
+    updateCompatControls();
+    if (!pending.wasPlaying) video.pause();
+    else if (video.paused) void video.play().catch(() => void recoverPlayback("error"));
+    if (pending.wasPlaying) continueProgressiveOrRecover({ force: true });
+  }).catch(() => {
+    if (!current()) {
+      if (progressiveSeekController === controller && video.dataset.progressive === "1") {
+        controller.close(); loader.close();
+        progressiveSeekController = null; progressiveMseLoader = null;
+        delete video.dataset.progressive;
+        if (progressiveSeekOriginalMute !== null) {
+          video.muted = progressiveSeekOriginalMute;
+          progressiveSeekOriginalMute = null;
+        }
+      }
+      return;
+    }
+    video.muted = oldMute;
+    progressiveSeekOriginalMute = null;
+    controller.close(); loader.close();
+    progressiveSeekController = null; progressiveMseLoader = null;
+    if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying: pending.wasPlaying }))
+      void openTranscodeAt(target, { wasPlaying: pending.wasPlaying, forceNative: true });
+  });
+  // The controller primes the freshly attached MSE source while muted and
+  // restores the user's original play/pause intent after real frame proof.
+  loadMoreEmbeddedSubtitles({ seeked: true });
   return true;
 }
 let remuxMseWarmSeek = null;
@@ -5663,6 +6270,18 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
   if (!context?.baseUrl) return false;
   if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
   delete video.dataset.indexed;
+  if (video.dataset.progressive === "1") {
+    progressiveContinueController?.abort();
+    progressiveSeekController?.cancel();
+    progressiveMseLoader?.close?.();
+    progressiveSeekController = null;
+    progressiveMseLoader = null;
+    if (progressiveSeekOriginalMute !== null) {
+      video.muted = progressiveSeekOriginalMute;
+      progressiveSeekOriginalMute = null;
+    }
+    delete video.dataset.progressive;
+  }
   if (!initialize && typeof preserveCurrentFrameForTranscodeSeek === "function")
     preserveCurrentFrameForTranscodeSeek();
   if (typeof clearWaitingTorrentSeek === "function") clearWaitingTorrentSeek();
@@ -6138,7 +6757,8 @@ function playerIsPlaying() {
 // directly buffered/local files untouched and preserve the selected audio track.
 let transcodePauseSnapshot = null;
 function noteTranscodePause() {
-  transcodePauseSnapshot = video.dataset.mode === "transcode" && video.dataset.indexed !== "1"
+  transcodePauseSnapshot = video.dataset.mode === "transcode"
+    && video.dataset.indexed !== "1" && video.dataset.progressive !== "1"
     && !state.pendingSeek && state.transcodeContext?.baseUrl
     ? { at: Date.now(), src: video.src, position: absolutePlaybackSeconds() } : null;
 }
@@ -6244,6 +6864,33 @@ function seekPlayerTo(seconds) {
       return true;
     }
   }
+  if (video.dataset.progressive === "1" && !state.pendingSeek
+    && isPlayerTimeBuffered(target)) {
+    hideLoadingForBufferedSeek();
+    video.currentTime = target;
+    state.currentMs = target * 1000;
+    loadMoreEmbeddedSubtitles({ seeked: true });
+    renderSubtitles();
+    updateCompatControls();
+    return true;
+  }
+  if (video.dataset.progressive === "1" && !isPlayerTimeBuffered(target)) {
+    // Even a 50ms seek can cross a decoded GOP boundary into a real MSE gap.
+    // Do NOT let the generic <200ms path write video.currentTime into sparse
+    // SourceBuffer time. Preserve the selected audio/source and play intent,
+    // and use an actually verified completed MP4, independent GOP, or bounded
+    // native fallback with a fresh explicit movie-clock seek.
+    const wasPlaying = playerIsPlaying();
+    if (readyIndexedVideo() && openIndexedSeekAt(target, { wasPlaying })) {
+      loadMoreEmbeddedSubtitles({ seeked: true });
+      return true;
+    }
+    if (openProgressiveSeekAt(target, { wasPlaying })) return true;
+    if (!seekGapViaVerifiedIndexedOrNative(target, { wasPlaying }))
+      scheduleTranscodeSeek(target, { forceNative: true });
+    loadMoreEmbeddedSubtitles({ seeked: true });
+    return true;
+  }
   if (video.dataset.mode === "transcode" && Math.abs(target - absolutePlaybackSeconds()) > 0.2
     && typeof readyIndexedVideo === "function" && readyIndexedVideo()
     && openIndexedSeekAt(target, { wasPlaying: playerIsPlaying() })) {
@@ -6251,7 +6898,14 @@ function seekPlayerTo(seconds) {
     return true;
   }
   if (video.dataset.mode === "transcode" && Math.abs(target - absolutePlaybackSeconds()) > 0.2
+    && openProgressiveSeekAt(target, { wasPlaying: playerIsPlaying() })) return true;
+  if (video.dataset.mode === "transcode" && Math.abs(target - absolutePlaybackSeconds()) > 0.2
     && typeof seekInsideRemuxMse === "function" && seekInsideRemuxMse(target)) {
+    loadMoreEmbeddedSubtitles({ seeked: true });
+    return true;
+  }
+  if (video.dataset.mode === "transcode" && Math.abs(target - absolutePlaybackSeconds()) > 0.2
+    && seekGapViaVerifiedIndexedOrNative(target, { wasPlaying: playerIsPlaying() })) {
     loadMoreEmbeddedSubtitles({ seeked: true });
     return true;
   }
@@ -10426,7 +11080,7 @@ function stopPlaybackIfHiddenAfterNavigation(destination) {
 // opened at its top).
 let lastRandomEntry = null;
 let suppressRandomFocusPreview = false;
-function switchView(view, { historyMode = "push", restoreScroll = false } = {}) {
+function switchView(view, { historyMode = "push", restoreScroll = false, query } = {}) {
   if (!learningEnabled && ["study", "review", "test"].includes(view)) view = "home";
   if (view === "watch" && (linePreview.active || linePreview.pending)) return;
   if (catalogSearchIsOpen()) closeCatalogSearch();
@@ -10453,16 +11107,26 @@ function switchView(view, { historyMode = "push", restoreScroll = false } = {}) 
   const topbarLabel = $("#app-topbar-view-label");
   if (topbarLabel) topbarLabel.textContent = t(({ home: "Home", watch: "Watch", library: "Library", calendar: "Calendar", study: "Study", review: "Review", test: "Tests", settings: "Settings", title: "Library" })[view] || clientFeatures.viewLabel(view));
   if ($(".app-shell")?.classList.contains("sidebar-expanded")) setSidebarExpanded(false, { persist: false });
-  if (view !== "title") $$(".nav-btn").forEach((button) => button.classList.toggle("is-active", button.dataset.view === view));
-  const route = view === "title" ? `${VIEW_ROUTES.title}${window.location.search}` : VIEW_ROUTES[view];
-  const here = view === "title" ? `${window.location.pathname}${window.location.search}` : window.location.pathname;
+  if (view !== "title") {
+    const navView = clientFeatures.navFor(view) || view;
+    $$(".nav-btn").forEach((button) => button.classList.toggle("is-active", button.dataset.view === navView));
+  }
+  // Feature views with keepQuery: a sidebar click (push without a query) opens
+  // the bare route, internal navigation passes { query }, reload and Back keep it.
+  const featureQuery = clientFeatures.keepsQuery(view)
+    ? (typeof query === "string" ? (query && !query.startsWith("?") ? `?${query}` : query)
+      : historyMode === "push" ? "" : window.location.search)
+    : null;
+  const keepQuery = view === "title" || featureQuery !== null;
+  const route = keepQuery ? `${VIEW_ROUTES[view]}${view === "title" ? window.location.search : featureQuery}` : VIEW_ROUTES[view];
+  const here = keepQuery ? `${window.location.pathname}${window.location.search}` : window.location.pathname;
   if (historyMode === "replace") window.history.replaceState({ view }, "", route);
   else if (historyMode === "push" && here !== route) window.history.pushState({ view }, "", route);
   if (view === "title") renderTitlePage();
   else if (document.title !== DEFAULT_DOCUMENT_TITLE) document.title = DEFAULT_DOCUMENT_TITLE;
   if (typeof refreshRandomPickIndicator === "function") refreshRandomPickIndicator();
   const previousKey = lastViewKey;
-  lastViewKey = view === "title" ? `title${window.location.search}` : view;
+  lastViewKey = keepQuery ? `${view}${window.location.search}` : view;
   if (restoreScroll) {
     const top = viewScroll.get(lastViewKey) || 0;
     requestAnimationFrame(() => window.scrollTo({ top, behavior: "instant" }));
@@ -12620,26 +13284,39 @@ let titleRenderQueued = false;
 function titleRoute() {
   const params = new URLSearchParams(window.location.search);
   const id = String(params.get("id") || "");
+  // A title a feature owns (a manga with no anime): /title?f=comics&item=anilist-30013.
+  const feature = String(params.get("f") || "");
+  const item = String(params.get("item") || "");
+  const owned = /^[a-z][a-z0-9-]{1,31}$/.test(feature) && /^[\w:.-]{1,120}$/.test(item);
+  // A feature section to open first, e.g. /title?id=tt…&section=manga.
+  const section = String(params.get("section") || "");
   return {
-    id: /^tt\d{5,12}$/.test(id) ? id : "",
+    id: !owned && /^tt\d{5,12}$/.test(id) ? id : "",
     type: params.get("type") === "movie" ? "movie" : "series",
-    key: String(params.get("key") || "").slice(0, 300),
+    key: owned ? "" : String(params.get("key") || "").slice(0, 300),
+    feature: owned ? feature : "",
+    item: owned ? item : "",
+    section: /^[a-z][a-z0-9-]{1,31}$/.test(section) ? section : "",
   };
 }
 
-function titleUrl({ id = "", type = "series", key = "" } = {}) {
+function titleUrl({ id = "", type = "series", key = "", feature = "", item = "", section = "" } = {}) {
   const params = new URLSearchParams();
-  if (/^tt\d{5,12}$/.test(String(id || ""))) {
+  if (feature && item) {
+    params.set("f", feature);
+    params.set("item", item);
+  } else if (/^tt\d{5,12}$/.test(String(id || ""))) {
     params.set("id", id);
     params.set("type", type === "movie" ? "movie" : "series");
   }
-  if (key) params.set("key", key);
+  if (key && !feature) params.set("key", key);
+  if (section) params.set("section", section);
   return `${VIEW_ROUTES.title}?${params}`;
 }
 
-function openTitlePage({ id = "", type = "series", key = "", meta = null } = {}, { historyMode = "push" } = {}) {
+function openTitlePage({ id = "", type = "series", key = "", meta = null, feature = "", item = "", section = "" } = {}, { historyMode = "push" } = {}) {
   if (meta?.id) titleSeedMeta.set(meta.id, meta);
-  const url = titleUrl({ id, type, key });
+  const url = titleUrl({ id, type, key, feature, item, section });
   if (historyMode === "push") {
     if (`${window.location.pathname}${window.location.search}` !== url) {
       viewScroll.set(lastViewKey, window.scrollY);
@@ -12654,6 +13331,24 @@ function openTitlePage({ id = "", type = "series", key = "", meta = null } = {},
 function openLibrarySeries(seriesKey) {
   const series = buildLibrarySeries().find((item) => item.key === seriesKey);
   if (series) openTitlePage({ id: series.catalogId, type: series.type, key: series.key });
+}
+
+// Catalog ids and AniList ids of the video titles in the Library (features join
+// their own entries to these, e.g. a manga to the anime it was adapted into).
+function libraryTitleIds() {
+  const catalogIds = new Set();
+  const anilistIds = new Set();
+  const add = (value) => { const id = Number(value); if (Number.isSafeInteger(id) && id > 0) anilistIds.add(id); };
+  for (const series of buildLibrarySeries()) {
+    if (series.catalogId) catalogIds.add(series.catalogId);
+    for (const entry of series.sources || []) {
+      add(entry.anilistId);
+      add(entry.anilist?.showId);
+      for (const part of [...(entry.anilist?.seasons || []), ...(entry.anilist?.seasons || []).flatMap((season) => season?.parts || [])]) { add(part?.anilistId); add(part?.id); }
+      for (const part of [...(entry.anilistManualLinks || []), ...(entry.anilistAutoLinks || [])]) add(part?.anilistId);
+    }
+  }
+  return { catalogIds, anilistIds };
 }
 
 function openHomeTitle(meta) {
@@ -13298,14 +13993,28 @@ function titleOtherVideosMarkup(subject, view) {
   </section>`;
 }
 
-function titleMovieMarkup(subject, info) {
+function titleMovieMarkup(subject, info, meta = null) {
   const series = subject.series;
   const saved = series && ([...series.seasons.values()].flat().length || series.extras.length)
     ? `<section class="title-block" aria-labelledby="title-saved-heading"><div class="title-section__head"><h2 class="title-section__title" id="title-saved-heading">In your Library</h2></div><div id="title-chapters" class="title-saved-list">${libraryDialogChaptersMarkup(series, refreshTitlePage)}</div></section>`
     : "";
   const sources = info.id ? `<section class="title-block" id="title-sources" aria-labelledby="title-sources-heading">${titleMovieSourcesMarkup(info)}</section>` : "";
-  return saved + sources || emptyMarkup({ compact: true, title: "No sources saved" });
+  const movie = saved + sources || emptyMarkup({ compact: true, title: "No sources saved" });
+  // Part B sections (Comics…): a chip row like a series' seasons, "Movie" first.
+  const chips = typeof clientFeatures !== "undefined" ? clientFeatures.titleSectionChips(titleMovieSectionPayload(subject, info, meta)) : [];
+  if (!chips.length) return movie;
+  const open = chips.some((chip) => chip.id === titleView.featureSection) ? titleView.featureSection : "";
+  const row = `<div class="ui-chip-row catalog-season-switch" role="group" aria-label="Sections">`
+    + `<button class="ui-chip catalog-feature-section" type="button" data-feature-section="" aria-pressed="${!open}">Movie</button>`
+    + chips.map((chip) => `<button class="ui-chip catalog-feature-section" type="button" data-feature-section="${escapeHtml(chip.id)}" aria-pressed="${chip.id === open}">${escapeHtml(t(chip.label))}${Number.isFinite(chip.count) ? `<span class="ui-chip__count">${chip.count}</span>` : ""}</button>`).join("")
+    + "</div>";
+  if (!open) return `<section class="title-block title-movie-sections" aria-label="Sections">${row}</section>${movie}`;
+  return `<section class="title-block" aria-labelledby="title-chapters-heading"><div class="title-movie-feature">
+      <div class="title-section__head"><h2 class="title-section__title" id="title-chapters-heading">Chapters</h2><div class="title-feature-head"></div></div>
+      ${row}<div class="title-feature-section" data-feature-section="${escapeHtml(open)}"></div></div></section>`;
 }
+
+const titleMovieSectionPayload = (subject, info, meta) => ({ meta, info, subject });
 
 // A movie's torrents, looked up only when asked (Find sources), best first.
 function titleMovieSourcesMarkup(info) {
@@ -13421,12 +14130,79 @@ function titleRatingSubject(subject, info, meta) {
   };
 }
 
+// A title a feature owns (titleSubjects; e.g. a manga with no anime), drawn with
+// the same hero, "Chapters" heading and chips as a video title. The feature's
+// describe() gives { name, poster, backdrop, description, genres, facts, scores,
+// actions, inLibrary, progressHtml, aboutHtml } or null while it loads; its title
+// sections (chips) fill the chapter area, and mount() binds its own controls.
+function featureTitleHeroMarkup(info) {
+  const actions = (info.actions || []).map((action, index) => buttonMarkup({ label: action.label, variant: action.variant || (index ? "glass" : "primary"),
+    size: "lg", icon: action.icon || "", attrs: action.attrs || {}, i18n: action.i18n !== false })).join("");
+  const scores = (info.scores || []).filter((score) => Number.isFinite(Number(score.value)) && Number(score.value) > 0 && Number(score.value) <= 10)
+    .map((score) => `<span class="title-rating" data-title-rating-provider="${escapeHtml(score.provider)}">${icon("star")}<strong>${escapeHtml(Number(score.value).toFixed(1))}</strong><span>${escapeHtml(score.provider)}</span></span>`).join("");
+  const poster = info.poster
+    ? `<img class="title-hero__poster" src="${escapeHtml(info.poster)}" alt="${escapeHtml(`${info.name} cover`)}" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(info.name)}" />`
+    : `<img class="title-hero__poster" src="${escapeHtml(artworkFallback(info.name, { label: info.kind || "" }))}" alt="" />`;
+  return `<div class="title-hero${info.backdrop ? " has-backdrop" : ""}">
+    <div class="title-hero__media" aria-hidden="true">${info.backdrop ? `<img class="title-hero__backdrop" src="${escapeHtml(info.backdrop)}" alt="" decoding="async" fetchpriority="high" />` : ""}</div>
+    <div class="title-hero__shade" aria-hidden="true"></div>
+    <div class="title-hero__bar">${buttonMarkup({ label: titleView.fromApp ? "Back" : "Library", variant: "glass", size: "sm", icon: "chevron-left", className: "title-back", attrs: { "data-title-action": "back" } })}</div>
+    <div class="title-hero__content">
+      <div class="title-hero__poster-wrap">${poster}</div>
+      <div class="title-hero__copy">
+        <h1 class="ui-hero__title title-hero__title" id="title-name"><span class="ui-hero__title-text">${escapeHtml(info.name)}</span></h1>
+        ${info.subtitle ? `<p class="title-hero__subtitle">${escapeHtml(info.subtitle)}</p>` : ""}
+        <div class="title-hero__facts">${metaMarkup(info.facts || [])}<div class="title-hero__scores">${scores}<div id="title-lvl-rating-slot" class="title-lvl-rating-slot"></div></div></div>
+        ${info.genres?.length ? `<ul class="title-genres" aria-label="Genres">${info.genres.map((genre) => `<li>${escapeHtml(genre)}</li>`).join("")}</ul>` : ""}
+        ${info.description ? `<p class="title-hero__synopsis">${escapeHtml(info.description)}</p>` : ""}
+        <div class="title-hero__actions">${actions}<div id="title-feature-actions" class="title-feature-actions"></div></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderFeatureTitlePage(route) {
+  const parts = { hero: $("#title-hero"), progress: $("#title-progress"), main: $("#title-main"), related: $("#title-related-movies"), about: $("#title-about") };
+  if (Object.values(parts).some((node) => !node)) return;
+  recsUi.renderTitleRating($("#title-your-rating"), null);
+  const info = clientFeatures.titleSubjectInfo(route.feature, route.item);
+  if (!info || info.missing) {
+    document.title = DEFAULT_DOCUMENT_TITLE;
+    setTitlePart(parts.hero, "hero", info?.missing ? titleMissingMarkup() : `<div class="title-hero">${skeletonHeroMarkup()}</div>`);
+    for (const part of ["progress", "main", "related", "about"]) setTitlePart(parts[part], part, "");
+    return;
+  }
+  $$(".nav-btn").forEach((button) => button.classList.toggle("is-active", button.dataset.view === (info.inLibrary ? "library" : "home")));
+  document.title = `${info.name} | ${DEFAULT_DOCUMENT_TITLE}`;
+  const heroChanged = setTitlePart(parts.hero, "hero", featureTitleHeroMarkup(info));
+  if (heroChanged) fitTitleBackdrop();
+  setTitlePart(parts.progress, "progress", info.progressHtml || "");
+  // Same heading and chips as a video title; the feature's sections are the chips.
+  const payload = { feature: route.feature, item: route.item, info, subject: { feature: route.feature, item: route.item } };
+  const chips = clientFeatures.titleSectionChips(payload);
+  const open = chips.find((chip) => chip.id === titleView.featureSection)?.id || chips[0]?.id || "";
+  const markup = `<section class="title-block" aria-labelledby="title-chapters-heading"><div id="title-chapters">
+      <div class="title-section__head"><h2 class="title-section__title" id="title-chapters-heading">Chapters</h2><div class="title-feature-head"></div></div>
+      <div class="ui-chip-row catalog-season-switch" role="group" aria-label="Sections">${chips.map((chip) => `<button class="ui-chip catalog-feature-section" type="button" data-feature-section="${escapeHtml(chip.id)}" aria-pressed="${chip.id === open}">${escapeHtml(t(chip.label))}${Number.isFinite(chip.count) ? `<span class="ui-chip__count">${chip.count}</span>` : ""}</button>`).join("")}</div>
+      <div class="title-feature-section" data-feature-section="${escapeHtml(open)}"></div></div></section>`;
+  const mainChanged = setTitlePart(parts.main, "main", markup);
+  if (mainChanged && open) {
+    const main = parts.main;
+    clientFeatures.renderTitleSection(open, main.querySelector(".title-feature-section"), { ...payload, head: main.querySelector(".title-feature-head") });
+  }
+  setTitlePart(parts.related, "related", "");
+  const aboutChanged = setTitlePart(parts.about, "about", info.aboutHtml || "");
+  if (heroChanged || mainChanged || aboutChanged) refreshImages($("#view-title"));
+  clientFeatures.mountTitleSubject(route.feature, { ...parts, changed: { hero: heroChanged, main: mainChanged, about: aboutChanged } }, route.item);
+}
+
 function renderTitlePage() {
   if (!viewActive("title")) return;
   const route = titleRoute();
-  const routeKey = `${route.id}|${route.key}|${route.type}`;
+  const routeKey = `${route.id}|${route.key}|${route.type}|${route.feature}|${route.item}`;
   if (titleView.routeKey !== routeKey) {
     titleView.routeKey = routeKey;
+    titleView.featureSection = route.section || "";
     catalogSeriesView = null;
     catalogSeriesToken += 1;
     titleMovieView = null;
@@ -13435,6 +14211,10 @@ function renderTitlePage() {
     libraryDialogView.open.clear();
     Object.keys(titleRendered).forEach((part) => { titleRendered[part] = ""; });
     setToolStatus(TITLE_STATUS, "");
+  }
+  if (route.feature) {
+    renderFeatureTitlePage(route);
+    return;
   }
   const subject = titleSubject(route);
   Object.assign(titleView, { id: subject.id, type: subject.type, key: subject.key });
@@ -13463,8 +14243,14 @@ function renderTitlePage() {
   // The rating needs the details (genres, country) to know an anime from a series.
   const detailsReady = !subject.id || meta || !titleMetaState(subject.type, subject.id).pending;
   recsUi.renderTitleRating($("#title-your-rating"), detailsReady ? titleRatingSubject(subject, info, meta) : null);
-  const mainChanged = setTitlePart(main, "main", subject.type === "movie" ? titleMovieMarkup(subject, info) : titleChaptersSectionMarkup(subject, meta, view));
+  const mainChanged = setTitlePart(main, "main", subject.type === "movie" ? titleMovieMarkup(subject, info, meta) : titleChaptersSectionMarkup(subject, meta, view));
   if (mainChanged) titleRendered.chapters = "";
+  // A movie's open feature section (Comics…) is filled by the feature once its markup is new.
+  const movieSection = subject.type === "movie" ? main.querySelector(".title-movie-feature .title-feature-section") : null;
+  if (mainChanged && movieSection) {
+    clientFeatures.renderTitleSection(movieSection.dataset.featureSection, movieSection,
+      { ...titleMovieSectionPayload(subject, info, meta), head: main.querySelector(".title-movie-feature .title-feature-head") });
+  }
   if (view) renderTitleChapters();
   const movies = subject.type === "series" ? titleRelatedMovies(communityRating, subject, meta) : null;
   const relatedChanged = setTitlePart(related, "related", titleRelatedMoviesMarkup(movies));
@@ -13551,6 +14337,28 @@ async function titleFindCatalogMatch(series, button) {
 function handleTitleMainClick(event) {
   const target = event.target.closest("button");
   if (!target || target.disabled || !event.currentTarget.contains(target)) return;
+  // A feature's title page: its chips switch sections; the rest is the feature's.
+  if (titleRoute().feature) {
+    const section = target.matches(".catalog-feature-section") ? target.dataset.featureSection : "";
+    if (section && section !== titleView.featureSection) {
+      titleView.featureSection = section;
+      titleRendered.main = "";
+      renderTitlePage();
+      $(`#title-main .catalog-feature-section[data-feature-section="${CSS.escape(section)}"]`)?.focus();
+    }
+    return;
+  }
+  // A movie's section chips: "Movie" (empty id) or a feature section; the section's own clicks are the feature's.
+  if (titleView.type === "movie" && target.matches(".catalog-feature-section")) {
+    const section = target.dataset.featureSection || "";
+    if (section !== (titleView.featureSection || "")) {
+      titleView.featureSection = section;
+      renderTitlePage();
+      $(`#title-main .catalog-feature-section[data-feature-section="${CSS.escape(section)}"]`)?.focus();
+    }
+    return;
+  }
+  if (titleView.type === "movie" && target.closest(".title-feature-section")) return;
   if (target.matches(".title-mark-watched")) {
     markTitleChapterWatched(target.dataset.titleMarkWatched);
     return;
@@ -14158,8 +14966,28 @@ function renderLibrary() {
   const counts = { all: all.length, series: groups.series.length, movie: groups.movie.length, anime: groups.anime.length };
   document.querySelectorAll("[data-library-count]").forEach((node) => { node.textContent = counts[node.dataset.libraryCount] ? String(counts[node.dataset.libraryCount]) : ""; });
   setActiveTab($("#library-filter"), libraryView.filter);
-  // A Part B filter (Manga, Books…) fills the list itself.
-  if (typeof clientFeatures !== "undefined" && clientFeatures.showLibraryFilter(libraryView.filter, list)) return;
+  // A Part B filter (Manga, Books…) fills the list itself. data-feature-filter
+  // lets its stylesheet hide video-only parts (Continue watching, picks).
+  const libraryPage = $("#view-library");
+  const featureOptions = { query: libraryView.query, sort: libraryView.sort, status: libraryView.status };
+  const paintStatusCounts = (counts, labels = {}) => $$("#library-status-filter [data-library-status]").forEach((button) => {
+    const key = button.dataset.libraryStatus;
+    button.setAttribute("aria-pressed", String(key === libraryView.status));
+    const count = button.querySelector("[data-library-status-count]");
+    if (count) count.textContent = counts[key] ? String(counts[key]) : "";
+    // A feature filter (Manga…) names the lists its own way: Reading, Rereading.
+    const name = button.querySelector("span:not([data-library-status-count])");
+    if (!name || name === count) return;
+    if (button.dataset.coreLabel === undefined) button.dataset.coreLabel = name.textContent;
+    const text = labels[key] ? t(labels[key]) : button.dataset.coreLabel;
+    if (name.textContent !== text) name.textContent = text;
+  });
+  if (typeof clientFeatures !== "undefined" && clientFeatures.showLibraryFilter(libraryView.filter, list, featureOptions)) {
+    if (libraryPage) libraryPage.dataset.featureFilter = libraryView.filter;
+    paintStatusCounts(clientFeatures.libraryFilterStatuses(libraryView.filter, featureOptions), clientFeatures.libraryStatusLabels(libraryView.filter));
+    return;
+  }
+  if (libraryPage) delete libraryPage.dataset.featureFilter;
   const sort = $("#library-sort");
   if (sort && sort.value !== libraryView.sort) sort.value = libraryView.sort;
   const status = libraryView.status;
@@ -14183,12 +15011,13 @@ function renderLibrary() {
     const key = libraryStatus(series);
     if (Object.hasOwn(statuses, key)) statuses[key] += 1;
   }
-  $$("#library-status-filter [data-library-status]").forEach((button) => {
-    const key = button.dataset.libraryStatus;
-    button.setAttribute("aria-pressed", String(key === status));
-    const count = button.querySelector("[data-library-status-count]");
-    if (count) count.textContent = statuses[key] ? String(statuses[key]) : "";
-  });
+  // Part B groups (Comics…) join the "All" view and its status counts.
+  const featureGroups = libraryView.filter === "all" && typeof clientFeatures !== "undefined" ? clientFeatures.libraryAllGroups(featureOptions) : [];
+  for (const group of featureGroups) {
+    for (const [key, value] of Object.entries(group.statuses)) if (Object.hasOwn(statuses, key)) statuses[key] += Number(value) || 0;
+  }
+  const featureShown = featureGroups.reduce((sum, group) => sum + group.shown, 0);
+  paintStatusCounts(statuses);
   const shown = filteredByCategoryAndSearch
     .filter((series) => status === "any" || libraryStatus(series) === status)
     .sort((a, b) => {
@@ -14204,7 +15033,7 @@ function renderLibrary() {
   // The Continue shelf belongs to the current Library view. Do not show
   // anime resume cards under Movies/Series or ignore the status/search filters.
   renderLibraryContinue(shown);
-  if (!all.length) {
+  if (!all.length && !featureShown) {
     list.classList.remove("is-grouped");
     list.innerHTML = emptyMarkup({
       icon: "library",
@@ -14214,7 +15043,7 @@ function renderLibrary() {
     });
     return;
   }
-  if (!shown.length) {
+  if (!shown.length && !featureShown) {
     list.classList.remove("is-grouped");
     list.innerHTML = emptyMarkup({ compact: true, icon: "search", title: "No matches", text: libraryView.query ? `Nothing in your Library matches "${libraryView.query}".` : status !== "any" ? `No titles match ${ANILIST_STATUS_LABELS[status]?.toLowerCase() || "this status"}.` : "Nothing here yet." });
     return;
@@ -14229,6 +15058,9 @@ function renderLibrary() {
       const items = shown.filter((series) => groups[kind].includes(series));
       if (!items.length) return "";
       return `<section class="lib-category" aria-label="${heading}"><header class="lib-category__head"><h2>${heading}</h2><span class="lib-category__count">${items.length}</span></header><div class="ui-grid lib-grid">${items.map(card).join("")}</div></section>`;
+    }).join("") + featureGroups.filter((group) => group.shown).map((group) => {
+      const heading = escapeHtml(t(group.label));
+      return `<section class="lib-category" aria-label="${heading}" data-feature="${escapeHtml(group.id)}"><header class="lib-category__head"><h2>${heading}</h2><span class="lib-category__count">${group.shown}</span></header><div class="ui-grid lib-grid">${group.html}</div></section>`;
     }).join("");
   } else {
     list.innerHTML = shown.map(card).join("");
@@ -14689,6 +15521,18 @@ function renderHome() {
   setActiveTab($("#home-tabs"), homeBrowseCategory);
   $("#home-panel")?.setAttribute("aria-labelledby", `home-tab-${homeBrowseCategory}`);
   $("#home-topbar")?.classList.toggle("is-solid", window.scrollY > 24);
+  // A Part B category (Comics…) renders its own hero and rows, without the video catalog.
+  const homePage = $("#view-home");
+  if (typeof clientFeatures !== "undefined" && clientFeatures.homeCategoryIds.includes(homeBrowseCategory)) {
+    homeHeroController?.destroy();
+    homeHeroController = null;
+    rows.removeAttribute("aria-busy");
+    if (homePage) homePage.dataset.featureCategory = homeBrowseCategory;
+    clientFeatures.showHomeCategory(homeBrowseCategory, { hero, rows });
+    homeRenderedCategory = homeBrowseCategory;
+    return;
+  }
+  if (homePage) delete homePage.dataset.featureCategory;
   if (!state.homeLoaded) {
     if (homeCatalogError) renderHomeError(hero, rows, homeCatalogError);
     else renderHomeLoading(hero, rows);
@@ -16210,6 +17054,8 @@ function titleSeriesView(subject, meta) {
     sources: new Map(),
     seasonPacks: new Map(),
     packsActive: false,
+    // ?section=manga opens a feature section first (once; the chips change it after).
+    featureSection: titleView.featureSection || null,
     busy: false,
   };
   return catalogSeriesView;
@@ -16234,6 +17080,31 @@ function renderTitleChapters({ focusSelector = "" } = {}) {
   const packOpen = Boolean(view.packsActive);
   const packPanelId = `catalog-season-packs-${current.season}`;
   const packButton = `<button class="ui-chip catalog-season-pack-toggle" type="button" aria-pressed="${packOpen}" aria-controls="${packPanelId}">${icon("library")}<span>Packs</span>${packState?.status === "ready" ? `<span class="ui-chip__count">${packState.rows.length}</span>` : ""}</button>`;
+  // Part B sections (Manga…) sit with the seasons; the feature fills the list area itself.
+  const hasFeatures = typeof clientFeatures !== "undefined";
+  const sectionPayload = hasFeatures ? { meta, subject: titleSubject() } : { meta };
+  const featureChips = hasFeatures ? clientFeatures.titleSectionChips(sectionPayload) : [];
+  const featureOpen = Boolean(view.featureSection && featureChips.some((chip) => chip.id === view.featureSection));
+  const featureButtons = featureChips.map((chip) => `<button class="ui-chip catalog-feature-section" type="button" data-feature-section="${escapeHtml(chip.id)}" aria-pressed="${featureOpen && view.featureSection === chip.id}">${escapeHtml(t(chip.label))}${Number.isFinite(chip.count) ? `<span class="ui-chip__count">${chip.count}</span>` : ""}</button>`).join("");
+  if (featureOpen) {
+    // Same heading and chips as a season, so switching to a feature section moves nothing.
+    const markup = `<div class="title-section__head">
+      <h2 class="title-section__title" id="title-chapters-heading">Chapters</h2>
+      <div class="title-feature-head"></div>
+    </div>
+    <div class="ui-chip-row catalog-season-switch" role="group" aria-label="Season and pack sources">
+      ${seasons.map((item) => `<button class="ui-chip catalog-season-option" type="button" data-season="${item.season}" aria-pressed="false">${escapeHtml(catalogSeasonLabel(item.season))}<span class="ui-chip__count">${Number(item.count) || item.episodes.length}</span></button>`).join("")}
+      ${packButton}
+      ${featureButtons}
+    </div><div class="title-feature-section" data-feature-section="${escapeHtml(view.featureSection)}"></div>`;
+    if (titleRendered.chapters !== markup) {
+      titleRendered.chapters = markup;
+      container.innerHTML = markup;
+      clientFeatures.renderTitleSection(view.featureSection, container.querySelector(".title-feature-section"), { ...sectionPayload, head: container.querySelector(".title-feature-head") });
+    }
+    if (focusSelector) container.querySelector(focusSelector)?.focus();
+    return;
+  }
   const markup = `<div class="title-section__head">
       <h2 class="title-section__title" id="title-chapters-heading">${packOpen ? "Packs" : "Chapters"}</h2>
       ${packOpen ? "" : `<p class="catalog-chapters-note">${count} chapter${count === 1 ? "" : "s"}${savedHere ? `<span>${savedHere} in your Library</span>` : ""}${watchedHere ? `<span>${watchedHere} watched</span>` : ""}</p>`}
@@ -16242,6 +17113,7 @@ function renderTitleChapters({ focusSelector = "" } = {}) {
     <div class="ui-chip-row catalog-season-switch" role="group" aria-label="Season and pack sources">
       ${seasons.map((item) => `<button class="ui-chip catalog-season-option" type="button" data-season="${item.season}" aria-pressed="${!packOpen && item.season === current.season}">${escapeHtml(catalogSeasonLabel(item.season))}<span class="ui-chip__count">${Number(item.count) || item.episodes.length}</span></button>`).join("")}
       ${packButton}
+      ${featureButtons}
     </div>
     ${packOpen
       ? `<div class="catalog-season-pack-panel" id="${packPanelId}">${catalogSeasonPacksMarkup(packState)}</div>`
@@ -16743,9 +17615,19 @@ function handleCatalogChapterClick(event) {
   const view = catalogSeriesView;
   const target = event.target.closest("button");
   if (!view || !target || !event.currentTarget.contains(target)) return;
+  if (target.matches(".catalog-feature-section")) {
+    const section = target.dataset.featureSection;
+    if (view.featureSection === section) return;
+    view.featureSection = section;
+    view.packsActive = false;
+    renderTitleChapters({ focusSelector: `.catalog-feature-section[data-feature-section="${section}"]` });
+    return;
+  }
+  if (target.closest(".title-feature-section")) return;
   if (target.matches(".catalog-season-option")) {
     const season = Number(target.dataset.season);
-    if (season === view.season && !view.packsActive) return;
+    if (season === view.season && !view.packsActive && !view.featureSection) return;
+    view.featureSection = null;
     view.season = season;
     view.packsActive = false;
     view.shown = CHAPTER_PAGE;
@@ -16756,6 +17638,7 @@ function handleCatalogChapterClick(event) {
     const season = view.season;
     if (view.packsActive) return;
     const state = view.seasonPacks.get(season);
+    view.featureSection = null;
     view.packsActive = true;
     renderTitleChapters({ focusSelector: ".catalog-season-pack-toggle" });
     if (state?.status !== "ready" && state?.status !== "loading") void loadCatalogSeasonPacks(view, season);
@@ -17679,7 +18562,8 @@ function previewLastRandomReason() {
   showRandomPickPopover(lastRandomEntry.markup);
 }
 function randomActiveCategory() {
-  if (viewActive("home")) return homeBrowseCategory;
+  if (viewActive("home")) return typeof clientFeatures !== "undefined" && clientFeatures.homeCategoryIds.includes(homeBrowseCategory)
+    ? "all" : homeBrowseCategory;
   if (viewActive("library")) return libraryView.filter === "series" ? "tv"
     : clientFeatures.libraryFilterIds.includes(libraryView.filter) ? "all" : libraryView.filter;
   if (viewActive("title")) {
@@ -18004,7 +18888,8 @@ bindTabs($("#home-tabs"), {
   onChange: (value) => {
     ++animeBrowser.openRequestId;
     window.clearTimeout(animeBrowserPrefetchTimer);
-    homeBrowseCategory = normalizeHomeCategory(value);
+    homeBrowseCategory = typeof clientFeatures !== "undefined" && clientFeatures.homeCategoryIds.includes(value)
+      ? value : normalizeHomeCategory(value);
     localStorage.setItem("blackline-home-filter", homeBrowseCategory);
     if (!viewActive("home")) switchView("home");
     else if (window.scrollY > ($("#home-hero")?.offsetHeight || 0) * 0.5) window.scrollTo({ top: 0 });
@@ -19043,6 +19928,12 @@ video.addEventListener("timeupdate", () => {
     updateCompatControls();
     return;
   }
+  if (video.dataset.progressive === "1") {
+    const end = progressiveBufferEndAroundCurrent();
+    const current = Number(video.currentTime);
+    if (Number.isFinite(end) && Number.isFinite(current)
+      && end - current <= 1.5) continueProgressiveOrRecover();
+  }
   refreshEpisodeSkipOptions();
   markPlaybackMotion();
   prefetchUpcomingChapter();
@@ -19064,8 +19955,25 @@ video.addEventListener("timeupdate", () => {
   checkAudioSyncCoverage();
   recordWatchProgress();
 });
+for (const eventName of ["waiting", "stalled"]) {
+  video.addEventListener(eventName, () => {
+    // A SourceBuffer can run out of decoded frames BEFORE its GOP metadata
+    // end. There may be no final timeupdate/ended event in that case, so
+    // retry the next verified GOP or move to the complete indexed MP4/native
+    // source on actual decoder starvation. Never switch while user-paused.
+    if (video.dataset.progressive === "1" && !video.paused && !state.pendingSeek)
+      continueProgressiveOrRecover({ force: true });
+  });
+}
 video.addEventListener("ended", () => {
   if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
+  if (video.dataset.progressive === "1" && state.pendingSeek?.priming) {
+    const pending = state.pendingSeek;
+    // A standalone GOP can finish without reaching the requested frame.
+    // Treat that as a bounded native fallback, never a terminal player error.
+    void openTranscodeAt(pending.target, { wasPlaying: pending.wasPlaying, forceNative: true });
+    return;
+  }
   if (state.pendingSeek?.priming) {
     if (!state.pendingSeek.streamInstalled) return;
     if (typeof transcodeStartAttempt !== "undefined" && transcodeStartAttempt?.fallbackToNative?.()) return;
@@ -19078,6 +19986,13 @@ video.addEventListener("ended", () => {
   // A queued seek still displays the outgoing stream for its debounce period.
   // Its terminal event must not recover or auto-advance the episode.
   if (state.pendingSeek) return;
+  if (video.dataset.progressive === "1") {
+    // A verified GOP window is intentionally shorter than the episode. Its
+    // natural EOF is not a media error nor permission to play the next title.
+    if (absolutePlaybackSeconds() < state.mediaDurationMs / 1000 - 0.25)
+      continueProgressiveOrRecover({ force: true, fromEnded: true });
+    return;
+  }
   // Transcoded streams represent a window beginning at an offset, so a premature
   // stream EOF is not the end of the actual movie.
   const duration = state.mediaDurationMs / 1000;

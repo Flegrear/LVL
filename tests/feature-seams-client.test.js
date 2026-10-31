@@ -170,7 +170,7 @@ test("app.js installs features before translating and wires every hook", () => {
   assert.ok(install > 0 && install < translate && translate < navBinding, "install → translate → bind nav");
   for (const hook of [
     "...clientFeatures.viewRoutes", "...clientFeatures.settingsTabIds", "...clientFeatures.libraryFilterIds",
-    "clientFeatures.showView(view);", "clientFeatures.showLibraryFilter(libraryView.filter, list)",
+    "clientFeatures.showView(view);", "clientFeatures.showLibraryFilter(libraryView.filter, list,",
     'clientFeatures.run("title:render"', 'clientFeatures.run("storage:render"', "clientFeatures.handleKey(event)",
     "clientFeatures.showSettingsTab(settingsView.tab", "clientFeatures.viewLabel(view)",
   ]) assert.ok(app.includes(hook), `app.js keeps the feature hook: ${hook}`);

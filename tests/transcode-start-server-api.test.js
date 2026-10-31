@@ -60,7 +60,7 @@ function harness({ probe, duration = 0, sessionState = "ready" } = {}) {
 }
 
 test("actual route contract returns copy preroll clock with no cached metadata and caches only verified results", async () => {
-  assert.match(server, /\(stream\|transcode\|transcode-start\|metadata\|subtitle\|speech\|indexed\|indexed\\\/status\|remux-cache\\\/window\)/,
+  assert.match(server, /stream\|transcode\|transcode-start\|metadata\|subtitle\|speech\|indexed\|indexed\\\/status\|progressive\\\/status/,
     "verified copied-seek preflight stays available alongside bounded cache-window route");
   assert.match(server, /if \(fileAction === "transcode-start"\)/);
   const h = harness();

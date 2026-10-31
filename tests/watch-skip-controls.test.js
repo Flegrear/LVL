@@ -33,7 +33,7 @@ function fixture() {
     mediaDurationMs: 1_440_000, pendingSeek: null,
     currentSource: { kind: "torrent", libraryId: "source-a", fileIndex: 2 },
   };
-  const video = { paused: false, addEventListener(name, listener) { listeners.set(name, listener); } };
+  const video = { dataset: {}, paused: false, addEventListener(name, listener) { listeners.set(name, listener); } };
   const context = vm.createContext({
     state, watchPendingSelection: null,
     video,

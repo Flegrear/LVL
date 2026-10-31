@@ -3,6 +3,10 @@
 ## 0.1.14 — 2026-10-30
 
 - Add full-episode indexed seeking for fully verified compatible H.264 and HEVC SDR torrents, with disk-safe cache, accurate presented frames, and a default-on Settings switch.
+- Make individually hash-verified, independently decoded H.264/AAC GOPs seekable before an entire torrent finishes, including supported complete Matroska clusters separated by missing pieces. Show only proven seek-ready sections on the timeline; downloaded-only intervals and decoder-unsafe gaps remain unready.
+- Fix seeking into gaps between decoded sections: refresh full-episode indexed availability first, then use a bounded native fallback without attempting an impossible sparse-MSE seek. Preserve paused playback, selected audio/subtitles, source generation, and actual movie timestamps.
+- Automatically prefer a fully indexed MP4 once ready; restore playback at the original position and validate presented frames, while retaining accurate HTTP byte-range seeking and bounded conversion resources.
+- Preserve existing full-index performance when incomplete-torrent progressive preprocessing cannot start, and stop stale FFmpeg/background jobs from starving the player.
 - Improve fast local seeking, pause/resume, source switching, recovery messages, FFmpeg cleanup, and truthful playback progress and duration.
 - Improve selected dub and channel handling, embedded subtitle priority, seek synchronization, ASS text fidelity, and chapter detection.
 - Fix newer Jujutsu Kaisen seasons linking to the original Library series; add missing anime cover fallback, safer Library/calendar updates, and Watch/Settings UI refinements.

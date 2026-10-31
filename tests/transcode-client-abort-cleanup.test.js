@@ -44,6 +44,8 @@ function fixture({ autoCloseOnStdout = true, realChild = false, maxJobs = 1 } = 
     createTranscodePlan, transcodeVideoFilter, videoTranscodeEncoder: async () => 'libx264',
     hardwareVideoEncodingArgs: () => ['-c:v', 'libx264'],
     remuxSegmentCache: cache, activeTranscodes: new Set(), pruneExitedTranscodes, torrentSessions: sessions,
+    progressiveIndexCache: { async stopAll() {} },
+    indexedVideoCache: { async stopAll() {} },
     scheduleSessionExpiry() {}, trackOpenStream(_session, res) { calls.open++; res.once('close', () => calls.closed++); },
     internalTorrentSource() { return { url: 'http://127.0.0.1:5000/internal', release() { calls.released++; } }; },
     SPEECH_SAMPLE_RATE: 16000, speechTapeWriter: () => ({ push() {}, end() {} }),

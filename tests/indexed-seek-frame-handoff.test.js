@@ -30,6 +30,9 @@ function makePlayer({ wasPlaying = true } = {}) {
     currentMs: 1000, transcodeBaseOffsetSeconds: 1 };
   const runtime = {
     video, state, playbackLoadRequestId: 17, indexedSeekReady: cache,
+    progressiveContinueController:null,progressiveBoundaryAttempt:null,
+    progressiveSeekController:null,progressiveMseLoader:null,
+    progressiveSeekOriginalMute:null,
     sourceFrameGate: null, subtitlePresentedFrame: null,
     frame: { classList: {
       add(name) { classes.add(name); }, remove(name) { classes.delete(name); },

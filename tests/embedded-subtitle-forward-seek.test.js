@@ -367,6 +367,9 @@ test("transcode forward seek requests captions immediately instead of relying on
     state, video, frame: { classList: { contains: () => true } },
     absolutePlaybackSeconds: () => state.pendingSeek?.target ?? video.currentTime,
     scheduleTranscodeSeek(target) { state.pendingSeek = { target, wasPlaying: true }; },
+    openProgressiveSeekAt() { return false; },
+    seekGapViaVerifiedIndexedOrNative() { return false; },
+    playerIsPlaying() { return true; },
     loadMoreEmbeddedSubtitles() { requests.push(state.pendingSeek?.target); },
   });
   vm.runInContext(app.slice(from, end), ctx);

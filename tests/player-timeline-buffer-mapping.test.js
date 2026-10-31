@@ -30,6 +30,7 @@ function harness({ base = 0, ranges = [[0, 30]], now = 10, mode = 'transcode', d
     playerIsPlaying: () => true,
     absolutePlaybackSeconds: () => base + now,
     readyIndexedVideo: () => indexedReady,
+    renderProgressiveSeekableRanges() {},
     transcodeStartAttempt: null,
   });
   vm.runInContext(fragment('function playerReadyRangeSeconds() {', '\nfunction isPlayerTimeBuffered('),ctx);

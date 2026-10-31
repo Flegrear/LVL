@@ -148,7 +148,7 @@ export function createAniListClient({ endpoint = ANILIST_ENDPOINT, fetchImpl = g
   let lastAt = 0;
   let requests = 0;
 
-  async function send(query, variables, attempt = 0) {
+  async function send(query, variables, attempt = 0, raw = false) {
     const wait = lastAt + minGapMs - now();
     if (wait > 0) await sleep(wait);
     lastAt = now();
@@ -162,24 +162,29 @@ export function createAniListClient({ endpoint = ANILIST_ENDPOINT, fetchImpl = g
     if (response.status === 429 && attempt < 2) {
       const seconds = Math.min(65, Math.max(5, Number(response.headers?.get?.("retry-after")) || 60));
       await sleep(seconds * 1000);
-      return send(query, variables, attempt + 1);
+      return send(query, variables, attempt + 1, raw);
     }
     const payload = await response.json().catch(() => null);
     if (!response.ok || payload?.errors?.length) {
       const message = payload?.errors?.[0]?.message || `AniList answered HTTP ${response.status}`;
-      throw Object.assign(new Error(/not found/i.test(message) ? "That AniList user wasn't found, or their list is private." : message), { status: response.status });
+      throw Object.assign(new Error(!raw && /not found/i.test(message) ? "That AniList user wasn't found, or their list is private." : message), { status: response.status });
     }
     return payload?.data || {};
   }
 
-  const request = (query, variables) => {
-    const run = queue.then(() => send(query, variables));
+  const request = (query, variables, raw = false) => {
+    const run = queue.then(() => send(query, variables, 0, raw));
     queue = run.catch(() => {});
     return run;
   };
 
   return {
     get requests() { return requests; },
+    /** Any AniList GraphQL query, through the same queue and rate limit as the methods below. */
+    async query(query, variables = {}) {
+      if (typeof query !== "string" || !query.trim()) throw new Error("AniList query must be a non-empty string");
+      return request(query, variables, true);
+    },
     async userList(username) {
       return normalizeAniListList(await request(LIST_QUERY, { name: String(username || "").trim() }));
     },

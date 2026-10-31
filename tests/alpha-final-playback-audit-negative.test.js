@@ -328,7 +328,7 @@ test("old video ended during copied-seek preflight must not cancel the new seek"
     streamInstalled: false }, mediaDurationMs: 180_000 };
   let cancelled = 0;
   const loading = [];
-  const video = { src: "/old-fragment?start=30", paused: true,
+  const video = { dataset: {}, src: "/old-fragment?start=30", paused: true,
     addEventListener(name, handler) { handlers.set(name, handler); },
     pause() { this.paused = true; },
   };

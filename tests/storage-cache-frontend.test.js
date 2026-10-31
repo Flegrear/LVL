@@ -19,7 +19,8 @@ test('storage report paints persisted cache setting rather than hardcoded HTML d
   paint(true);
   assert.equal(switchNode.checked, true);
   paint(undefined);
-  assert.equal(switchNode.checked, true, 'legacy reports preserve enabled default');
+  assert.equal(switchNode.checked, false,
+    'missing cache permission fails closed rather than silently authorizing disk-backed seeking');
 });
 
 test('cache toggle persists a boolean; rejected save reverts and refreshes without disabling streaming', async () => {

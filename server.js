@@ -50,6 +50,9 @@ import { createPlaybackTrace } from "./backend/media/performance-trace.js";
 import { createStreamHealth } from "./backend/media/stream-health.js";
 import { createInternalReaderRoles } from "./backend/media/internal-reader-roles.js";
 import { createRemuxSegmentCache } from "./backend/media/remux-segment-cache.js";
+import { createProgressiveIndexCache } from "./backend/media/progressive-index-cache.js";
+import { createProgressiveVerifiedSource } from "./backend/media/progressive-verified-source.js";
+import { verifyTorrentFileByteRange } from "./backend/media/verified-torrent-range.js";
 import { pruneExitedTranscodes } from "./backend/media/transcode-slot-lifecycle.js";
 import { pipeRemuxAhead } from "./backend/media/remux-run-ahead.js";
 import { isTorrentFileFullyVerified } from "./backend/media/verified-torrent-file.js";
@@ -117,10 +120,12 @@ const releaseCalendar = createReleaseCalendarService({
   tmdbEndpoint: process.env.LANGUAGE_VIDEO_LEARNER_TMDB_URL || undefined,
 });
 const animeDiscovery = createAnimeDiscoveryService({ endpoint: process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL || undefined });
+// One AniList client (one request queue and rate limit) for recommendations and features.
+const anilistClient = createAniListClient(process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL ? { endpoint: process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL, minGapMs: 0 } : {});
 // Picks are matched to catalog titles with the same search the Add a title dialog uses.
 const recs = createRecsService({
   store: recsStore,
-  anilist: createAniListClient(process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL ? { endpoint: process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL, minGapMs: 0 } : {}),
+  anilist: anilistClient,
   searchCatalog: (query) => catalogSearchResults(query),
 });
 const clipStore = createClipStore({
@@ -392,6 +397,7 @@ const PUBLIC_ASSETS = new Map([
   ["/frontend/features/registry.js", { file: "frontend/features/registry.js", cacheControl: "no-cache" }],
   ["/frontend/player/performance-trace.js", { file: "frontend/player/performance-trace.js", cacheControl: "no-cache" }],
   ["/frontend/player/stream-status.js", { file: "frontend/player/stream-status.js", cacheControl: "no-cache" }],
+  ["/frontend/player/progressive-seek.js", { file: "frontend/player/progressive-seek.js", cacheControl: "no-cache" }],
   ["/frontend/player/torrent-piece-wait.js", { file: "frontend/player/torrent-piece-wait.js", cacheControl: "no-cache" }],
   ["/learning/browser/vocabulary-meanings.js", { file: "learning/browser/vocabulary-meanings.js", cacheControl: "no-cache" }],
 ]);
@@ -426,6 +432,14 @@ function internalTorrentSource(session, fileIndex, role) {
   return { url: lease?.urlFor(base) || base, release: () => lease?.release() };
 }
 const activeTranscodes = new Set();
+// Background encoders are tracked separately from the foreground players.
+// An already-admitted background process must not see its OWN shared slot as
+// a new foreground conflict. Admission is bounded separately before spawn;
+// when a new player actually needs a slot transcodeTorrentFile preempts caches.
+const indexedActiveProcesses = new Set();
+const progressiveActiveProcesses = new Set();
+const activeForegroundTranscodeCount = () => Math.max(0,activeTranscodes.size
+  - indexedActiveProcesses.size - progressiveActiveProcesses.size);
 const activeEmbeddedSubtitleJobs = new Set();
 let preferredHardwareEncoderPromise = null;
 let failedHardwareEncoder = "";
@@ -481,15 +495,146 @@ const indexedVideoCache = createIndexedVideoCache({
   // At most one background conversion alongside the one active player. A
   // new foreground request cancels the background first (below) so the
   // two-slot hard limit never starves interactive playback.
-  foregroundBusy: () => activeTranscodes.size >= MAX_TRANSCODE_JOBS,
-  onSpawn: child => activeTranscodes.add(child),
-  onClose: child => { if (child) activeTranscodes.delete(child); },
+  foregroundBusy: () => activeForegroundTranscodeCount() >= MAX_TRANSCODE_JOBS,
+  onSpawn: child => { activeTranscodes.add(child); indexedActiveProcesses.add(child); },
+  onClose: child => {
+    if (child) { activeTranscodes.delete(child); indexedActiveProcesses.delete(child); }
+  },
+});
+// Independently verified fMP4/IDR windows become readable while the next GOP
+// is still converting. This is separate from the existing complete MP4 index.
+// It uses local, fully bitfield-verified source bytes only: no optional cache
+// worker may download missing torrent pieces or consume both FFmpeg slots.
+// A committed GOP is announced as soon as its complete MP4 + FFprobe proof
+// hits the atomic index. Browser readiness therefore need not wait for the
+// next three-second poll; subscribers still fetch the authenticated status
+// before drawing a new bright interval.
+const progressiveReadyListeners = new Map();
+const progressiveStarts = new Map();
+const progressiveIslandStarts = new Map();
+function startProgressiveWhenNewPieces(params, status) {
+  if (storage.limits().remuxCacheEnabled !== true || !status?.identityKey
+    || activeTranscodes.size >= MAX_TRANSCODE_JOBS
+    || !['waiting','partial'].includes(status.status)) return false;
+  const size = status.sourceFullyVerified === true
+    && Number.isSafeInteger(status.sourceFileBytes) && status.sourceFileBytes > 0
+    ? `whole:${status.sourceFileBytes}`
+    : `prefix:${Number(status.verifiedSourceBytes) || 0}`;
+  const previous = progressiveStarts.get(status.identityKey);
+  // A stopped/failed partial conversion must NOT re-encode a 58-minute prefix
+  // every time the UI checks status. Newly hash-verified source bytes, however,
+  // grant exactly one new attempt; new GOPs can be published before torrent EOF.
+  if ((status.status === 'waiting'
+    || status.status === 'partial' && status.canContinue === true)
+    && previous?.bytes !== size) {
+    if (progressiveStarts.size >= 256)
+      progressiveStarts.delete(progressiveStarts.keys().next().value);
+    progressiveStarts.set(status.identityKey,{bytes:size,sessionId:params.session.id});
+    void progressiveIndexCache.start(params);
+    return true;
+  }
+  if (status.sourceMode !== 'verified-prefix') return false;
+  // A hash-verified remote MKV Cluster can be independently reconstructed
+  // from its verified EBML header plus a complete, verified later Cluster.
+  // The cache must still decode it, prove IDR/AAC and recover original movie
+  // PTS before publication. An arbitrary downloaded island is NOT bright.
+  const evidence = progressiveVerifiedSource.inspect(params);
+  if (!evidence?.eligible || !evidence.islands?.length) return false;
+  let attempts = progressiveIslandStarts.get(status.identityKey);
+  if (!attempts) {
+    if (progressiveIslandStarts.size >= 64)
+      progressiveIslandStarts.delete(progressiveIslandStarts.keys().next().value);
+    attempts = new Set();
+    progressiveIslandStarts.set(status.identityKey,attempts);
+  }
+  for (const island of evidence.islands) {
+    const priorClusters=(status.ranges||[]).filter(item=>
+      item.sourceKind==='isolated-cluster'
+      && Number.isSafeInteger(item.sourceClusterStart)
+      && item.sourceClusterStart>=island.start
+      && item.sourceClusterStart<=island.end);
+    const afterStartBytes=priorClusters.length
+      ?Math.max(...priorClusters.map(item=>item.sourceClusterStart))+1
+      :island.start;
+    const signature=`${island.start}:${island.end}:${afterStartBytes}`;
+    if (attempts.has(signature)) continue;
+    if (attempts.size>=8192)return false;
+    attempts.add(signature); // one attempt per verified island/cluster horizon
+    void progressiveIndexCache.start(params,{sourceKind:'island',afterStartBytes});
+    return true;
+  }
+  return false;
+}
+function emitProgressiveReady(event) {
+  const clients = progressiveReadyListeners.get(event?.identityKey);
+  if (!clients?.size) return;
+  const payload = `event: ready\ndata: ${JSON.stringify({id:event.id})}\n\n`;
+  for (const entry of [...clients]) {
+    try {
+      if (entry.res.destroyed || entry.res.writableEnded) clients.delete(entry);
+      else entry.res.write(payload);
+    } catch { clients.delete(entry); }
+  }
+  if (!clients.size) progressiveReadyListeners.delete(event.identityKey);
+}
+function closeProgressiveReadyListeners(sessionId = null) {
+  for (const [key, clients] of progressiveReadyListeners) {
+    for (const entry of [...clients]) {
+      if (sessionId && entry.sessionId !== sessionId) continue;
+      clients.delete(entry);
+      if (!entry.res.destroyed && !entry.res.writableEnded) entry.res.end();
+    }
+    if (!clients.size) progressiveReadyListeners.delete(key);
+  }
+}
+const progressiveVerifiedSource = createProgressiveVerifiedSource({
+  sessionsRoot:torrentRoot,ffprobePath,
+  allowance:bytes=>storage.playerCacheAllowance({additionalBytes:bytes}),
+  isCurrent:identity=>{
+    const session=torrentSessions.get(identity.sessionId);
+    const file=session?.torrent?.files?.[identity.fileIndex];
+    return session?.infoHash?.toLowerCase()===identity.infoHash
+      && session.torrent?.destroyed!==true
+      && file?.name===identity.fileName
+      && file?.length===identity.fileLength
+      && file?.offset===identity.fileOffset
+      && session.torrent?.pieceLength===identity.pieceLength;
+  },
+});
+const progressiveIndexCache = createProgressiveIndexCache({
+  sessionsRoot: torrentRoot, ffmpegPath, ffprobePath,
+  verifiedSource:progressiveVerifiedSource,
+  enabled: () => storage.limits().remuxCacheEnabled === true,
+  allowance: bytes => storage.playerCacheAllowance({ additionalBytes: bytes }),
+  isCurrent: identity => {
+    const session = torrentSessions.get(identity.sessionId);
+    const file = session?.torrent?.files?.[identity.fileIndex];
+    const sameSource=session?.infoHash?.toLowerCase() === identity.infoHash
+      && session?.torrent?.destroyed!==true
+      && file?.length === identity.sourceLength && file.name === identity.sourceName;
+    if (!sameSource) return false;
+    if (identity.sourceMode === 'verified-prefix') {
+      // The cache checks the hash bitfield for each exact per-GOP source span;
+      // never require file.done for an individually verified offline snapshot.
+      return file.offset >= 0 && typeof session.torrent?.bitfield?.get === 'function';
+    }
+    return file.done === true && file.downloaded === identity.sourceLength
+      && isTorrentFileFullyVerified(session.torrent, identity.fileIndex);
+  },
+  foregroundBusy: () => activeForegroundTranscodeCount() >= MAX_TRANSCODE_JOBS,
+  onSpawn: child => { activeTranscodes.add(child); progressiveActiveProcesses.add(child); },
+  onClose: child => {
+    if (child) { activeTranscodes.delete(child); progressiveActiveProcesses.delete(child); }
+  },
+  onReady: emitProgressiveReady,
 });
 // A Windows cache file can remain locked by an in-flight HTTP reader when the
 // user disables retention. Retry safe indexed-only cleanup on next startup;
 // never touch selected torrent source pieces or other player data.
 if (storage.limits().remuxCacheEnabled === false)
   void indexedVideoCache.purgeAll().catch(error => console.warn("Indexed-cache cleanup:", error?.message || error));
+if (storage.limits().remuxCacheEnabled === false)
+  void progressiveIndexCache.purgeAll().catch(error => console.warn("Progressive-index cleanup:", error?.message || error));
 let kuroshiroPromise = null;
 
 torrentClient.on("error", (error) => {
@@ -1710,6 +1855,14 @@ async function removeTorrentSession(id) {
   // Stop only the background conversion for this session; it may still be
   // reading selected pieces through an internal local HTTP stream.
   await indexedVideoCache.stopSession(id);
+  await progressiveIndexCache.stopSession(id);
+  for (const [key,attempt] of progressiveStarts) {
+    if (attempt.sessionId===id) progressiveStarts.delete(key);
+  }
+  // Keys are SHA-256 cache identities. Session-scoped cleanup follows each
+  // associated start; unused islands are bounded globally and on Settings OFF.
+  if (!progressiveStarts.size) progressiveIslandStarts.clear();
+  closeProgressiveReadyListeners(id);
   await remuxSegmentCache.dropSession(id).catch(() => {});
   invalidateSpeechWindowSession(session);
   streamHealth.clear(session);
@@ -2015,8 +2168,34 @@ function parseRange(rangeHeader, length) {
   return { start, end: Math.min(end, length - 1) };
 }
 
+// WebTorrent's addUID:true store is NOT <session>/<file.path>. It writes
+// <session>/<torrent.name> - <infohash8>/<file.path>. HTTP stream readers
+// resolve this internally, but optional *local-only* FFmpeg index inputs must
+// use the exact same physical path. Never fall back to a network reader here.
+function localVerifiedTorrentInputPath(session, fileIndex) {
+  const torrent=session?.torrent, file=torrent?.files?.[fileIndex];
+  const relative=String(file?.path||file?.name||"");
+  const hash=String(torrent?.infoHash||session?.infoHash||"").toLowerCase();
+  if(!safeTorrentRelativePath(relative)||!/^[a-f0-9]{40}$/.test(hash)
+    ||typeof session?.id!=="string"||!/^[a-f0-9-]{36}$/i.test(session.id))return null;
+  const root=path.resolve(torrentRoot,session.id);
+  const uid=torrent.addUID===true ? `${String(torrent.name||"")} - ${hash.slice(0,8)}` : "";
+  if(uid&&!safeTorrentRelativePath(uid))return null;
+  const input=path.resolve(root,uid,relative);
+  return input.startsWith(root+path.sep)?input:null;
+}
+
 // Only a completed, verified, plan-matched indexed file may answer Range.
 // Partials are not addressable. The browser never sees filesystem paths.
+function equivalentIndexedAudioMode(media,audioIndex,audioMode) {
+  // The finished MP4 is already exactly stereo when the selected track has
+  // <=2 channels. Auto and Stereo yield identical AAC output in that case;
+  // a mode-only cache-key difference must not hide an existing full-episode
+  // indexed MP4 and send the player back into short progressive GOPs.
+  const channels=Number(media?.audioTracks?.[audioIndex]?.channels);
+  return audioMode === "auto" && Number.isSafeInteger(channels)
+    && channels >= 1 && channels <= 2 ? "stereo" : audioMode;
+}
 async function serveIndexedSeek(req, res, session, fileIndex, url, statusOnly = false) {
   const file = session.torrent?.files?.[fileIndex];
   if (!file || !VIDEO_EXTENSIONS.has(path.extname(file.name).toLowerCase())) {
@@ -2025,8 +2204,45 @@ async function serveIndexedSeek(req, res, session, fileIndex, url, statusOnly = 
   const audioIndex = Number(url.searchParams.get("audio") ?? 0);
   const audioMode = String(url.searchParams.get("audioMode") || "stereo");
   const media = getCachedMediaProbe(session.id, fileIndex);
-  const params = { session, fileIndex, media, audioIndex, audioMode };
-  const state = await indexedVideoCache.status(params, { start: statusOnly && req.method === "GET" });
+  const params = { session, fileIndex, media, audioIndex,
+    audioMode: equivalentIndexedAudioMode(media,audioIndex,audioMode) };
+  let startFullIndex = statusOnly && req.method === "GET";
+  if (startFullIndex && storage.limits().remuxCacheEnabled === true) {
+    // SERVER-SIDE priority matters: merely ordering two async fetch() calls
+    // in the browser cannot guarantee the progressive worker claims the spare
+    // FFmpeg slot first. A full-episode builder can occupy that slot until
+    // EOF and prevent the first early GOP from ever becoming seek-ready.
+    const inputPath=localVerifiedTorrentInputPath(session,fileIndex);
+    if (inputPath) {
+      const progressiveParams = { ...params,
+        inputPath };
+      const progressive = await progressiveIndexCache.status(progressiveParams);
+      if (progressive.status === "waiting" || progressive.status === "building"
+        || progressive.status === "partial" && progressive.canContinue === true) {
+        // The optional cache itself rechecks exact source identity, verified
+        // pieces, local path and foreground slot admission before spawning.
+        const admittedProgressive = startProgressiveWhenNewPieces(progressiveParams, progressive);
+        // When the progressive producer has already CLAIMED one slot and no
+        // foreground player uses the other slot, a full-index optimization
+        // may run concurrently. Once a player appears the normal preemption
+        // path cancels optional producers before admitting user playback.
+        // Never let a full index race a progressive job while its first
+        // verified GOP is still only `waiting` admission.
+        startFullIndex = activeTranscodes.size < MAX_TRANSCODE_JOBS
+          && (progressive.status === 'building'
+            ? progressiveActiveProcesses.size > 0
+            : !admittedProgressive);
+        // A progressive attempt can fail before spawning its child (local
+        // path, quota or FFprobe admission). Its same-source retry memo then
+        // prevents CPU churn; it MUST NOT indefinitely block the older
+        // complete-MP4 indexed optimization in this valid source/session.
+      }
+    }
+  }
+  // Never admit a third FFmpeg even if a stale index poll arrived after the
+  // converter became busy. Existing ready manifests remain readable.
+  if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) startFullIndex = false;
+  const state = await indexedVideoCache.status(params, { start: startFullIndex });
   if (statusOnly) {
     const headers = { "Cache-Control": "no-store" };
     json(res, 200, {
@@ -2074,6 +2290,131 @@ async function serveIndexedSeek(req, res, session, fileIndex, url, statusOnly = 
   res.writeHead(range ? 206 : 200, { ...common, "Content-Length": size,
     ...(range ? { "Content-Range": `bytes ${range.start}-${range.end}/${saved.bytes}` } : {}) });
   stream.pipe(res);
+}
+
+async function serveProgressiveSeek(req, res, session, fileIndex, url, statusOnly = false) {
+  const file = session.torrent?.files?.[fileIndex];
+  if (!file || !VIDEO_EXTENSIONS.has(path.extname(file.name).toLowerCase())) {
+    json(res, 404, { error: "Video not found" }); return;
+  }
+  // An optional background conversion must never read via WebTorrent HTTP:
+  // that would silently fetch missing torrent pieces. Both the source's
+  // complete verified bitfield and the local path are independently checked
+  // again by the cache before spawning FFmpeg and before publication.
+  const inputPath=localVerifiedTorrentInputPath(session,fileIndex);
+  if (!inputPath) {
+    json(res, 404, { error: "Video path unavailable" }); return;
+  }
+  const audioIndex = Number(url.searchParams.get("audio") ?? 0);
+  const audioMode = String(url.searchParams.get("audioMode") || "auto");
+  const media = getCachedMediaProbe(session.id, fileIndex);
+  const params = { session, fileIndex, audioIndex, audioMode, media,
+    inputPath };
+  if (url.pathname.endsWith('/progressive/events')) {
+    const status = await progressiveIndexCache.status(params);
+    if (req.method !== 'GET' || !status.identityKey
+      || storage.limits().remuxCacheEnabled !== true) {
+      json(res, 404, {error:'Progressive events unavailable'}); return;
+    }
+    const key = status.identityKey;
+    let clients = progressiveReadyListeners.get(key);
+    if (!clients) { clients = new Set(); progressiveReadyListeners.set(key,clients); }
+    if (clients.size >= 8 || progressiveReadyListeners.size > 64) {
+      json(res, 429, {error:'Too many active progressive viewers'}); return;
+    }
+    res.writeHead(200, {'Content-Type':'text/event-stream; charset=utf-8',
+      'Cache-Control':'no-store', 'Connection':'keep-alive',
+      'X-Content-Type-Options':'nosniff'});
+    const entry={sessionId:session.id,res};
+    clients.add(entry);
+    res.write(': verified-sections\n\n');
+    const remove=()=>{
+      clients.delete(entry);
+      if (!clients.size) progressiveReadyListeners.delete(key);
+    };
+    req.once('aborted',remove);
+    res.once('close',remove);
+    return;
+  }
+  if (statusOnly) {
+    const status = await progressiveIndexCache.status(params);
+    // HEAD must remain read-only; GET explicitly opts into the bounded local
+    // producer. A cache miss cannot prevent the original playback response.
+    // Partial means a previous producer stopped/faulted but its individually
+    // verified GOPs remain safe. Do NOT restart 58 minutes of FFmpeg on every
+    // three-second status poll; an explicit later retry must be separately
+    // bounded and admitted. 'building' is already single-flight.
+    if (req.method === "GET")
+      startProgressiveWhenNewPieces(params,status);
+    const duration = Number(media?.durationSeconds) || 0;
+    const generation = Number(url.searchParams.get("generation"));
+    const readable = status.ranges?.length > 0 && duration > 0;
+    const codecStrings = new Set((status.ranges || []).map(item => item.videoCodecString));
+    const videoCodec = codecStrings.size === 1 ? [...codecStrings][0] : null;
+    const mime = /^avc1\.[0-9a-f]{6}$/i.test(String(videoCodec || ""))
+      ? `video/mp4; codecs="${videoCodec}, mp4a.40.2"` : "";
+    json(res, 200, {
+      kind: "indexed-video-segments",
+      status: readable ? (status.complete ? "ready" : "partial-ready") : status.status,
+      identityKey: status.identityKey || "",
+      ranges: status.ranges || [],
+      readyRanges: status.readyRanges || [],
+      sourceKey: `torrent:${session.id}:${fileIndex}`,
+      generation: Number.isSafeInteger(generation) && generation >= 0 ? generation : 0,
+      audioIndex, audioMode, durationSeconds: duration,
+      videoCodec: "h264", audioCodec: "aac", container: "fmp4",
+      mime, sourceVerified: readable && Boolean(mime), initVerified: readable && Boolean(mime),
+      // Bright readiness is based on independently committed and FFprobe-
+      // verified decoded samples; no bytes-downloaded estimate participates.
+      segments: (status.ranges || []).map(item => ({
+        id: item.id, startSeconds: item.start, endSeconds: item.end,
+        mediaStartSeconds: item.mediaStart, initHash: item.initHash,
+        timelineOffsetSeconds: item.timelineOffsetSeconds ?? 0,
+        bytes: item.bytes, complete: true, verified: true,
+        independentlyDecodable: true, keyframeStart: true,
+        movieClockVerified: true,
+      })),
+    }, { "Cache-Control": "no-store" });
+    return;
+  }
+  const id = /\/progressive\/window\/([a-f0-9]{64})$/.exec(url.pathname)?.[1];
+  if (!id) { json(res, 400, { error: "Invalid progressive video window" }); return; }
+  const reader = await progressiveIndexCache.open(params, id);
+  if (!reader) { json(res, 404, { error: "Verified video window unavailable" }); return; }
+  try {
+    // Cache.open() validates its pin, but a source switch or Settings OFF can
+    // occur after that async validation and before the HTTP response starts.
+    // Never serve an old section using a replaced session/disabled generation.
+    if (req.aborted || res.destroyed || res.writableEnded) return;
+    const proof = reader.sourceKind === 'isolated-cluster'
+      && Array.isArray(reader.sourceRanges) && reader.sourceRanges.length === 2
+      ? reader.sourceRanges.every(({start,end})=>
+          verifyTorrentFileByteRange(session.torrent,fileIndex,{start,end}).verified === true)
+      : Number.isSafeInteger(reader.sourceByteEnd)
+        ? verifyTorrentFileByteRange(session.torrent,fileIndex,
+            {start:0,end:reader.sourceByteEnd}).verified === true
+        : isTorrentFileFullyVerified(session.torrent,fileIndex);
+    if (torrentSessions.get(session.id) !== session
+      || storage.limits().remuxCacheEnabled !== true || !proof) {
+      json(res, 404, { error: "Verified video window unavailable" });
+      return;
+    }
+    const headers = {
+      "Content-Type": "video/mp4", "Content-Length": String(reader.bytes),
+      "Cache-Control": "no-store", "Accept-Ranges": "none",
+      "X-Content-Type-Options": "nosniff",
+      "X-LVL-Progressive-Start-Seconds": String(reader.start),
+      "X-LVL-Progressive-End-Seconds": String(reader.end),
+      "X-LVL-Progressive-Source": session.id,
+    };
+    if (req.method === "HEAD") { res.writeHead(200, headers); res.end(); return; }
+    trackOpenStream(session, res, fileIndex);
+    const stream = reader.handle.createReadStream({ autoClose: false });
+    res.once("close", () => stream.destroy());
+    res.writeHead(200, headers);
+    await pipeline(stream, res);
+  } catch { if (!res.destroyed) res.destroy(); }
+  finally { await reader.release(); }
 }
 
 function streamTorrentFile(req, res, session, fileIndex, requestUrl = null) {
@@ -3673,6 +4014,12 @@ async function handleStorageApi(req, res, url) {
     });
     if (body.remuxCacheEnabled === false) await remuxSegmentCache.purgeIdle();
     if (body.remuxCacheEnabled === false) await indexedVideoCache.purgeAll();
+    if (body.remuxCacheEnabled === false) {
+      progressiveStarts.clear();
+      progressiveIslandStarts.clear();
+      closeProgressiveReadyListeners();
+      await progressiveIndexCache.purgeAll();
+    }
     await enforcePlayerStorage();
     collectClipGarbage();
     json(res, 200, await storage.report());
@@ -4084,8 +4431,10 @@ async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = n
   // half-built whole-episode rendition while a spare FFmpeg slot exists.
   // Preempt only when admission would otherwise hit the two-slot ceiling;
   // stopAll waits for actual child close before the next admission check.
-  if (activeTranscodes.size >= MAX_TRANSCODE_JOBS && typeof indexedVideoCache !== "undefined")
-    await indexedVideoCache.stopAll();
+  if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) {
+    await progressiveIndexCache.stopAll();
+    if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) await indexedVideoCache.stopAll();
+  }
   if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) {
     json(res, 429, { error: "Too many videos are being transcoded right now" });
     return;
@@ -5947,7 +6296,7 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  const torrentMatch = /^\/api\/torrents\/([0-9a-f-]+)(?:\/files(?:\/(\d+)\/(stream|transcode|transcode-start|metadata|subtitle|speech|indexed|indexed\/status|remux-cache\/window))?)?$/.exec(url.pathname);
+  const torrentMatch = /^\/api\/torrents\/([0-9a-f-]+)(?:\/files(?:\/(\d+)\/(stream|transcode|transcode-start|metadata|subtitle|speech|indexed|indexed\/status|progressive\/status|progressive\/events|progressive\/window\/[a-f0-9]{64}|remux-cache\/window))?)?$/.exec(url.pathname);
   if (torrentMatch) {
     const [, id, fileIndex, fileAction] = torrentMatch;
     const session = getTorrentSession(id);
@@ -5959,6 +6308,11 @@ async function handleApi(req, res, url) {
       if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed(res, ["GET", "HEAD"]);
       if (fileAction === "indexed" || fileAction === "indexed/status") {
         await serveIndexedSeek(req, res, session, Number(fileIndex), url, fileAction === "indexed/status");
+        return true;
+      }
+      if (fileAction === "progressive/status" || fileAction === "progressive/events"
+        || fileAction?.startsWith("progressive/window/")) {
+        await serveProgressiveSeek(req, res, session, Number(fileIndex), url, fileAction === "progressive/status");
         return true;
       }
       if (fileAction === "remux-cache/window") {
@@ -6144,7 +6498,7 @@ for (const [route, asset] of serverFeatures.assets) PUBLIC_ASSETS.set(route, ass
 serverFeatures.init({
   db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta,
   dataRoot: appDataRoot, port, root, json, readJsonBody, methodNotAllowed,
-  rejectNonLocal: localRequestRejected,
+  rejectNonLocal: localRequestRejected, anilist: anilistClient,
 });
 
 const server = http.createServer(async (req, res) => {

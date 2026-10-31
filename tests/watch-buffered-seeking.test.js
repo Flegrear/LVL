@@ -31,6 +31,9 @@ test("Direct and local playback seek instantly within buffered ranges; missing r
     renderSubtitles() {}, updateCompatControls() {},
     formatTime: () => "01:20",
     scheduleTranscodeSeek: (target) => messages.push(`restart:${target}`),
+    openProgressiveSeekAt: () => false,
+    seekGapViaVerifiedIndexedOrNative: () => false,
+    playerIsPlaying: () => true,
     loadMoreEmbeddedSubtitles: () => messages.push("refresh-embedded-captions"),
   });
   vm.runInContext(slice("function isPlayerTimeBuffered(seconds) {", "\nfunction hideLoadingForBufferedSeek()"), context);
