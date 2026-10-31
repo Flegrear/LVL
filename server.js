@@ -6551,18 +6551,9 @@ if (STARTED_BY_LAUNCHER) {
 server.listen(port, "127.0.0.1", () => {
   console.log(`LVL running at http://127.0.0.1:${port}`);
   // Only after listening: a second copy on the same port fails to start and never gets here.
-  // Dev-server hot restarts have no way to reattach their old in-memory
-  // sessions. A deliberate one-time preserve flag prevents the normal orphan
-  // cleanup from deleting their actual downloaded pieces on startup. This
-  // is NOT an automatic reattach: old folders remain intact on disk for
-  // explicit recovery, and the flag has no effect on launcher deployments.
-  if (!STARTED_BY_LAUNCHER && process.env.LVL_PRESERVE_PLAYER_DOWNLOADS_ON_STARTUP === "1") {
-    console.log("Player storage: preserving existing download folders for this development restart");
-  } else {
-    storage.clearOrphans()
-      .then((removed) => { if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`); })
-      .catch((error) => console.warn("Startup cleanup failed:", error.message));
-  }
+  storage.clearOrphans()
+    .then((removed) => { if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`); })
+    .catch((error) => console.warn("Startup cleanup failed:", error.message));
   // Automatic recommendation updates (only when switched on in Settings).
   recs.startScheduler();
   void serverFeatures.start();

@@ -59,7 +59,7 @@ import { canUseRemuxMse, canUseEncodedH264Mse, createRemuxMseSession } from "./f
 import { normalizeAudioMode, planCompatibleAudio } from "./shared/media/audio-policy.js";
 import { watchSidebarPicks } from "./frontend/catalog/watch-discovery.js";
 import { createCalendarView } from "./frontend/calendar/calendar-view.js";
-import { animeCatalogRootSearchNames, animeCatalogSearchNames, animeCatalogCombinedSearchNames, animeCatalogSubtitleSearchNames, verifiedAnimeCatalogMatch } from "./frontend/catalog/anime-catalog-match.js";
+import { animeCatalogRootSearchNames, animeCatalogSearchNames, animeCatalogCombinedSearchNames, animeCatalogSubtitleSearchNames, verifiedAnimeCatalogMatch, verifiedAnimeLibraryCatalogMatch } from "./frontend/catalog/anime-catalog-match.js";
 import {
   changePlaybackRecoverySource, createPlaybackRecoveryState, failPlaybackRecoverySwitch,
   isPlaybackStallExpired, playbackRecoverySourceKey,

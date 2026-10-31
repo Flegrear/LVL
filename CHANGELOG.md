@@ -1,17 +1,13 @@
 # LVL Changelog
 
-## 0.1.14 — 2026-10-30
+## 0.1.14 — 2026-10-31
 
-- Add full-episode indexed seeking for fully verified compatible H.264 and HEVC SDR torrents, with disk-safe cache, accurate presented frames, and a default-on Settings switch.
-- Make individually hash-verified, independently decoded H.264/AAC GOPs seekable before an entire torrent finishes, including supported complete Matroska clusters separated by missing pieces. Show only proven seek-ready sections on the timeline; downloaded-only intervals and decoder-unsafe gaps remain unready.
-- Fix seeking into gaps between decoded sections: refresh full-episode indexed availability first, then use a bounded native fallback without attempting an impossible sparse-MSE seek. Preserve paused playback, selected audio/subtitles, source generation, and actual movie timestamps.
-- Automatically prefer a fully indexed MP4 once ready; restore playback at the original position and validate presented frames, while retaining accurate HTTP byte-range seeking and bounded conversion resources.
-- Recover long-paused video without reopening a stale progressive fragment: use the completed indexed MP4 when ready, bound fragment network requests, prevent late background responses from restarting playback after Pause, and preserve source selection. Keep verified torrent sessions alive while their authenticated player event connection remains open.
-- Preserve existing full-index performance when incomplete-torrent progressive preprocessing cannot start, and stop stale FFmpeg/background jobs from starving the player.
-- Improve fast local seeking, pause/resume, source switching, recovery messages, FFmpeg cleanup, and truthful playback progress and duration.
-- Improve selected dub and channel handling, embedded subtitle priority, seek synchronization, ASS text fidelity, and chapter detection.
-- Fix newer Jujutsu Kaisen seasons linking to the original Library series; add missing anime cover fallback, safer Library/calendar updates, and Watch/Settings UI refinements.
-- Improve diagnostic safety, playback telemetry, and Windows updater TLS initialization.
+- Seek instantly in compatible videos, including the parts of an episode that have already downloaded. The timeline shows which parts are ready. Turn it off in Settings › Storage.
+- Fix seeking into parts of a video that aren't ready yet, and resuming after a long pause.
+- Make seeking, pausing, resuming and switching sources faster and more reliable, with clearer error messages.
+- Improve audio track choice, embedded subtitles, subtitle sync and text, and chapter detection.
+- Fix newer seasons of some series linking to the original series in the Library; add fallback covers and safer Library and calendar updates.
+- Refine Watch and Settings, and make the Windows updater more reliable.
 
 ## 0.1.13 — 2026-10-26
 
