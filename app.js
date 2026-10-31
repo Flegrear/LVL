@@ -3927,6 +3927,10 @@ function continueProgressiveOrRecover({ force = false, fromEnded = false } = {})
     && video.dataset.progressive === "1" && !state.pendingSeek;
   void extendProgressivePlayback({ force: true }).then(continued => {
     if (continued || !current()) return;
+    // A delayed section HTTP response may settle after the viewer pressed
+    // Pause. The initial `wasPlaying` snapshot is no longer permission to
+    // restart playback and produce phantom audio after an intentional pause.
+    if (!fromEnded && video.paused) return;
     const endNow = progressiveBufferEndAroundCurrent() ?? (force || fromEnded ? at : NaN);
     const position = Number(video.currentTime);
     if (!Number.isFinite(endNow) || !Number.isFinite(position)
@@ -3934,12 +3938,13 @@ function continueProgressiveOrRecover({ force = false, fromEnded = false } = {})
     const target = Math.max(0, Math.min(position,
       Math.max(0, state.mediaDurationMs / 1000 - 0.05)));
     if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying }))
-      void restartTranscodeAt(target, { wasPlaying });
+      void restartTranscodeAt(target, { wasPlaying, forceNative: true });
   }).catch(() => {
     if (!current()) return;
+    if (!fromEnded && video.paused) return;
     const target = Math.max(0, Number(video.currentTime) || 0);
     if (!readyIndexedVideo() || !openIndexedSeekAt(target, { wasPlaying }))
-      void restartTranscodeAt(target, { wasPlaying });
+      void restartTranscodeAt(target, { wasPlaying, forceNative: true });
   }).finally(() => {
     if (progressiveBoundaryAttempt === attempt) progressiveBoundaryAttempt = null;
   });
@@ -5565,6 +5570,7 @@ function setMediaSource({ src, title, status, objectUrl = null, mode = "local", 
   if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
   progressiveSeekController?.cancel();
   progressiveContinueController?.abort();
+  progressiveBoundaryAttempt = null;
   closeProgressiveEventStream();
   progressiveMseLoader?.close?.();
   progressiveSeekController = null;
@@ -5897,6 +5903,7 @@ function openProgressiveSeekAt(target, { wasPlaying = !video.paused } = {}) {
   const previousUserMute = progressiveSeekOriginalMute;
   progressiveSeekController?.close();
   progressiveContinueController?.abort();
+  progressiveBoundaryAttempt = null;
   progressiveMseLoader?.close?.();
   if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
   closeRemuxMseSession();
@@ -5930,7 +5937,11 @@ function openProgressiveSeekAt(target, { wasPlaying = !video.paused } = {}) {
       || selected.generation !== context.generation || signal.aborted)
       throw Error("Progressive source changed");
     const url = `/api/torrents/${encodeURIComponent(transcode.sessionId)}/files/${transcode.fileIndex}/progressive/window/${segment.id}?audio=${context.audioIndex}&audioMode=${encodeURIComponent(context.audioMode)}`;
-    const response = await fetch(url, { signal, cache: "no-store" });
+    // A stalled HTTP body (not just MSE append/updateend) must have a finite
+    // deadline. Otherwise appendNext awaits forever, keeping the single-flight
+    // boundary recovery lock occupied after a long paused browser session.
+    const boundedSignal = AbortSignal.any([signal, AbortSignal.timeout(8000)]);
+    const response = await fetch(url, { signal: boundedSignal, cache: "no-store" });
     const bytes = Number(response.headers.get("Content-Length"));
     if (!response.ok || response.headers.get("Content-Type") !== "video/mp4"
       || response.headers.get("X-LVL-Progressive-Source") !== transcode.sessionId
@@ -6272,6 +6283,7 @@ async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize
   delete video.dataset.indexed;
   if (video.dataset.progressive === "1") {
     progressiveContinueController?.abort();
+    progressiveBoundaryAttempt = null;
     progressiveSeekController?.cancel();
     progressiveMseLoader?.close?.();
     progressiveSeekController = null;
@@ -6758,9 +6770,12 @@ function playerIsPlaying() {
 let transcodePauseSnapshot = null;
 function noteTranscodePause() {
   transcodePauseSnapshot = video.dataset.mode === "transcode"
-    && video.dataset.indexed !== "1" && video.dataset.progressive !== "1"
+    && video.dataset.indexed !== "1"
     && !state.pendingSeek && state.transcodeContext?.baseUrl
-    ? { at: Date.now(), src: video.src, position: absolutePlaybackSeconds() } : null;
+    ? { at: Date.now(), src: video.src, position: absolutePlaybackSeconds(),
+      source: state.currentSource, context: state.transcodeContext,
+      generation: playbackLoadRequestId,
+      progressive: video.dataset.progressive === "1" } : null;
 }
 function nativeTranscodeHasBufferedContinuation() {
   // Native fragmented MP4 can still have several decoded/buffered seconds
@@ -6788,14 +6803,34 @@ function resyncTranscodeAfterLongPause() {
   transcodePauseSnapshot = null;
   if (Date.now() - snapshot.at < 30_000 || video.dataset.mode !== "transcode"
     || state.pendingSeek || video.src !== snapshot.src || !state.transcodeContext?.baseUrl) return false;
+  if (snapshot.source !== state.currentSource
+    || snapshot.context !== state.transcodeContext
+    || snapshot.generation !== playbackLoadRequestId) return false;
   const position = absolutePlaybackSeconds();
   // Never rewind to an earlier position if the user sought while paused.
   if (!Number.isFinite(position) || Math.abs(position - snapshot.position) > 0.5) return false;
+  if (snapshot.progressive && video.dataset.progressive === "1") {
+    // A standalone GOP is finite. After a long pause its SourceBuffer can
+    // still report a buffered *frame* although the next GOP request timed out
+    // and no new frame can be presented. Prefer the already verified complete
+    // MP4, which refreshes the decoder at precisely the same movie timestamp.
+    if (readyIndexedVideo() && openIndexedSeekAt(position,{wasPlaying:true})) return true;
+    // Without a complete indexed file, retain genuinely usable frames, but
+    // do not attempt to play from an absent or expired SourceBuffer range.
+    const bufferEnd = progressiveBufferEndAroundCurrent();
+    if (Number.isFinite(bufferEnd) && bufferEnd - Number(video.currentTime) > 0.75
+      && video.readyState >= 3 && !video.error) return false;
+    void restartTranscodeAt(position,{wasPlaying:true,forceNative:true,verifySession:true});
+    return true;
+  }
   const mse = typeof remuxMseSession !== "undefined" ? remuxMseSession : null;
   const expiredProducer = Boolean(mse?.ended || mse?.needsResumeRefresh);
   if (mse?.contains(position - state.transcodeBaseOffsetSeconds) && !expiredProducer)
     return false; // A LIVE MSE still retains this exact decoded timeline.
   if (!mse && nativeTranscodeHasBufferedContinuation()) return false;
+  // A stale native FFmpeg response should not spawn another expensive worker
+  // if a separately verified complete indexed MP4 has finished while paused.
+  if (readyIndexedVideo() && openIndexedSeekAt(position,{wasPlaying:true})) return true;
   // A SourceBuffer TimeRange is NOT proof the FFmpeg producer survived a long
   // idle pause. Stale/ended MSE must reopen one-way in native playback.
   void restartTranscodeAt(position, {
@@ -6816,6 +6851,11 @@ function resumePlayback() {
   // bounded recovery path instead of treating it as an idle paused player.
   recoveryPauseSerial += 1;
   recoveryPlaybackRequested = true;
+  // A paused Watch can miss a newly completed full-MP4 status notification.
+  // Rediscover it before reopening an expired progressive GOP or FFmpeg
+  // producer; the authenticated ready callback may promote the same source.
+  if (video.dataset?.mode === "transcode" && video.dataset.indexed !== "1"
+    && typeof checkIndexedSeekCache === "function") checkIndexedSeekCache();
   if (resyncTranscodeAfterLongPause()) return;
   const source = state.currentSource;
   const loadId = playbackLoadRequestId;

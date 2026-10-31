@@ -145,6 +145,40 @@ test('failed append after the last timeupdate recovers at the real buffer edge',
   'recover at the last playable movie frame, before the unbuffered metadata tail');
   assert.equal(env.calls.native[0].options.wasPlaying, true,
     'continuation must preserve user play intent');
+  assert.equal(env.calls.native[0].options.forceNative,true,
+    'failed GOP continuation may not re-enter the same optional MSE producer');
+});
+
+test('a delayed GOP response after the viewer intentionally paused cannot auto-play or reopen FFmpeg',async()=>{
+  const pending=deferred();
+  const env=environment({append:()=>pending.promise});
+  env.handoff({force:true});
+  await flush();
+  env.video.paused=true;
+  pending.resolve(false);
+  await flush();
+  assert.equal(env.calls.native.length,0);
+  assert.equal(env.calls.indexed.length,0);
+  assert.equal(vm.runInContext('progressiveBoundaryAttempt',env.context),null,
+    'the single-flight recovery lock releases after a late completion');
+});
+
+test('source replacement clears the old recovery lock without allowing stale completion to restart playback',async()=>{
+  const pending=deferred();
+  let calls=0;
+  const env=environment({append:()=>++calls===1?pending.promise:Promise.resolve(true)});
+  env.handoff({force:true});
+  await flush();
+  env.context.progressiveBoundaryAttempt=null;
+  env.context.progressiveMseLoader={currentWindow:{id:'gop-new',endSeconds:12}};
+  assert.equal(env.handoff({force:true}),true,
+    'new verified player must not remain blocked by its predecessor lock');
+  await flush();
+  pending.resolve(false);
+  await flush();
+  assert.equal(calls,2);
+  assert.equal(env.calls.native.length+env.calls.indexed.length,0,
+    'obsolete response cannot restart or override a new source');
 });
 
 test('failed GOP append chooses ready full indexed MP4 before another native FFmpeg', async () => {

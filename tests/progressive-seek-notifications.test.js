@@ -57,6 +57,17 @@ test('actual progressive/events route only opens bounded GET event stream after 
     path,VIDEO_EXTENSIONS:new Set(['.mkv']),torrentRoot:path.resolve('/safe'),
     storage:{limits:()=>({remuxCacheEnabled:true})},progressiveIndexCache:cache,
     progressiveReadyListeners:listeners,
+    trackOpenStream(session,res,index){
+      session.openStreams=(session.openStreams||0)+1;
+      session.activeStreamFiles ||=new Map();
+      session.activeStreamFiles.set(index,(session.activeStreamFiles.get(index)||0)+1);
+      res.once('close',()=>{
+        session.openStreams--;
+        const remain=session.activeStreamFiles.get(index)-1;
+        if(remain)session.activeStreamFiles.set(index,remain);
+        else session.activeStreamFiles.delete(index);
+      });
+    },
     safeTorrentRelativePath:()=>true,getCachedMediaProbe:()=>({durationSeconds:20}),
     localVerifiedTorrentInputPath:(session,index)=>path.resolve('/safe',session.id,session.torrent.files[index].path),
     json(res,status,payload){res.writeHead(status);res.end(JSON.stringify(payload));},
@@ -81,8 +92,10 @@ test('actual progressive/events route only opens bounded GET event stream after 
   assert.equal(get.res.status,200);
   assert.match(get.res.headers['Content-Type'],/text\/event-stream/);
   assert.equal(listeners.get(KEY)?.size,1);
+  assert.equal(session.openStreams,1,'connected paused Watch counts as a session reader lease');
   get.res.end();
   assert.equal(listeners.has(KEY),false);
+  assert.equal(session.openStreams,0,'closed EventSource returns session to ordinary expiry policy');
 });
 
 test('frontend ready event invalidates status immediately but does not trust unverified event payload as bright time',()=>{

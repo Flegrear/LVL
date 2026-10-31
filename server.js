@@ -2325,6 +2325,10 @@ async function serveProgressiveSeek(req, res, session, fileIndex, url, statusOnl
     res.writeHead(200, {'Content-Type':'text/event-stream; charset=utf-8',
       'Cache-Control':'no-store', 'Connection':'keep-alive',
       'X-Content-Type-Options':'nosniff'});
+    // An authenticated paused Watch may retain this notification connection
+    // without an active video Range reader. Keep its torrent UUID alive while
+    // this bounded EventSource is open; close releases the normal TTL lease.
+    trackOpenStream(session,res,fileIndex);
     const entry={sessionId:session.id,res};
     clients.add(entry);
     res.write(': verified-sections\n\n');

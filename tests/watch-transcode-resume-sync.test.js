@@ -10,6 +10,7 @@ assert.ok(start > 0 && end > start);
 
 function resumeFixture(mode = "transcode") {
   let now = 1_000_000;
+  let indexedReady = false;
   const calls = [];
   const restarts = [];
   const video = {
@@ -34,13 +35,22 @@ function resumeFixture(mode = "transcode") {
       return Promise.resolve(true);
     },
     fallbackActiveRemuxMseToNative: () => false,
+    checkIndexedSeekCache: () => {},
+    progressiveBufferEndAroundCurrent: () => null,
+    readyIndexedVideo: () => indexedReady,
+    openIndexedSeekAt: (seconds, options) => {
+      calls.push(["indexed",seconds,options.wasPlaying]);
+      return true;
+    },
     recoverPlayback() {},
     updateCompatControls() {},
     linePreview: { pending: false, active: false, preventBackgroundPlayback: false },
   });
   vm.runInContext(app.slice(start, end), context);
   const run = (code) => vm.runInContext(code, context);
-  return { video, state, calls, restarts, run, advance: (delta) => { now += delta; } };
+  return { video, state, calls, restarts, run,
+    setIndexedReady: value => { indexedReady=Boolean(value); },
+    advance: (delta) => { now += delta; } };
 }
 
 test("Seeked transcode reopens at precise paused timestamp after several minutes, just once", () => {
@@ -137,4 +147,52 @@ test("native transcode at end of expired buffer still safely reopens after long 
   f.advance(5 * 60_000);
   f.run("resumePlayback()");
   assert.deepEqual(f.calls, [["restart", 132, true]], "do not treat a stale edge frame as buffered continuation");
+});
+
+test("a long-paused native transcode with no future decoded frames selects ready indexed MP4 instead of FFmpeg",()=>{
+  const f=resumeFixture();
+  f.video.readyState=4;
+  f.video.buffered={length:1,start:()=>8,end:()=>12.05};
+  f.setIndexedReady(true);
+  f.run('noteTranscodePause()');
+  f.advance(4*60_000);
+  f.run('resumePlayback()');
+  assert.deepEqual(f.calls,[["indexed",132,true]]);
+  assert.equal(f.restarts.length,0);
+});
+
+test("a long-paused progressive GOP resumes from the already verified full MP4 at the original movie timestamp",()=>{
+  const f=resumeFixture();
+  f.video.dataset.progressive="1";
+  f.setIndexedReady(true);
+  f.run("noteTranscodePause()");
+  f.advance(5*60_000);
+  f.run("resumePlayback()");
+  assert.deepEqual(f.calls,[["indexed",132,true]]);
+  assert.equal(f.restarts.length,0,'never restart optional GOP/FFmpeg when full indexed file exists');
+  f.run("resumePlayback()");
+  assert.deepEqual(f.calls,[["indexed",132,true],"play"],
+    'the pause snapshot is consumed and cannot trigger duplicate reopening');
+});
+
+test("a long-paused progressive source with no loaded frame falls back one-way to native",()=>{
+  const f=resumeFixture();
+  f.video.dataset.progressive="1";
+  f.run("noteTranscodePause()");
+  f.advance(120_000);
+  f.run("resumePlayback()");
+  assert.equal(f.restarts.length,1);
+  assert.equal(f.restarts[0].seconds,132);
+  assert.equal(f.restarts[0].forceNative,true);
+  assert.equal(f.restarts[0].verifySession,true);
+});
+
+test("a short pause on a still-live progressive GOP does not trigger a decoder restart",()=>{
+  const f=resumeFixture();
+  f.video.dataset.progressive="1";
+  f.setIndexedReady(true);
+  f.run("noteTranscodePause()");
+  f.advance(5_000);
+  f.run("resumePlayback()");
+  assert.deepEqual(f.calls,["play"]);
 });
