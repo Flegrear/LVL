@@ -50,7 +50,7 @@ import {
 import { planAniListWatchSync, reconcileAniListProgressQueue, resolveAniListEpisode } from "./frontend/anilist/anilist-watch-sync.js";
 import { planAniListUnwatch } from "./frontend/anilist/anilist-unwatch.js";
 import { runAniListReversibleSmoke } from "./frontend/anilist/anilist-test-sync.js";
-import { acknowledgeUnconfirmedAniListScore, planMissingAniListScores, readUnconfirmedAniListScore, resolveAniListScorePart, saveAniListScore, stageUnconfirmedAniListScore } from "./frontend/anilist/anilist-score-sync.js";
+import { acknowledgeUnconfirmedAniListScore, planAniListScoresIntoLvl, planMissingAniListScores, readUnconfirmedAniListScore, resolveAniListScorePart, saveAniListScore, stageUnconfirmedAniListScore } from "./frontend/anilist/anilist-score-sync.js";
 import { eligibleForPublicAnimeRating, fetchPublicAniListTitle, fetchPublicAniListSequels, fetchMatchedPublicAniListSeasons, fetchPublicAnimeRelatedMovies, verifiedPublicAnimeFranchiseRoot, publicCatalogSeasonCounts,
   matchPublicAniListSeasons, verifiedPublicAniListLinks } from "./frontend/catalog/title-public-ratings.js";
 import { learningLocaleOptions, normalizeLearningLocale } from "./shared/settings/language-settings.js";
@@ -16106,7 +16106,7 @@ async function saveUserAniListScore(subject, season, score) {
     saveLibrary();
     recsUi.invalidateRatings();
     // Fixed raw 100-point units permit one decimal in a 0–10 UI.
-    await syncAniListLibrary({ quiet: true }).catch((error) => {
+    await syncAniListLibrary({ quiet: true, skipScoreSync: true }).catch((error) => {
       console.warn("AniList score saved; Library refresh deferred:", error?.message);
     });
     const message = result.unchanged ? "Already up to date on AniList" : `Saved to AniList (${(result.scoreRaw / 10).toFixed(1)}/10)`;
@@ -16141,6 +16141,8 @@ function renderAniListAutoSettings() {
   const scoreEnabled = $("#anilist-score-sync-enabled");
   if (scoreEnabled && document.activeElement !== scoreEnabled) scoreEnabled.checked = anilistScoreSyncEnabled();
   if (scoreEnabled) scoreEnabled.disabled = !account;
+  const migrate = $("#anilist-score-migrate");
+  if (migrate && !anilistScoreCopyRun) migrate.disabled = !account;
   const threshold = $("#anilist-auto-threshold");
   const client = $("#anilist-auto-client-id");
   if (enabled && document.activeElement !== enabled) enabled.checked = options.enabled;
@@ -16675,9 +16677,29 @@ function wireAniListAutoSettings() {
     localStorage.setItem(ANILIST_SCORE_SYNC_KEY, JSON.stringify({ userId: account.userId, enabled: event.target.checked }));
     recsUi.invalidateRatings();
     if (event.target.checked) {
-      showAniListAutoStatus("Two-way anime score syncing enabled. Loading AniList scores…");
-      void syncAniListLibrary({ quiet: true }).then(() => showAniListAutoStatus("AniList scores refreshed. Edit a uniquely matched anime rating on its title page to save to AniList.")).catch((error) => showAniListAutoStatus(error.message, true));
+      showAniListAutoStatus("Two-way rating sync on. Reading your AniList scores…");
+      void syncAniListLibrary({ quiet: true })
+        .then((result) => showAniListAutoStatus(result?.scores ? aniListScoreSummary(result.scores)
+          : "AniList scores read. Your AniList list couldn't be verified for this account, so no scores were changed."))
+        .catch((error) => showAniListAutoStatus(error.message, true));
     } else showAniListAutoStatus("Anime score syncing disabled. Local ratings and AniList scores are preserved.");
+  });
+  $("#anilist-score-migrate")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    if (!readAniListAccount(localStorage)) { showAniListAutoStatus("Connect AniList first.", true); return; }
+    button.disabled = true;
+    showAniListAutoStatus("Reading your AniList scores…");
+    try {
+      // A fresh, verified list read; the copy below then uses it.
+      const read = await syncAniListLibrary({ quiet: true, skipScoreSync: true });
+      const account = readAniListAccount(localStorage);
+      if (!account || !read?.authenticatedAt) throw new Error("Your AniList list couldn't be verified for this account. No scores were changed.");
+      showAniListAutoStatus(aniListScoreSummary(await copyAniListScoresIntoLvl(account, { snapshotAt: read.authenticatedAt })));
+    } catch (error) {
+      showAniListAutoStatus(error.message || "Couldn't migrate AniList scores.", true);
+    } finally {
+      button.disabled = !readAniListAccount(localStorage);
+    }
   });
   $("#anilist-auto-dev-test")?.addEventListener("click", async (event) => {
     const account = readAniListAccount(localStorage);
@@ -16805,7 +16827,7 @@ async function syncMissingLocalAniListScores(account) {
     if (!anilistScoreSyncEnabled() || readAniListAccount(localStorage)?.token !== account.token) break;
     const info = seriesAniList(series, account.userId);
     if (!info?.seasons?.length) continue;
-    const params = new URLSearchParams({ catalogId: series.catalogId || "", seriesKey: series.key });
+    const params = new URLSearchParams({ catalogId: series.catalogId || "", key: series.key });
     let ratings;
     try { ({ ratings } = await fetchJson(`/api/ratings?${params}`)); }
     catch (error) { console.warn("Local score reconciliation deferred:", error?.message); skipped++; continue; }
@@ -16841,7 +16863,86 @@ async function syncMissingLocalAniListScores(account) {
   return { sent, skipped };
 }
 
-function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = false } = {}) {
+// AniList -> LVL: each season scored on the signed-in user's AniList list
+// becomes that season's LVL rating. When both have a different score, AniList's
+// wins (see planAniListScoresIntoLvl). Runs on its own with two-way sync, and
+// from Settings > Tracking > Migrate scores from AniList.
+let anilistScoreCopyRun = null;
+function copyAniListScoresIntoLvl(account, { snapshotAt = 0 } = {}) {
+  if (anilistScoreCopyRun) return anilistScoreCopyRun;
+  anilistScoreCopyRun = (async () => {
+    const result = { copied: 0, same: 0, skipped: 0, failed: 0, changes: [] };
+    if (!account?.token) return result;
+    const candidates = [];
+    for (const series of buildLibrarySeries().filter((item) => item.mediaKind === "anime").slice(0, 400)) {
+      if (readAniListAccount(localStorage)?.token !== account.token) return result;
+      const info = seriesAniList(series, account.userId);
+      const parts = (info?.seasons || []).filter((part) => Number.isSafeInteger(part.anilistId) && part.anilistId > 0
+        && Number(part.score) > 0);
+      if (!parts.length) continue;
+      let ratings;
+      try {
+        ({ ratings } = await fetchJson(`/api/ratings?${new URLSearchParams({ catalogId: series.catalogId || "", key: series.key })}`));
+      } catch (error) {
+        result.failed++;
+        console.warn("AniList score copy deferred for one title:", error?.message);
+        continue;
+      }
+      const own = (ratings || []).filter((row) => row.source === "app");
+      for (const part of parts) {
+        // A movie is rated as a whole; a series per season.
+        const season = part.format === "MOVIE" && info.seasons.length === 1 ? null
+          : Number.isInteger(part.season) && part.season > 0 ? part.season : undefined;
+        if (season === undefined) { result.skipped++; continue; }
+        const unique = resolveAniListScorePart(info, season)?.anilistId === part.anilistId;
+        const shared = !unique || info.seasons.some((other) => other !== part && other.anilistId === part.anilistId);
+        const local = own.find((row) => (Number.isInteger(row.season) ? row.season : null) === season) || null;
+        const pending = Boolean(readUnconfirmedAniListScore(localStorage, account.userId, part.anilistId))
+          || anilistScoreRuns.has(`${account.userId}:${part.anilistId}`);
+        candidates.push({ seriesKey: series.key, catalogId: series.catalogId || "", title: series.title || "",
+          season, part, shared, local, pending, snapshotAt });
+      }
+    }
+    const plan = planAniListScoresIntoLvl(candidates);
+    result.same = plan.skipped.filter((row) => row.reason === "same").length;
+    result.skipped += plan.skipped.length - result.same;
+    for (const update of plan.updates) {
+      if (readAniListAccount(localStorage)?.token !== account.token) break;
+      try {
+        await postJson("/api/ratings", { catalogId: update.catalogId, seriesKey: update.seriesKey, season: update.season,
+          title: update.title, kind: update.kind, year: update.year, score: update.score, status: update.status });
+        result.copied++;
+        result.changes.push({ title: update.title, season: update.season, from: update.previous, to: update.score });
+      } catch (error) {
+        result.failed++;
+        console.warn("AniList score not copied into LVL:", error?.message);
+      }
+    }
+    if (result.copied) recsUi.invalidateRatings();
+    return result;
+  })().finally(() => { anilistScoreCopyRun = null; });
+  return anilistScoreCopyRun;
+}
+
+// Two-way sync after each AniList list read: AniList scores into LVL first,
+// then LVL scores into AniList entries that have none yet.
+async function reconcileAniListScores(account, snapshotAt) {
+  const copied = await copyAniListScoresIntoLvl(account, { snapshotAt });
+  const sent = await syncMissingLocalAniListScores(account);
+  return { ...copied, sent: sent.sent, sendSkipped: sent.skipped };
+}
+
+function aniListScoreSummary(result) {
+  if (!result) return "";
+  const parts = [];
+  if (result.copied) parts.push(`${result.copied} AniList score${result.copied === 1 ? "" : "s"} copied into LVL`);
+  if (result.sent) parts.push(`${result.sent} LVL score${result.sent === 1 ? "" : "s"} sent to AniList`);
+  if (!parts.length) parts.push(result.same ? "LVL and AniList scores already match" : "No AniList scores to copy");
+  if (result.failed) parts.push(`${result.failed} couldn't be saved; try again`);
+  return `${parts.join(". ")}.`;
+}
+
+function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = false, skipScoreSync = false } = {}) {
   if (anilistLibraryRun) return anilistLibraryRun;
   if (status) setToolStatus(status, "Adding your AniList list to the Library. The first time takes up to half a minute.");
   else if (!quiet) toast("Adding your AniList list to the Library");
@@ -16854,7 +16955,7 @@ function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = false }
       const data = await fetchJson("/api/recs/anilist/library");
       return { data, authenticatedAt: Number(authenticated?.settings?.anilist?.syncedAt) || 0 };
     })
-    .then(({ data, authenticatedAt }) => {
+    .then(async ({ data, authenticatedAt }) => {
       if (account && readAniListAccount(localStorage)?.token !== account.token)
         throw new Error("AniList account changed during import; Library was not modified.");
       // This is the same authenticated snapshot only if its server revision
@@ -16881,6 +16982,12 @@ function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = false }
       }
       recsUi.invalidateRatings();
       localStorage.setItem(ANILIST_LIBRARY_KEY, String(Number(data.syncedAt) || Date.now()));
+      result.authenticatedAt = ownerId ? authenticatedAt : 0;
+      // Two-way score sync: only with a verified, account-owned list.
+      if (ownerId && !skipScoreSync && anilistScoreSyncEnabled() && !anilistAutoDevTestRun) {
+        try { result.scores = await reconcileAniListScores(account, authenticatedAt); }
+        catch (error) { console.warn("AniList score sync deferred:", error?.message); }
+      }
       const text = result.added
         ? `Added ${result.added} title${result.added === 1 ? "" : "s"} from AniList to your Library`
         : `Your Library has ${result.total} AniList title${result.total === 1 ? "" : "s"}`;

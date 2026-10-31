@@ -118,6 +118,84 @@ export function planMissingAniListScores(candidates = [], { limit = 25 } = {}) {
   return { updates, skipped };
 }
 
+/**
+ * Plan copying scores from the signed-in user's AniList list into LVL ratings.
+ * AniList is the only tracker today, so when both have a score and they
+ * differ, AniList's wins. (With more trackers, the user will choose which one
+ * LVL keeps.) Planning sends nothing; the caller saves each update as the LVL
+ * rating of that season.
+ *
+ * candidates: [{ seriesKey, catalogId, title, season, part, shared, local, pending, snapshotAt }]
+ *   part:    the season's AniList entry from the authenticated list import
+ *   shared:  true when this AniList entry also covers another LVL season
+ *   local:   the LVL rating of that season ({ score, status, updatedAt }) or null
+ *   pending: true while an LVL edit of this entry hasn't reached AniList yet
+ *   snapshotAt: when that AniList list was read (ms)
+ */
+export function planAniListScoresIntoLvl(candidates = []) {
+  const updates = [];
+  const skipped = [];
+  const seen = new Map(); // AniList media id -> series keys
+  const valid = [];
+  for (const candidate of candidates) {
+    const { seriesKey, season = null, part } = candidate || {};
+    const mediaId = part?.anilistId;
+    const remote = Number(part?.score);
+    if (!String(seriesKey || "").trim() || !(season === null || (Number.isInteger(season) && season > 0))
+        || !Number.isSafeInteger(mediaId) || mediaId <= 0) {
+      skipped.push({ seriesKey, season, mediaId: mediaId || null, reason: "unmatched" });
+      continue;
+    }
+    // Only entries on the user's own list carry the user's score.
+    if (!(part.status || (Number.isInteger(part.progress) && part.progress >= 0))) {
+      skipped.push({ seriesKey, season, mediaId, reason: "not-on-list" });
+      continue;
+    }
+    if (!(Number.isFinite(remote) && remote > 0 && remote <= 10)) {
+      skipped.push({ seriesKey, season, mediaId, reason: "no-anilist-score" });
+      continue;
+    }
+    if (candidate.shared) {
+      skipped.push({ seriesKey, season, mediaId, reason: "shared" });
+      continue;
+    }
+    if (candidate.pending) {
+      skipped.push({ seriesKey, season, mediaId, reason: "local-edit-pending" });
+      continue;
+    }
+    // An LVL edit made after this AniList list was read is newer than what we
+    // know of AniList; it goes to AniList instead of being replaced.
+    const snapshotAt = Number(candidate.snapshotAt) || 0;
+    if (snapshotAt > 0 && Number(candidate.local?.updatedAt) > snapshotAt) {
+      skipped.push({ seriesKey, season, mediaId, reason: "newer-local-edit" });
+      continue;
+    }
+    if (!seen.has(mediaId)) seen.set(mediaId, new Set());
+    seen.get(mediaId).add(String(seriesKey));
+    valid.push({ ...candidate, mediaId, remote: Math.round(remote * 10) / 10 });
+  }
+  for (const row of valid) {
+    // The same AniList entry linked from two Library titles: don't guess which one it rates.
+    if (seen.get(row.mediaId).size > 1) {
+      skipped.push({ seriesKey: row.seriesKey, season: row.season, mediaId: row.mediaId, reason: "ambiguous" });
+      continue;
+    }
+    const localScore = Number(row.local?.score);
+    // AniList keeps one decimal; an LVL 7.56 sent as 7.6 is the same score.
+    if (Number.isFinite(localScore) && Math.round(localScore * 10) === Math.round(row.remote * 10)) {
+      skipped.push({ seriesKey: row.seriesKey, season: row.season, mediaId: row.mediaId, reason: "same" });
+      continue;
+    }
+    updates.push({ seriesKey: row.seriesKey, catalogId: row.catalogId || "",
+      // Keep an existing rating's title, kind and year: changing them would make LVL match it again.
+      title: row.local?.title || row.title || "",
+      kind: row.local?.kind || (row.part.format === "MOVIE" ? "anime-movie" : "anime"),
+      year: row.local?.year ?? null, season: row.season, mediaId: row.mediaId,
+      score: row.remote, previous: Number.isFinite(localScore) ? localScore : null, status: row.local?.status || null });
+  }
+  return { updates, skipped };
+}
+
 // A local edit must stay visible when its AniList write fails. Keep only the
 // score and AniList media/account IDs here (never credentials or list status).
 // No automatic retries: the owner must explicitly retry after a conflict.

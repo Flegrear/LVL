@@ -1,5 +1,11 @@
 # LVL Changelog
 
+## 0.1.18 — 2026-10-31
+
+- Fix two-way rating sync with AniList: your AniList scores now become your LVL ratings, and when both have a different score, AniList's is kept.
+- Send LVL ratings to AniList on their own for anime that have no AniList score yet.
+- Add Migrate scores from AniList to Settings, to copy your AniList scores into LVL at any time.
+
 ## 0.1.17 — 2026-10-31
 
 - Make the whole episode seekable about a minute after it finishes downloading, instead of several minutes later.
