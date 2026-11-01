@@ -1,5 +1,14 @@
 # LVL Changelog
 
+## 0.2.2 — 2026-11-01
+
+- Add sync between your devices in Settings › Library: your Library, where you are in each video and chapter, your ratings and your comics, kept in a private GitHub repository.
+- Add importing your library, sources and reading progress from a Mihon or Tachiyomi backup in Settings › Comics.
+- Make the arrow keys skip back and forward in the player, and hide the pointer with the player controls until the mouse moves.
+- Make the comic reader's arrows, side clicks and mouse wheel follow the reading direction.
+- Refine Settings: fewer status labels, confirmations in LVL's own window, a simpler Comics switch and check marks for added sources.
+- Fix the source details window staying open after adding a source.
+
 ## 0.2.1 — 2026-11-01
 
 - Make the pop-up player a borderless window that stays above other apps, with no browser bar.
