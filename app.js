@@ -7215,6 +7215,21 @@ function seekPlayerBy(deltaSeconds) {
 function normalizeCollectionTitle(...candidates) {
   const source = candidates.find((value) => String(value || "").trim()) || "Untitled source";
   const raw = String(source)
+// ← and → seek 10 seconds, like the Back and Forward buttons. They also work right after a
+// player control was used: on a focused player button, and on the position bar (its own arrow
+// step would move it a tenth of a second). Elsewhere, focused fields and buttons keep their keys.
+function playerArrowSeek(event, tag) {
+  if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return false;
+  if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
+  if (!$("#view-watch")?.classList.contains("is-active") || !frame.classList.contains("has-video")) return false;
+  const target = event.target;
+  const playerControl = frame.contains(target) && (tag === "button" || target.id === "compat-progress") && !target.closest?.('[role="menu"]');
+  if (!playerControl && (["input", "textarea", "select", "button"].includes(tag) || target?.isContentEditable)) return false;
+  event.preventDefault();
+  seekPlayerBy(event.key === "ArrowLeft" ? -10 : 10);
+  return true;
+}
+
     .replace(/\.(mp4|m4v|webm|mkv|avi|mov|ogv)$/i, "")
     .replace(/^\s*\[?pseudo\]?\s*/i, "")
     .replace(/[._]+/g, " ")
@@ -21184,6 +21199,7 @@ document.addEventListener("keydown", (event) => {
   if (document.querySelector("dialog[open]")) return;
   const tag = event.target?.tagName?.toLowerCase();
   const typing = ["input", "textarea", "select"].includes(tag) || event.target?.isContentEditable;
+  if (playerArrowSeek(event, tag)) return;
   if (!typing && clientFeatures.handleKey(event)) return;
   if (learningEnabled && !typing && handleStudyKey(event)) return;
   if (learningEnabled && !typing && handleQuizKey(event)) return;
