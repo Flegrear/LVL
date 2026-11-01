@@ -31,13 +31,17 @@ export function newKdfSettings({ iterations = KDF_DEFAULTS.iterations } = {}) {
   return { name: KDF_DEFAULTS.name, iterations, salt: toBase64(globalThis.crypto.getRandomValues(new Uint8Array(16))) };
 }
 
-export async function deriveKey(passphrase, kdf) {
+// The key as 32 bytes: kept with this device's sync settings, so a restart doesn't ask for
+// the passphrase again (the passphrase itself is never stored).
+export async function deriveKeyBytes(passphrase, kdf) {
   if (typeof passphrase !== "string" || passphrase.length < 8) throw new Error("The sync passphrase must have at least 8 characters");
   if (kdf?.name !== KDF_DEFAULTS.name || !Number.isInteger(kdf.iterations) || kdf.iterations < 100_000) throw new Error("Unsupported sync encryption settings");
-  const base = await subtle().importKey("raw", encoder.encode(passphrase.normalize("NFC")), "PBKDF2", false, ["deriveKey"]);
-  return subtle().deriveKey({ name: "PBKDF2", hash: "SHA-256", salt: fromBase64(kdf.salt), iterations: kdf.iterations },
-    base, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+  const base = await subtle().importKey("raw", encoder.encode(passphrase.normalize("NFC")), "PBKDF2", false, ["deriveBits"]);
+  return new Uint8Array(await subtle().deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: fromBase64(kdf.salt), iterations: kdf.iterations }, base, 256));
 }
+
+export const importKeyBytes = (bytes) => subtle().importKey("raw", bytes, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+export const deriveKey = async (passphrase, kdf) => importKeyBytes(await deriveKeyBytes(passphrase, kdf));
 
 // file: the path inside the sync storage, like "changes/d-4k2m9x7q1z/000001.json".
 export async function encryptText(key, file, text) {

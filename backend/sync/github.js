@@ -1,0 +1,109 @@
+// GitHub for sync: sign-in with GitHub's device flow (the user approves a short code at
+// github.com/login/device; no secret is needed), the repositories LVL may use, and one
+// private repository as sync storage (shared/sync/log.js):
+//   list  -> one request (the branch's file tree), read -> the file's blob, write -> a commit.
+// Renewal (the user's choice at setup): asking for "offline_access" gives a token that lasts
+// 8 hours and renews itself with a refresh token (unused for 6 months, it ends); without it
+// the token lasts until the user disconnects or revokes it.
+const API = "https://api.github.com";
+const LOGIN = "https://github.com/login";
+const TIMEOUT_MS = 20_000;
+
+export function githubError(message, status, code = "") {
+  return Object.assign(new Error(message), { status, code });
+}
+
+export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, userAgent = "LVL" } = {}) {
+  async function form(url, body) {
+    const response = await fetchImpl(url, {
+      method: "POST", signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: { Accept: "application/json", "Content-Type": "application/json", "User-Agent": userAgent },
+      body: JSON.stringify(body),
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw githubError(data.error_description || `GitHub answered HTTP ${response.status}`, response.status, data.error || "");
+    return data;
+  }
+
+  async function call(token, method, path, { body, etag } = {}) {
+    const response = await fetchImpl(`${api}${path}`, {
+      method, signal: AbortSignal.timeout(TIMEOUT_MS),
+      headers: {
+        Accept: "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28", "User-Agent": userAgent,
+        Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": "application/json" } : {}), ...(etag ? { "If-None-Match": etag } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    if (response.status === 304) return { notModified: true, etag };
+    const data = await response.json().catch(() => ({}));
+    if (response.ok) return { data, etag: response.headers.get("etag") || "" };
+    const remaining = response.headers.get("x-ratelimit-remaining");
+    if ((response.status === 403 || response.status === 429) && (remaining === "0" || response.headers.get("retry-after")))
+      throw githubError("GitHub's request limit is reached; LVL tries again later", response.status, "rate-limited");
+    if (response.status === 401) throw githubError("The GitHub sign-in ended", 401, "signed-out");
+    throw githubError(data.message || `GitHub answered HTTP ${response.status}`, response.status, response.status === 404 ? "not-found" : "");
+  }
+
+  const encodePath = (path) => path.split("/").map(encodeURIComponent).join("/");
+
+  return {
+    // Step 1 of the device flow: a code for the user to enter at github.com/login/device.
+    startDevice: ({ clientId, renew }) => form(`${login}/device/code`, { client_id: clientId, ...(renew ? { scope: "offline_access" } : {}) }),
+    // Step 2, every `interval` seconds: { access_token, refresh_token?, expires_in? } or { error }.
+    pollDevice: ({ clientId, deviceCode }) => form(`${login}/oauth/access_token`,
+      { client_id: clientId, device_code: deviceCode, grant_type: "urn:ietf:params:oauth:grant-type:device_code" }),
+    refresh: ({ clientId, refreshToken }) => form(`${login}/oauth/access_token`,
+      { client_id: clientId, grant_type: "refresh_token", refresh_token: refreshToken }),
+    user: async (token) => (await call(token, "GET", "/user")).data,
+    // The repositories this sign-in may use: through LVL's GitHub App installations, or, for
+    // a personal access token, the ones the token can see.
+    async repositories(token, { app = true } = {}) {
+      if (!app) {
+        const { data } = await call(token, "GET", "/user/repos?per_page=100&sort=updated");
+        return (Array.isArray(data) ? data : []).map(repoOf);
+      }
+      const { data } = await call(token, "GET", "/user/installations?per_page=100");
+      const repos = [];
+      for (const installation of data.installations || []) {
+        const page = await call(token, "GET", `/user/installations/${installation.id}/repositories?per_page=100`);
+        repos.push(...(page.data.repositories || []).map(repoOf));
+      }
+      return repos;
+    },
+    // A repository as sync storage. token(): the current token (it may renew between calls).
+    storage({ token, owner, repo }) {
+      const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
+      let branch = "";
+      const branchName = async () => branch || (branch = (await call(token(), "GET", base)).data.default_branch || "main");
+      return {
+        async list() {
+          let tree;
+          try { tree = (await call(token(), "GET", `${base}/git/trees/${encodeURIComponent(await branchName())}?recursive=1`)).data; } catch (error) {
+            // A new, empty repository has no tree yet.
+            if (error.status === 409 || (error.status === 404 && /empty|branch/i.test(error.message))) return [];
+            throw error;
+          }
+          if (tree.truncated) throw githubError("The sync repository has too many files to list", 500, "too-large");
+          return (tree.tree || []).filter((item) => item.type === "blob").map((item) => ({ path: item.path, version: item.sha }));
+        },
+        async read(path, version) {
+          const { data } = await call(token(), "GET", `${base}/git/blobs/${encodeURIComponent(version)}`);
+          return Buffer.from(String(data.content || ""), data.encoding === "base64" ? "base64" : "utf8").toString("utf8");
+        },
+        async write(path, text, { version } = {}) {
+          try {
+            const { data } = await call(token(), "PUT", `${base}/contents/${encodePath(path)}`, {
+              body: { message: `LVL sync: ${path}`, content: Buffer.from(text, "utf8").toString("base64"), ...(version ? { sha: version } : {}) },
+            });
+            return data.content?.sha || "";
+          } catch (error) {
+            if (error.status === 409 || error.status === 422) throw githubError(`${path} changed on GitHub`, error.status, "conflict");
+            throw error;
+          }
+        },
+      };
+    },
+  };
+}
+
+const repoOf = (repo) => ({ owner: repo.owner?.login || "", name: repo.name || "", private: Boolean(repo.private), fullName: repo.full_name || "" });

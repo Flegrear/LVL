@@ -1,0 +1,10 @@
+/* Settings › Sync (frontend/sync/feature.js). */
+.settings-sync-intro,.settings-sync-note{margin:0 0 12px;color:var(--ui-text-3,#aaa);font:500 13px/1.5 var(--font-sans)}
+.settings-sync-row{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:10px 0}
+.settings-sync-row input{min-width:240px;padding:7px 10px;border:1px solid #333;border-radius:8px;background:#111;color:#eee}
+.settings-sync-code{margin:8px 0;font:700 28px/1.2 ui-monospace,monospace;letter-spacing:.12em}
+.settings-sync-renew{display:grid;gap:6px;margin:0 0 8px;padding:0;border:0}
+.settings-sync-renew legend{margin-bottom:6px;font-weight:600}
+.settings-sync-repos{display:grid;gap:6px;margin:8px 0;padding:0;list-style:none}
+.settings-sync-error{color:#ff8a80}
+.settings-sync-token summary{cursor:pointer;color:var(--ui-text-2,#ccc)}

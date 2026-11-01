@@ -6598,6 +6598,9 @@ serverFeatures.init({
   db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta,
   dataRoot: appDataRoot, port, root, json, readJsonBody, methodNotAllowed,
   rejectNonLocal: localRequestRejected, anilist: anilistClient,
+  // Sync reads and writes these like another LVL window would.
+  appState: { readSection: appDatabase.readSection, sectionUpdatedAt: appDatabase.sectionUpdatedAt, compareAndSwapSection: appDatabase.compareAndSwapSection },
+  recs: recsStore,
 });
 
 const server = http.createServer(async (req, res) => {

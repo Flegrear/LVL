@@ -44,7 +44,7 @@ export const RECORD_TYPES = Object.freeze({
   // entry id (the torrent's infohash).
   "video.title": { schema: 1, id: /^[0-9a-f]{40}$/, fields: {
     title: "string", displayTitle: "string", seriesKey: "string", magnet: "text", coverUrl: "string",
-    catalogId: "string", catalogType: "string", aliases: "list", sourceMeta: "object", addedAt: time } },
+    catalogId: "string", catalogType: "string", aliases: "list", sourceMeta: "object", addedAt: time, episodes: "list" } },
   // Where you are in one file of a title. id: "<infohash>/<file index>".
   "video.progress": { schema: 1, id: /^[0-9a-f]{40}\/\d{1,6}$/, fields: {
     positionMs: count, durationMs: count, finished: "boolean" } },
@@ -53,7 +53,7 @@ export const RECORD_TYPES = Object.freeze({
   // Your tracking status of a series (CURRENT, PLANNING, COMPLETED…). id: the series key.
   "video.status": { schema: 1, id: anyId, fields: { status: "string", automatic: "boolean" } },
   // A comic in Library › Comics. id: "anilist-<id>".
-  "comic.library": { schema: 1, id: anilistWork, fields: { status: "string", title: "string" } },
+  "comic.library": { schema: 1, id: anilistWork, fields: { status: "string", title: "string", work: "object" } },
   // A source linked to a comic. id: joinId(work, kind, source id, the source's manga path).
   "comic.source": { schema: 1, id: anyId, fields: { name: "string", title: "string", lang: "string", pkg: "string" } },
   // Reading progress in a chapter from a source. id: joinId(source id, chapter path).
@@ -62,7 +62,8 @@ export const RECORD_TYPES = Object.freeze({
   "comic.rating": { schema: 1, id: anyId, fields: { score: ["number", { min: 0, max: 10 }] } },
   // An LVL rating of a title or season. id: the ratings key.
   "rating.lvl": { schema: 1, id: anyId, fields: {
-    score: ["number", { min: 0, max: 10 }], title: "string", kind: "string", year: "number" } },
+    score: ["number", { min: 0, max: 10 }], title: "string", kind: "string", year: "number",
+    catalogId: "string", seriesKey: "string", season: "number", status: "string" } },
   // Settings that make sense on every device (subtitle style, languages…). id: the setting.
   "settings.shared": { schema: 1, id: /^[a-z][a-z0-9.-]{1,60}$/, fields: { value: "object" } },
   // Books. Their ids must not depend on one device: a work is its catalog key (like the
