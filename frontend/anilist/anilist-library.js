@@ -211,8 +211,3 @@ export function anilistRatingText(info) {
   return `Your rating: ${Number(score.toFixed(1))}/10`;
 }
 
-/** Status key used by the Library's status filter (rewatching counts as watching). */
-export function anilistStatusKey(info) {
-  const status = info?.status || "";
-  return status === "REPEATING" ? "CURRENT" : status;
-}
