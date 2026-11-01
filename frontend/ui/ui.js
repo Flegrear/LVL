@@ -847,3 +847,28 @@ export function toast(message, { tone = "default", timeout = 3600 } = {}) {
     },
   };
 }
+
+// An in-app confirmation in LVL's dialog style, instead of the browser's own box. Resolves
+// true when confirmed; Cancel, Escape, the close button and a click outside resolve false.
+export function confirmDialog({ title = "", text = "", confirmLabel = "Continue", cancelLabel = "Cancel" } = {}) {
+  if (typeof document === "undefined") return Promise.resolve(false);
+  return new Promise((resolve) => {
+    const box = document.createElement("dialog");
+    box.className = "detail-dialog app-dialog ui-confirm-dialog";
+    box.setAttribute("aria-labelledby", "ui-confirm-title");
+    box.innerHTML = `<button class="dialog-close" type="button" data-confirm="no" aria-label="${escapeHtml(t("Close"))}">×</button>`
+      + `<div class="app-dialog__body"><h2 class="app-dialog__title" id="ui-confirm-title">${escapeHtml(t(title))}</h2>`
+      + (text ? `<p class="app-dialog__sub">${escapeHtml(t(text))}</p>` : "")
+      + `<div class="app-dialog__actions">${buttonMarkup({ label: cancelLabel, variant: "ghost", attrs: { "data-confirm": "no" } })}`
+      + `${buttonMarkup({ label: confirmLabel, variant: "primary", attrs: { "data-confirm": "yes" } })}</div></div>`;
+    let confirmed = false;
+    box.addEventListener("click", (event) => {
+      const choice = event.target.closest("[data-confirm]")?.dataset.confirm;
+      if (choice) { confirmed = choice === "yes"; box.close(); } else if (event.target === box) box.close();
+    });
+    box.addEventListener("close", () => { box.remove(); resolve(confirmed); });
+    document.body.append(box);
+    box.showModal();
+    box.querySelector('[data-confirm="yes"]')?.focus();
+  });
+}

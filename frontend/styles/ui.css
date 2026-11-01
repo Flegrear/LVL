@@ -563,6 +563,7 @@ input.ui-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(-
 .ui-badge .ui-icon { width: 12px; height: 12px; }
 .ui-badge--solid { border-color: var(--ui-inverse); background: var(--ui-inverse); color: var(--ui-inverse-text); }
 .ui-badge--outline { border-color: var(--ui-line-hover); background: transparent; color: var(--ui-text-3); }
+.ui-badge[hidden] { display: none; }
 
 .ui-count {
   display: inline-grid;

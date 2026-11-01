@@ -16390,8 +16390,10 @@ function renderAniListAutoSettings() {
   if (threshold && document.activeElement !== threshold) threshold.value = String(options.threshold);
   if (client && document.activeElement !== client) client.value = options.clientId;
   const stateNode = $("#anilist-auto-state");
-  if (stateNode) stateNode.textContent = account ? `Authorized: ${account.username}`
-    : storedAccount.token ? "Reconnect required" : "Not authorized";
+  if (stateNode) {
+    stateNode.textContent = account ? `Authorized: ${account.username}` : storedAccount.token ? "Reconnect required" : "";
+    stateNode.hidden = !stateNode.textContent;
+  }
   const connect = $("#anilist-auto-connect");
   const disconnect = $("#anilist-auto-disconnect");
   const sync = $("#anilist-auto-sync");

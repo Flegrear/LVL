@@ -675,8 +675,7 @@
               </div>
             </section>
             <section class="settings-card" aria-labelledby="settings-learning-heading">
-              <div class="settings-card__head"><h2 id="settings-learning-heading">Learning features</h2></div>
-              <p class="settings-hint">Coming soon. Your saved learning data is preserved.</p>
+              <div class="settings-card__head"><h2 id="settings-learning-heading">Learning features</h2><span class="ui-badge ui-badge--outline">Coming soon</span></div>
             </section>
             <section class="settings-card settings-floating-player" aria-labelledby="settings-floating-heading">
               <div class="settings-card__head"><h2 id="settings-floating-heading">Floating player</h2></div>
@@ -772,13 +771,13 @@
               <div class="settings-card__head"><h2 id="settings-sync-title">Sync</h2></div>
             </section>
             <section class="settings-card recs-card" aria-labelledby="recs-ratings-title">
-              <div class="settings-card__head"><h2 id="recs-ratings-title" data-i18n="Your ratings">Your ratings</h2><span id="recs-rated-count" class="ui-badge ui-badge--outline">None yet</span></div>
+              <div class="settings-card__head"><h2 id="recs-ratings-title" data-i18n="Your ratings">Your ratings</h2><span id="recs-rated-count" class="ui-badge ui-badge--outline" hidden></span></div>
               <section id="anilist-auto-settings" class="anilist-auto-settings" aria-labelledby="anilist-auto-title">
                 <div class="anilist-auto-heading">
                   <div>
                     <h3 id="anilist-auto-title">AniList account sync</h3>
                   </div>
-                  <span id="anilist-auto-state" class="ui-badge ui-badge--outline">Not authorized</span>
+                  <span id="anilist-auto-state" class="ui-badge ui-badge--outline" hidden></span>
                 </div>
                 <div class="anilist-auto-actions" role="group" aria-label="AniList account connection">
                   <button id="anilist-auto-connect" class="ui-btn ui-btn--primary ui-btn--sm" type="button">Authorize account sync</button>
@@ -833,7 +832,7 @@
                   <label class="recs-row__label" for="recs-letterboxd-name">Letterboxd</label>
                   <button class="ui-help" type="button" data-ui-tip="tip-recs-letterboxd" aria-label="About linking Letterboxd" aria-describedby="tip-recs-letterboxd" data-i18n-aria-label="About linking Letterboxd">?</button>
                   <span id="tip-recs-letterboxd" class="ui-tip-content" hidden><strong>Letterboxd</strong><p data-i18n="Your public profile shows your latest films and ratings. For your whole diary, export your data on letterboxd.com (Settings, Data, Export your data) and import the zip here.">Your public profile shows your latest films and ratings. For your whole diary, export your data on letterboxd.com (Settings, Data, Export your data) and import the zip here.</p><ul><li data-i18n="Stars become 1 to 10: 4½ stars is 9.">Stars become 1 to 10: 4½ stars is 9.</li><li data-i18n="Films count for your picks once a TMDB key is saved.">Films count for your picks once a TMDB key is saved.</li></ul></span>
-                  <span id="recs-letterboxd-usage" class="recs-row__usage">Not linked</span>
+                  <span id="recs-letterboxd-usage" class="recs-row__usage" hidden></span>
                 </div>
                 <form id="recs-letterboxd-form" class="recs-row__control">
                   <div class="settings-field recs-row__field"><input id="recs-letterboxd-name" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="128" placeholder="User name" data-i18n-placeholder="User name" /></div>
@@ -853,13 +852,13 @@
             </section>
 
             <section class="settings-card recs-card" aria-labelledby="recs-tmdb-title">
-              <div class="settings-card__head"><h2 id="recs-tmdb-title" data-i18n="Movies and series">Movies and series</h2><span id="recs-tmdb-state" class="ui-badge ui-badge--outline">Off</span></div>
+              <div class="settings-card__head"><h2 id="recs-tmdb-title" data-i18n="Movies and series">Movies and series</h2><span id="recs-tmdb-state" class="ui-badge ui-badge--outline" hidden></span></div>
               <div class="recs-row">
                 <div class="recs-row__head">
                   <label class="recs-row__label" for="recs-tmdb-key" data-i18n="TMDB key">TMDB key</label>
                   <button class="ui-help" type="button" data-ui-tip="tip-recs-tmdb" aria-label="About the TMDB key" aria-describedby="tip-recs-tmdb" data-i18n-aria-label="About the TMDB key">?</button>
                   <span id="tip-recs-tmdb" class="ui-tip-content" hidden><strong data-i18n="TMDB key">TMDB key</strong><p data-i18n="Optional. With a free key from The Movie Database, your picks also include movies and series, and your Letterboxd films count.">Optional. With a free key from The Movie Database, your picks also include movies and series, and your Letterboxd films count.</p><ul><li data-i18n="Sign in at themoviedb.org, open Settings, then API, and request a key for personal use.">Sign in at themoviedb.org, open Settings, then API, and request a key for personal use.</li><li data-i18n="Paste the API key or the API read access token.">Paste the API key or the API read access token.</li><li data-i18n="The key stays on this computer and is never exported.">The key stays on this computer and is never exported.</li></ul></span>
-                  <span id="recs-tmdb-usage" class="recs-row__usage">Not set</span>
+                  <span id="recs-tmdb-usage" class="recs-row__usage" hidden></span>
                 </div>
                 <form id="recs-tmdb-form" class="recs-row__control">
                   <div class="settings-field recs-row__field"><input id="recs-tmdb-key" type="password" autocomplete="off" spellcheck="false" maxlength="400" placeholder="API key or read access token" data-i18n-placeholder="API key or read access token" /></div>

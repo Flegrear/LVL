@@ -1,7 +1,7 @@
 // Browser side of the recommendations: the "Top picks for you" rows on Home and in the Library,
 // Settings › Recommendations and "Your rating" on title pages. The server does the work
 // (recs-service.js); this module shows it. app.js passes in the few app functions it needs.
-import { artworkFallback, badgeMarkup, bindShelves, buttonMarkup, emptyMarkup, escapeHtml, helpTipMarkup, icon, iconButtonMarkup, refreshImages, shelfMarkup, toast } from "../ui/ui.js";
+import { artworkFallback, badgeMarkup, bindShelves, buttonMarkup, confirmDialog, emptyMarkup, escapeHtml, helpTipMarkup, icon, iconButtonMarkup, refreshImages, shelfMarkup, toast } from "../ui/ui.js";
 import { metahubUrl, posterSrcset, sharperPoster } from "../catalog/home-feed.js";
 import { resolveAniListScorePart } from "../anilist/anilist-score-sync.js";
 import { lvlRatingSummary } from "./lvl-ratings.js";
@@ -391,7 +391,8 @@ export function createRecsUi(hooks) {
     if (!overview || !settingsVisible()) return;
     const { settings, stats, status } = overview;
     const total = totalRatings(overview);
-    setText("#recs-rated-count", total ? plural(total, "rating") : "None yet");
+    setText("#recs-rated-count", total ? plural(total, "rating") : "");
+    show("#recs-rated-count", Boolean(total));
 
     const anilist = settings.anilist;
     show("#recs-anilist-form", !anilist);
@@ -405,7 +406,8 @@ export function createRecsUi(hooks) {
     show("#recs-letterboxd-linked", Boolean(letterboxd));
     show("#recs-letterboxd-sync", feed);
     setText("#recs-letterboxd-unlink", feed ? "Unlink" : "Remove films");
-    setText("#recs-letterboxd-usage", feed ? `Linked as ${letterboxd.username}` : letterboxd ? "Imported" : "Not linked");
+    setText("#recs-letterboxd-usage", feed ? `Linked as ${letterboxd.username}` : letterboxd ? "Imported" : "");
+    show("#recs-letterboxd-usage", Boolean(letterboxd));
     const films = [
       feed ? `${plural(letterboxd.count, "recent film")}${letterboxd.scored == null ? "" : `, ${plural(letterboxd.scored, "rated")}`}, synced ${timeAgo(letterboxd.syncedAt)}` : "",
       letterboxd?.importedAt ? `${plural(letterboxd.imported, "film")} imported ${timeAgo(letterboxd.importedAt)}` : "",
@@ -413,8 +415,10 @@ export function createRecsUi(hooks) {
     setText("#recs-letterboxd-note", films.join(", "));
 
     const tmdb = settings.tmdb || {};
-    setText("#recs-tmdb-state", tmdb.linked ? "On" : "Off");
-    setText("#recs-tmdb-usage", tmdb.linked ? `Key saved${tmdb.checkedAt ? `, checked ${timeAgo(tmdb.checkedAt)}` : ""}` : "Not set");
+    setText("#recs-tmdb-state", tmdb.linked ? "On" : "");
+    show("#recs-tmdb-state", Boolean(tmdb.linked));
+    setText("#recs-tmdb-usage", tmdb.linked ? `Key saved${tmdb.checkedAt ? `, checked ${timeAgo(tmdb.checkedAt)}` : ""}` : "");
+    show("#recs-tmdb-usage", Boolean(tmdb.linked));
     show("#recs-tmdb-remove", Boolean(tmdb.linked));
     const keyInput = $("#recs-tmdb-key");
     if (keyInput) keyInput.placeholder = tmdb.linked ? "Paste a new key to replace it" : "API key or read access token";
@@ -519,9 +523,10 @@ export function createRecsUi(hooks) {
           : "No ratings in recent public films. Use Import your export for full history.",
       });
     });
-    $("#recs-letterboxd-unlink")?.addEventListener("click", (event) => {
-      if (!window.confirm("Remove your Letterboxd films from this app? Nothing changes on Letterboxd.")) return;
-      void act(event.currentTarget, () => postJson("/api/recs/letterboxd/unlink", {}), { status: ratingsStatus, done: "Letterboxd films removed" });
+    $("#recs-letterboxd-unlink")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      if (!(await confirmDialog({ title: "Remove your Letterboxd films?", text: "They leave this app. Nothing changes on Letterboxd.", confirmLabel: "Remove" }))) return;
+      void act(button, () => postJson("/api/recs/letterboxd/unlink", {}), { status: ratingsStatus, done: "Letterboxd films removed" });
     });
     $("#recs-letterboxd-import")?.addEventListener("click", () => $("#recs-letterboxd-file")?.click());
     $("#recs-letterboxd-file")?.addEventListener("change", (event) => {
@@ -552,9 +557,10 @@ export function createRecsUi(hooks) {
 
     const dataStatus = "#recs-data-status";
     $("#recs-unhide")?.addEventListener("click", (event) => void act(event.currentTarget, () => postJson("/api/recs/unhide-all", {}), { status: dataStatus, done: "Hidden titles can be picked again" }));
-    $("#recs-clear")?.addEventListener("click", (event) => {
-      if (!window.confirm("Clear the saved details and fan links? Your ratings, hidden titles and settings stay; the next update reads everything again.")) return;
-      void act(event.currentTarget, () => postJson("/api/recs/clear-cache", {}), { status: dataStatus, done: "Cleared" });
+    $("#recs-clear")?.addEventListener("click", async (event) => {
+      const button = event.currentTarget;
+      if (!(await confirmDialog({ title: "Clear the saved details and fan links?", text: "Your ratings, hidden titles and settings stay. The next update reads everything again.", confirmLabel: "Clear" }))) return;
+      void act(button, () => postJson("/api/recs/clear-cache", {}), { status: dataStatus, done: "Cleared" });
     });
   }
 

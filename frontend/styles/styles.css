@@ -3087,6 +3087,9 @@ select:focus-visible { outline:2px solid #fff; outline-offset:2px; }
 .app-dialog__sub { margin:-8px 0 0; color:var(--ui-muted); font:500 14px/1.45 var(--font-sans); }
 .app-dialog__sub:empty { display:none; }
 .app-dialog__actions { display:flex; justify-content:flex-end; gap:8px; }
+.detail-dialog.app-dialog.ui-confirm-dialog { width:min(460px,calc(100vw - 24px)); }
+.ui-confirm-dialog .app-dialog__title { font-size:22px; }
+.ui-confirm-dialog .app-dialog__sub { margin:-6px 0 4px; }
 .detail-dialog.app-dialog.library-remove-dialog { width:min(570px,calc(100vw - 24px)); }
 .library-remove-dialog .app-dialog__actions { flex-wrap:wrap; }
 .library-remove-dialog .app-dialog__body { gap:22px; }
