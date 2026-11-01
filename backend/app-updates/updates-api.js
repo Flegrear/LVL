@@ -1,7 +1,7 @@
 // The changelog shown in Settings › Updates, and asking the launcher to update.
-import { default as fs } from "node:fs";
-import { default as path } from "node:path";
-import { default as net } from "node:net";
+import fs from "node:fs";
+import path from "node:path";
+import net from "node:net";
 import { APP_VERSION, root, UPDATE_BRIDGE, updatePolicy } from "../../server.js";
 import { json, methodNotAllowed, readJsonBody } from "../app/http-helpers.js";
 

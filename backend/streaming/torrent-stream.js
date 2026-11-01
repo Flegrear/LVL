@@ -1,6 +1,6 @@
 // Streaming a torrent's video file: direct ranges, indexed and progressive seeking, copied seek origins and remux warm windows.
-import { default as fs } from "node:fs";
-import { default as path } from "node:path";
+import fs from "node:fs";
+import path from "node:path";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
 import { probeCopiedSeekOrigin } from "../media/transcode-start.js";

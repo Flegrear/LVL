@@ -1,6 +1,6 @@
 // Learning: decks (Anki import and export, AnkiWeb), clips, presets and learning subtitles.
-import { default as crypto } from "node:crypto";
-import { default as ffmpegPath } from "ffmpeg-static";
+import crypto from "node:crypto";
+import ffmpegPath from "ffmpeg-static";
 import { learningPresetBundle, learningPresetCatalog, learningPresetSlice } from "../../learning/presets.js";
 import { alignCueArtifacts, processCueArtifact } from "../../learning/subtitle-processing.js";
 import {

@@ -1,6 +1,6 @@
 // Where people speak in a stretch of audio (for lining subtitles up with the audio).
 import { spawn } from "node:child_process";
-import { default as ffmpegPath } from "ffmpeg-static";
+import ffmpegPath from "ffmpeg-static";
 import { SPEECH_FRAME_MS, SPEECH_SAMPLE_RATE, speechActivityFromPcm } from "../../shared/subtitles/subtitle-sync.js";
 import { speechTapeActivity, speechTapeCoverage } from "./speech-tape.js";
 import { port, TORRENT_SESSION_TTL_MS, torrentSessions } from "../../server.js";

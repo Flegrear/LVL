@@ -1,6 +1,6 @@
 // Posters and artwork: checked image addresses, optimized posters and Library artwork search.
 import { spawn } from "node:child_process";
-import { default as ffmpegPath } from "ffmpeg-static";
+import ffmpegPath from "ffmpeg-static";
 import { json, methodNotAllowed, pruneTimedCache } from "../app/http-helpers.js";
 
 const MAX_ARTWORK_QUERY_LENGTH = 180;

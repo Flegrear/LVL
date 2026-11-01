@@ -1,5 +1,5 @@
 // Learning: the voice coach (providers, live sessions, voice turns and usage).
-import { default as crypto } from "node:crypto";
+import crypto from "node:crypto";
 import { normalizeLearningLocale } from "../../shared/settings/language-settings.js";
 import {
   buildLiveTranscriptEnrichmentPrompt, buildNativeLiveVoicePrompt, buildVoiceCoachPrompt,

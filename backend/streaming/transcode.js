@@ -1,10 +1,10 @@
 // Transcoding a torrent's video with FFmpeg, and the encoder it uses.
-import { default as fs } from "node:fs";
-import { default as path } from "node:path";
-import { default as crypto } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { pipeline } from "node:stream/promises";
-import { default as ffmpegPath } from "ffmpeg-static";
+import ffmpegPath from "ffmpeg-static";
 import { SPEECH_SAMPLE_RATE } from "../../shared/subtitles/subtitle-sync.js";
 import { speechTapeWriter } from "../media/speech-tape.js";
 import { createTranscodePlan, transcodeVideoFilter } from "../../shared/media/media-compat.js";

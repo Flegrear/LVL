@@ -1,7 +1,7 @@
 // Torrent sessions: magnets, manifests, the session list and its expiry.
-import { default as fs } from "node:fs";
-import { default as path } from "node:path";
-import { default as crypto } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import { dropSpeechTapes } from "../media/speech-tape.js";
 import { attachPeerManager } from "../media/peer-manager.js";
 import {

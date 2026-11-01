@@ -1,6 +1,6 @@
 // Searching and downloading subtitles (SubDL, OpenSubtitles, Wyzie, SubSource).
-import { default as path } from "node:path";
-import { default as AdmZip } from "adm-zip";
+import path from "node:path";
+import AdmZip from "adm-zip";
 import { searchSubtitles as searchWyzieSubtitles } from "wyzie-lib";
 import { assToWebVtt as parseAssToWebVtt } from "../../shared/subtitles/ass-events.js";
 import { CINEMETA_ORIGIN, MAX_SUBTITLE_TEXT_BYTES, remoteSubtitleDownloads } from "../../server.js";

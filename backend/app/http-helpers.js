@@ -1,7 +1,7 @@
 // Small HTTP helpers for LVL's own server: JSON replies, request bodies, bounded reads, local-only checks.
-import { default as fs } from "node:fs";
-import { default as crypto } from "node:crypto";
-import { default as net } from "node:net";
+import fs from "node:fs";
+import crypto from "node:crypto";
+import net from "node:net";
 import { port } from "../../server.js";
 
 const MAX_BODY_BYTES = 64 * 1024;

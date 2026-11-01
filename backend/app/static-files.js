@@ -1,6 +1,6 @@
 // The files the server hands to the browser: the fixed table and serveStatic.
-import { default as fs } from "node:fs";
-import { default as path } from "node:path";
+import fs from "node:fs";
+import path from "node:path";
 import { mime, root } from "../../server.js";
 
 export const PUBLIC_ASSETS = new Map([

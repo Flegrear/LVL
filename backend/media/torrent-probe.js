@@ -1,5 +1,5 @@
 // What a torrent's video file holds (ffprobe), with a cache.
-import { default as path } from "node:path";
+import path from "node:path";
 import { spawn } from "node:child_process";
 import { inspectMediaCompatibility } from "../../shared/media/media-compat.js";
 import { dolbyVisionFromProbe } from "../../shared/media/video-profile.js";

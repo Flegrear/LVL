@@ -1,7 +1,7 @@
 // Learning: the browser coach extension (pairing, polling, results and live control).
-import { default as fs } from "node:fs";
-import { default as path } from "node:path";
-import { default as crypto } from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   appDatabase, BROWSER_COACH_EXTENSION_DIR, browserCoachToken, DEFAULT_COACH_PROVIDER_ID,

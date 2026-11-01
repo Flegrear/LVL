@@ -1,7 +1,7 @@
 // Subtitle files from the web: provider keys, safe download addresses and the downloads kept for a while.
-import { default as crypto } from "node:crypto";
-import { default as dns } from "node:dns/promises";
-import { default as net } from "node:net";
+import crypto from "node:crypto";
+import dns from "node:dns/promises";
+import net from "node:net";
 import { remoteSubtitleDownloads } from "../../server.js";
 import { isPrivateOrReservedIp } from "../app/http-helpers.js";
 import { normalizeSubtitleLanguage } from "./subtitle-search.js";

@@ -1,6 +1,6 @@
 // Subtitle tracks inside a torrent's video file.
 import { spawn } from "node:child_process";
-import { default as ffmpegPath } from "ffmpeg-static";
+import ffmpegPath from "ffmpeg-static";
 import { MAX_SUBTITLE_TEXT_BYTES, port } from "../../server.js";
 import { boundedInteger, json, methodNotAllowed } from "../app/http-helpers.js";
 import { internalTorrentSource } from "../torrents/torrent-sessions.js";

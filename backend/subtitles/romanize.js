@@ -1,8 +1,8 @@
 // Romanized subtitle text (Japanese, Russian and others).
-import { default as KuroshiroModule } from "kuroshiro";
-import { default as KuromojiAnalyzer } from "kuroshiro-analyzer-kuromoji";
+import KuroshiroModule from "kuroshiro";
+import KuromojiAnalyzer from "kuroshiro-analyzer-kuromoji";
 import { pinyin } from "pinyin-pro";
-import { default as hangulRomanization } from "hangul-romanization";
+import hangulRomanization from "hangul-romanization";
 import { json, readJsonBody } from "../app/http-helpers.js";
 import { normalizeSubtitleLanguage } from "./subtitle-search.js";
 
