@@ -768,29 +768,11 @@
             </div>
 
             <div id="settings-panel-library" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-library" hidden>
-            <section class="settings-card settings-artwork-panel" aria-labelledby="settings-artwork-title">
-              <div class="settings-card__head"><h2 id="settings-artwork-title" data-i18n="Artwork">Artwork</h2><span id="settings-artwork-state" class="ui-badge ui-badge--outline">Off</span></div>
-              <label class="ui-switch settings-switch-row"><input id="settings-auto-artwork" type="checkbox" /><span class="ui-switch__track" aria-hidden="true"></span><span data-i18n="Fetch posters automatically">Fetch posters automatically</span></label>
-              <div class="settings-actions">
-                <button id="settings-fetch-artwork" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Fetch missing posters">Fetch missing posters</button>
-                <p id="settings-artwork-message" class="tool-status settings-status" aria-live="polite"></p>
-              </div>
+            <section id="settings-sync" class="settings-card settings-sync" aria-labelledby="settings-sync-title">
+              <div class="settings-card__head"><h2 id="settings-sync-title">Sync</h2></div>
             </section>
             <section class="settings-card recs-card" aria-labelledby="recs-ratings-title">
               <div class="settings-card__head"><h2 id="recs-ratings-title" data-i18n="Your ratings">Your ratings</h2><span id="recs-rated-count" class="ui-badge ui-badge--outline">None yet</span></div>
-              <div class="recs-row">
-                <div class="recs-row__head">
-                  <label class="recs-row__label" for="recs-anilist-name">AniList</label>
-                  <span id="recs-anilist-usage" class="recs-row__usage">Not linked</span>
-                </div>
-                <form id="recs-anilist-form" class="recs-row__control">
-                  <div class="settings-field recs-row__field"><input id="recs-anilist-name" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="40" placeholder="User name" data-i18n-placeholder="User name" /></div>
-                  <button class="ui-btn ui-btn--primary ui-btn--sm" type="submit" data-i18n="Link">Link</button>
-                </form>
-                <div id="recs-anilist-linked" class="recs-row__control" hidden>
-                  <p id="recs-anilist-note" class="recs-row__note"></p>
-                </div>
-              </div>
               <section id="anilist-auto-settings" class="anilist-auto-settings" aria-labelledby="anilist-auto-title">
                 <div class="anilist-auto-heading">
                   <div>
@@ -804,7 +786,6 @@
                   <button id="anilist-auto-sync" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" title="Send your watched episode progress to AniList" disabled>Sync now</button>
                   <button id="anilist-score-migrate" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" title="Set each anime's LVL rating to your AniList score, where AniList has one" disabled>Migrate scores from AniList</button>
                 </div>
-                <p class="recs-row__note">AniList OAuth callback for this LVL window: <code id="anilist-auto-redirect-url">Detecting local address…</code>. Your AniList developer application's registered Redirect URL must match this address exactly, including the port. A shared Client ID's redirect can only be changed by its owner.</p>
                 <p id="anilist-auto-status" class="tool-status settings-status anilist-auto-status" role="status" aria-live="polite" aria-atomic="true"></p>
                 <div class="anilist-auto-options">
                   <label class="ui-switch settings-switch-row anilist-auto-toggle" for="anilist-auto-enabled">

@@ -1,6 +1,6 @@
 // GitHub for sync: sign-in with GitHub's device flow (the user approves a short code at
 // github.com/login/device; no secret is needed), the repositories LVL may use, and one
-// private repository as sync storage (shared/sync/log.js):
+// repository (kept private) as sync storage (shared/sync/log.js):
 //   list  -> one request (the branch's file tree), read -> the file's blob, write -> a commit.
 // Renewal (the user's choice at setup): asking for "offline_access" gives a token that lasts
 // 8 hours and renews itself with a refresh token (unused for 6 months, it ends); without it
@@ -8,9 +8,11 @@
 const API = "https://api.github.com";
 const LOGIN = "https://github.com/login";
 const TIMEOUT_MS = 20_000;
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904"; // git's tree with no files
 
+// status: GitHub's HTTP status. github: true tells LVL's own routes it was GitHub that answered.
 export function githubError(message, status, code = "") {
-  return Object.assign(new Error(message), { status, code });
+  return Object.assign(new Error(message), { status, code, github: true });
 }
 
 export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, userAgent = "LVL" } = {}) {
@@ -75,12 +77,18 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
       const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
       let branch = "";
       const branchName = async () => branch || (branch = (await call(token(), "GET", base)).data.default_branch || "main");
+      // After every file is deleted the branch points at git's empty tree, which the trees API answers with 404.
+      const emptyBranch = async () => {
+        try { return (await call(token(), "GET", `${base}/branches/${encodeURIComponent(await branchName())}`)).data?.commit?.commit?.tree?.sha === EMPTY_TREE; } catch { return false; }
+      };
       return {
         async list() {
           let tree;
           try { tree = (await call(token(), "GET", `${base}/git/trees/${encodeURIComponent(await branchName())}?recursive=1`)).data; } catch (error) {
             // A new, empty repository has no tree yet.
             if (error.status === 409 || (error.status === 404 && /empty|branch/i.test(error.message))) return [];
+            if (error.status === 404 && (await emptyBranch())) return [];
+            if (error.status === 404) throw githubError(`LVL can't see ${owner}/${repo} on GitHub any more (removed, renamed, or no longer shared with LVL)`, 404, "not-found");
             throw error;
           }
           if (tree.truncated) throw githubError("The sync repository has too many files to list", 500, "too-large");

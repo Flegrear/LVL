@@ -34,7 +34,7 @@ export const CORE_ROUTES = Object.freeze(["/", "/home", "/watch", "/library", "/
 export const CORE_SETTINGS_TABS = Object.freeze(["general", "coach", "library", "storage", "updates", "notifications"]);
 export const CORE_LIBRARY_FILTERS = Object.freeze(["all", "series", "movie", "anime"]);
 export const CORE_HOME_CATEGORIES = Object.freeze(["all", "movie", "tv", "anime"]);
-export const CLIENT_HOOKS = Object.freeze(["title:render", "storage:render"]);
+export const CLIENT_HOOKS = Object.freeze(["title:render", "storage:render", "settings:library"]);
 // Library status list keys (the "My lists" sidebar); a filter's statusLabels rename them.
 export const LIBRARY_STATUSES = Object.freeze(["CURRENT", "COMPLETED", "PLANNING", "PAUSED", "DROPPED", "REPEATING"]);
 

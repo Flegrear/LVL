@@ -1,13 +1,14 @@
-// Sync with a private GitHub repository: the setup steps and the automatic sync.
+// Sync with a private GitHub repository named lvl-sync: the setup steps and the automatic sync.
 // Setup (status().step): "start" (choose renewal, sign in) -> "device" (enter the code at
-// github.com/login/device) -> "repo" (create or choose the repository, give LVL access)
-// -> "passphrase" (new sync: choose one; joining: the one used on the other devices)
-// -> "ready". Then a sync runs 5 s after start, every minute, and on "Sync now".
+// github.com/login/device) -> "repo" (LVL finds lvl-sync; the user creates it if needed)
+// -> "options" (a new sync: plain files, or encrypted with a passphrase) or "passphrase"
+// (joining a sync another device encrypted; joining a plain one needs no step) -> "ready".
+// Then a sync runs 5 s after start, every minute, and on "Sync now".
 // One sync: read new files from the repo, apply what changed elsewhere, compare LVL's data
 // with what was last synced, and write this device's changes as one new file.
-// Kept on this device (app_meta "sync"): the sign-in, the repository, the encryption key
-// (never the passphrase), the clock and which files were read. sync_items: the current
-// change for every synced item, and a hash of what LVL had for it.
+// Kept on this device (app_meta "sync"): the sign-in, the repository, the encryption key if
+// the sync is encrypted (never the passphrase), the clock and which files were read.
+// sync_items: the current change for every synced item, and a hash of what LVL had for it.
 import crypto from "node:crypto";
 import { createClock, newDeviceId } from "../../shared/sync/clock.js";
 import { records } from "../../shared/sync/records.js";
@@ -15,6 +16,7 @@ import { deriveKeyBytes, fromBase64, importKeyBytes, newKdfSettings, passphraseM
 import { SETTINGS_FILE, createSyncLog, newSettingsFile, readSettingsFile } from "../../shared/sync/log.js";
 
 const META_KEY = "sync";
+const SYNC_REPO = "lvl-sync";
 const EVERY_MS = 60_000;
 const RENEW_BEFORE_MS = 5 * 60_000;
 const SNAPSHOT_EVERY = 50;
@@ -36,15 +38,23 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   let timer = null;
   let lastError = "";
   let reloadNeeded = 0;
+  let repoMissing = false;
 
   const step = () => {
     if (device) return "device";
     if (!settings.token) return "start";
     if (!settings.repo) return "repo";
-    if (!settings.key) return "passphrase";
+    if (!settings.active) return settings.joining && settings.encrypted ? "passphrase" : "options";
     return "ready";
   };
   const storageFor = () => github.storage({ token: () => settings.token, owner: settings.repo.owner, repo: settings.repo.name });
+
+  // Setup is done: from now on this device syncs (keyBytes only for an encrypted sync).
+  function activate(keyBytes) {
+    Object.assign(settings, { active: true, key: keyBytes ? toBase64(keyBytes) : "", seen: {}, nextSeq: 1, joining: false });
+    db.exec("DELETE FROM sync_items");
+    schedule(500);
+  }
 
   async function ensureToken() {
     if (!settings.expiresAt || now() < settings.expiresAt - RENEW_BEFORE_MS) return;
@@ -76,7 +86,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     if (step() !== "ready") return { skipped: true };
     await ensureToken();
     const storage = storageFor();
-    const key = await importKeyBytes(fromBase64(settings.key));
+    const key = settings.key ? await importKeyBytes(fromBase64(settings.key)) : null;
     const syncLog = createSyncLog({ storage, device: settings.device, key });
     const clock = createClock({ device: settings.device, last: settings.clock });
     const pulled = await syncLog.pull(settings.seen || {});
@@ -127,8 +137,9 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     const seen = { ...pulled.seen };
     let seq = Math.max(pulled.nextSeq, settings.nextSeq || 1);
-    if (outgoing.length) {
-      const pushed = await syncLog.push(outgoing, seq);
+    // Up to 2000 changes per file, so a first sync of a big Library is several small files.
+    for (let at = 0; at < outgoing.length; at += 2000) {
+      const pushed = await syncLog.push(outgoing.slice(at, at + 2000), seq);
       seen[pushed.path] = pushed.version;
       if (seq % SNAPSHOT_EVERY === 0) settings.snapshotVersion = await syncLog.snapshot([...state.values()], seq, settings.snapshotVersion);
       seq += 1;
@@ -137,9 +148,11 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       putItem.run(itemKey, JSON.stringify(state.get(itemKey)), hashes.get(itemKey) || null);
     for (const change of applied) putItem.run(`${change.type} ${change.id}`, JSON.stringify(state.get(`${change.type} ${change.id}`)), hashes.get(`${change.type} ${change.id}`));
     Object.assign(settings, { seen, nextSeq: seq, clock: clock.last(), lastSyncAt: now(), sent: (settings.sent || 0) + outgoing.length,
-      received: (settings.received || 0) + applied.size });
+      received: (settings.received || 0) + applied.size,
+      skippedFiles: (settings.skippedFiles || 0) + pulled.skipped.length,
+      refused: (settings.refused || 0) + pulled.changes.filter((change) => records.read(change).status === "invalid").length });
     save();
-    return { sent: outgoing.length, received: applied.size };
+    return { sent: outgoing.length, received: applied.size, skippedFiles: pulled.skipped, refused: settings.refused };
   }
 
   function schedule(ms = EVERY_MS) {
@@ -190,11 +203,12 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       const shown = reloadNeeded;
       return {
         step: step(), appReady: Boolean(app.clientId), installUrl: app.slug ? `https://github.com/apps/${app.slug}/installations/new` : "",
-        newRepoUrl: "https://github.com/new?name=lvl-sync&visibility=private&description=LVL%20sync%20(encrypted)",
+        newRepoUrl: "https://github.com/new?name=lvl-sync&visibility=private&description=LVL%20sync",
         login: settings.login || "", renew: Boolean(settings.renew), mode: settings.mode || "app",
-        repo: settings.repo ? `${settings.repo.owner}/${settings.repo.name}` : "", joining: Boolean(settings.joining),
+        repo: settings.repo ? `${settings.repo.owner}/${settings.repo.name}` : "", joining: Boolean(settings.joining), encrypted: Boolean(settings.encrypted),
         device: device ? { userCode: device.userCode, verificationUri: device.verificationUri, expiresAt: device.expiresAt } : null,
         syncing: Boolean(running), lastSyncAt: settings.lastSyncAt || 0, lastError, sent: settings.sent || 0, received: settings.received || 0,
+        skippedFiles: settings.skippedFiles || 0, refused: settings.refused || 0, repoMissing,
         reloadNeeded: shown,
       };
     },
@@ -219,34 +233,62 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       save();
       return this.status();
     },
-    repositories: () => github.repositories(settings.token, { app: settings.mode !== "token" }),
-    async chooseRepo({ owner, name }) {
+    // Only a repository named lvl-sync, never another one of the account (some are public).
+    async findRepo() {
       if (!settings.token) throw Object.assign(new Error("Sign in first"), { status: 400 });
-      settings.repo = { owner: String(owner || ""), name: String(name || "") };
-      const files = await storageFor().list();
-      settings.joining = files.some((file) => file.path === SETTINGS_FILE);
+      const repos = await github.repositories(settings.token, { app: settings.mode !== "token" });
+      const found = repos.find((repo) => repo.name.toLowerCase() === SYNC_REPO);
+      if (!found) { repoMissing = true; return this.status(); }
+      if (!found.private) throw Object.assign(new Error(`${found.owner}/${found.name} is public. Make it private on GitHub first (Settings › Danger Zone › Change visibility)`), { status: 400 });
+      repoMissing = false;
+      settings.repo = { owner: found.owner, name: found.name };
+      const existing = (await storageFor().list()).find((file) => file.path === SETTINGS_FILE);
+      settings.joining = Boolean(existing);
+      if (existing) {
+        const remote = readSettingsFile(await storageFor().read(SETTINGS_FILE, existing.version));
+        settings.encrypted = remote.encrypted ?? Boolean(remote.kdf);
+        // Another device already syncs here without a passphrase: this device joins at once.
+        if (!settings.encrypted) activate(null);
+      }
       save();
       return this.status();
     },
+    // A new sync in lvl-sync: plain by default; with encrypt, the files are encrypted with the passphrase.
+    async startSync({ encrypt = false, passphrase = "" } = {}) {
+      if (!settings.repo) throw Object.assign(new Error("Find the repository first"), { status: 400 });
+      const storage = storageFor();
+      if ((await storage.list()).some((file) => file.path === SETTINGS_FILE)) return this.findRepo();
+      let bytes = null;
+      try {
+        if (encrypt) {
+          const kdf = newKdfSettings();
+          bytes = await deriveKeyBytes(passphrase, kdf);
+          await storage.write(SETTINGS_FILE, await newSettingsFile({ key: await importKeyBytes(bytes), kdf }), {});
+        } else {
+          await storage.write(SETTINGS_FILE, await newSettingsFile(), {});
+        }
+      } catch (error) {
+        // Another device started the sync at the same moment: join that one.
+        if (error.code === "conflict") return this.findRepo();
+        throw error;
+      }
+      settings.encrypted = Boolean(encrypt);
+      activate(bytes);
+      save();
+      return this.status();
+    },
+    // Joining a sync another device encrypted.
     async setPassphrase({ passphrase }) {
-      if (!settings.repo) throw Object.assign(new Error("Choose the repository first"), { status: 400 });
+      if (!settings.repo) throw Object.assign(new Error("Find the repository first"), { status: 400 });
       const storage = storageFor();
       const existing = (await storage.list()).find((file) => file.path === SETTINGS_FILE);
-      let bytes;
-      if (existing) {
-        const remote = readSettingsFile(await storage.read(SETTINGS_FILE, existing.version));
-        bytes = await deriveKeyBytes(passphrase, remote.kdf);
-        if (!(await passphraseMatches(await importKeyBytes(bytes), remote.check)))
-          throw Object.assign(new Error("That passphrase doesn't match the one used on your other devices"), { status: 400 });
-      } else {
-        const kdf = newKdfSettings();
-        bytes = await deriveKeyBytes(passphrase, kdf);
-        await storage.write(SETTINGS_FILE, await newSettingsFile(await importKeyBytes(bytes), kdf), {});
-      }
-      Object.assign(settings, { key: toBase64(bytes), seen: {}, nextSeq: 1, joining: false });
-      db.exec("DELETE FROM sync_items");
+      if (!existing) return this.startSync({ encrypt: true, passphrase });
+      const remote = readSettingsFile(await storage.read(SETTINGS_FILE, existing.version));
+      const bytes = await deriveKeyBytes(passphrase, remote.kdf);
+      if (!(await passphraseMatches(await importKeyBytes(bytes), remote.check)))
+        throw Object.assign(new Error("That passphrase doesn't match the one used on your other devices"), { status: 400 });
+      activate(bytes);
       save();
-      schedule(500);
       return this.status();
     },
     syncNow,

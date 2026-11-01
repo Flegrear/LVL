@@ -51,9 +51,10 @@ export async function encryptText(key, file, text) {
 }
 
 export async function decryptText(key, file, stored) {
+  const notSync = (message) => Object.assign(new Error(message), { code: "not-sync-file" });
   let box;
-  try { box = JSON.parse(stored); } catch { throw new Error(`${file} isn't a sync file`); }
-  if (box?.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") throw new Error(`${file} isn't an encrypted sync file`);
+  try { box = JSON.parse(stored); } catch { throw notSync(`${file} isn't a sync file`); }
+  if (box?.v !== 1 || typeof box.iv !== "string" || typeof box.data !== "string") throw notSync(`${file} isn't an encrypted sync file`);
   try {
     const plain = await subtle().decrypt({ name: "AES-GCM", iv: fromBase64(box.iv), additionalData: encoder.encode(file) }, key, fromBase64(box.data));
     return decoder.decode(plain);

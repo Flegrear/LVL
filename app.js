@@ -3251,7 +3251,10 @@ function renderSettingsTabs() {
   }
   setActiveTab($("#settings-tabs"), settingsView.tab);
   if (settingsView.tab === "storage" && $("#view-settings")?.classList.contains("is-active")) void renderSettingsStorage();
-  if (settingsView.tab === "library" && $("#view-settings")?.classList.contains("is-active")) recsUi.showSettings();
+  if (settingsView.tab === "library" && $("#view-settings")?.classList.contains("is-active")) {
+    recsUi.showSettings();
+    clientFeatures.run("settings:library", { panel: $("#settings-panel-library") });
+  }
   if (settingsView.tab === "updates" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
   if (settingsView.tab === "notifications" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
   clientFeatures.showSettingsTab(settingsView.tab, Boolean($("#view-settings")?.classList.contains("is-active")));
@@ -7212,9 +7215,6 @@ function seekPlayerBy(deltaSeconds) {
   return seekPlayerTo(absolutePlaybackSeconds() + deltaSeconds);
 }
 
-function normalizeCollectionTitle(...candidates) {
-  const source = candidates.find((value) => String(value || "").trim()) || "Untitled source";
-  const raw = String(source)
 // ← and → seek 10 seconds, like the Back and Forward buttons. They also work right after a
 // player control was used: on a focused player button, and on the position bar (its own arrow
 // step would move it a tenth of a second). Elsewhere, focused fields and buttons keep their keys.
@@ -7230,6 +7230,9 @@ function playerArrowSeek(event, tag) {
   return true;
 }
 
+function normalizeCollectionTitle(...candidates) {
+  const source = candidates.find((value) => String(value || "").trim()) || "Untitled source";
+  const raw = String(source)
     .replace(/\.(mp4|m4v|webm|mkv|avi|mov|ogv)$/i, "")
     .replace(/^\s*\[?pseudo\]?\s*/i, "")
     .replace(/[._]+/g, " ")
@@ -11776,6 +11779,7 @@ function addSubtitleText(text, label, language = "", options = {}) {
 
 function setToolStatus(selector, message, error = false) {
   const node = $(selector);
+  if (!node) return;
   node.textContent = message;
   node.classList.toggle("is-error", error);
 }
@@ -11951,7 +11955,7 @@ function upsertLibrarySession(session, magnet = "", {
   saveLibrary();
   if (render && $("#view-library")?.classList.contains("is-active")) renderLibrary();
   else updateLibrarySummary();
-  if (state.autoArtwork && !entry.coverUrl) {
+  if (!entry.coverUrl) {
     queueMicrotask(() => { void fetchArtworkForSeriesKey(entry.seriesKey, { quiet: true }); });
   }
   return entry;
@@ -20319,14 +20323,6 @@ $("#subtitle-preview-rotate")?.addEventListener("click", () => {
 $("#settings-browser-coach-check")?.addEventListener("click", connectBrowserCoach);
 $("#settings-browser-coach-open")?.addEventListener("click", () => { void openBrowserCoachExtensionFolder(); });
 $("#settings-ai-provider")?.addEventListener("change", (event) => setCoachProvider(event.target.value));
-$("#settings-auto-artwork").addEventListener("change", (event) => {
-  state.autoArtwork = event.target.checked;
-  localStorage.setItem("blackline-auto-artwork", state.autoArtwork ? "1" : "0");
-  persistPreferences();
-  renderSettings();
-  setToolStatus("#settings-artwork-message", state.autoArtwork ? "Posters will be fetched automatically" : "Automatic posters off");
-});
-$("#settings-fetch-artwork").addEventListener("click", () => { void fetchMissingLibraryArtwork(); });
 $("#settings-subdl-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const key = $("#settings-subdl-key").value.trim();
@@ -21199,11 +21195,11 @@ document.addEventListener("keydown", (event) => {
   if (document.querySelector("dialog[open]")) return;
   const tag = event.target?.tagName?.toLowerCase();
   const typing = ["input", "textarea", "select"].includes(tag) || event.target?.isContentEditable;
-  if (playerArrowSeek(event, tag)) return;
   if (!typing && clientFeatures.handleKey(event)) return;
   if (learningEnabled && !typing && handleStudyKey(event)) return;
   if (learningEnabled && !typing && handleQuizKey(event)) return;
   if (learningEnabled && handleTestKey(event, typing)) return;
+  if (playerArrowSeek(event, tag)) return;
   if (["input", "textarea", "select", "button"].includes(tag) || event.target?.isContentEditable) return;
 
   if ($("#view-watch").classList.contains("is-active") && frame.classList.contains("has-video")) {

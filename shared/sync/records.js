@@ -1,16 +1,20 @@
 // What LVL syncs between devices, as small records ("changes"):
 //   { type: "video.progress", id: "<infohash>/3", at: "<clock stamp>", schema: 1, value: {...} }
 // value null removes the item. For each type and id, the change with the newest stamp wins.
+// A change is refused (counted, never applied) when its shape, id or stamp is wrong, when its
+// stamp is more than a day ahead of this device's clock (it would win over every later change),
+// or when a field the type requires is missing or of the wrong kind. Other wrong fields are dropped.
 //
 // Changing the format later (this file is the only place to edit):
 // - Adding a field: list it in the type's fields. Older LVL versions don't know it, keep it
 //   untouched when they write the item again (unlisted fields are carried over), and ignore it.
+//   Never add a field to an existing type's required list; that needs a new schema.
 // - Renaming a field or changing its meaning: raise the type's schema and add an upgrade step
 //   from the old schema. Older changes are upgraded when read. An older LVL that reads a newer
 //   schema keeps the change and passes it on, but doesn't apply it ("update LVL to sync it").
 // - A new type: add it here. Older LVL versions keep and pass on types they don't know.
 // - The file layout and encryption have their own version (SYNC_FORMAT_VERSION, in lvl-sync.json).
-import { DEVICE_ID, compareStamps, parseStamp } from "./clock.js";
+import { DEVICE_ID, MAX_AHEAD_MS, compareStamps, parseStamp } from "./clock.js";
 
 export const SYNC_FORMAT = "lvl-sync";
 export const SYNC_FORMAT_VERSION = 1;
@@ -46,14 +50,14 @@ export const RECORD_TYPES = Object.freeze({
     title: "string", displayTitle: "string", seriesKey: "string", magnet: "text", coverUrl: "string",
     catalogId: "string", catalogType: "string", aliases: "list", sourceMeta: "object", addedAt: time, episodes: "list" } },
   // Where you are in one file of a title. id: "<infohash>/<file index>".
-  "video.progress": { schema: 1, id: /^[0-9a-f]{40}\/\d{1,6}$/, fields: {
+  "video.progress": { schema: 1, id: /^[0-9a-f]{40}\/\d{1,6}$/, required: ["positionMs", "durationMs", "finished"], fields: {
     positionMs: count, durationMs: count, finished: "boolean" } },
   // Episodes marked watched or unwatched by hand. id: "<series key>/<code, like S01E02>".
-  "video.watched": { schema: 1, id: anyId, fields: { watched: "boolean" } },
+  "video.watched": { schema: 1, id: anyId, required: ["watched"], fields: { watched: "boolean" } },
   // Your tracking status of a series (CURRENT, PLANNING, COMPLETED…). id: the series key.
   "video.status": { schema: 1, id: anyId, fields: { status: "string", automatic: "boolean" } },
   // A comic in Library › Comics. id: "anilist-<id>".
-  "comic.library": { schema: 1, id: anilistWork, fields: { status: "string", title: "string", work: "object" } },
+  "comic.library": { schema: 1, id: anilistWork, required: ["status"], fields: { status: "string", title: "string", work: "object" } },
   // A source linked to a comic. id: joinId(work, kind, source id, the source's manga path).
   "comic.source": { schema: 1, id: anyId, fields: { name: "string", title: "string", lang: "string", pkg: "string" } },
   // Reading progress in a chapter from a source. id: joinId(source id, chapter path).
@@ -93,7 +97,7 @@ const isPlainObject = (value) => Boolean(value) && typeof value === "object" && 
   && Object.getPrototypeOf(value) === Object.prototype;
 const byteSize = (value) => new TextEncoder().encode(JSON.stringify(value)).length;
 
-export function createRegistry(types = RECORD_TYPES) {
+export function createRegistry(types = RECORD_TYPES, { now = Date.now } = {}) {
   for (const [name, type] of Object.entries(types)) {
     if (!TYPE_NAME.test(name) || !Number.isInteger(type.schema) || type.schema < 1) throw new Error(`Invalid sync type ${name}`);
     for (let from = 1; from < type.schema; from += 1)
@@ -119,6 +123,7 @@ export function createRegistry(types = RECORD_TYPES) {
     if (typeof raw.id !== "string" || !raw.id || raw.id.length > MAX_ID || /[\u0000-\u001f\u007f]/.test(raw.id)) return { status: "invalid", reason: "bad id" };
     const stamp = parseStamp(raw.at);
     if (!stamp || !DEVICE_ID.test(stamp.device)) return { status: "invalid", reason: "bad stamp" };
+    if (stamp.ms > now() + MAX_AHEAD_MS) return { status: "invalid", reason: "stamp in the future" };
     if (!Number.isInteger(raw.schema) || raw.schema < 1) return { status: "invalid", reason: "bad schema" };
     if (raw.value !== null && !isPlainObject(raw.value)) return { status: "invalid", reason: "bad value" };
     if (raw.value !== null && byteSize(raw.value) > MAX_VALUE_BYTES) return { status: "invalid", reason: "value too large" };
@@ -129,7 +134,10 @@ export function createRegistry(types = RECORD_TYPES) {
     if (raw.schema > type.schema) return { status: "newer", change };
     let value = raw.value;
     for (let from = raw.schema; value !== null && from < type.schema; from += 1) value = type.upgrades[from](value);
-    return { status: "ok", change: { ...change, schema: type.schema, value: value === null ? null : clean(type, value) } };
+    const cleaned = value === null ? null : clean(type, value);
+    const missing = cleaned && (type.required || []).find((field) => !(field in cleaned));
+    if (missing) return { status: "invalid", reason: `bad or missing ${missing}` };
+    return { status: "ok", change: { ...change, schema: type.schema, value: cleaned } };
   }
 
   // A change made on this device. previous: the current change for the same item, if any;

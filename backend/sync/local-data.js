@@ -16,7 +16,7 @@ const pick = (object, keys) => Object.fromEntries(keys.filter((key) => present(o
 const episodeMeta = ({ progress, ...rest } = {}) => rest;
 const stampMs = (change) => parseStamp(change.at)?.ms || 0;
 
-export function createLocalData({ appState, db, recs }) {
+export function createLocalData({ appState, db, recs, log = console }) {
   const types = ["video.title", "video.progress", "video.watched", "rating.lvl", "comic.library"];
   const tableExists = (name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
@@ -78,6 +78,8 @@ export function createLocalData({ appState, db, recs }) {
           if (entry && Number(entry.updatedAt || entry.addedAt || 0) > at) continue;
           const episodes = Array.isArray(change.value.episodes) ? change.value.episodes : null;
           if (!entry) {
+            // A title that doesn't say what it is would be a blank Library card: wait for one that does.
+            if (!present(change.value.title) && !present(change.value.displayTitle)) continue;
             const created = { id: change.id, ...pick(change.value, TITLE_FIELDS), episodes: episodes || [], addedAt: change.value.addedAt || at, updatedAt: at };
             library.push(created);
             byId.set(change.id, created);
@@ -120,6 +122,7 @@ export function createLocalData({ appState, db, recs }) {
   }
 
   function applyRating(change, previous, done) {
+    if (!tableExists("rec_ratings")) return;
     const value = change.value || previous?.value || {};
     const existing = db.prepare("SELECT updated_at FROM rec_ratings WHERE rating_key = ?").get(change.id);
     if (existing && Number(existing.updated_at || 0) > stampMs(change)) return;
@@ -128,6 +131,7 @@ export function createLocalData({ appState, db, recs }) {
       if (identity.catalogId || identity.seriesKey) recs.setAppRating({ ...identity, score: null, status: null });
       else db.prepare("DELETE FROM rec_ratings WHERE rating_key = ? AND source = 'app'").run(change.id);
     } else {
+      if (!identity.catalogId && !identity.seriesKey) return;
       recs.setAppRating({ ...identity, title: value.title || "", kind: value.kind || null, year: value.year ?? null, score: value.score ?? null, status: value.status || null });
     }
     done.add(change);
@@ -164,8 +168,13 @@ export function createLocalData({ appState, db, recs }) {
       const library = changes.filter((change) => change.type.startsWith("video."));
       if (library.length) applyLibrary(library, done);
       for (const change of changes) {
-        if (change.type === "rating.lvl") applyRating(change, previous.get(`${change.type} ${change.id}`), done);
-        else if (change.type === "comic.library") applyComic(change, done);
+        // A change LVL's own stores refuse stays pending instead of failing the whole sync.
+        try {
+          if (change.type === "rating.lvl") applyRating(change, previous.get(`${change.type} ${change.id}`), done);
+          else if (change.type === "comic.library") applyComic(change, done);
+        } catch (error) {
+          log.warn?.(`Sync: ${change.type} ${String(change.id).slice(0, 80)} not applied: ${error.message}`);
+        }
       }
       return done;
     },

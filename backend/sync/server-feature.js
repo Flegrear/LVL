@@ -24,7 +24,8 @@ export const syncServerFeature = {
       db: ctx.db, getMeta: ctx.getMeta, setMeta: ctx.setMeta, github: createGitHub(), app: GITHUB_APP,
       local: createLocalData({ appState: ctx.appState, db: ctx.db, recs: ctx.recs }),
     });
-    const fail = (res, error) => ctx.json(res, Number(error.status) && error.status < 500 ? error.status : 502, { error: String(error.message || error).slice(0, 300) });
+    // LVL's own refusals keep their status (400, 503); anything GitHub answered is a 502.
+    const fail = (res, error) => ctx.json(res, !error.github && Number(error.status) && error.status < 500 ? error.status : 502, { error: String(error.message || error).slice(0, 300) });
     return {
       start: () => service.start(),
       stop: () => service.stop(),
@@ -35,19 +36,15 @@ export const syncServerFeature = {
           ctx.json(res, 200, service.status());
           return true;
         }
-        if (route === "github/repos") {
-          if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]);
-          try { ctx.json(res, 200, { repos: await service.repositories() }); } catch (error) { fail(res, error); }
-          return true;
-        }
         if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]);
         const input = await ctx.readJsonBody(req, 4096);
         const actions = {
           "github/start": () => service.startDevice({ renew: input.renew !== false }),
           "github/cancel": () => { service.cancelDevice(); return service.status(); },
           "github/token": () => service.useToken({ token: input.token }),
-          "github/repo": () => service.chooseRepo({ owner: input.owner, name: input.name }),
+          "github/find": () => service.findRepo(),
           passphrase: () => service.setPassphrase({ passphrase: input.passphrase }),
+          start: () => service.startSync({ encrypt: input.encrypt === true, passphrase: input.passphrase || "" }),
           now: async () => ({ ...(await service.syncNow()), status: service.status() }),
           "reload-shown": () => { service.acknowledgeReload(); return service.status(); },
           disconnect: () => service.disconnect(),
