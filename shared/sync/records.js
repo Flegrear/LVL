@@ -27,7 +27,7 @@ export const joinId = (...parts) => parts.map((part) => encodeURIComponent(Strin
 export const splitId = (id) => String(id).split("/").map((part) => decodeURIComponent(part));
 
 // Field kinds: "string" (up to 2000 characters), "text" (up to 20000), "number", "boolean",
-// "list" (up to 1000 items), "object". [kind, { min, max }] narrows numbers.
+// "list" (up to 1000 items), "object", "json" (any JSON value). [kind, { min, max }] narrows numbers.
 const CHECKS = {
   string: (value) => typeof value === "string" && value.length <= 2000,
   text: (value) => typeof value === "string" && value.length <= 20000,
@@ -35,59 +35,80 @@ const CHECKS = {
   boolean: (value) => typeof value === "boolean",
   list: (value) => Array.isArray(value) && value.length <= 1000,
   object: (value) => Boolean(value) && typeof value === "object" && !Array.isArray(value),
+  json: (value) => value !== undefined,
 };
 const fraction = ["number", { min: 0, max: 1 }];
 const count = ["number", { min: 0, max: 1e9 }];
 const time = ["number", { min: 0, max: 1e15 }];
 const anyId = /^[^\u0000-\u001f\u007f]{1,600}$/;
-const anilistWork = /^anilist-\d{1,10}$/;
+// A comic: its AniList work, or "local-<12 hex>" for a comic read from its sources (the hash of
+// its series key, so every device computes the same id).
+const workId = /^(?:anilist-[1-9]\d{0,9}|local-[0-9a-f]{12})$/;
+const sourceId = /^-?\d{1,20}$/;
+const score = ["number", { min: 0, max: 10 }];
 
 // schema: the current version of each type's value. upgrades[n]: value at schema n -> n + 1.
+// required: fields a change must have (with the right kind) to be applied.
 export const RECORD_TYPES = Object.freeze({
-  // A video title in the Library (series or movie) and where it plays from. id: the Library
-  // entry id (the torrent's infohash).
+  // A video title in the Library (a series, season pack or movie) and where it plays from.
+  // id: the Library entry id (the torrent's infohash). trackingStatus: Reading, Completed…
+  // (the same for every entry of a series). episodes: each file's metadata, without the
+  // position (video.progress) and without this device's file analysis.
   "video.title": { schema: 1, id: /^[0-9a-f]{40}$/, fields: {
-    title: "string", displayTitle: "string", seriesKey: "string", magnet: "text", coverUrl: "string",
-    catalogId: "string", catalogType: "string", aliases: "list", sourceMeta: "object", addedAt: time, episodes: "list" } },
-  // Where you are in one file of a title. id: "<infohash>/<file index>".
+    title: "string", displayTitle: "string", rawName: "string", seriesKey: "string", magnet: "text", coverUrl: "string",
+    catalogId: "string", catalogType: "string", mediaKind: "string", aliases: "list", sourceMeta: "object", addedAt: time,
+    trackingStatus: "string", artworkIndex: count, artworkSource: "string", artworkPinned: "boolean",
+    chapterFileIndexes: "list", chapterLabels: "object", episodes: "list" } },
+  // Where you are in one file of a title: resume at positionMs; progress is positionMs / durationMs.
+  // id: "<infohash>/<file index>".
   "video.progress": { schema: 1, id: /^[0-9a-f]{40}\/\d{1,6}$/, required: ["positionMs", "durationMs", "finished"], fields: {
     positionMs: count, durationMs: count, finished: "boolean" } },
-  // Episodes marked watched or unwatched by hand. id: "<series key>/<code, like S01E02>".
+  // An episode marked watched or unwatched by hand. id: joinId(<infohash>, <code, like S01E02>).
   "video.watched": { schema: 1, id: anyId, required: ["watched"], fields: { watched: "boolean" } },
-  // Your tracking status of a series (CURRENT, PLANNING, COMPLETED…). id: the series key.
-  "video.status": { schema: 1, id: anyId, fields: { status: "string", automatic: "boolean" } },
-  // A comic in Library › Comics. id: "anilist-<id>".
-  "comic.library": { schema: 1, id: anilistWork, required: ["status"], fields: { status: "string", title: "string", work: "object" } },
-  // A source linked to a comic. id: joinId(work, kind, source id, the source's manga path).
-  "comic.source": { schema: 1, id: anyId, fields: { name: "string", title: "string", lang: "string", pkg: "string" } },
-  // Reading progress in a chapter from a source. id: joinId(source id, chapter path).
-  "comic.read": { schema: 1, id: anyId, fields: { page: count, pages: count, finished: "boolean", workId: "string" } },
-  // A comic volume rating (LVL Manga). id: joinId(work, volume).
-  "comic.rating": { schema: 1, id: anyId, fields: { score: ["number", { min: 0, max: 10 }] } },
+  // A comic in Library › Comics. An AniList comic carries its card (work); a comic read from
+  // its sources carries its series key (seriesKey: "video:<IMDb id>#<n>" or "mihon:<source>:<path>"),
+  // its cover and the video page it was added on.
+  "comic.library": { schema: 1, id: workId, required: ["status"], fields: {
+    status: "string", title: "string", work: "object", seriesKey: "string", cover: "object", video: "object" } },
+  // A source chosen for a comic. id: joinId(<work id>, "ext", <source id>, <the comic's path on the source>).
+  "comic.source": { schema: 1, id: anyId, required: ["name"], fields: { name: "string", title: "string", lang: "string" } },
+  // Reading progress in a chapter read from a source: it opens on page (0-based) of pages.
+  // id: joinId(<source id>, <the chapter's path on the source>). chapter, volume: its numbers.
+  "comic.read": { schema: 1, id: anyId, required: ["workId", "page", "pages"], fields: {
+    workId: "string", page: count, pages: count, finished: "boolean", chapter: "string", volume: "string" } },
+  // A volume rating (LVL Manga). id: joinId(<work id>, <volume>); volume "" is the overall score.
+  "comic.rating": { schema: 1, id: anyId, required: ["score"], fields: { score: ["number", { min: 1, max: 10 }] } },
+  // A favorite source (Settings › Comics). id: the source's id in its extension. The address is
+  // where to start: each device follows the repository for moves and versions.
+  "comic.favorite": { schema: 1, id: sourceId, required: ["pkg", "name", "baseUrl"], fields: {
+    pkg: "string", extension: "string", name: "string", lang: "string", baseUrl: "string", nsfw: "boolean", settings: "object" } },
+  // An extension repository. id: its address. (Torznab indexers aren't synced: their keys stay on each device.)
+  "comic.repository": { schema: 1, id: /^https:\/\/[^\s"'<>]{4,590}$/, required: ["enabled"], fields: { name: "string", enabled: "boolean" } },
   // An LVL rating of a title or season. id: the ratings key.
   "rating.lvl": { schema: 1, id: anyId, fields: {
-    score: ["number", { min: 0, max: 10 }], title: "string", kind: "string", year: "number",
+    score, title: "string", kind: "string", year: "number",
     catalogId: "string", seriesKey: "string", season: "number", status: "string" } },
-  // Settings that make sense on every device (subtitle style, languages…). id: the setting.
-  "settings.shared": { schema: 1, id: /^[a-z][a-z0-9.-]{1,60}$/, fields: { value: "object" } },
-  // Books. Their ids must not depend on one device: a work is its catalog key (like the
-  // Books lane's work_key), and a file is identified by a fingerprint of its contents
-  // (the same EPUB on two devices), never by a local file number.
-  "book.library": { schema: 1, id: anyId, fields: {
-    status: "string", edition: "object", note: "text", progressPages: count, progressPercent: ["number", { min: 0, max: 100 }],
+  // A setting that makes sense on every device. id: the setting ("languages.interface",
+  // "subtitles.style"…); value: its value. Never secrets (API keys stay on each device).
+  "settings.shared": { schema: 1, id: /^[a-z][a-z0-9.-]{1,60}$/, required: ["value"], fields: { value: "json" } },
+  // Books. Their ids must not depend on one device: a work is its catalog key (the Books lane's
+  // work_key), a file is a fingerprint of its contents (the same EPUB on two devices), never a
+  // local file number; reads and shelves get a random id when they are made.
+  "book.library": { schema: 1, id: anyId, required: ["status"], fields: {
+    status: "string", snapshot: "object", edition: "object", note: "text", progressPages: count, progressPercent: ["number", { min: 0, max: 100 }],
     source: "string", title: "string" } },
   // Position in one book file. id: joinId(work key, file fingerprint). location is the
-  // format's own position (EPUB CFI, PDF page); fraction lets another file of the same work
-  // open at about the same place.
+  // format's own position (EPUB CFI, PDF page); fraction (0..1) is how far in, and lets another
+  // file of the same work open at about the same place.
   "book.progress": { schema: 1, id: anyId, fields: {
     location: "string", fraction, page: count, pages: count, label: "string", finished: "boolean", format: "string" } },
   // One read of a book, with dates (rereads keep their history). id: a random id per read.
-  "book.read": { schema: 1, id: anyId, fields: {
+  "book.read": { schema: 1, id: anyId, required: ["workKey"], fields: {
     workKey: "string", startedAt: "string", finishedAt: "string", status: "string",
     progressPages: count, progressPercent: ["number", { min: 0, max: 100 }] } },
-  "book.rating": { schema: 1, id: anyId, fields: { score: ["number", { min: 0, max: 10 }] } },
+  "book.rating": { schema: 1, id: anyId, required: ["score"], fields: { score } },
   // A shelf (id: a random id) and a book on it (id: joinId(shelf, work key)).
-  "book.shelf": { schema: 1, id: anyId, fields: { name: "string" } },
+  "book.shelf": { schema: 1, id: anyId, required: ["name"], fields: { name: "string" } },
   "book.shelf-item": { schema: 1, id: anyId, fields: { addedAt: time } },
   // A bookmark. id: joinId(work key, file fingerprint, location).
   "book.bookmark": { schema: 1, id: anyId, fields: { label: "string", fraction } },

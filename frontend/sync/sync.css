@@ -1,11 +1,54 @@
-/* Settings › Library › Sync (frontend/sync/feature.js). Uses the cards' own chips, buttons and notes. */
-.settings-sync-options { margin: 4px 0 14px; }
-.settings-sync-note { margin: 0 0 12px; color: var(--ui-text-3, #aaa); font: 500 13px/1.5 var(--font-sans); }
-.settings-sync-note strong { color: var(--ui-text, #eee); }
-.settings-sync-steps { margin: 0 0 12px; padding-left: 20px; color: var(--ui-text-3, #aaa); font: 500 13px/1.6 var(--font-sans); }
-.settings-sync-steps a, .settings-sync-note a { color: var(--ui-text, #eee); }
-.settings-sync-choices { display: grid; gap: 6px; margin: 0 0 12px; color: var(--ui-text-2, #ccc); font: 500 13px/1.5 var(--font-sans); }
-.settings-sync-input { min-width: 240px; padding: 7px 10px; border: 1px solid var(--ui-border, #333); border-radius: 8px; background: var(--ui-bg-raised, #111); color: var(--ui-text, #eee); font: 500 13px/1.4 var(--font-sans); }
-.settings-sync-code { margin: 4px 0 12px; font: 700 26px/1.2 ui-monospace, monospace; letter-spacing: .12em; }
-.settings-sync-token summary { cursor: pointer; margin: 4px 0 10px; color: var(--ui-text-2, #ccc); font: 500 13px/1.5 var(--font-sans); }
-.settings-sync-error { margin: 8px 0 0; color: #ff8a80; font: 500 13px/1.5 var(--font-sans); }
+/* Settings › Library › Sync (frontend/sync/feature.js), built from LVL's settings parts:
+   chips, the raised panel of the AniList card, settings fields, switches and stat tiles. */
+.settings-sync-body { display: grid; gap: 14px; }
+.settings-sync-body .settings-sync-options { margin: 0; }
+.settings-sync-body .settings-hint a, .sync-repo { color: var(--ui-text); text-decoration: underline; text-decoration-color: var(--ui-line-hover); text-underline-offset: 3px; }
+.sync-panel { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--ui-line-subtle); border-radius: var(--ui-radius-lg); background: var(--ui-bg-raised); }
+.sync-panel > *, .sync-panel .settings-hint { margin: 0; }
+.sync-panel > .ui-btn--ghost { justify-self: start; }
+
+/* Numbered steps, each with its button on the right. */
+.sync-steps { display: grid; margin: 0; padding: 0; list-style: none; }
+.sync-step { display: grid; grid-template-columns: 28px minmax(0, 1fr) auto; align-items: center; gap: 14px; padding: 13px 0; border-top: 1px solid var(--ui-line-subtle); }
+.sync-step:first-child { padding-top: 0; border-top: 0; }
+.sync-step:last-child { padding-bottom: 0; }
+.sync-step__mark { display: grid; place-items: center; width: 28px; height: 28px; border: 1px solid var(--ui-line-strong); border-radius: 50%; color: var(--ui-text-2); font: 600 12px/1 var(--ui-font-mono); }
+.sync-step.is-done .sync-step__mark { border-color: var(--ui-inverse); background: var(--ui-inverse); color: var(--ui-inverse-text); }
+.sync-step__mark .ui-icon { width: 14px; height: 14px; }
+.sync-step__text { display: grid; gap: 4px; min-width: 0; }
+.sync-step__text strong { color: var(--ui-text); font: 600 14px/1.3 var(--font-sans); }
+.sync-step__text small { color: var(--ui-muted); font: 400 12px/1.5 var(--font-sans); }
+.sync-link .ui-icon { width: 14px; height: 14px; }
+
+/* A field with its button (token, passphrase). */
+.sync-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; align-items: end; max-width: 620px; }
+.sync-form > .ui-btn { min-height: 40px; }
+.sync-form input[name="token"] { font-family: var(--ui-font-mono); letter-spacing: .02em; }
+.sync-start, .sync-pass { display: grid; gap: 12px; }
+.sync-pass[hidden] { display: none; }
+.sync-pass__fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; max-width: 620px; }
+
+.sync-signin { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 24px; }
+.sync-account { display: flex; align-items: center; gap: 12px; padding-bottom: 14px; border-bottom: 1px solid var(--ui-line-subtle); }
+.sync-account__text { display: grid; flex: 1; gap: 3px; min-width: 0; }
+.sync-account__text strong { overflow: hidden; color: var(--ui-text); font: 600 15px/1.3 var(--font-sans); text-overflow: ellipsis; white-space: nowrap; }
+.sync-account__text small { color: var(--ui-muted); font: 500 12px/1.4 var(--font-sans); }
+
+/* The device code, large and easy to copy. */
+.sync-code { display: flex; align-items: center; justify-content: space-between; gap: 12px; width: fit-content; min-width: min(320px, 100%); padding: 12px 12px 12px 18px;
+  border: 1px dashed var(--ui-line-strong); border-radius: var(--ui-radius-md); background: var(--ui-surface); color: var(--ui-text); font: 700 26px/1 var(--ui-font-mono); letter-spacing: .14em; }
+
+.sync-stats .ui-stat { padding: 12px 14px; background: var(--ui-surface); }
+.sync-stats .ui-stat__value { margin-top: 8px; font-size: 20px; }
+.sync-banner { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px 14px; padding: 12px 14px; border: 1px solid var(--ui-line-strong);
+  border-radius: var(--ui-radius-md); color: var(--ui-text-2); font: 500 13px/1.45 var(--font-sans); }
+.sync-soon { display: grid; justify-items: start; gap: 10px; }
+.sync-panel .ui-status { margin: 0; }
+.sync-spinner { flex: 0 0 auto; width: 14px; height: 14px; border: 2px solid var(--ui-line-strong); border-top-color: var(--ui-text); border-radius: 50%; animation: sync-spin .8s linear infinite; }
+@keyframes sync-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .sync-spinner { animation: none; } }
+@media (max-width: 680px) {
+  .sync-step { grid-template-columns: 28px minmax(0, 1fr); }
+  .sync-step > .ui-btn { grid-column: 2; justify-self: start; }
+  .sync-form, .sync-pass__fields { grid-template-columns: minmax(0, 1fr); }
+}

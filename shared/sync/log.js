@@ -7,7 +7,8 @@
 // Files are plain JSON by default; with the passphrase option every file except lvl-sync.json
 // is encrypted (crypto.js), its path bound to it.
 // storage: { list() -> [{ path, version }], read(path, version) -> text,
-//            write(path, text, { version }) -> new version }
+//            write(path, text, { version }) -> new version,
+//            head() -> { version } (optional: the whole storage's version, cheap to ask) }
 import { SYNC_FORMAT, SYNC_FORMAT_VERSION } from "./records.js";
 import { decryptText, encryptText, makeCheck, newKdfSettings } from "./crypto.js";
 
@@ -53,7 +54,7 @@ export function createSyncLog({ storage, device, key = null }) {
   return {
     // Everything new since `seen` ({ path: version } of files already read): snapshots that
     // changed, then change files not read yet. Returns the changes, the new `seen`, the
-    // files skipped, and the next number for this device's own change files.
+    // files skipped, the next number for this device's own change files, and every path listed.
     async pull(seen = {}) {
       const files = await storage.list();
       const next = { ...seen };
@@ -93,7 +94,7 @@ export function createSyncLog({ storage, device, key = null }) {
         next[file.path] = file.version;
         if (content) changes.push(...content.changes);
       }
-      return { changes, seen: next, skipped, nextSeq: ownLast + 1 };
+      return { changes, seen: next, skipped, nextSeq: ownLast + 1, paths: new Set(files.map((file) => file.path)) };
     },
     // Writes this device's next change file.
     async push(changes, seq) {
@@ -117,6 +118,7 @@ export function memoryStorage() {
   let counter = 0;
   return {
     files,
+    async head() { return { version: `h${counter}` }; },
     async list() { return [...files].map(([path, file]) => ({ path, version: file.version })); },
     async read(path) {
       if (!files.has(path)) throw Object.assign(new Error(`${path} is missing`), { code: "missing" });

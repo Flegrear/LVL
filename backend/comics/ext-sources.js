@@ -12,6 +12,8 @@ import { EXT_CHAPTER_ID, SOURCE_ID } from "../../shared/reading/ids.js";
 export { EXT_CHAPTER_ID };
 const PKG = /^[A-Za-z0-9_.]{3,160}$/;
 const EXT = "eu.kanade.tachiyomi.extension.";
+// A source chapter's id: the same on every device for the same source and chapter path.
+export const extChapterId = (sourceId, path) => `ex-${crypto.createHash("sha256").update(`${sourceId}\n${path}`).digest("hex").slice(0, 20)}`;
 
 // Favorites a new profile starts with (all from keiyoushi).
 // Removing one keeps it removed. Versions and site moves come from the repository.
@@ -141,7 +143,7 @@ export function createExtSources({ db, now = Date.now, defaults = DEFAULT_FAVORI
     },
     support: (pkg) => support(String(pkg)),
     chapterId(sourceId, path) {
-      const id = `ex-${crypto.createHash("sha256").update(`${sourceId}\n${path}`).digest("hex").slice(0, 20)}`;
+      const id = extChapterId(sourceId, path);
       insertChapter.run(id, String(sourceId), String(path), now());
       return id;
     },

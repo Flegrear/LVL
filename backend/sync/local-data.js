@@ -2,22 +2,28 @@
 // - Library (the app-state "library" section): video.title, video.progress, video.watched.
 //   Changes are written with the section's revision check, like another LVL window's edit.
 // - LVL ratings (rec_ratings, source "app"): rating.lvl, through the ratings store.
-// - Comics library (comic_library): comic.library.
+// - Comics: comics-data.js.
+// mark(): a short text that changes whenever synced data may have changed (section times, row
+// counts and newest times), so the sync service compares everything only when it moved.
 // An incoming change older than the same item here (by the item's own time) isn't applied:
 // the next export sends the newer local value instead. This keeps the newest data the first
 // time two devices with their own data meet.
 import { joinId, splitId } from "../../shared/sync/records.js";
 import { parseStamp } from "../../shared/sync/clock.js";
+import { COMIC_TYPES, createComicsData } from "./comics-data.js";
 
-const TITLE_FIELDS = ["title", "displayTitle", "seriesKey", "magnet", "coverUrl", "catalogId", "catalogType", "aliases", "sourceMeta", "addedAt"];
+const TITLE_FIELDS = ["title", "displayTitle", "rawName", "seriesKey", "magnet", "coverUrl", "catalogId", "catalogType", "mediaKind", "aliases", "sourceMeta",
+  "addedAt", "trackingStatus", "artworkIndex", "artworkSource", "artworkPinned", "chapterFileIndexes", "chapterLabels"];
 const HASH_ID = /^[0-9a-f]{40}$/;
 const present = (value) => value !== undefined && value !== null && value !== "";
 const pick = (object, keys) => Object.fromEntries(keys.filter((key) => present(object?.[key])).map((key) => [key, object[key]]));
-const episodeMeta = ({ progress, ...rest } = {}) => rest;
+// An episode's metadata as synced: not its position (video.progress) and not this device's analysis of the file.
+const episodeMeta = ({ progress, analysis, ...rest } = {}) => rest;
 const stampMs = (change) => parseStamp(change.at)?.ms || 0;
 
 export function createLocalData({ appState, db, recs, log = console }) {
-  const types = ["video.title", "video.progress", "video.watched", "rating.lvl", "comic.library"];
+  const comics = createComicsData({ db });
+  const types = ["video.title", "video.progress", "video.watched", "rating.lvl", ...COMIC_TYPES];
   const tableExists = (name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
   function exportLibrary(out) {
@@ -44,15 +50,6 @@ export function createLocalData({ appState, db, recs, log = console }) {
       out.push({ type: "rating.lvl", id: row.rating_key, value: pick({
         catalogId: row.catalog_id, seriesKey: row.series_key, season: row.season, title: row.title, kind: row.kind,
         year: row.year, score: row.score, status: row.status }, ["catalogId", "seriesKey", "season", "title", "kind", "year", "score", "status"]) });
-    }
-  }
-
-  function exportComics(out) {
-    if (!tableExists("comic_library")) return;
-    for (const row of db.prepare("SELECT anilist_id, status, work_json FROM comic_library").all()) {
-      let work = {};
-      try { work = JSON.parse(row.work_json || "{}") || {}; } catch {}
-      out.push({ type: "comic.library", id: `anilist-${row.anilist_id}`, value: pick({ status: row.status, title: work.title, work }, ["status", "title", "work"]) });
     }
   }
 
@@ -84,9 +81,15 @@ export function createLocalData({ appState, db, recs, log = console }) {
             library.push(created);
             byId.set(change.id, created);
           } else {
-            const progress = new Map((entry.episodes || []).map((episode) => [Number(episode.fileIndex), episode.progress]));
+            const known = new Map((entry.episodes || []).map((episode) => [Number(episode.fileIndex), episode]));
             Object.assign(entry, pick(change.value, TITLE_FIELDS));
-            if (episodes) entry.episodes = episodes.map((episode) => (progress.get(Number(episode.fileIndex)) ? { ...episode, progress: progress.get(Number(episode.fileIndex)) } : { ...episode }));
+            // The other device's episode metadata over this one's; this device's file analysis and positions stay.
+            if (episodes) {
+              entry.episodes = episodes.map((episode) => {
+                const mine = known.get(Number(episode.fileIndex));
+                return mine ? { ...mine, ...episode, ...(mine.progress ? { progress: mine.progress } : {}) } : { ...episode };
+              });
+            }
           }
           appliedNow.push(change);
         } else if (change.type === "video.progress") {
@@ -137,28 +140,13 @@ export function createLocalData({ appState, db, recs, log = console }) {
     done.add(change);
   }
 
-  function applyComic(change, done) {
-    if (!tableExists("comic_library")) return;
-    const anilistId = Number(change.id.slice("anilist-".length));
-    const existing = db.prepare("SELECT updated_at FROM comic_library WHERE anilist_id = ?").get(anilistId);
-    if (existing && Number(existing.updated_at || 0) > stampMs(change)) return;
-    if (change.value === null) db.prepare("DELETE FROM comic_library WHERE anilist_id = ?").run(anilistId);
-    else {
-      const at = stampMs(change);
-      db.prepare(`INSERT INTO comic_library (anilist_id, status, work_json, added_at, updated_at) VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(anilist_id) DO UPDATE SET status = excluded.status, work_json = excluded.work_json, updated_at = excluded.updated_at`)
-        .run(anilistId, change.value.status || "PLANNING", JSON.stringify(change.value.work || {}), at, at);
-    }
-    done.add(change);
-  }
-
   return {
     types,
     export() {
       const out = [];
       exportLibrary(out);
       exportRatings(out);
-      exportComics(out);
+      comics.export(out);
       return out;
     },
     // Applies changes; returns the ones applied (the rest stay pending, or a newer local
@@ -167,16 +155,21 @@ export function createLocalData({ appState, db, recs, log = console }) {
       const done = new Set();
       const library = changes.filter((change) => change.type.startsWith("video."));
       if (library.length) applyLibrary(library, done);
-      for (const change of changes) {
+      const order = (change) => (change.type === "rating.lvl" ? -1 : COMIC_TYPES.indexOf(change.type));
+      for (const change of changes.filter((item) => order(item) !== -1 || item.type === "rating.lvl").sort((a, b) => order(a) - order(b))) {
         // A change LVL's own stores refuse stays pending instead of failing the whole sync.
         try {
           if (change.type === "rating.lvl") applyRating(change, previous.get(`${change.type} ${change.id}`), done);
-          else if (change.type === "comic.library") applyComic(change, done);
+          else comics.apply(change, done);
         } catch (error) {
           log.warn?.(`Sync: ${change.type} ${String(change.id).slice(0, 80)} not applied: ${error.message}`);
         }
       }
       return done;
+    },
+    mark() {
+      const ratings = tableExists("rec_ratings") ? db.prepare("SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM rec_ratings WHERE source = 'app'").get() : null;
+      return [appState.sectionUpdatedAt("library"), ratings ? `${ratings.n}.${ratings.t ?? 0}` : "-", comics.mark()].join("|");
     },
   };
 }
