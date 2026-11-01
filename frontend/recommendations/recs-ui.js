@@ -52,24 +52,6 @@ export function timeUntil(ms, now = Date.now()) {
   return hours < 36 ? `in ${hours} h` : `in ${Math.round(hours / 24)} days`;
 }
 
-/**
- * Public username imports are anonymous. For the SAME already-connected AniList
- * Viewer, use the authenticated, direct-browser list import instead: private
- * profiles legitimately return HTTP 404 to anonymous requests.
- * This function never receives a bearer token or sends one to LVL's server.
- */
-export async function linkAniListUsername({ username, connectedUsername = "", importConnectedAniList = null, postJson }) {
-  const ownProfile = Boolean(connectedUsername && String(username).trim().toLowerCase() === String(connectedUsername).trim().toLowerCase()
-    && typeof importConnectedAniList === "function");
-  if (ownProfile) return { data: await importConnectedAniList(), authenticated: true };
-  try { return { data: await postJson("/api/recs/anilist/link", { username }), authenticated: false }; }
-  catch (error) {
-    if (/\b(?:HTTP|status|request failed)\s*\(?404\)?\b/i.test(error?.message || ""))
-      throw new Error("AniList could not read that public profile. If this is your account, connect AniList below to import a private list.");
-    throw error;
-  }
-}
-
 const take = (from) => (hasScore(from.score) ? `you rated ${formatScore(from.score)}` : STATUS_TAKE[from.status] || "you watched");
 function personalVsPublic(from) {
   if (!hasScore(from.score)) return "";
@@ -225,7 +207,7 @@ export function picksShelfMarkup(overview, { place = "home", category = "all" } 
  *          homeCategory, onHomeChange, onTitleChange }
  */
 export function createRecsUi(hooks) {
-  const { $, fetchJson, postJson, setToolStatus, openTitlePage, openSettings, isViewActive, homeCategory, onHomeChange, onTitleChange, showHomePicks = () => {}, onAniListChange = () => {}, onOverview = () => {}, getConnectedAniListUsername = () => "", importConnectedAniList = null, getAniListScoreSyncState = () => ({ enabled: false }), getAniListScorePending = () => null, onRatingSaved = async () => "" } = hooks;
+  const { $, fetchJson, postJson, setToolStatus, openTitlePage, openSettings, isViewActive, homeCategory, onHomeChange, onTitleChange, showHomePicks = () => {}, onOverview = () => {}, getAniListScoreSyncState = () => ({ enabled: false }), getAniListScorePending = () => null, onRatingSaved = async () => "" } = hooks;
   const $$ = (selector) => [...document.querySelectorAll(selector)];
   const openPicks = () => { void Promise.resolve(showHomePicks()).catch(() => {}); };
   let overview = null;
@@ -394,12 +376,6 @@ export function createRecsUi(hooks) {
     setText("#recs-rated-count", total ? plural(total, "rating") : "");
     show("#recs-rated-count", Boolean(total));
 
-    const anilist = settings.anilist;
-    show("#recs-anilist-form", !anilist);
-    show("#recs-anilist-linked", Boolean(anilist));
-    setText("#recs-anilist-usage", anilist ? `Ratings linked: ${anilist.username}` : "Not linked");
-    setText("#recs-anilist-note", anilist ? `${plural(anilist.count, "anime", "anime")}, ${plural(anilist.scored, "with a score", "with a score")}, synced ${timeAgo(anilist.syncedAt)}` : "");
-
     const letterboxd = settings.letterboxd;
     const feed = Boolean(letterboxd?.username);
     show("#recs-letterboxd-form", !feed);
@@ -478,28 +454,6 @@ export function createRecsUi(hooks) {
 
   function wireSettings() {
     const ratingsStatus = "#recs-ratings-status";
-    $("#recs-anilist-form")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const username = $("#recs-anilist-name")?.value.trim() || "";
-      if (!username) return setToolStatus(ratingsStatus, "Enter your AniList user name", true);
-      // A private AniList list is invisible to the anonymous username API.
-      // When this is already the connected Viewer, use the existing direct-
-      // browser authenticated importer instead of a guaranteed public 404.
-      // Never use the connected token to read a DIFFERENT username's list.
-      const connected = String(getConnectedAniListUsername() || "").trim();
-      const useViewer = Boolean(connected && connected.toLowerCase() === username.toLowerCase()
-        && typeof importConnectedAniList === "function");
-      void act(event.submitter, async () => {
-        const { data } = await linkAniListUsername({ username,
-          connectedUsername: connected, importConnectedAniList, postJson });
-        // The server has linked the list, but the Library import may still take
-        // time to match catalog titles. Wait before reporting completion.
-        await onAniListChange(true, ratingsStatus, { skipAuthPull: true });
-        return data;
-      }, { status: ratingsStatus,
-        busy: useViewer ? "Importing your connected AniList list into the Library…" : "Reading AniList and importing titles into the Library…",
-        done: (data) => `Linked and imported: ${plural(data.settings.anilist?.count, "anime", "anime")}` });
-    });
     $("#recs-letterboxd-form")?.addEventListener("submit", (event) => {
       event.preventDefault();
       const username = $("#recs-letterboxd-name")?.value.trim() || "";

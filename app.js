@@ -270,7 +270,6 @@ const state = {
   homeLoaded: false,
   homeCatalogUpdatedAt: 0,
   library: readStorageArray("blackline-library"),
-  autoArtwork: localStorage.getItem("blackline-auto-artwork") === "1",
   subdlKey: localStorage.getItem("blackline-subdl-key") || "",
   wyzieKey: localStorage.getItem("blackline-wyzie-key") || "",
   subsourceKey: localStorage.getItem("blackline-subsource-key") || "",
@@ -340,17 +339,6 @@ const recsUi = createRecsUi({
   homeCategory: () => homeBrowseCategory,
   onHomeChange: () => { if (!clientFeatures.homeCategoryIds.includes(homeBrowseCategory)) renderHome(); },
   onTitleChange: () => refreshTitlePage(),
-  onAniListChange: (linked, status, { skipAuthPull = false } = {}) => {
-    if (!linked) return removeAniListLibrary();
-    localStorage.removeItem(ANILIST_LIBRARY_KEY);
-    return syncAniListLibrary({ status, skipAuthPull });
-  },
-  getConnectedAniListUsername: () => readAniListAccount(localStorage)?.username || "",
-  importConnectedAniList: async () => {
-    const account = readAniListAccount(localStorage);
-    if (!account) throw new Error("Connect your AniList account to import a private list.");
-    return syncAniListAuthenticatedRatings(account);
-  },
   onOverview: (overview) => maybeSyncAniListLibrary(overview),
   getAniListScoreSyncState: () => ({
     enabled: Boolean(readAniListAccount(localStorage)) && anilistScoreSyncEnabled(),
@@ -489,26 +477,6 @@ function applyPersistentSectionRevisions(revisions) {
     const revision = Number(value);
     if (Number.isFinite(revision) && revision >= 0) persistentAppSectionRevisions.set(section, revision);
   }
-}
-
-function reconcileEarlyLibraryEntries(saved, beforeHydration, afterUserEdits) {
-  // The user can add a Library title while SQLite is still hydrating. Overlay
-  // only actual in-session edits onto the authoritative disk snapshot. Never
-  // use the entire (possibly stale) browser cache as a replacement database.
-  const baseline = new Map((Array.isArray(beforeHydration) ? beforeHydration : [])
-    .filter(item => item?.id).map(item => [String(item.id), item]));
-  const result = new Map((Array.isArray(saved) ? saved : [])
-    .filter(item => item?.id).map(item => [String(item.id), item]));
-  for (const item of Array.isArray(afterUserEdits) ? afterUserEdits : []) {
-    if (!item?.id) continue;
-    const id = String(item.id);
-    const previous = baseline.get(id);
-    if (previous && JSON.stringify(previous) === JSON.stringify(item)) continue;
-    const stored = result.get(id);
-    if (!stored || Number(item.updatedAt || item.addedAt || 0) > Number(stored.updatedAt || stored.addedAt || 0))
-      result.set(id, item);
-  }
-  return [...result.values()].slice(0, 5_000);
 }
 
 function copyPersistentLibrary(items) {
@@ -742,7 +710,6 @@ function saveTestResults() {
 
 function persistentPreferencesSnapshot() {
   return {
-    autoArtwork: Boolean(state.autoArtwork),
     subdlKey: String(state.subdlKey || ""),
     wyzieKey: String(state.wyzieKey || ""),
     subsourceKey: String(state.subsourceKey || ""),
@@ -989,7 +956,6 @@ function persistPreferences({ immediate = false } = {}) {
 
 function mirrorPersistentPreferencesToLocalStorage(preferences) {
   const prefs = preferences && typeof preferences === "object" ? preferences : {};
-  localStorage.setItem("blackline-auto-artwork", prefs.autoArtwork ? "1" : "0");
   localStorage.setItem("blackline-subdl-key", String(prefs.subdlKey || ""));
   localStorage.setItem("blackline-wyzie-key", String(prefs.wyzieKey || ""));
   localStorage.setItem("blackline-subsource-key", String(prefs.subsourceKey || ""));
@@ -1032,7 +998,6 @@ function applyPersistentAppState(snapshot = {}) {
   if (Array.isArray(snapshot.coachTranscripts)) state.coachTranscripts = snapshot.coachTranscripts.slice(-100);
   const prefs = snapshot.preferences && typeof snapshot.preferences === "object" && !Array.isArray(snapshot.preferences) ? snapshot.preferences : null;
   if (prefs) {
-    state.autoArtwork = Boolean(prefs.autoArtwork);
     state.subdlKey = String(prefs.subdlKey || "");
     state.wyzieKey = String(prefs.wyzieKey || "");
     state.subsourceKey = String(prefs.subsourceKey || "");
@@ -1625,23 +1590,6 @@ function persistVoiceChatSession({ replace = false } = {}) {
     .slice(0, 100);
   storeLocalCopy("blackline-coach-transcripts", state.coachTranscripts);
   persistAppSection("coachTranscripts", state.coachTranscripts, { merge: !replace });
-}
-
-function setVoiceMode(mode) {
-  const next = mode === "practice" ? "practice" : "live";
-  if (voiceChat.mode === next) return;
-  persistVoiceChatSession();
-  localStorage.setItem("blackline-voice-mode", next);
-  voiceChat.mode = next;
-  persistPreferences();
-  renderReview();
-}
-
-function setReviewMode(mode) {
-  reviewMode = mode === "voice" ? "voice" : "cards";
-  localStorage.setItem("blackline-review-mode", reviewMode);
-  persistPreferences();
-  renderReview();
 }
 
 function setReviewTab(tab) {
@@ -4311,10 +4259,6 @@ function renderSettings() {
     const keyed = [state.subdlKey, state.wyzieKey, state.subsourceKey].filter(Boolean).length;
     stateNode.textContent = t("{count} active", { count: 1 + keyed });
   }
-  const artworkToggle = $("#settings-auto-artwork");
-  const artworkState = $("#settings-artwork-state");
-  if (artworkToggle && document.activeElement !== artworkToggle) artworkToggle.checked = state.autoArtwork;
-  if (artworkState) artworkState.textContent = t(state.autoArtwork ? "On" : "Off");
   renderSettingsTabs();
   const pathNode = $("#settings-browser-coach-path");
   if (pathNode) pathNode.textContent = browserCoachStatus?.extensionPath || "browser-extension";
@@ -10095,10 +10039,6 @@ function replayStudyCard() {
   if (card.clipId || card.context) void openLinePreview(card);
 }
 
-async function replayCardSource(card) {
-  return openLinePreview(card);
-}
-
 window.addEventListener("message", (event) => {
   const frameNode = $("#study-card-frame");
   const data = event.data;
@@ -11663,47 +11603,6 @@ function switchView(view, { historyMode = "push", restoreScroll = false, query }
   if (view === "review" && reviewMode === "voice" && !coachProviders.length) void refreshCoachProviders();
   if (view === "home") void loadHomeCatalog();
   if (view === "watch") restoreLastWatchOnVisit();
-}
-
-function setLearningEnabled(enabled) {
-  const next = LEARNING_DEV_ENABLED && Boolean(enabled);
-  if (learningEnabled === next) return;
-  learningEnabled = next;
-  localStorage.setItem(LEARNING_ENABLED_KEY, next ? "1" : "0");
-  document.documentElement.dataset.learningMode = next ? "on" : "off";
-  if (!next) {
-    window.clearTimeout(clipPlanner.timer);
-    // Close learning popovers and active speech sessions. Playback and saved
-    // subtitle/card data are left alone so enabling the feature restores them.
-    for (const id of ["line-preview-dialog", "library-words-dialog", "top-words-dialog", "ankiweb-dialog"]) {
-      const dialog = $(`#${id}`);
-      if (dialog?.open) dialog.close();
-    }
-    if (voiceChat.providerConversationId || voiceChat.providerLive || voiceChat.liveStarting) void closeLiveCoachSession();
-    try { voiceRecognition?.abort?.(); } catch {}
-    stopVoiceSpeech({ render: false });
-    stopStudySounds();
-    if (settingsView.tab === "coach") {
-      settingsView.tab = "general";
-      localStorage.setItem("blackline-settings-tab", "general");
-    }
-    if (["study", "review", "test"].some((view) => viewActive(view))) switchView("home", { historyMode: "replace" });
-  }
-  renderSettingsTabs();
-  renderSubtitles();
-  if (next) {
-    renderAll();
-    // Re-enabling while a video is already playing must restart the learning
-    // work; the player's `playing` event will not fire again automatically.
-    if (frame.classList.contains("has-video") && !video.paused) {
-      scheduleClipStep(5000);
-    }
-    if (viewActive("settings")) {
-      if (!coachProviders.length) void refreshCoachProviders();
-      if (!browserCoachStatus && !browserCoachChecking) void refreshBrowserCoachStatus();
-    }
-    if (state.wordColoring || state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
-  }
 }
 
 async function handleSubtitleFiles(files) {
@@ -14970,10 +14869,9 @@ function cleanArtworkQuery(title) {
     .trim();
 }
 
-// Poster messages go to Settings, and also show as a toast when the Library is on screen.
+// Poster messages show as a toast.
 function artworkNotice(message, error = false) {
-  setToolStatus("#settings-artwork-message", message, error);
-  if (!$("#view-settings")?.classList.contains("is-active")) toast(message, { tone: error ? "error" : "default" });
+  toast(message, { tone: error ? "error" : "default" });
 }
 
 async function fetchArtworkForSeriesKey(seriesKey, { advance = false, quiet = false, rerender = true } = {}) {
@@ -14984,7 +14882,6 @@ async function fetchArtworkForSeriesKey(seriesKey, { advance = false, quiet = fa
     if (!advance && (series.artworkPinned || ["CUSTOM", "TVMAZE", "MANUAL"].includes(String(series.artworkSource || "").toUpperCase()))) return false;
     const query = cleanArtworkQuery(series.title);
     if (!query) return false;
-    if (!quiet) setToolStatus("#settings-artwork-message", `Looking for a poster for ${query}…`);
     const data = await fetchJson(`/api/images/search?q=${encodeURIComponent(query)}`);
     const candidates = Array.isArray(data.results) ? data.results.filter((item) => item?.url) : [];
     if (!candidates.length) {
@@ -15012,21 +14909,6 @@ async function fetchArtworkForSeriesKey(seriesKey, { advance = false, quiet = fa
   }).finally(() => artworkFetches.delete(seriesKey));
   artworkFetches.set(seriesKey, task);
   return task;
-}
-
-async function fetchMissingLibraryArtwork() {
-  const groups = buildLibrarySeries().filter((series) => !series.coverUrl);
-  if (!groups.length) {
-    setToolStatus("#settings-artwork-message", "Every title already has a poster");
-    return;
-  }
-  let updated = 0;
-  for (let index = 0; index < groups.length; index += 1) {
-    setToolStatus("#settings-artwork-message", `Looking for posters: ${index + 1} of ${groups.length}`);
-    if (await fetchArtworkForSeriesKey(groups[index].key, { quiet: true, rerender: false })) updated += 1;
-  }
-  if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
-  setToolStatus("#settings-artwork-message", `Found ${updated} of ${groups.length} poster${groups.length === 1 ? "" : "s"}${updated < groups.length ? "; the others had no match" : ""}`, updated === 0);
 }
 
 // Popup menus (title actions, More): open at the pointer (right-click) or under their button,
@@ -17314,13 +17196,6 @@ function applyAniListLibrary(shows, { accountUserId = null } = {}) {
   return { added, marked: plan.annotate.length, removed: gone.size, total: shows.length };
 }
 
-// Unlinking AniList: its titles leave the Library (unless they have videos now), and your own
-// titles lose their AniList status.
-function removeAniListLibrary() {
-  localStorage.removeItem(ANILIST_LIBRARY_KEY);
-  return applyAniListLibrary([]);
-}
-
 function catalogSeriesKey(meta) {
   return librarySeriesKey(meta?.name || meta?.id || "untitled");
 }
@@ -19268,12 +19143,6 @@ function closeRandomPickPopover({ restoreFocus = false } = {}) {
     suppressRandomFocusPreview = true;
     visibleRandomPickTrigger()?.focus({ preventScroll: true });
   }
-}
-function showRandomPickMessage(title, message, { reasons = [] } = {}) {
-  const details = reasons.length ? reasons : [message];
-  showRandomPickPopover(`<p class="random-pick-title">${escapeHtml(title)}</p>
-    <ul class="random-pick-reasons">${details.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>
-    <button class="random-pick-dismiss" type="button" data-random-mode="close">Dismiss</button>`);
 }
 function showRandomPickReason(pick) {
   const groups = reasonGroups(pick);

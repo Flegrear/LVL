@@ -7,7 +7,6 @@ function localeInstruction(target, base, targetLocale, baseLocale) {
   const native = normalizeLearningLocale(base, baseLocale);
   return `Use the learner's target variant ${learning} for vocabulary, grammar and pronunciation guidance, and ${native} for base-language explanations. ${learning === "es-AR" ? "Use broad Argentine Spanish, including natural voseo (vos), without caricaturing a local accent." : learning === "es" ? "Use broadly understood neutral Spanish and accept regional alternatives." : "Use this broad regional variant and accept other valid regional alternatives."}`;
 }
-export const COACH_MODES = Object.freeze(["practice", "live"]);
 export const COACH_LIVE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 export const COACH_LIVE_PRESET_LIMITS = Object.freeze({
   id: 80,

@@ -5261,14 +5261,6 @@ async function readBoundedResponse(response, maxBytes) {
   return Buffer.concat(chunks);
 }
 
-function assTimestampToVtt(value) {
-  const match = String(value || "").trim().match(/^(\d+):(\d{2}):(\d{2})[.](\d{1,2})$/);
-  if (!match) return null;
-  const hours = String(Number(match[1])).padStart(2, "0");
-  const centiseconds = Number(match[4].padEnd(2, "0").slice(0, 2));
-  return `${hours}:${match[2]}:${match[3]}.${String(centiseconds * 10).padStart(3, "0")}`;
-}
-
 function assToWebVtt(text) {
   // Respect ASS event formatting and drawing mode; the old token stripper
   // exposed vector coordinates as subtitles and duplicated styled overlays.

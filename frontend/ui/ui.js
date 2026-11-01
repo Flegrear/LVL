@@ -79,8 +79,6 @@ const ICON_PATHS = Object.freeze({
   bookmark: '<path d="M7 4.5h10v15l-5-3.5-5 3.5z"/>',
 });
 
-export const ICON_NAMES = Object.freeze(Object.keys(ICON_PATHS));
-
 export function icon(name, { className = "" } = {}) {
   const paths = ICON_PATHS[name];
   if (!paths) return "";
@@ -401,37 +399,6 @@ export function bindTabs(tablist, { onChange } = {}) {
     if (!next) return;
     event.preventDefault();
     select(next, { focus: true });
-  });
-}
-
-// Single-select groups (segmented controls) and multi-select chips, driven by aria-pressed.
-export function bindPressables(root = document) {
-  root?.querySelectorAll?.("[data-ui-toggle-group]").forEach((group) => {
-    if (group.dataset.uiBound === "1") return;
-    group.dataset.uiBound = "1";
-    const single = group.dataset.uiToggleGroup === "single";
-    group.addEventListener("click", (event) => {
-      const button = event.target.closest("button[aria-pressed]");
-      if (!button || !group.contains(button)) return;
-      if (single) group.querySelectorAll("button[aria-pressed]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
-      else button.setAttribute("aria-pressed", String(button.getAttribute("aria-pressed") !== "true"));
-      group.dispatchEvent(new CustomEvent("ui-change", { bubbles: true, detail: { value: button.dataset.value || "" } }));
-    });
-  });
-}
-
-export function bindRanges(root = document) {
-  root?.querySelectorAll?.("input.ui-range").forEach((input) => {
-    const update = () => {
-      const min = Number(input.min) || 0;
-      const max = Number(input.max) || 100;
-      const percent = max > min ? ((Number(input.value) - min) / (max - min)) * 100 : 0;
-      input.style.setProperty("--ui-range-fill", `${Math.max(0, Math.min(100, percent))}%`);
-    };
-    update();
-    if (input.dataset.uiBound === "1") return;
-    input.dataset.uiBound = "1";
-    input.addEventListener("input", update);
   });
 }
 

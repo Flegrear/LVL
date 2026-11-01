@@ -85,11 +85,6 @@ export function createPlaybackRecoveryState(currentSourceKey = "", currentSource
   };
 }
 
-export function resetPlaybackRecovery(state, currentSourceKey = state?.sourceKey || "", options = {}) {
-  return createPlaybackRecoveryState(currentSourceKey,
-    hasGeneration(options) ? options.sourceGeneration : state?.sourceGeneration);
-}
-
 // A requested recovery switch is remembered in pendingSourceKey. Confirming that exact source
 // preserves the incident history so a bad pair of sources cannot bounce back and forth forever.
 // Any other source change is treated as an explicit/new playback choice and starts fresh.

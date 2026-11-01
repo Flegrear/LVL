@@ -169,16 +169,6 @@ export function typeAnswerDiff(expected, typed) {
 
 /* ---------------------------------------------------------------- questions */
 
-export function seededRandom(seed = Date.now()) {
-  let value = (Number(seed) >>> 0) || 1;
-  return () => {
-    value ^= value << 13; value >>>= 0;
-    value ^= value >>> 17;
-    value ^= value << 5; value >>>= 0;
-    return value / 4294967296;
-  };
-}
-
 export function shuffle(list, random = Math.random) {
   const output = list.slice();
   for (let index = output.length - 1; index > 0; index -= 1) {
