@@ -8,7 +8,9 @@ import {
   buttonMarkup,
   cardLibraryActionMarkup,
   cardMarkup,
+  confirmDialog,
   emptyMarkup,
+  escapeHtml,
   heroDetailsButtonMarkup,
   heroLibraryButtonMarkup,
   heroMarkup,
@@ -18,6 +20,7 @@ import {
   installImageFallbacks,
   installTips,
   metaMarkup,
+  promptDialog,
   refreshImages,
   setActiveTab,
   shelfMarkup,
@@ -3774,7 +3777,8 @@ async function saveStorageLimits(changes) {
       const affected = Number(error.data.clipCount) || 0;
       const used = formatStorage(Number(error.data.usedBytes) || 0);
       const requested = formatStorage(Number(error.data.requestedBytes) || 0);
-      if (!window.confirm(`Your ${affected} saved learning clips use ${used}, more than the new ${requested} limit. Some clips may be deleted. Reduce the limit anyway?`)) {
+      if (!(await confirmDialog({ title: "Reduce the storage limit?", confirmLabel: "Reduce the limit",
+        text: `Your ${affected} saved learning clips use ${used}, more than the new ${requested} limit. Some clips may be deleted.` }))) {
         setToolStatus("#storage-status", "Storage limit unchanged; clips preserved.");
         return false;
       }
@@ -4220,8 +4224,8 @@ function wireStorageSettings() {
   });
   $("#storage-leftovers-clear")?.addEventListener("click", async (event) => {
     const size = $("#storage-leftovers-title")?.textContent || "the leftover downloads";
-    if (!window.confirm(`Delete ${size}? These are downloads from earlier runs; nothing uses them.`)) return;
     const button = event.currentTarget;
+    if (!(await confirmDialog({ title: `Delete ${size}?`, text: "These are downloads from earlier runs; nothing uses them.", confirmLabel: "Delete" }))) return;
     button.disabled = true;
     try {
       const result = await postJson("/api/storage/clear-leftovers", {});
@@ -10195,7 +10199,8 @@ async function exportCardsToAnki(format = "apkg", { cards = null, deckName = "",
 
 async function deleteStudyDeck(deck) {
   if (!deck) return;
-  if (!window.confirm(`Delete "${deck.name}" and its ${deck.total.toLocaleString()} card${deck.total === 1 ? "" : "s"}? Their progress is lost.`)) return;
+  if (!(await confirmDialog({ title: `Delete "${deck.name}"?`, confirmLabel: "Delete",
+    text: `Its ${deck.total.toLocaleString()} card${deck.total === 1 ? "" : "s"} and their progress are lost.` }))) return;
   try {
     if (deck.storeId) {
       const response = await fetch(`/api/anki/decks/${encodeURIComponent(deck.storeId)}`, { method: "DELETE", signal: AbortSignal.timeout(30_000) });
@@ -12665,7 +12670,8 @@ async function flushAniListUnwatches({ interactive = false, only = null } = {}) 
           if (!interactive) continue; // Never silently approve a remote reduction on reload.
           const span = planned.discardedFollowing > 0
             ? ` This also reduces AniList's contiguous progress for ${planned.discardedFollowing} later episode(s).` : "";
-          const approved = window.confirm(`AniList stores episode progress as one number. Change this title from episode ${planned.previousProgress} to ${planned.progress}?${span}`);
+          const approved = await confirmDialog({ title: "Change your AniList progress?", confirmLabel: "Change it",
+            text: `AniList stores episode progress as one number. Change this title from episode ${planned.previousProgress} to ${planned.progress}?${span}` });
           if (!approved) {
             savePendingAniListUnwatches(pendingAniListUnwatches().filter((item) =>
               !(item.accountId === row.accountId && item.seriesKey === row.seriesKey && item.code === row.code)));
@@ -14319,7 +14325,8 @@ async function handleTitleAniListLink(event) {
     if (localEpisodes.some((episode) => episode > planned.episodes))
       throw new Error("The selected AniList entry has fewer episodes than the Library season.");
     if (!current()) return;
-    if (!window.confirm(`Link ${active.title} season ${season} to ${anilistLinkTitle(media)} (${planned.episodes} episodes, AniList #${id})? Watched episodes may then sync to your AniList account. No scores are changed.`)) {
+    if (!(await confirmDialog({ title: `Link ${active.title} season ${season}?`, confirmLabel: "Link",
+      text: `To ${anilistLinkTitle(media)} (${planned.episodes} episodes, AniList #${id}). Watched episodes may then sync to your AniList account. No scores are changed.` }))) {
       show("No mapping saved.");
       return;
     }
@@ -18971,9 +18978,6 @@ function empty(title, copy) {
   return `<div class="empty-state"><strong>${escapeHtml(title)}</strong>${escapeHtml(copy)}</div>`;
 }
 
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[char]));
-}
 
 $("#video-input").addEventListener("change", (event) => {
   const file = event.target.files?.[0];
@@ -19466,7 +19470,8 @@ $("#library-db-file")?.addEventListener("change", async (event) => {
     if (!Array.isArray(entries) || entries.length > 5000) throw new Error("Invalid or oversized Library backup.");
     const existing = new Set(state.library.map((entry) => String(entry.id)));
     const conflicts = entries.filter((entry) => entry?.id && existing.has(String(entry.id))).length;
-    if (!window.confirm(`Import ${entries.length} title records? ${conflicts} already exist and will keep their current data. Existing cards, progress, learning history and AniList links will not be replaced. The backup does not include clip video files.`)) {
+    if (!(await confirmDialog({ title: `Import ${entries.length} title records?`, confirmLabel: "Import",
+      text: `${conflicts} already exist and will keep their current data. Existing cards, progress, learning history and AniList links will not be replaced. The backup does not include clip video files.` }))) {
       setToolStatus("#library-import-status", "Import cancelled. Your Library is unchanged.");
       return;
     }
@@ -20342,14 +20347,15 @@ $("#library-context-menu").addEventListener("click", (event) => {
     return;
   }
   if (button.dataset.libraryAction === "rename") {
-    const nextTitle = window.prompt("Rename", series.title)?.trim();
-    if (!nextTitle || nextTitle === series.title) return;
-    updateLibrarySeriesEntries(seriesKey, (entry) => {
-      entry.displayTitle = nextTitle;
-      entry.updatedAt = Date.now();
+    void promptDialog({ title: "Rename", label: "Title", value: series.title }).then((nextTitle) => {
+      if (!nextTitle || nextTitle === series.title) return;
+      updateLibrarySeriesEntries(seriesKey, (entry) => {
+        entry.displayTitle = nextTitle;
+        entry.updatedAt = Date.now();
+      });
+      renderLibrary();
+      refreshTitlePage();
     });
-    renderLibrary();
-    refreshTitlePage();
     return;
   }
   if (button.dataset.libraryAction === "fetch-image") {

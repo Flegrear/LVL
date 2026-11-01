@@ -839,3 +839,35 @@ export function confirmDialog({ title = "", text = "", confirmLabel = "Continue"
     box.querySelector('[data-confirm="yes"]')?.focus();
   });
 }
+
+// An in-app text prompt in LVL's dialog style. Resolves the trimmed text, or null when cancelled.
+export function promptDialog({ title = "", label = "", value = "", confirmLabel = "Save", cancelLabel = "Cancel", maxLength = 200 } = {}) {
+  if (typeof document === "undefined") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const box = document.createElement("dialog");
+    box.className = "detail-dialog app-dialog ui-confirm-dialog";
+    box.setAttribute("aria-labelledby", "ui-prompt-title");
+    box.innerHTML = `<button class="dialog-close" type="button" data-prompt="no" aria-label="${escapeHtml(t("Close"))}">×</button>`
+      + `<form class="app-dialog__body" method="dialog"><h2 class="app-dialog__title" id="ui-prompt-title">${escapeHtml(t(title))}</h2>`
+      + `<label class="settings-field"><span>${escapeHtml(t(label || title))}</span><input name="value" type="text" maxlength="${Number(maxLength) || 200}" autocomplete="off" spellcheck="false" /></label>`
+      + `<div class="app-dialog__actions">${buttonMarkup({ label: cancelLabel, variant: "ghost", attrs: { "data-prompt": "no" } })}`
+      + `${buttonMarkup({ label: confirmLabel, variant: "primary", type: "submit" })}</div></form>`;
+    const input = box.querySelector("input");
+    input.value = String(value ?? "");
+    let result = null;
+    box.addEventListener("click", (event) => {
+      if (event.target.closest('[data-prompt="no"]')) box.close();
+      else if (event.target === box) box.close();
+    });
+    box.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      result = input.value.trim();
+      box.close();
+    });
+    box.addEventListener("close", () => { box.remove(); resolve(result); });
+    document.body.append(box);
+    box.showModal();
+    input.focus();
+    input.select();
+  });
+}
