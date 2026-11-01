@@ -31,7 +31,7 @@
 export const CORE_VIEWS = Object.freeze(["home", "watch", "library", "calendar", "study", "review", "test", "settings", "title"]);
 export const CORE_NAV_VIEWS = Object.freeze(["home", "watch", "library", "calendar", "study", "review", "test", "settings"]);
 export const CORE_ROUTES = Object.freeze(["/", "/home", "/watch", "/library", "/calendar", "/study", "/review", "/test", "/tests", "/settings", "/title", "/components"]);
-export const CORE_SETTINGS_TABS = Object.freeze(["general", "coach", "library", "storage", "updates", "notifications", "recs"]);
+export const CORE_SETTINGS_TABS = Object.freeze(["general", "coach", "library", "storage", "updates", "notifications"]);
 export const CORE_LIBRARY_FILTERS = Object.freeze(["all", "series", "movie", "anime"]);
 export const CORE_HOME_CATEGORIES = Object.freeze(["all", "movie", "tv", "anime"]);
 export const CLIENT_HOOKS = Object.freeze(["title:render", "storage:render"]);

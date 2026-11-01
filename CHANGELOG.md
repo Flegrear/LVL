@@ -1,5 +1,15 @@
 # LVL Changelog
 
+## 0.2.0 — 2026-10-31
+
+- Add Comics: browse, search and read manga, manhwa and manhua, with their own tab on Home and in the Library.
+- Read from your own files (CBZ or image folders) or from comic sources you add in Settings › Comics.
+- Show a manga's chapters on its anime's page, and comics on series and movie pages.
+- Rate comics by volume and keep your manga progress, status and score in sync with AniList.
+- Add a switch in Settings › Comics to turn Comics off.
+- Move ratings and AniList settings into Settings › Library.
+- Move an anime's films into a Movies tab next to its seasons, and fix pages showing another title's films.
+
 ## 0.1.18 — 2026-10-31
 
 - Fix two-way rating sync with AniList: your AniList scores now become your LVL ratings, and when both have a different score, AniList's is kept.

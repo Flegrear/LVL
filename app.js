@@ -163,7 +163,7 @@ const anilistOAuthResponse = window.__lvlAniListOAuthResponse
 delete window.__lvlAniListOAuthResponse;
 if (anilistOAuthResponse) {
   window.history.replaceState({ view: "settings" }, "", "/settings");
-  localStorage.setItem("blackline-settings-tab", "recs");
+  localStorage.setItem("blackline-settings-tab", "library");
 }
 
 function readStorageArray(key) {
@@ -331,8 +331,8 @@ const recsUi = createRecsUi({
   setToolStatus: (selector, message, error) => setToolStatus(selector, message, error),
   openTitlePage: (target) => openTitlePage(target),
   openSettings: () => {
-    settingsView.tab = "recs";
-    localStorage.setItem("blackline-settings-tab", "recs");
+    settingsView.tab = "library";
+    localStorage.setItem("blackline-settings-tab", "library");
     switchView("settings");
     renderSettingsTabs();
   },
@@ -3231,8 +3231,11 @@ function renderBrowserCoachStatus() {
 }
 
 let settingsStorageLoading = false;
-const SETTINGS_TABS = ["general", "coach", "library", "storage", "updates", "notifications", "recs", ...clientFeatures.settingsTabIds];
-const settingsView = { tab: SETTINGS_TABS.includes(localStorage.getItem("blackline-settings-tab")) ? localStorage.getItem("blackline-settings-tab") : "general" };
+const SETTINGS_TABS = ["general", "coach", "library", "storage", "updates", "notifications", ...clientFeatures.settingsTabIds];
+// Tracking (ratings, AniList, Letterboxd, recommendations) is part of Library;
+// a tab saved as "recs" before that opens Library.
+const savedSettingsTab = localStorage.getItem("blackline-settings-tab") === "recs" ? "library" : localStorage.getItem("blackline-settings-tab");
+const settingsView = { tab: SETTINGS_TABS.includes(savedSettingsTab) ? savedSettingsTab : "general" };
 
 function renderSettingsTabs() {
   if (!learningEnabled && settingsView.tab === "coach") settingsView.tab = "general";
@@ -3244,7 +3247,7 @@ function renderSettingsTabs() {
   }
   setActiveTab($("#settings-tabs"), settingsView.tab);
   if (settingsView.tab === "storage" && $("#view-settings")?.classList.contains("is-active")) void renderSettingsStorage();
-  if (settingsView.tab === "recs" && $("#view-settings")?.classList.contains("is-active")) recsUi.showSettings();
+  if (settingsView.tab === "library" && $("#view-settings")?.classList.contains("is-active")) recsUi.showSettings();
   if (settingsView.tab === "updates" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
   if (settingsView.tab === "notifications" && $("#view-settings")?.classList.contains("is-active")) void refreshAppUpdateSettings();
   clientFeatures.showSettingsTab(settingsView.tab, Boolean($("#view-settings")?.classList.contains("is-active")));
@@ -13813,7 +13816,8 @@ function titleRelatedMovies(confirmedRating, subject = null, meta = null) {
     const key = `franchise:${meta.name}:${count}`;
     const prior = titleRelatedMovieCache.get(key);
     if (prior && Date.now() - prior.createdAt < (prior.failed ? 5 * 60_000 : 60 * 60_000)) return prior;
-    const record = { items: [], pending: true, failed: false, createdAt: Date.now() };
+    // The films found last time stay listed while they're looked up again.
+    const record = { items: prior?.items || [], pending: true, failed: false, createdAt: Date.now() };
     titleRelatedMovieCache.set(key, record);
     void fetchPublicAniListTitle(meta.name).then(async (media) => {
       const rootId = verifiedPublicAnimeFranchiseRoot(media, { title: meta.name, totalEpisodes: count });
@@ -13828,7 +13832,7 @@ function titleRelatedMovies(confirmedRating, subject = null, meta = null) {
   const key = ids.slice().sort((a, b) => a - b).join(",");
   const old = titleRelatedMovieCache.get(key);
   if (old && Date.now() - old.createdAt < (old.failed ? 5 * 60_000 : 60 * 60_000)) return old;
-  const record = { items: [], pending: true, failed: false, createdAt: Date.now() };
+  const record = { items: old?.items || [], pending: true, failed: false, createdAt: Date.now() };
   if (titleRelatedMovieCache.size >= 80) titleRelatedMovieCache.clear();
   titleRelatedMovieCache.set(key, record);
   void fetchPublicAnimeRelatedMovies(ids).then((movies) => {
@@ -13842,19 +13846,16 @@ function titleRelatedMovies(confirmedRating, subject = null, meta = null) {
   return record;
 }
 
-function titleRelatedMoviesMarkup(record) {
-  if (!record || (!record.pending && !record.items.length)) return "";
-  const movies = record.items || [];
-  return `<div class="title-section__head"><h2 class="title-section__title" id="title-related-movies-heading">Movies</h2>
-    <span class="catalog-sources-note">Connected to this anime on AniList</span></div>
-    ${record.pending ? '<p class="title-note" role="status">Finding related films…</p>' : ""}
-    ${movies.length ? `<div class="title-related-movies__grid">${movies.map((movie) =>
+// The Movies tab next to the seasons: the films AniList links to this anime.
+function titleRelatedMoviesMarkup(movies = []) {
+  if (!movies.length) return "";
+  return `<div class="title-related-movies__grid">${movies.map((movie) =>
       `<button type="button" class="title-related-movie" data-title-action="related-movie" data-anime-movie-id="${movie.id}"
         aria-label="${escapeHtml(`Open ${movie.title}`)}">
         <span class="title-related-movie__art">${movie.cover ? `<img src="${escapeHtml(movie.cover)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(movie.title)}"/>` : icon("film")}</span>
         <strong>${escapeHtml(movie.title)}</strong>
         <small>${escapeHtml([movie.year, "Film"].filter(Boolean).join(" - "))}</small>
-      </button>`).join("")}</div>` : ""}`;
+      </button>`).join("")}</div>`;
 }
 
 function titleCommunityRating(subject, meta) {
@@ -14218,7 +14219,6 @@ function titleAboutMarkup(subject, info) {
     ["Chapters", text(chapters)],
     ["Country", text(info.country)],
     ["Awards", text(info.awards)],
-    ["Rating", info.rating ? titleRatingMarkup(info) : ""],
     ["Trailers", info.trailers.map((trailer, index) => `<a class="title-trailer" data-trailer-id="${escapeHtml(trailer.id)}" href="${escapeHtml(titleTrailerUrl(trailer))}" target="_blank" rel="noopener noreferrer">${escapeHtml(info.trailers.length > 1 ? `Trailer ${index + 1}` : "Trailer")}</a>`).join(" ")],
   ].filter(([, value]) => value);
   if (!info.description && !rows.length) return "";
@@ -14347,7 +14347,7 @@ function titleMissingMarkup() {
 }
 
 // Parts are only replaced when their markup changed, so a refresh doesn't reload the backdrop.
-const titleRendered = { hero: "", progress: "", main: "", related: "", about: "", chapters: "" };
+const titleRendered = { hero: "", progress: "", main: "", about: "", chapters: "" };
 
 function setTitlePart(node, part, markup) {
   if (titleRendered[part] === markup) return false;
@@ -14433,14 +14433,14 @@ function featureTitleHeroMarkup(info) {
 }
 
 function renderFeatureTitlePage(route) {
-  const parts = { hero: $("#title-hero"), progress: $("#title-progress"), main: $("#title-main"), related: $("#title-related-movies"), about: $("#title-about") };
+  const parts = { hero: $("#title-hero"), progress: $("#title-progress"), main: $("#title-main"), about: $("#title-about") };
   if (Object.values(parts).some((node) => !node)) return;
   recsUi.renderTitleRating($("#title-your-rating"), null);
   const info = clientFeatures.titleSubjectInfo(route.feature, route.item);
   if (!info || info.missing) {
     document.title = DEFAULT_DOCUMENT_TITLE;
     setTitlePart(parts.hero, "hero", info?.missing ? titleMissingMarkup() : `<div class="title-hero">${skeletonHeroMarkup()}</div>`);
-    for (const part of ["progress", "main", "related", "about"]) setTitlePart(parts[part], part, "");
+    for (const part of ["progress", "main", "about"]) setTitlePart(parts[part], part, "");
     return;
   }
   $$(".nav-btn").forEach((button) => button.classList.toggle("is-active", button.dataset.view === (info.inLibrary ? "library" : "home")));
@@ -14461,7 +14461,6 @@ function renderFeatureTitlePage(route) {
     const main = parts.main;
     clientFeatures.renderTitleSection(open, main.querySelector(".title-feature-section"), { ...payload, head: main.querySelector(".title-feature-head") });
   }
-  setTitlePart(parts.related, "related", "");
   const aboutChanged = setTitlePart(parts.about, "about", info.aboutHtml || "");
   if (heroChanged || mainChanged || aboutChanged) refreshImages($("#view-title"));
   clientFeatures.mountTitleSubject(route.feature, { ...parts, changed: { hero: heroChanged, main: mainChanged, about: aboutChanged } }, route.item);
@@ -14480,7 +14479,8 @@ function renderTitlePage() {
     libraryDialogView.key = "";
     libraryDialogView.season = null;
     libraryDialogView.open.clear();
-    Object.keys(titleRendered).forEach((part) => { titleRendered[part] = ""; });
+    // Unknown, not "": a part the new title leaves empty must still clear the last title's content.
+    Object.keys(titleRendered).forEach((part) => { titleRendered[part] = null; });
     setToolStatus(TITLE_STATUS, "");
   }
   if (route.feature) {
@@ -14493,13 +14493,12 @@ function renderTitlePage() {
   const hero = $("#title-hero");
   const progress = $("#title-progress");
   const main = $("#title-main");
-  const related = $("#title-related-movies");
   const about = $("#title-about");
-  if (!hero || !progress || !main || !related || !about) return;
+  if (!hero || !progress || !main || !about) return;
   if (!subject.id && !subject.series) {
     document.title = DEFAULT_DOCUMENT_TITLE;
     setTitlePart(hero, "hero", titleMissingMarkup());
-    ["progress", "main", "related", "about"].forEach((part) => setTitlePart({ progress, main, related, about }[part], part, ""));
+    ["progress", "main", "about"].forEach((part) => setTitlePart({ progress, main, about }[part], part, ""));
     recsUi.renderTitleRating($("#title-your-rating"), null);
     return;
   }
@@ -14522,11 +14521,14 @@ function renderTitlePage() {
     clientFeatures.renderTitleSection(movieSection.dataset.featureSection, movieSection,
       { ...titleMovieSectionPayload(subject, info, meta), head: main.querySelector(".title-movie-feature .title-feature-head") });
   }
-  if (view) renderTitleChapters();
+  // Films linked on AniList get a Movies tab with the seasons.
   const movies = subject.type === "series" ? titleRelatedMovies(communityRating, subject, meta) : null;
-  const relatedChanged = setTitlePart(related, "related", titleRelatedMoviesMarkup(movies));
+  if (view) {
+    view.movies = movies?.items || [];
+    renderTitleChapters();
+  }
   const aboutChanged = setTitlePart(about, "about", titleAboutMarkup(subject, info));
-  if (heroChanged || mainChanged || relatedChanged || aboutChanged) refreshImages($("#view-title"));
+  if (heroChanged || mainChanged || aboutChanged) refreshImages($("#view-title"));
   clientFeatures.run("title:render", { subject, info, meta, view: $("#view-title") });
 }
 
@@ -16866,7 +16868,7 @@ async function syncMissingLocalAniListScores(account) {
 // AniList -> LVL: each season scored on the signed-in user's AniList list
 // becomes that season's LVL rating. When both have a different score, AniList's
 // wins (see planAniListScoresIntoLvl). Runs on its own with two-way sync, and
-// from Settings > Tracking > Migrate scores from AniList.
+// from Settings > Library > Migrate scores from AniList.
 let anilistScoreCopyRun = null;
 function copyAniListScoresIntoLvl(account, { snapshotAt = 0 } = {}) {
   if (anilistScoreCopyRun) return anilistScoreCopyRun;
@@ -17432,6 +17434,9 @@ function titleSeriesView(subject, meta) {
     sources: new Map(),
     seasonPacks: new Map(),
     packsActive: false,
+    // Films AniList links to this anime (set on each render) and whether their tab is open.
+    movies: [],
+    moviesActive: false,
     // ?section=manga opens a feature section first (once; the chips change it after).
     featureSection: titleView.featureSection || null,
     busy: false,
@@ -17455,14 +17460,17 @@ function renderTitleChapters({ focusSelector = "" } = {}) {
   const chapters = current.episodes.slice(0, view.shown);
   const remaining = current.episodes.length - chapters.length;
   const packState = view.seasonPacks.get(current.season);
-  const packOpen = Boolean(view.packsActive);
-  const packPanelId = `catalog-season-packs-${current.season}`;
-  const packButton = `<button class="ui-chip catalog-season-pack-toggle" type="button" aria-pressed="${packOpen}" aria-controls="${packPanelId}">${icon("library")}<span>Packs</span>${packState?.status === "ready" ? `<span class="ui-chip__count">${packState.rows.length}</span>` : ""}</button>`;
   // Feature sections (Manga…) sit with the seasons; the feature fills the list area itself.
   const hasFeatures = typeof clientFeatures !== "undefined";
   const sectionPayload = hasFeatures ? { meta, subject: titleSubject() } : { meta };
   const featureChips = hasFeatures ? clientFeatures.titleSectionChips(sectionPayload) : [];
   const featureOpen = Boolean(view.featureSection && featureChips.some((chip) => chip.id === view.featureSection));
+  const movies = view.movies || [];
+  const moviesOpen = !featureOpen && Boolean(view.moviesActive && movies.length);
+  const packOpen = !featureOpen && !moviesOpen && Boolean(view.packsActive);
+  const packPanelId = `catalog-season-packs-${current.season}`;
+  const packButton = `<button class="ui-chip catalog-season-pack-toggle" type="button" aria-pressed="${packOpen}" aria-controls="${packPanelId}">${icon("library")}<span>Packs</span>${packState?.status === "ready" ? `<span class="ui-chip__count">${packState.rows.length}</span>` : ""}</button>`;
+  const moviesButton = movies.length ? `<button class="ui-chip catalog-movies-toggle" type="button" aria-pressed="${moviesOpen}">${icon("film")}<span>Movies</span><span class="ui-chip__count">${movies.length}</span></button>` : "";
   const featureButtons = featureChips.map((chip) => `<button class="ui-chip catalog-feature-section" type="button" data-feature-section="${escapeHtml(chip.id)}" aria-pressed="${featureOpen && view.featureSection === chip.id}">${escapeHtml(t(chip.label))}${Number.isFinite(chip.count) ? `<span class="ui-chip__count">${chip.count}</span>` : ""}</button>`).join("");
   if (featureOpen) {
     // Same heading and chips as a season, so switching to a feature section moves nothing.
@@ -17473,6 +17481,7 @@ function renderTitleChapters({ focusSelector = "" } = {}) {
     <div class="ui-chip-row catalog-season-switch" role="group" aria-label="Season and pack sources">
       ${seasons.map((item) => `<button class="ui-chip catalog-season-option" type="button" data-season="${item.season}" aria-pressed="false">${escapeHtml(catalogSeasonLabel(item.season))}<span class="ui-chip__count">${Number(item.count) || item.episodes.length}</span></button>`).join("")}
       ${packButton}
+      ${moviesButton}
       ${featureButtons}
     </div><div class="title-feature-section" data-feature-section="${escapeHtml(view.featureSection)}"></div>`;
     if (titleRendered.chapters !== markup) {
@@ -17483,17 +17492,21 @@ function renderTitleChapters({ focusSelector = "" } = {}) {
     if (focusSelector) container.querySelector(focusSelector)?.focus();
     return;
   }
+  const listOpen = !packOpen && !moviesOpen;
   const markup = `<div class="title-section__head">
-      <h2 class="title-section__title" id="title-chapters-heading">${packOpen ? "Packs" : "Chapters"}</h2>
-      ${packOpen ? "" : `<p class="catalog-chapters-note">${count} chapter${count === 1 ? "" : "s"}${savedHere ? `<span>${savedHere} in your Library</span>` : ""}${watchedHere ? `<span>${watchedHere} watched</span>` : ""}</p>`}
-      ${packOpen ? "" : `<button class="ui-btn ui-btn--secondary ui-btn--sm catalog-fetch-all" type="button"${view.fetchAll?.running ? " disabled" : ""}><span>${escapeHtml(catalogFetchAllLabel(view, chapters.length))}</span></button>`}
+      <h2 class="title-section__title" id="title-chapters-heading">${moviesOpen ? "Movies" : packOpen ? "Packs" : "Chapters"}</h2>
+      ${listOpen ? `<p class="catalog-chapters-note">${count} chapter${count === 1 ? "" : "s"}${savedHere ? `<span>${savedHere} in your Library</span>` : ""}${watchedHere ? `<span>${watchedHere} watched</span>` : ""}</p>` : ""}
+      ${listOpen ? `<button class="ui-btn ui-btn--secondary ui-btn--sm catalog-fetch-all" type="button"${view.fetchAll?.running ? " disabled" : ""}><span>${escapeHtml(catalogFetchAllLabel(view, chapters.length))}</span></button>` : ""}
     </div>
     <div class="ui-chip-row catalog-season-switch" role="group" aria-label="Season and pack sources">
-      ${seasons.map((item) => `<button class="ui-chip catalog-season-option" type="button" data-season="${item.season}" aria-pressed="${!packOpen && item.season === current.season}">${escapeHtml(catalogSeasonLabel(item.season))}<span class="ui-chip__count">${Number(item.count) || item.episodes.length}</span></button>`).join("")}
+      ${seasons.map((item) => `<button class="ui-chip catalog-season-option" type="button" data-season="${item.season}" aria-pressed="${listOpen && item.season === current.season}">${escapeHtml(catalogSeasonLabel(item.season))}<span class="ui-chip__count">${Number(item.count) || item.episodes.length}</span></button>`).join("")}
       ${packButton}
+      ${moviesButton}
       ${featureButtons}
     </div>
-    ${packOpen
+    ${moviesOpen
+      ? `<div class="catalog-movies-panel">${titleRelatedMoviesMarkup(movies)}</div>`
+      : packOpen
       ? `<div class="catalog-season-pack-panel" id="${packPanelId}">${catalogSeasonPacksMarkup(packState)}</div>`
       : `<ol class="catalog-chapter-list" aria-label="${escapeHtml(`${meta.name}, ${catalogSeasonLabel(current.season)}`)}">${chapters.map((episode) => catalogChapterMarkup(view, current.season, episode, groups)).join("")}</ol>
          ${remaining > 0 ? `<button class="ui-btn ui-btn--ghost catalog-chapters-more" type="button"><span>Show ${Math.min(CHAPTER_PAGE, remaining)} more</span></button>` : ""}`}`;
@@ -17998,25 +18011,36 @@ function handleCatalogChapterClick(event) {
     if (view.featureSection === section) return;
     view.featureSection = section;
     view.packsActive = false;
+    view.moviesActive = false;
     renderTitleChapters({ focusSelector: `.catalog-feature-section[data-feature-section="${section}"]` });
     return;
   }
   if (target.closest(".title-feature-section")) return;
   if (target.matches(".catalog-season-option")) {
     const season = Number(target.dataset.season);
-    if (season === view.season && !view.packsActive && !view.featureSection) return;
+    if (season === view.season && !view.packsActive && !view.moviesActive && !view.featureSection) return;
     view.featureSection = null;
     view.season = season;
     view.packsActive = false;
+    view.moviesActive = false;
     view.shown = CHAPTER_PAGE;
     renderTitleChapters({ focusSelector: `.catalog-season-option[data-season="${season}"]` });
     return;
   }
+  if (target.matches(".catalog-movies-toggle")) {
+    if (view.moviesActive && !view.featureSection) return;
+    view.featureSection = null;
+    view.packsActive = false;
+    view.moviesActive = true;
+    renderTitleChapters({ focusSelector: ".catalog-movies-toggle" });
+    return;
+  }
   if (target.matches(".catalog-season-pack-toggle")) {
     const season = view.season;
-    if (view.packsActive) return;
+    if (view.packsActive && !view.featureSection) return;
     const state = view.seasonPacks.get(season);
     view.featureSection = null;
+    view.moviesActive = false;
     view.packsActive = true;
     renderTitleChapters({ focusSelector: ".catalog-season-pack-toggle" });
     if (state?.status !== "ready" && state?.status !== "loading") void loadCatalogSeasonPacks(view, season);

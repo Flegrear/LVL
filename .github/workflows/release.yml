@@ -56,6 +56,14 @@ jobs:
         if: steps.update.outputs.mode == 'full'
         shell: pwsh
         run: choco install innosetup --yes --no-progress
+      - name: Build the Comics extension runner for the full installer
+        if: steps.update.outputs.mode == 'full'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Pinned Eclipse Temurin (ext-runner/jdk.json, SHA-256 checked) and Suwayomi commit (ext-runner/suwayomi.json).
+          node ext-runner/build.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Extension runner build failed' }
       - name: Build full Windows installer if required
         if: steps.update.outputs.mode == 'full'
         shell: pwsh

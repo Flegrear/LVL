@@ -3188,6 +3188,7 @@ textarea.ui-input.magnet-input { min-height:84px; font:500 12px/1.5 var(--font-m
 .catalog-season-pack-panel[hidden] { display:none; }
 .catalog-season-pack-panel .catalog-source-group { display:grid; gap:10px; }
 .catalog-season-pack-panel .catalog-sources-note { margin:0; line-height:1.45; }
+.catalog-movies-panel { margin:4px 0 16px; }
 .catalog-chapter-list, .catalog-stream-list { border-color:var(--ui-line); border-radius:var(--ui-radius-lg); background:var(--ui-bg-raised); }
 .catalog-chapter { background:transparent; border-bottom-color:var(--ui-line-subtle); }
 .catalog-chapter:hover, .catalog-chapter.is-open { background:var(--ui-surface-2); }
@@ -3510,7 +3511,7 @@ textarea.ui-input.magnet-input { min-height:84px; font:500 12px/1.5 var(--font-m
 }
 
 .title-body { display:grid; gap:44px; padding:0 var(--title-gutter); }
-.title-progress[hidden], .title-about[hidden], .title-main[hidden], .title-related-movies[hidden] { display:none; }
+.title-progress[hidden], .title-about[hidden], .title-main[hidden] { display:none; }
 .title-stats { grid-template-columns:repeat(auto-fit, minmax(150px, 1fr)); }
 .title-stats .ui-stat { background:var(--ui-bg-raised); }
 .title-stats .ui-stat__label { color:var(--ui-muted); font:500 13px/1.2 var(--font-sans); letter-spacing:0; text-transform:none; }
@@ -3638,7 +3639,7 @@ textarea.ui-input.magnet-input { min-height:84px; font:500 12px/1.5 var(--font-m
 .recs-card > .settings-status { margin-top:10px; }
 .recs-card > .settings-status:empty { display:none; }
 .recs-card > .recs-row__note { margin-bottom:14px; }
-/* Settings › Tracking: authorized AniList watch-progress sync. */
+/* Settings › Library: authorized AniList watch-progress sync. */
 .anilist-auto-settings { display:grid; gap:15px; margin:0 0 18px; padding:18px; border:1px solid var(--ui-line-subtle); border-radius:var(--ui-radius-lg); background:var(--ui-bg-raised); }
 .anilist-auto-heading { display:flex; align-items:flex-start; justify-content:space-between; flex-wrap:wrap; gap:12px 18px; }
 .anilist-auto-heading > div { flex:1 1 290px; min-width:0; }
@@ -3677,11 +3678,6 @@ textarea.ui-input.magnet-input { min-height:84px; font:500 12px/1.5 var(--font-m
 .recs-run:empty { display:none; }
 .recs-interval { flex:none; }
 .recs-interval select { width:auto; min-width:160px; }
-.settings-credits { width:min(860px,100%); padding:2px 6px; color:var(--ui-muted); font:400 12px/1.5 var(--font-sans); }
-.settings-credits summary { width:fit-content; cursor:pointer; }
-.settings-credits[open] { display:grid; gap:10px; }
-.settings-credits img { display:block; width:70px; height:50px; object-fit:contain; }
-.settings-credits p { margin:0; }
 
 /* "Your rating" on a title page. */
 .title-your-rating[hidden] { display:none; }

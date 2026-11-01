@@ -54,6 +54,7 @@ Type: filesandordirs; Name: "{app}\learning"
 Type: filesandordirs; Name: "{app}\shared"
 Type: filesandordirs; Name: "{app}\node_modules"
 Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\ext-runner"
 Type: filesandordirs; Name: "{app}\.lvl-patch-transaction"
 Type: filesandordirs; Name: "{app}\tests"
 Type: filesandordirs; Name: "{app}\devtools"
@@ -68,6 +69,7 @@ Type: filesandordirs; Name: "{app}\backend"
 Type: filesandordirs; Name: "{app}\frontend"
 Type: filesandordirs; Name: "{app}\learning"
 Type: filesandordirs; Name: "{app}\shared"
+Type: filesandordirs; Name: "{app}\ext-runner"
 Type: filesandordirs; Name: "{app}\.lvl-patch-transaction"
 Type: filesandordirs; Name: "{localappdata}\LVL\window-theme"
 
@@ -122,29 +124,46 @@ end;
 
 function StopPublicLauncher(): Boolean;
 var
-  LauncherPath, ScriptPath, ScriptText, Arguments: string;
+  LauncherPath, RunnerPath, ScriptPath, ScriptText, Arguments: string;
   ExitCode: Integer;
 begin
   Result := True;
   LauncherPath := ExpandConstant('{app}\LVL.exe');
+  RunnerPath := ExpandConstant('{app}\ext-runner\');
   if not FileExists(LauncherPath) then
     exit;
   ScriptPath := ExpandConstant('{tmp}\lvl-public-stop-for-update.ps1');
+  // Quit this LVL, then wait for the Comics runner (Java), which ends when LVL
+  // closes its input; one still running after 10 s is stopped, so its files can
+  // be replaced or removed.
   ScriptText :=
     '$ErrorActionPreference = ''Stop''' + #13#10 +
     '$target = [IO.Path]::GetFullPath(''' + PsSingleQuote(LauncherPath) + ''')' + #13#10 +
     '$running = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {' + #13#10 +
     '  $_.ExecutablePath -and [string]::Equals([IO.Path]::GetFullPath($_.ExecutablePath), $target, [StringComparison]::OrdinalIgnoreCase)' + #13#10 +
     '})' + #13#10 +
-    'if ($running.Count -eq 0) { exit 0 }' + #13#10 +
-    '& $target --quit --port 4273' + #13#10 +
-    '$ids = @($running | ForEach-Object { [int]$_.ProcessId })' + #13#10 +
-    '$deadline = [DateTime]::UtcNow.AddSeconds(20)' + #13#10 +
+    'if ($running.Count -gt 0) {' + #13#10 +
+    '  & $target --quit --port 4273' + #13#10 +
+    '  $ids = @($running | ForEach-Object { [int]$_.ProcessId })' + #13#10 +
+    '  $deadline = [DateTime]::UtcNow.AddSeconds(20)' + #13#10 +
+    '  do {' + #13#10 +
+    '    Start-Sleep -Milliseconds 100' + #13#10 +
+    '    $alive = @(Get-Process -Id $ids -ErrorAction SilentlyContinue)' + #13#10 +
+    '  } while ($alive.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)' + #13#10 +
+    '  if ($alive.Count -gt 0) { exit 23 }' + #13#10 +
+    '}' + #13#10 +
+    '$runnerDir = [IO.Path]::GetFullPath(''' + PsSingleQuote(RunnerPath) + ''')' + #13#10 +
+    '$deadline = [DateTime]::UtcNow.AddSeconds(10)' + #13#10 +
     'do {' + #13#10 +
-    '  Start-Sleep -Milliseconds 100' + #13#10 +
-    '  $alive = @(Get-Process -Id $ids -ErrorAction SilentlyContinue)' + #13#10 +
-    '} while ($alive.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)' + #13#10 +
-    'if ($alive.Count -gt 0) { exit 23 }' + #13#10 +
+    '  $runner = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {' + #13#10 +
+    '    $_.ExecutablePath -and [IO.Path]::GetFullPath($_.ExecutablePath).StartsWith($runnerDir, [StringComparison]::OrdinalIgnoreCase)' + #13#10 +
+    '  })' + #13#10 +
+    '  if ($runner.Count -gt 0) { Start-Sleep -Milliseconds 250 }' + #13#10 +
+    '} while ($runner.Count -gt 0 -and [DateTime]::UtcNow -lt $deadline)' + #13#10 +
+    'if ($runner.Count -gt 0) {' + #13#10 +
+    '  $runner | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }' + #13#10 +
+    '  Start-Sleep -Milliseconds 500' + #13#10 +
+    '}' + #13#10 +
     'exit 0' + #13#10;
   if not SaveStringToFile(ScriptPath, ScriptText, False) then
   begin

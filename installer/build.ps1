@@ -170,6 +170,17 @@ if (-not (Test-Path -LiteralPath $patchHelper -PathType Leaf)) {
 }
 Copy-Item -LiteralPath $patchHelper -Destination (Join-Path $runtimeDir 'update-apply.mjs')
 
+# The Comics extension runner, built by ext-runner/build.mjs (the release workflow
+# runs it for full releases): lvl-ext-runner.jar, lib/, a Java runtime made from
+# the pinned Eclipse Temurin, and NOTICE.txt. The server finds it in {app}\ext-runner.
+$runnerDist = Join-Path $projectRoot 'ext-runner\build\dist'
+foreach ($required in @('lvl-ext-runner.jar', 'lib', 'runtime\bin\java.exe', 'runtime\legal', 'NOTICE.txt')) {
+  if (-not (Test-Path -LiteralPath (Join-Path $runnerDist $required))) {
+    throw "The extension runner build is missing $required. Build it first: node ext-runner/build.mjs"
+  }
+}
+Copy-Item -LiteralPath $runnerDist -Destination (Join-Path $payloadRoot 'ext-runner') -Recurse
+
 # Launcher uses installed marker to isolate data/profile and bundled runtime.
 $marker = [ordered]@{
   schemaVersion = 1

@@ -384,7 +384,8 @@ export function createRecsUi(hooks) {
 
   const setText = (selector, value) => { const node = $(selector); if (node && node.textContent !== value) node.textContent = value; };
   const show = (selector, visible) => { const node = $(selector); if (node) node.hidden = !visible; };
-  const settingsVisible = () => isViewActive("settings") && $("#settings-panel-recs") && !$("#settings-panel-recs").hidden;
+  // Ratings, AniList, Letterboxd and recommendations live in Settings › Library.
+  const settingsVisible = () => isViewActive("settings") && $("#settings-panel-library") && !$("#settings-panel-library").hidden;
 
   function paintSettings() {
     if (!overview || !settingsVisible()) return;

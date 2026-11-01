@@ -454,7 +454,6 @@
               <div id="title-progress" class="title-progress" hidden></div>
               <section id="title-your-rating" class="title-block title-your-rating" aria-labelledby="title-your-rating-heading" hidden></section>
               <div id="title-main" class="title-main"></div>
-              <section id="title-related-movies" class="title-block title-related-movies" aria-labelledby="title-related-movies-heading" hidden></section>
               <section id="title-about" class="title-block title-about" aria-labelledby="title-about-heading" hidden></section>
             </div>
             <p id="title-status" class="tool-status app-status title-status" role="status" aria-live="polite"></p>
@@ -627,7 +626,6 @@
               <button id="settings-tab-storage" class="ui-tab" type="button" role="tab" data-value="storage" aria-selected="false" aria-controls="settings-panel-storage" tabindex="-1" data-i18n="Storage">Storage</button>
               <button id="settings-tab-updates" class="ui-tab" type="button" role="tab" data-value="updates" aria-selected="false" aria-controls="settings-panel-updates" tabindex="-1">Updates</button>
               <button id="settings-tab-notifications" class="ui-tab" type="button" role="tab" data-value="notifications" aria-selected="false" aria-controls="settings-panel-notifications" tabindex="-1">Notifications</button>
-              <button id="settings-tab-recs" class="ui-tab" type="button" role="tab" data-value="recs" aria-selected="false" aria-controls="settings-panel-recs" tabindex="-1" data-i18n="Tracking">Tracking</button>
             </div>
 
             <div id="settings-panel-general" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-general">
@@ -758,127 +756,6 @@
                 <p id="settings-artwork-message" class="tool-status settings-status" aria-live="polite"></p>
               </div>
             </section>
-            </div>
-
-            <div id="settings-panel-storage" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-storage" hidden>
-            <section class="settings-card storage-card" aria-labelledby="settings-storage-title">
-              <div class="settings-card__head"><h2 id="settings-storage-title" data-i18n="Storage">Storage</h2><button id="storage-refresh" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Refresh">Refresh</button></div>
-
-              <div class="storage-row">
-                <div class="storage-row__head">
-                  <label class="storage-row__label" for="storage-player-gb" data-i18n="Player storage">Player storage</label>
-                  <button class="ui-help" type="button" data-ui-tip="tip-storage-player" aria-label="What player storage is" aria-describedby="tip-storage-player" data-i18n-aria-label="What player storage is">?</button>
-                  <span id="tip-storage-player" class="ui-tip-content" hidden>
-                    <strong data-i18n="Player storage">Player storage</strong>
-                    <p>The player storage limit is shared by selected-episode torrent downloads, reusable converted video and playback cache. Only the selected video is downloaded, piece by piece.</p>
-                    <ul>
-                      <li>With the cache on, eligible fully downloaded SDR episodes may be converted once into a fully seekable file. Until preparation finishes, normal streaming and bounded-buffer seeking continue. Conversion uses CPU and extra disk space.</li>
-                      <li>Unused downloads and cache are cleaned up when space is needed. Active playback is protected.</li>
-                    </ul>
-                    <p data-i18n="A video bigger than this limit can&#x27;t be played until you raise it.">A video bigger than this limit can't be played until you raise it.</p>
-                    <p><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="player">20 GB</span>.</strong> Enough for most 1080p videos; large 4K files may require a higher limit. On a nearly full drive, keep this budget below a quarter of the free space.</p>
-                  </span>
-                  <span id="storage-player-usage" class="storage-row__usage">Checking…</span>
-                </div>
-                <div class="storage-row__control">
-                  <label class="storage-input"><input id="storage-player-gb" type="number" min="2" max="1000" step="1" inputmode="numeric" aria-describedby="storage-player-usage storage-player-rec" /><span aria-hidden="true">GB</span></label>
-                  <input id="storage-player-slider" class="storage-limit-slider" type="range" min="2" max="1000" step="1" value="20" aria-label="Maximum player storage in GB" />
-                  <button id="storage-player-clear" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Free space now">Free space now</button>
-                </div>
-                <p class="storage-row__rec"><span id="storage-player-rec">Recommended: 20 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="player" hidden>Use 20 GB</button></p>
-                <p id="storage-player-budget-note" class="storage-row__note">Torrent downloads, indexed seekable video and playback cache share this one storage limit.</p>
-              </div>
-
-              <div class="storage-cache-option">
-                <label class="ui-switch settings-switch-row storage-cache-option__toggle" for="storage-remux-cache-enabled">
-                  <input id="storage-remux-cache-enabled" type="checkbox" checked aria-describedby="storage-remux-cache-description" />
-                  <span class="ui-switch__track" aria-hidden="true"></span>
-                  <span class="settings-learning-copy">
-                    <strong>Playback improvements and seek cache</strong>
-                    <small id="storage-remux-cache-description">
-                      <span class="storage-cache-option__mode"><b>On (default):</b> Retain compatible playback buffers and prepare a reusable, fully seekable H.264 file for supported, verified completed episodes. Preparation uses CPU and disk within the player budget. Unsupported videos keep normal playback.</span>
-                      <span class="storage-cache-option__mode"><b>Off:</b> No background seek conversion or retained playback improvements; normal torrent streaming and on-demand FFmpeg conversion continue.</span>
-                    </small>
-                  </span>
-                </label>
-              </div>
-
-              <div class="storage-row" data-learning-only>
-                <div class="storage-row__head">
-                  <label class="storage-row__label" for="storage-clip-gb" data-i18n="Saved video fragments">Saved video fragments</label>
-                  <button class="ui-help" type="button" data-ui-tip="tip-storage-clips" aria-label="What saved video fragments are" aria-describedby="tip-storage-clips" data-i18n-aria-label="What saved video fragments are">?</button>
-                  <span id="tip-storage-clips" class="ui-tip-content" hidden><strong data-i18n="Saved video fragments">Saved video fragments</strong><p data-i18n="Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.">Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.</p><ul><li data-i18n="A card&#x27;s clip is kept as long as the card exists.">A card's clip is kept as long as the card exists.</li><li data-i18n="When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.">When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.</li></ul><p><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="clip">2 GB</span>.</strong> <span data-i18n="That holds about">That holds about</span> <span data-storage-rec="clip-lines">20,000</span> <span data-i18n="lines. The recommendation grows to twice what your cards&#x27; clips use, so they always have room.">lines. The recommendation grows to twice what your cards' clips use, so they always have room.</span></p></span>
-                  <span id="storage-clip-usage" class="storage-row__usage">Checking…</span>
-                </div>
-                <div class="storage-row__control">
-                  <label class="storage-input"><input id="storage-clip-gb" type="number" min="0.25" max="200" step="0.25" inputmode="decimal" aria-describedby="storage-clip-usage storage-clip-rec" /><span aria-hidden="true">GB</span></label>
-                  <div id="storage-clip-meter" class="ui-progress storage-meter" role="progressbar" aria-label="Saved video fragments used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-i18n-aria-label="Saved video fragments used"><span></span></div>
-                </div>
-                <p class="storage-row__rec"><span id="storage-clip-rec">Recommended: 2 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="clip" hidden>Use 2 GB</button></p>
-              </div>
-
-              <div class="storage-row storage-row--info" data-learning-only>
-                <div class="storage-row__head">
-                  <span class="storage-row__label" data-i18n="Anki deck media">Anki deck media</span>
-                  <button class="ui-help" type="button" data-ui-tip="tip-storage-decks" aria-label="What Anki deck media is" aria-describedby="tip-storage-decks" data-i18n-aria-label="What Anki deck media is">?</button>
-                  <span id="tip-storage-decks" class="ui-tip-content" hidden><strong data-i18n="Anki deck media">Anki deck media</strong><p data-i18n="Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app&#x27;s data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.">Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app's data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.</p></span>
-                  <span id="storage-deck-usage" class="storage-row__usage">Checking…</span>
-                </div>
-              </div>
-
-              <div id="storage-leftovers" class="storage-leftovers" hidden>
-                <div>
-                  <strong id="storage-leftovers-title">Leftover downloads</strong>
-                  <p data-i18n="Downloads from earlier runs that ended without cleaning up. Nothing uses them.">Downloads from earlier runs that ended without cleaning up. Nothing uses them.</p>
-                </div>
-                <button id="storage-leftovers-clear" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Delete leftovers">Delete leftovers</button>
-              </div>
-              <p id="storage-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
-            </section>
-            </div>
-
-            <div id="settings-panel-updates" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-updates" hidden>
-              <section class="settings-card" aria-labelledby="settings-app-updates-title">
-                <div class="settings-card__head">
-                  <h2 id="settings-app-updates-title">App updates</h2>
-                  <span id="settings-app-updates-version" class="app-updates-version">…</span>
-                </div>
-                <label class="ui-switch settings-switch-row" for="settings-app-updates-auto">
-                  <input id="settings-app-updates-auto" type="checkbox" disabled>
-                  <span class="ui-switch__track" aria-hidden="true"></span>
-                  <span class="settings-learning-copy"><strong>Update LVL automatically</strong>
-                    <small>Checks every hour and installs updates when no video is open.</small></span>
-                </label>
-                <div class="settings-actions">
-                  <button id="settings-app-updates-check" class="ui-btn ui-btn--primary ui-btn--sm" type="button" disabled>Check for updates</button>
-                  <button id="settings-app-updates-install" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" hidden>Install available update…</button>
-                </div>
-                <div id="settings-app-updates-progress" class="app-update-progress" hidden>
-                  <div class="app-update-progress__track" role="progressbar" aria-label="Update progress" aria-valuemin="0" aria-valuemax="100"><span class="app-update-progress__bar"></span></div>
-                  <span class="app-update-progress__label"></span>
-                </div>
-                <p id="settings-app-updates-status" class="tool-status settings-status" role="status" aria-live="polite">Reading updater settings…</p>
-                <details id="settings-app-updates-changelog-details" class="settings-guide">
-                  <summary>Changelog</summary>
-                  <div id="settings-app-updates-changelog-inline" class="app-changelog-history" aria-live="polite"></div>
-                </details>
-              </section>
-            </div>
-
-            <div id="settings-panel-notifications" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-notifications" hidden>
-              <section class="settings-card" aria-labelledby="settings-notification-title">
-                <div class="settings-card__head">
-                  <h2 id="settings-notification-title">Notifications</h2>
-                </div>
-                <label class="ui-switch settings-switch-row" for="settings-notification-update-alerts">
-                  <input id="settings-notification-update-alerts" type="checkbox" checked>
-                  <span class="ui-switch__track" aria-hidden="true"></span>
-                  <span class="settings-learning-copy"><strong>New version notifications</strong></span>
-                </label>
-              </section>
-            </div>
-
-            <div id="settings-panel-recs" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-recs" hidden>
             <section class="settings-card recs-card" aria-labelledby="recs-ratings-title">
               <div class="settings-card__head"><h2 id="recs-ratings-title" data-i18n="Your ratings">Your ratings</h2><span id="recs-rated-count" class="ui-badge ui-badge--outline">None yet</span></div>
               <div class="recs-row">
@@ -1017,11 +894,124 @@
               </div>
               <p id="recs-data-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
             </section>
-            <details class="settings-credits">
-              <summary>Credits</summary>
-              <a href="https://www.themoviedb.org" target="_blank" rel="noopener noreferrer" aria-label="The Movie Database"><img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHhtbG5zOnhsaW5rPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5L3hsaW5rIiB2aWV3Qm94PSIwIDAgMTg1LjA0IDEzMy40Ij48ZGVmcz48c3R5bGU+LmNscy0xe2ZpbGw6dXJsKCNsaW5lYXItZ3JhZGllbnQpO308L3N0eWxlPjxsaW5lYXJHcmFkaWVudCBpZD0ibGluZWFyLWdyYWRpZW50IiB5MT0iNjYuNyIgeDI9IjE4NS4wNCIgeTI9IjY2LjciIGdyYWRpZW50VW5pdHM9InVzZXJTcGFjZU9uVXNlIj48c3RvcCBvZmZzZXQ9IjAiIHN0b3AtY29sb3I9IiM5MGNlYTEiLz48c3RvcCBvZmZzZXQ9IjAuNTYiIHN0b3AtY29sb3I9IiMzY2JlYzkiLz48c3RvcCBvZmZzZXQ9IjEiIHN0b3AtY29sb3I9IiMwMGIzZTUiLz48L2xpbmVhckdyYWRpZW50PjwvZGVmcz48dGl0bGU+QXNzZXQgNDwvdGl0bGU+PGcgaWQ9IkxheWVyXzIiIGRhdGEtbmFtZT0iTGF5ZXIgMiI+PGcgaWQ9IkxheWVyXzEtMiIgZGF0YS1uYW1lPSJMYXllciAxIj48cGF0aCBjbGFzcz0iY2xzLTEiIGQ9Ik01MS4wNiw2Ni43aDBBMTcuNjcsMTcuNjcsMCwwLDEsNjguNzMsNDloLS4xQTE3LjY3LDE3LjY3LDAsMCwxLDg2LjMsNjYuN2gwQTE3LjY3LDE3LjY3LDAsMCwxLDY4LjYzLDg0LjM3aC4xQTE3LjY3LDE3LjY3LDAsMCwxLDUxLjA2LDY2LjdabTgyLjY3LTMxLjMzaDMyLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTg0LjMsMTcuN2gwQTE3LjY3LDE3LjY3LDAsMCwwLDE2Ni42MywwaC0zMi45QTE3LjY3LDE3LjY3LDAsMCwwLDExNi4wNiwxNy43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMTMzLjczLDM1LjM3Wm0tMTEzLDk4aDYzLjlBMTcuNjcsMTcuNjcsMCwwLDAsMTAyLjMsMTE1LjdoMEExNy42NywxNy42NywwLDAsMCw4NC42Myw5OEgyMC43M0ExNy42NywxNy42NywwLDAsMCwzLjA2LDExNS43aDBBMTcuNjcsMTcuNjcsMCwwLDAsMjAuNzMsMTMzLjM3Wm04My45Mi00OWg2LjI1TDEyNS41LDQ5aC04LjM1bC04LjksMjMuMmgtLjFMOTkuNCw0OUg5MC41Wm0zMi40NSwwaDcuOFY0OWgtNy44Wm0yMi4yLDBoMjQuOTVWNzcuMkgxNjcuMVY3MGgxNS4zNVY2Mi44SDE2Ny4xVjU2LjJoMTYuMjVWNDloLTI0Wk0xMC4xLDM1LjRoNy44VjYuOUgyOFYwSDBWNi45SDEwLjFaTTM5LDM1LjRoNy44VjIwLjFINjEuOVYzNS40aDcuOFYwSDYxLjlWMTMuMkg0Ni43NVYwSDM5Wm00MS4yNSwwaDI1VjI4LjJIODhWMjFoMTUuMzVWMTMuOEg4OFY3LjJoMTYuMjVWMGgtMjRabS03OSw0OUg5VjU3LjI1aC4xbDksMjcuMTVIMjRsOS4zLTI3LjE1aC4xVjg0LjRoNy44VjQ5SDI5LjQ1bC04LjIsMjMuMWgtLjFMMTMsNDlIMS4yWm0xMTIuMDksNDlIMTI2YTI0LjU5LDI0LjU5LDAsMCwwLDcuNTYtMS4xNSwxOS41MiwxOS41MiwwLDAsMCw2LjM1LTMuMzcsMTYuMzcsMTYuMzcsMCwwLDAsNC4zNy01LjVBMTYuOTEsMTYuOTEsMCwwLDAsMTQ2LDExNS44YTE4LjUsMTguNSwwLDAsMC0xLjY4LTguMjUsMTUuMSwxNS4xLDAsMCwwLTQuNTItNS41M0ExOC41NSwxOC41NSwwLDAsMCwxMzMuMDcsOTksMzMuNTQsMzMuNTQsMCwwLDAsMTI1LDk4SDExMy4yOVptNy44MS0yOC4yaDQuNmExNy40MywxNy40MywwLDAsMSw0LjY3LjYyLDExLjY4LDExLjY4LDAsMCwxLDMuODgsMS44OCw5LDksMCwwLDEsMi42MiwzLjE4LDkuODcsOS44NywwLDAsMSwxLDQuNTIsMTEuOTIsMTEuOTIsMCwwLDEtMSw1LjA4LDguNjksOC42OSwwLDAsMS0yLjY3LDMuMzQsMTAuODcsMTAuODcsMCwwLDEtNCwxLjgzLDIxLjU3LDIxLjU3LDAsMCwxLTUsLjU1SDEyMS4xWm0zNi4xNCwyOC4yaDE0LjVhMjMuMTEsMjMuMTEsMCwwLDAsNC43My0uNSwxMy4zOCwxMy4zOCwwLDAsMCw0LjI3LTEuNjUsOS40Miw5LjQyLDAsMCwwLDMuMS0zLDguNTIsOC41MiwwLDAsMCwxLjItNC42OCw5LjE2LDkuMTYsMCwwLDAtLjU1LTMuMiw3Ljc5LDcuNzksMCwwLDAtMS41Ny0yLjYyLDguMzgsOC4zOCwwLDAsMC0yLjQ1LTEuODUsMTAsMTAsMCwwLDAtMy4xOC0xdi0uMWE5LjI4LDkuMjgsMCwwLDAsNC40My0yLjgyLDcuNDIsNy40MiwwLDAsMCwxLjY3LTUsOC4zNCw4LjM0LDAsMCwwLTEuMTUtNC42NSw3Ljg4LDcuODgsMCwwLDAtMy0yLjczLDEyLjksMTIuOSwwLDAsMC00LjE3LTEuMywzNC40MiwzNC40MiwwLDAsMC00LjYzLS4zMmgtMTMuMlptNy44LTI4LjhoNS4zYTEwLjc5LDEwLjc5LDAsMCwxLDEuODUuMTcsNS43Nyw1Ljc3LDAsMCwxLDEuNy41OCwzLjMzLDMuMzMsMCwwLDEsMS4yMywxLjEzLDMuMjIsMy4yMiwwLDAsMSwuNDcsMS44MiwzLjYzLDMuNjMsMCwwLDEtLjQyLDEuOCwzLjM0LDMuMzQsMCwwLDEtMS4xMywxLjIsNC43OCw0Ljc4LDAsMCwxLTEuNTcuNjUsOC4xNiw4LjE2LDAsMCwxLTEuNzguMkgxNjVabTAsMTQuMTVoNS45YTE1LjEyLDE1LjEyLDAsMCwxLDIuMDUuMTUsNy44Myw3LjgzLDAsMCwxLDIsLjU1LDQsNCwwLDAsMSwxLjU4LDEuMTcsMy4xMywzLjEzLDAsMCwxLC42MiwyLDMuNzEsMy43MSwwLDAsMS0uNDcsMS45NSw0LDQsMCwwLDEtMS4yMywxLjMsNC43OCw0Ljc4LDAsMCwxLTEuNjcuNyw4LjkxLDguOTEsMCwwLDEtMS44My4yaC03WiIvPjwvZz48L2c+PC9zdmc+" alt="TMDB" width="70" height="50" loading="lazy" /></a>
-              <p>This product uses the TMDB API but is not endorsed or certified by TMDB.</p>
-            </details>
+            </div>
+
+            <div id="settings-panel-storage" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-storage" hidden>
+            <section class="settings-card storage-card" aria-labelledby="settings-storage-title">
+              <div class="settings-card__head"><h2 id="settings-storage-title" data-i18n="Storage">Storage</h2><button id="storage-refresh" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Refresh">Refresh</button></div>
+
+              <div class="storage-row">
+                <div class="storage-row__head">
+                  <label class="storage-row__label" for="storage-player-gb" data-i18n="Player storage">Player storage</label>
+                  <button class="ui-help" type="button" data-ui-tip="tip-storage-player" aria-label="What player storage is" aria-describedby="tip-storage-player" data-i18n-aria-label="What player storage is">?</button>
+                  <span id="tip-storage-player" class="ui-tip-content" hidden>
+                    <strong data-i18n="Player storage">Player storage</strong>
+                    <p>The player storage limit is shared by selected-episode torrent downloads, reusable converted video and playback cache. Only the selected video is downloaded, piece by piece.</p>
+                    <ul>
+                      <li>With the cache on, eligible fully downloaded SDR episodes may be converted once into a fully seekable file. Until preparation finishes, normal streaming and bounded-buffer seeking continue. Conversion uses CPU and extra disk space.</li>
+                      <li>Unused downloads and cache are cleaned up when space is needed. Active playback is protected.</li>
+                    </ul>
+                    <p data-i18n="A video bigger than this limit can&#x27;t be played until you raise it.">A video bigger than this limit can't be played until you raise it.</p>
+                    <p><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="player">20 GB</span>.</strong> Enough for most 1080p videos; large 4K files may require a higher limit. On a nearly full drive, keep this budget below a quarter of the free space.</p>
+                  </span>
+                  <span id="storage-player-usage" class="storage-row__usage">Checking…</span>
+                </div>
+                <div class="storage-row__control">
+                  <label class="storage-input"><input id="storage-player-gb" type="number" min="2" max="1000" step="1" inputmode="numeric" aria-describedby="storage-player-usage storage-player-rec" /><span aria-hidden="true">GB</span></label>
+                  <input id="storage-player-slider" class="storage-limit-slider" type="range" min="2" max="1000" step="1" value="20" aria-label="Maximum player storage in GB" />
+                  <button id="storage-player-clear" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Free space now">Free space now</button>
+                </div>
+                <p class="storage-row__rec"><span id="storage-player-rec">Recommended: 20 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="player" hidden>Use 20 GB</button></p>
+                <p id="storage-player-budget-note" class="storage-row__note">Torrent downloads, indexed seekable video and playback cache share this one storage limit.</p>
+              </div>
+
+              <div class="storage-cache-option">
+                <label class="ui-switch settings-switch-row storage-cache-option__toggle" for="storage-remux-cache-enabled">
+                  <input id="storage-remux-cache-enabled" type="checkbox" checked aria-describedby="storage-remux-cache-description" />
+                  <span class="ui-switch__track" aria-hidden="true"></span>
+                  <span class="settings-learning-copy">
+                    <strong>Playback improvements and seek cache</strong>
+                    <small id="storage-remux-cache-description">
+                      <span class="storage-cache-option__mode"><b>On (default):</b> Retain compatible playback buffers and prepare a reusable, fully seekable H.264 file for supported, verified completed episodes. Preparation uses CPU and disk within the player budget. Unsupported videos keep normal playback.</span>
+                      <span class="storage-cache-option__mode"><b>Off:</b> No background seek conversion or retained playback improvements; normal torrent streaming and on-demand FFmpeg conversion continue.</span>
+                    </small>
+                  </span>
+                </label>
+              </div>
+
+              <div class="storage-row" data-learning-only>
+                <div class="storage-row__head">
+                  <label class="storage-row__label" for="storage-clip-gb" data-i18n="Saved video fragments">Saved video fragments</label>
+                  <button class="ui-help" type="button" data-ui-tip="tip-storage-clips" aria-label="What saved video fragments are" aria-describedby="tip-storage-clips" data-i18n-aria-label="What saved video fragments are">?</button>
+                  <span id="tip-storage-clips" class="ui-tip-content" hidden><strong data-i18n="Saved video fragments">Saved video fragments</strong><p data-i18n="Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.">Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.</p><ul><li data-i18n="A card&#x27;s clip is kept as long as the card exists.">A card's clip is kept as long as the card exists.</li><li data-i18n="When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.">When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.</li></ul><p><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="clip">2 GB</span>.</strong> <span data-i18n="That holds about">That holds about</span> <span data-storage-rec="clip-lines">20,000</span> <span data-i18n="lines. The recommendation grows to twice what your cards&#x27; clips use, so they always have room.">lines. The recommendation grows to twice what your cards' clips use, so they always have room.</span></p></span>
+                  <span id="storage-clip-usage" class="storage-row__usage">Checking…</span>
+                </div>
+                <div class="storage-row__control">
+                  <label class="storage-input"><input id="storage-clip-gb" type="number" min="0.25" max="200" step="0.25" inputmode="decimal" aria-describedby="storage-clip-usage storage-clip-rec" /><span aria-hidden="true">GB</span></label>
+                  <div id="storage-clip-meter" class="ui-progress storage-meter" role="progressbar" aria-label="Saved video fragments used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-i18n-aria-label="Saved video fragments used"><span></span></div>
+                </div>
+                <p class="storage-row__rec"><span id="storage-clip-rec">Recommended: 2 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="clip" hidden>Use 2 GB</button></p>
+              </div>
+
+              <div class="storage-row storage-row--info" data-learning-only>
+                <div class="storage-row__head">
+                  <span class="storage-row__label" data-i18n="Anki deck media">Anki deck media</span>
+                  <button class="ui-help" type="button" data-ui-tip="tip-storage-decks" aria-label="What Anki deck media is" aria-describedby="tip-storage-decks" data-i18n-aria-label="What Anki deck media is">?</button>
+                  <span id="tip-storage-decks" class="ui-tip-content" hidden><strong data-i18n="Anki deck media">Anki deck media</strong><p data-i18n="Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app&#x27;s data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.">Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app's data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.</p></span>
+                  <span id="storage-deck-usage" class="storage-row__usage">Checking…</span>
+                </div>
+              </div>
+
+              <div id="storage-leftovers" class="storage-leftovers" hidden>
+                <div>
+                  <strong id="storage-leftovers-title">Leftover downloads</strong>
+                  <p data-i18n="Downloads from earlier runs that ended without cleaning up. Nothing uses them.">Downloads from earlier runs that ended without cleaning up. Nothing uses them.</p>
+                </div>
+                <button id="storage-leftovers-clear" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Delete leftovers">Delete leftovers</button>
+              </div>
+              <p id="storage-status" class="tool-status settings-status" role="status" aria-live="polite"></p>
+            </section>
+            </div>
+
+            <div id="settings-panel-updates" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-updates" hidden>
+              <section class="settings-card" aria-labelledby="settings-app-updates-title">
+                <div class="settings-card__head">
+                  <h2 id="settings-app-updates-title">App updates</h2>
+                  <span id="settings-app-updates-version" class="app-updates-version">…</span>
+                </div>
+                <label class="ui-switch settings-switch-row" for="settings-app-updates-auto">
+                  <input id="settings-app-updates-auto" type="checkbox" disabled>
+                  <span class="ui-switch__track" aria-hidden="true"></span>
+                  <span class="settings-learning-copy"><strong>Update LVL automatically</strong>
+                    <small>Checks every hour and installs updates when no video is open.</small></span>
+                </label>
+                <div class="settings-actions">
+                  <button id="settings-app-updates-check" class="ui-btn ui-btn--primary ui-btn--sm" type="button" disabled>Check for updates</button>
+                  <button id="settings-app-updates-install" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" hidden>Install available update…</button>
+                </div>
+                <div id="settings-app-updates-progress" class="app-update-progress" hidden>
+                  <div class="app-update-progress__track" role="progressbar" aria-label="Update progress" aria-valuemin="0" aria-valuemax="100"><span class="app-update-progress__bar"></span></div>
+                  <span class="app-update-progress__label"></span>
+                </div>
+                <p id="settings-app-updates-status" class="tool-status settings-status" role="status" aria-live="polite">Reading updater settings…</p>
+                <details id="settings-app-updates-changelog-details" class="settings-guide">
+                  <summary>Changelog</summary>
+                  <div id="settings-app-updates-changelog-inline" class="app-changelog-history" aria-live="polite"></div>
+                </details>
+              </section>
+            </div>
+
+            <div id="settings-panel-notifications" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-notifications" hidden>
+              <section class="settings-card" aria-labelledby="settings-notification-title">
+                <div class="settings-card__head">
+                  <h2 id="settings-notification-title">Notifications</h2>
+                </div>
+                <label class="ui-switch settings-switch-row" for="settings-notification-update-alerts">
+                  <input id="settings-notification-update-alerts" type="checkbox" checked>
+                  <span class="ui-switch__track" aria-hidden="true"></span>
+                  <span class="settings-learning-copy"><strong>New version notifications</strong></span>
+                </label>
+              </section>
             </div>
           </div>
         </section>

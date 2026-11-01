@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const mustExist = [
@@ -13,6 +14,9 @@ const mustExist = [
   'node_modules/ffmpeg-static/ffmpeg.exe',
   'node_modules/ffprobe-static/bin/win32/x64/ffprobe.exe',
   'THIRD_PARTY_NOTICES.txt',
+  // The Comics extension runner (ext-runner/build.mjs) and its own Java runtime.
+  'ext-runner/lvl-ext-runner.jar', 'ext-runner/NOTICE.txt',
+  'ext-runner/runtime/bin/java.exe', 'ext-runner/runtime/release', 'ext-runner/runtime/legal/java.base/LICENSE',
 ];
 
 const forbiddenTop = new Set([
@@ -79,8 +83,30 @@ export function validatePayload(payload, { checkRuntime = false } = {}) {
       const versionInfo = execFileSync(path.join(root, binary), ['-version'], { encoding: 'utf8', timeout: 20000, windowsHide: true });
       assert.match(versionInfo, /^ff(?:mpeg|probe) version/im);
     }
+    checkRunner(root);
   }
+  assert.ok(files.filter((file) => /^ext-runner\/lib\/[^/]+\.jar$/.test(file)).length >= 40, 'The extension runner needs its library jars');
   return { files: files.length, version: JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version };
+}
+
+// The bundled runner is Eclipse Temurin 21 (its licence allows shipping the jlink
+// runtime) and starts: it answers {"ready":true}, then quits when its input closes.
+function checkRunner(root) {
+  const runner = path.join(root, 'ext-runner');
+  const java = path.join(runner, 'runtime', 'bin', 'java.exe');
+  const settings = spawnSync(java, ['-XshowSettings:properties', '-version'], { encoding: 'utf8', timeout: 60000, windowsHide: true });
+  const output = `${settings.stderr}${settings.stdout}`;
+  assert.match(output, /^\s+java\.vendor = Eclipse Adoptium\r?$/m, 'The runner runtime must be Eclipse Temurin');
+  assert.match(output, /^\s+java\.runtime\.version = 21\./m, 'The runner runtime must be Java 21');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'lvl-verify-runner-'));
+  try {
+    const started = spawnSync(java, ['-Xmx384m', '-cp', `${path.join(runner, 'lvl-ext-runner.jar')}${path.delimiter}${path.join(runner, 'lib', '*')}`,
+      'lvl.runner.MainKt', '--data', data], { input: '', encoding: 'utf8', timeout: 120000, windowsHide: true });
+    assert.equal(started.status, 0, `The extension runner didn't start: ${String(started.stderr || started.error || '').slice(-400)}`);
+    assert.match(started.stdout, /^\{"ready":true/m, 'The extension runner must answer ready');
+  } finally {
+    fs.rmSync(data, { recursive: true, force: true, maxRetries: 5, retryDelay: 300 });
+  }
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

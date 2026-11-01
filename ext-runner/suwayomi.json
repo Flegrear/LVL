@@ -1,0 +1,5 @@
+{
+  "repo": "https://github.com/Suwayomi/Suwayomi-Server.git",
+  "commit": "6b481e8b62938b9c060eb210b934e0fbfdfa466b",
+  "license": "AndroidCompat and suwayomi.* files: MPL-2.0; eu.kanade.tachiyomi.* files: Apache-2.0 (Tachiyomi)"
+}

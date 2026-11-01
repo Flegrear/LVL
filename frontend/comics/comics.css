@@ -1,0 +1,225 @@
+/* Comics. Uses the core UI tokens; black/white Inter UI. */
+
+/* Settings › Comics › Use Comics off (comics-enabled.js): the Home and Library tabs go; Settings › Comics stays. */
+html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-comics) { display:none !important; }
+/* Main Library "Comics" filter: statuses and sort apply; video-only rows and actions don't. */
+#view-library[data-feature-filter="comics"] #library-continue,
+#view-library[data-feature-filter="comics"] #library-recommendations,
+#view-library[data-feature-filter="comics"] #library-add-magnet { display:none; }
+
+/* Home "Comics" tab: shelves, with the discovery browser (core anime-browser layout) after Trending */
+.comics-home-body { display:grid; gap:clamp(26px, 3vw, 40px); }
+.comic-chapters-empty { display:grid; justify-items:start; gap:12px; padding:8px 0 16px; }
+.comics-home-body > .comic-browser { margin:0 var(--ui-gutter); }
+.comic-browser .anime-browser-art { position:relative; }
+.comic-browser-badge { position:absolute; left:6px; bottom:6px; padding:3px 8px; border-radius:var(--ui-radius-pill); background:var(--ui-inverse, #fff); color:#000; font:650 11px/1.2 var(--font-sans); }
+
+/* Comic routes (/comic?…) only host the reader now. */
+.comics-page { min-height:60vh; }
+
+/* A manga's own title page: core's hero, plus the native title and the Library status */
+.title-hero__subtitle { margin:-6px 0 0; color:var(--ui-text-2); font-size:15px; }
+.title-feature-actions { display:contents; }
+.comic-status select { box-sizing:border-box; height:40px; padding:0 14px; border:1px solid var(--ui-line-strong); border-radius:var(--ui-radius-pill); background:var(--ui-surface); color:var(--ui-text); font:inherit; font-size:14px; font-weight:600; }
+.title-hero__actions .comic-status select { height:48px; padding:0 18px; background:rgba(255,255,255,.12); backdrop-filter:blur(8px); }
+.comic-status select:focus-visible { outline:2px solid var(--ui-inverse); outline-offset:2px; }
+
+/* The Manga block: Chapters / Sources / Details, the manga switch and its Library status */
+.comic-block-bar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; margin:4px 0 14px; }
+.comic-block-bar__end { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.comic-block-bar .comic-status select { height:36px; font-size:13px; }
+/* Comics on series and movie pages: "Added on …" and the draft's hint. */
+.comic-block-note { margin:-6px 0 14px; }
+#title-main .title-movie-sections { padding-bottom:0; }
+#title-main .title-movie-sections .catalog-season-switch { margin:0; }
+/* The manga's own scores in the bar (an anime's page): same pills as the hero, dropdown below. */
+.comic-block-scores { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.comic-block-scores .title-rating { height:36px; font-size:14px; }
+.comic-block-score { cursor:default; }
+.comic-block-scores .title-rating-breakdown { top:calc(100% + 8px); bottom:auto; left:auto; right:0; --rating-available-height:min(60vh, 520px); }
+.comic-block-view[hidden] { display:none; }
+.comic-block-view[data-manga-view="details"] { display:grid; gap:28px; }
+.comic-block-view[data-manga-view="details"][hidden] { display:none; }
+.comic-block { display:grid; gap:12px; }
+.comic-block__title, .comic-page__units-title { margin:0; font-size:18px; }
+.comic-details__ratings:empty { display:none; }
+.comic-staff { display:flex; flex-wrap:wrap; gap:8px 24px; margin:0; padding:0; list-style:none; }
+.comic-staff li { display:grid; gap:2px; }
+.comic-staff span { color:var(--ui-muted); font-size:13px; }
+.comic-head-tools { display:contents; }
+.comic-head-tools[hidden] { display:none; }
+
+/* Chapter list: the title page's episode rows, with search and order */
+.comic-chapter-tools { display:flex; gap:8px; margin-left:auto; }
+.comic-chapter-tools .ui-search__input { box-sizing:border-box; width:min(240px, 40vw); height:36px; padding:0 14px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-pill); background:var(--ui-surface); color:var(--ui-text); font:inherit; font-size:14px; }
+.comic-chapter-sort { height:36px; padding:0 12px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-pill); background:var(--ui-surface); color:var(--ui-text); font:inherit; font-size:14px; }
+.comic-chapter-tools .ui-search__input:focus-visible, .comic-chapter-sort:focus-visible { outline:2px solid var(--ui-inverse); outline-offset:2px; }
+/* Chapters as a list: the number, the title and facts, then Read / Sources (no images) */
+.comic-chapter-list .catalog-chapter-row { grid-template-columns:3.5em minmax(0, 1fr) auto; gap:14px; padding:10px 14px; }
+.comic-chapter-number { color:var(--ui-muted); font-size:14px; font-weight:700; font-variant-numeric:tabular-nums; text-align:right; }
+.comic-chapter-row.is-watched .comic-chapter-number { opacity:.6; }
+.comic-chapter-row .catalog-chapter-copy strong { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:14px; }
+.comic-chapter-row.is-watched .catalog-chapter-copy strong { color:var(--ui-text-2); }
+.comic-volume-head { border-bottom:1px solid var(--ui-line-subtle); }
+.comic-volume-head button { display:flex; align-items:center; gap:10px; width:100%; padding:12px 14px; border:0; background:var(--ui-surface, #0b0b0b); color:var(--ui-text); font:inherit; font-weight:700; text-align:left; cursor:pointer; }
+.comic-volume-head button:hover { background:var(--ui-surface-2, #111); }
+.comic-volume-head button:focus-visible { outline:2px solid var(--ui-inverse); outline-offset:-2px; }
+.comic-volume-head svg { flex:0 0 auto; transition:transform var(--ui-fast) var(--ui-ease); }
+.comic-volume-head button[aria-expanded="false"] svg { transform:rotate(-90deg); }
+.comic-volume-head__count { margin-left:auto; color:var(--ui-muted); font-size:13px; font-weight:500; white-space:nowrap; }
+@media (max-width:680px) { .comic-chapter-list .catalog-chapter-row { grid-template-columns:2.5em minmax(0, 1fr); } .comic-chapter-list .catalog-chapter-actions { grid-column:2; } }
+.comic-volumes__loading { height:72px; border-radius:var(--ui-radius-md); }
+.comic-candidates { display:grid; gap:6px; margin:0; padding:0 16px 14px; list-style:none; }
+.comic-candidates li { display:flex; align-items:center; gap:12px; padding:8px 12px; border:1px solid var(--ui-line-subtle); border-radius:var(--ui-radius-sm); }
+.comic-candidates__name { font-weight:600; }
+.comic-candidates .comic-source__meta { flex:1 1 auto; min-width:0; }
+.comic-chapter-row .catalog-chapter-sources > .title-note, .comic-chapter-row .catalog-chapter-sources > .ui-btn { margin:0 16px 14px; }
+
+/* The Manga block in core's heading row: chapter count, search and order, like a season's note */
+.title-feature-head:has(.comic-head-tools) { display:contents; }
+.title-section__head .comic-chapter-tools { margin-left:auto; }
+.title-feature-head .comic-chapter-tools .ui-search__input, .title-feature-head .comic-chapter-sort { height:32px; }
+.title-feature-head .ui-btn { flex:0 0 auto; }
+
+/* Your files, availability and matching */
+.comic-page__files, .comic-match { display:grid; gap:12px; }
+.comic-files { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.comic-file { display:grid; grid-template-columns:minmax(120px, 200px) minmax(0, 1fr) auto auto; align-items:center; gap:12px; padding:8px 12px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-md); background:var(--ui-surface); }
+.comic-file__unit { font-weight:600; }
+.comic-file__name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ui-muted); font-size:13px; }
+.comic-file__state { color:var(--ui-text-2); font-size:13px; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.comic-file.is-read .comic-file__state { color:var(--ui-muted); }
+.comic-match__list { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.comic-match__pick { display:flex; align-items:center; gap:12px; width:100%; padding:6px 10px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-md); background:var(--ui-surface); color:var(--ui-text); font:inherit; text-align:left; cursor:pointer; }
+.comic-match__pick:hover, .comic-match__pick:focus-visible { border-color:var(--ui-inverse); outline:none; }
+.comic-match__pick img { width:40px; aspect-ratio:2 / 3; object-fit:cover; border-radius:var(--ui-radius-xs); }
+.comic-match__pick span { display:grid; gap:2px; }
+.comic-match__pick span span { color:var(--ui-muted); font-size:13px; }
+.comic-page__extra { display:grid; gap:32px; }
+.comic-page__extra:empty, .comic-page__slot:empty { display:none; }
+
+/* Settings › Comics: core settings cards; lists are rows split by thin lines, like Storage */
+.comics-settings__extra, .comics-settings__group { display:grid; gap:14px; align-content:start; }
+.comics-settings__extra:empty, .comics-settings__group:empty { display:none; }
+.comics-rows { display:grid; margin:0; padding:0; list-style:none; }
+.comics-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:center; gap:6px 14px; padding:12px 0; border-top:1px solid var(--ui-line-subtle); }
+.comics-extensions .comics-row { padding:14px 0; gap:10px 14px; }
+.comics-row:first-child { border-top:0; padding-top:4px; }
+.comics-row__text { display:grid; gap:3px; min-width:0; }
+.comics-row__text strong { color:var(--ui-text); font:600 14px/1.3 var(--font-sans); overflow-wrap:anywhere; }
+.comics-row__text small { color:#9a9a9a; font:500 13px/1.4 var(--font-sans); overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.comics-row__mono { font-family:var(--font-mono, var(--ui-font-mono)) !important; font-weight:500 !important; font-size:13px !important; }
+.comics-row.is-muted .comics-row__text strong { color:#9a9a9a; }
+.comics-row__switch { display:flex; align-items:center; gap:12px; min-width:0; justify-content:flex-start; }
+.comics-row__actions { display:flex; align-items:center; gap:6px; }
+.comics-row__panel { grid-column:1 / -1; padding:16px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-lg); background:var(--ui-bg-raised); }
+.comics-row__panel[hidden] { display:none; }
+.comics-site-form { display:grid; gap:14px; }
+.comics-add { display:flex; flex-wrap:wrap; align-items:flex-end; gap:10px; }
+.comics-add > .settings-field, .comics-add > .settings-grid { flex:1 1 320px; }
+.comics-filters { display:grid; gap:10px; }
+.comics-repos:empty { display:none; }
+.comics-settings__status { min-height:0; }
+.comics-card .is-error { color:#ffb4b4; }
+@media (max-width:680px) { .comic-file { grid-template-columns:minmax(0, 1fr) auto; } .comic-file__name { display:none; } .comics-row { grid-template-columns:minmax(0, 1fr); } }
+
+
+/* Links with anime */
+.comic-page__relations { display:grid; gap:24px; }
+.comic-relations { display:grid; gap:12px; }
+.comic-relations__list { display:grid; grid-template-columns:repeat(auto-fill, minmax(260px, 1fr)); gap:8px; margin:0; padding:0; list-style:none; }
+.comic-relation { display:flex; align-items:center; gap:12px; width:100%; padding:8px 10px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-md); background:var(--ui-surface); color:var(--ui-text); font:inherit; text-align:left; cursor:pointer; }
+.comic-relation:hover, .comic-relation:focus-visible { border-color:var(--ui-inverse); outline:none; }
+.comic-relation:disabled { opacity:.6; cursor:progress; }
+.comic-relation img { width:44px; aspect-ratio:2 / 3; object-fit:cover; border-radius:var(--ui-radius-xs); }
+.comic-relation span { display:grid; gap:2px; min-width:0; }
+.comic-relation span span { color:var(--ui-muted); font-size:13px; text-transform:capitalize; }
+
+
+/* Sources */
+.comic-sources { display:grid; gap:12px; justify-items:start; }
+.comic-sources__results, .comic-sources__downloads { display:grid; gap:16px; width:100%; }
+.comic-sources__results:empty, .comic-sources__downloads:empty { display:none; }
+.comic-source { display:grid; gap:8px; }
+.comic-source h3 { margin:0; font-size:15px; }
+.comic-source__group { border:1px solid var(--ui-line); border-radius:var(--ui-radius-md); background:var(--ui-surface); }
+.comic-source__group > summary { display:flex; justify-content:space-between; gap:12px; padding:10px 14px; cursor:pointer; font-weight:600; }
+.comic-source__group > summary span { color:var(--ui-muted); font-weight:400; font-size:13px; }
+.comic-source__chapters, .comic-source__torrents, .comic-downloads { display:grid; gap:4px; margin:0; padding:4px 10px 10px; list-style:none; }
+.comic-source__chapters li, .comic-source__torrents li, .comic-downloads li { display:grid; grid-template-columns:minmax(120px, 220px) minmax(0, 1fr) auto; align-items:center; gap:12px; padding:6px 4px; border-bottom:1px solid var(--ui-line-subtle); }
+.comic-source__torrents li, .comic-downloads li { grid-template-columns:minmax(0, 1fr) auto auto; }
+.comic-source__name { min-width:0; overflow-wrap:anywhere; }
+.comic-source__meta { color:var(--ui-muted); font-size:13px; font-variant-numeric:tabular-nums; }
+.comic-source__error { margin:0; color:#ff8a80; font-size:13px; }
+
+/* Extension sources: a star per source, like Mihon's pinned sources */
+.comics-ext { grid-template-columns:36px minmax(0, 1fr) auto; column-gap:14px; }
+.comics-ext__icon { width:36px; height:36px; border-radius:9px; background:var(--ui-surface-raised, rgba(255,255,255,.06)); object-fit:cover; }
+/* Several languages: the chips go under the name, across the text and action columns. */
+.comics-ext.has-langs { grid-template-columns:36px minmax(0, 1fr); align-items:start; }
+.comics-ext__langs { grid-column:2 / -1; gap:6px; }
+.comics-lang-chip, .comics-lang-more { min-height:28px; padding:0 11px; font-size:12px; }
+.comics-lang-chip { gap:5px; }
+.comics-ext:not(.is-open) .comics-lang-chip.is-extra { display:none; }
+.comics-lang-more { border-style:dashed; color:var(--ui-muted); }
+/* Not added: "+"; added: a star (chips and the Add button), with the pressed colours. */
+.comics-toggle__off, .comics-toggle__on { display:inline-flex; align-items:center; gap:6px; }
+.comics-toggle__on, [aria-pressed="true"] > .comics-toggle__off { display:none; }
+[aria-pressed="true"] > .comics-toggle__on { display:inline-flex; }
+.comics-lang-chip .ui-icon { width:12px; height:12px; }
+.comics-lang-chip[aria-pressed="false"] .comics-toggle__off { opacity:.55; }
+.comics-add-toggle { min-width:96px; justify-content:center; }
+.comics-add-toggle .ui-icon { width:14px; height:14px; }
+.comics-add-toggle[aria-pressed="true"] { border-color:var(--ui-inverse); background:var(--ui-inverse); color:var(--ui-inverse-text); }
+.comics-repo { display:flex; flex-wrap:wrap; gap:4px 0; margin:0 0 14px; color:var(--ui-muted); font:500 13px/1.4 var(--font-sans); }
+.comics-repo > span + span::before { content:"·"; margin:0 7px; opacity:.6; }
+.comics-repo .is-error { color:var(--ui-danger, #ff8a80); }
+.comics-filters__row { display:grid; grid-template-columns:minmax(0, 2fr) minmax(180px, 1fr); gap:12px; margin-bottom:6px; }
+@media (max-width:680px) { .comics-filters__row { grid-template-columns:minmax(0, 1fr); } .comics-ext { grid-template-columns:36px minmax(0, 1fr); } .comics-ext > .comics-row__actions { grid-column:2; justify-self:start; } }
+.comics-star { color:var(--ui-muted); }
+.comics-star[aria-pressed="true"] { color:#f5c451; }
+.comics-star[aria-pressed="true"] svg { fill:currentColor; }
+
+/* Sources tab: each favorite source with the entries it found for this comic */
+.comic-sources__favorites { display:grid; gap:18px; }
+.comic-ext { display:grid; gap:8px; }
+.comic-ext__name { margin:0; font-size:15px; }
+.comic-ext__loading { height:150px; border-radius:var(--ui-radius-md); }
+.comic-ext__actions { display:flex; flex-wrap:wrap; gap:8px; }
+.comic-hits { display:grid; grid-template-columns:repeat(auto-fill, minmax(124px, 1fr)); gap:12px; margin:0; padding:0; list-style:none; }
+.comic-hit { display:grid; grid-template-rows:auto auto; gap:6px; min-width:0; }
+.comic-hit__open { display:grid; gap:6px; padding:0; border:0; background:none; color:inherit; font:inherit; text-align:left; cursor:pointer; }
+.comic-hit__open:focus-visible { outline:2px solid var(--ui-inverse); outline-offset:3px; border-radius:var(--ui-radius-md); }
+.comic-hit__cover { display:block; aspect-ratio:2 / 3; overflow:hidden; border-radius:var(--ui-radius-md); background:var(--ui-surface-raised, rgba(255,255,255,.06)); transition:transform var(--ui-fast) var(--ui-ease); }
+.comic-hit__open:hover .comic-hit__cover { transform:translateY(-2px); }
+.comic-hit__cover img { width:100%; height:100%; object-fit:cover; }
+.comic-hit.is-linked .comic-hit__cover { outline:2px solid var(--ui-inverse); outline-offset:2px; }
+.comic-hit__cover { position:relative; }
+.comic-hit__badge { position:absolute; left:6px; bottom:6px; padding:3px 8px; border-radius:var(--ui-radius-pill); background:var(--ui-inverse, #fff); color:#000; font:650 11px/1.2 var(--font-sans); }
+/* An entry's details popup (core app-dialog) */
+.detail-dialog.comic-hit-dialog { width:min(620px, calc(100vw - 24px)); }
+.comic-hit-details__loading { height:150px; border-radius:var(--ui-radius-md); }
+.comic-hit-details__head { display:flex; align-items:center; gap:16px; padding-right:40px; }
+.comic-hit-details__head img { width:72px; aspect-ratio:2 / 3; object-fit:cover; border-radius:var(--ui-radius-sm); }
+.comic-hit-details__head div { display:grid; gap:6px; min-width:0; }
+.comic-hit-details__title { padding-right:0; font-size:22px; overflow-wrap:anywhere; }
+.comic-hit-details__facts { margin:0; }
+.comic-hit-dialog .app-dialog__actions { align-items:center; flex-wrap:wrap; }
+.detail-dialog.comic-verify-dialog { width:min(520px, calc(100vw - 24px)); }
+.comic-verify__wait { height:6px; border-radius:var(--ui-radius-pill); }
+.comic-about { display:grid; gap:28px; margin-top:24px; }
+.comic-about:empty { display:none; }
+.comic-hit__title { display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; font-size:13px; line-height:1.3; }
+.comic-hit__state { color:var(--ui-muted); font-size:13px; }
+.comic-hit__count { color:var(--ui-muted); font-size:12px; font-variant-numeric:tabular-nums; }
+
+
+/* LVL Manga score (next to LVL's score; core's LVL dropdown styles apply) */
+.comic-manga-score-slot { display:inline-flex; flex:none; }
+.comic-manga-score .title-lvl-score-list { max-height:min(46vh, 380px); overflow:auto; }
+
+/* Narrow screens */
+@media (max-width:760px) {
+  .comic-block-bar { align-items:stretch; }
+  .comic-chapter-tools { margin-left:0; width:100%; }
+}
