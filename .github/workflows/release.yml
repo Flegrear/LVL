@@ -75,6 +75,15 @@ jobs:
           if (-not (Test-Path dist/LVL-Setup.exe) -or -not (Test-Path dist/LVL-Setup.exe.sha256)) {
             throw 'Canonical LVL-Setup.exe release artifacts are missing'
           }
+      - name: Build the pop-up player window
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          # Installed LVL downloads this once and checks it against its .sha256
+          # (backend/media/popup-program.js): in-app patches can't carry programs.
+          $version = '${{ github.ref_name }}'.Substring(1)
+          node scripts/build-popup.mjs --out build/popup-release --zip "dist/LVL-Popup-v$version.zip"
+          if ($LASTEXITCODE -ne 0) { throw 'Pop-up player build failed' }
       - name: Publish tagged Windows update to GitHub Releases
         shell: pwsh
         env:
@@ -83,8 +92,8 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $tag = '${{ github.ref_name }}'
           $releaseTitle = if ($tag -eq 'v0.1.1') { 'LVL Alpha 0.1.1 — Updater test' } else { "LVL Alpha $tag" }
-          $assets = @(Get-ChildItem dist -File | Where-Object { $_.Name -match '^(?:LVL-Setup\.exe(?:\.sha256)?|LVL-update-v\d+\.\d+\.\d+\.zip(?:\.sha256)?)$' } | ForEach-Object { $_.FullName })
-          if ($assets.Count -ne 2) { throw "Expected an update or full setup and matching checksum, got $($assets.Count)" }
+          $assets = @(Get-ChildItem dist -File | Where-Object { $_.Name -match '^(?:LVL-Setup\.exe(?:\.sha256)?|LVL-update-v\d+\.\d+\.\d+\.zip(?:\.sha256)?|LVL-Popup-v\d+\.\d+\.\d+\.zip(?:\.sha256)?)$' } | ForEach-Object { $_.FullName })
+          if ($assets.Count -ne 4) { throw "Expected an update or full setup, the pop-up player and their checksums, got $($assets.Count)" }
           if ($assets | Where-Object { $_ -match '[\\/]LVL\.exe(?:\.sha256)?$' }) { throw 'LVL.exe is the installed app, not a GitHub release installer' }
           gh release create $tag @assets --repo '${{ github.repository }}' --verify-tag --title $releaseTitle --generate-notes --latest
           if ($LASTEXITCODE -ne 0) { throw "GitHub Release upload failed for $tag" }

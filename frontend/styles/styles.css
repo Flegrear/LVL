@@ -260,8 +260,15 @@ button { color: inherit; }
 .floating-player-volume { display:flex; min-width:35px; flex:0 1 70px; max-width:80px; }
 .floating-player-volume input { width:100%; min-width:0; accent-color:#fff; cursor:pointer; }
 .is-document-pip #compat-controls { display:none!important; }
-.settings-floating-player .settings-field { max-width:550px; }
-.settings-floating-hint { margin:0; color:var(--ui-text-3,#aaa); font:500 12px/1.5 var(--font-sans); }
+/* The borderless pop-up player window (/watch?popup=…): only the video and LVL's floating
+   controls. LVL's window hides its own frame while the pop-up has the video. */
+html.lvl-popup-window, html.lvl-popup-window body { width:100%; height:100%; margin:0; padding:0; overflow:hidden; background:#000; }
+html.lvl-popup-window body > :not(#video-frame) { display:none!important; }
+html.lvl-popup-window #video-frame { position:fixed; inset:0; display:block!important; width:100%!important; height:100%!important; min-height:0!important; aspect-ratio:auto!important; margin:0!important; border:0!important; border-radius:0!important; box-shadow:none!important; }
+html.lvl-popup-window #floating-player-actions:not([hidden]) { display:flex!important; }
+html.lvl-popup-window #floating-player-return,
+html.lvl-popup-window #floating-player-close { pointer-events:auto; }
+#video-frame.is-popped-out { display:none!important; }
 .floating-player-placeholder[hidden] { display:none; }
 .floating-player-placeholder { min-height:200px; display:grid; place-content:center; justify-items:center; gap:15px; padding:20px; color:#aaa; background:#111; border:1px solid #333; border-radius:12px; font:500 14px/1.5 var(--font-sans); text-align:center; }
 @media (max-width:540px) {

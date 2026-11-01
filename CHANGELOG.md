@@ -1,5 +1,12 @@
 # LVL Changelog
 
+## 0.2.1 — 2026-11-01
+
+- Make the pop-up player a borderless window that stays above other apps, with no browser bar.
+- Move the pop-up by dragging the video and resize it from its edges; it keeps the video's shape and remembers where you left it.
+- Close the pop-up with Escape, ✕ or Return; playback continues in LVL from where the pop-up was.
+- Remove the floating player choice from Settings: the pop-up is now the only floating player.
+
 ## 0.2.0 — 2026-10-31
 
 - Add Comics: browse, search and read manga, manhwa and manhua, with their own tab on Home and in the Library.

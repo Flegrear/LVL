@@ -21,4 +21,4 @@ LVL stores application data locally; catalog, subtitle, and torrent services may
 
 ## Run from source
 
-With Node.js 22 and Git, run `npm ci`, then `npm start`, and open http://127.0.0.1:4173. Comics also needs the extension runner, which the installer includes. In a source checkout, build it once with `npm run runner`: it downloads the pinned Eclipse Temurin JDK, the Suwayomi sources and the runner's libraries, and takes a few minutes.
+With Node.js 22 and Git, run `npm ci`, then `npm start`, and open http://127.0.0.1:4173. Comics also needs the extension runner, which the installer includes. In a source checkout, build it once with `npm run runner`: it downloads the pinned Eclipse Temurin JDK, the Suwayomi sources and the runner's libraries, and takes a few minutes. On Windows, `node scripts/build-popup.mjs` builds the borderless pop-up player; without it, LVL uses the browser's own pop-up.

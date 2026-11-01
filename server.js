@@ -59,6 +59,8 @@ import { pipeRemuxAhead } from "./backend/media/remux-run-ahead.js";
 import { isTorrentFileFullyVerified } from "./backend/media/verified-torrent-file.js";
 import { evaluateEncodedH264CacheEligibility } from "./backend/media/transcode-cache-eligibility.js";
 import { createIndexedVideoCache, indexedCacheEligibility } from "./backend/media/indexed-video-cache.js";
+import { createPopupRoutes, createPopupWindow } from "./backend/media/popup-window.js";
+import { createPopupProgram } from "./backend/media/popup-program.js";
 import { createUpdatePolicy } from "./backend/app-updates/update-policy.js";
 import {
   COACH_LIVE_IDLE_TIMEOUT_MS,
@@ -113,6 +115,19 @@ const appDataRoot = process.env.LANGUAGE_VIDEO_LEARNER_DATA_ROOT
   ? path.resolve(process.env.LANGUAGE_VIDEO_LEARNER_DATA_ROOT)
   : path.join(root, "data");
 const appDatabase = createAppDatabase(path.join(appDataRoot, "language-video-learner.sqlite3"));
+// The borderless pop-up player window (LVL-Popup.exe, WebView2) and its own browser profile.
+// An installed LVL downloads the program from its release (patches can't carry programs).
+const popupProgram = createPopupProgram({
+  root, dataRoot: appDataRoot, version: APP_VERSION,
+  installed: fs.existsSync(path.join(root, "installed-app.json")),
+});
+const popupWindow = createPopupWindow({
+  resolveHome: () => popupProgram.home(),
+  profileDir: path.join(appDataRoot, "runtime", "popup"),
+  boundsFile: path.join(appDataRoot, "runtime", "popup-bounds.json"),
+});
+const handlePopupApi = createPopupRoutes({ popup: popupWindow, program: popupProgram, port, json, readJsonBody, methodNotAllowed });
+setTimeout(() => { void popupProgram.ensure(); }, 5000).unref();
 const ankiStore = createAnkiStore({ db: appDatabase.sqlite, mediaRoot: path.join(appDataRoot, "anki-media") });
 const recsStore = createRecsStore({ db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta });
 const releaseCalendar = createReleaseCalendarService({
@@ -6242,6 +6257,7 @@ async function handleApi(req, res, url) {
   const appOnlyRoute = url.pathname === "/api/app-state" || url.pathname.startsWith("/api/app-state/")
     || url.pathname === "/api/diagnostics/playback"
     || url.pathname.startsWith("/api/app-updates/")
+    || url.pathname.startsWith("/api/popup/")
     || url.pathname.startsWith("/api/coach/")
     || url.pathname === "/api/browser-coach/status"
     || url.pathname === "/api/browser-coach/decision"
@@ -6286,6 +6302,7 @@ async function handleApi(req, res, url) {
     return true;
   }
   if (url.pathname.startsWith("/api/app-updates/")) return appUpdatesEndpoint(req, res, url);
+  if (url.pathname.startsWith("/api/popup/")) return handlePopupApi(req, res, url);
   if (url.pathname === "/api/recs" || url.pathname.startsWith("/api/recs/") || url.pathname === "/api/ratings") return handleRecsApi(req, res, url);
   if (url.pathname === "/api/calendar/releases") {
     if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
@@ -6607,6 +6624,7 @@ async function shutdown() {
   shuttingDown = true;
   // Downloads are deleted on the way out; never hang there.
   setTimeout(() => process.exit(0), 8000).unref();
+  popupWindow.stop();
   await serverFeatures.stop();
   for (const ffmpeg of activeTranscodes) {
     if (!ffmpeg.killed) ffmpeg.kill();

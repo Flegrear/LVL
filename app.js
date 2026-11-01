@@ -379,6 +379,8 @@ const recsUi = createRecsUi({
 const video = $("#video");
 const playbackMetrics = installPlaybackTrace(video);
 const frame = $("#video-frame");
+// Set when this page is the borderless pop-up player window (index.html reads the handoff).
+const POPUP_HANDOFF = window.__lvlPopupHandoff?.playback ? window.__lvlPopupHandoff : null;
 // Match the episode list to the actual video rectangle, not the full player
 // column (which extends farther down for subtitles and title details).
 function syncWatchEpisodeHeight() {
@@ -823,6 +825,8 @@ function persistBlockedLibraryChange(section, submittedValue, generation) {
 
 function persistAppSection(section, value, { immediate = false, merge = false } = {}) {
   const mode = merge ? "merge" : "replace";
+  // The pop-up player window saves nothing: LVL's window does (no second writer, no conflicts).
+  if (typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) return;
   const generation = (persistentAppWriteGenerations.get(section) || 0) + 1;
   persistentAppWriteGenerations.set(section, generation);
   if (section === "library" && !merge) preservePendingLibraryForTab(value);
@@ -7066,6 +7070,8 @@ function resyncTranscodeAfterLongPause() {
 }
 
 function resumePlayback() {
+  // The pop-up player has the video; LVL's window takes it back first.
+  if (typeof popupPlayer !== "undefined" && popupPlayer.open) return;
   if (!linePreview.pending || linePreview.active) linePreview.preventBackgroundPlayback = false;
   if (state.pendingSeek) {
     state.pendingSeek.wasPlaying = true;
@@ -7814,14 +7820,16 @@ let watchProgressSavedAt = 0;
 // was already near its ending. A subsequent rewatch arms completion only
 // after playback has returned to an earlier part of that episode.
 const explicitUnwatchCompletionArmed = new Set();
-function recordWatchProgress({ force = false } = {}) {
+// positionSeconds/playing: the pop-up player's position, saved by LVL's window while it plays there.
+function recordWatchProgress({ force = false, positionSeconds = null, playing = null } = {}) {
+  if (typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) return;
   const current = currentLibraryEpisode();
   if (!current || !frame.classList.contains("has-video") || state.pendingSeek) return;
   const durationMs = Math.round(Number(state.mediaDurationMs) || 0);
   // The subtitle overlay follows the last frame actually presented, which
   // Chromium can throttle in a background tab while audio keeps playing.
   // Continue Watching must persist the absolute *playback* clock instead.
-  const positionMs = Math.max(0, Math.round(absolutePlaybackSeconds() * 1000) || 0);
+  const positionMs = Math.max(0, Math.round((positionSeconds ?? absolutePlaybackSeconds()) * 1000) || 0);
   if (!durationMs || positionMs < 5000) return;
   const now = Date.now();
   const code = String(current.episode.code || "").toUpperCase();
@@ -7845,7 +7853,7 @@ function recordWatchProgress({ force = false } = {}) {
   current.entry.lastPlayedFileIndex = Number(current.episode.fileIndex);
   // Real playback (not merely loading a planned anime) promotes only Planning
   // to Watching. Keep the user's other explicit tracking choices unchanged.
-  if (!video.paused && positionMs >= 5000) {
+  if ((playing ?? !video.paused) && positionMs >= 5000) {
     const series = buildLibrarySeries().find((item) => item.key === key);
     if (series?.mediaKind === "anime" && watchTrackingStatus(series) === "PLANNING") {
       setWatchTrackingStatus(key, "CURRENT", { automatic: true });
@@ -11067,7 +11075,7 @@ function lastWatchSelection() {
 }
 
 function restoreLastWatchOnVisit() {
-  if (!watchRestoreReady || watchRestoreStarted || !viewActive("watch")
+  if ((typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) || !watchRestoreReady || watchRestoreStarted || !viewActive("watch")
     || state.currentSource?.kind !== "idle" || watchPendingSelection) return;
   const target = lastWatchSelection();
   if (!target) return;
@@ -11086,14 +11094,12 @@ function viewFromLocation() {
 // A single live video/subtitle DOM is shared by the normal, site-floating and
 // browser-managed always-on-top Document PiP surfaces. No playback recreation.
 const FLOAT_AUTO_KEY = "lvl-floating-auto-v1";
-// v2 does not carry forward older native-PiP selections: the default is the
-// borderless in-app window. Desktop PiP remains an explicit Settings opt-in.
-const FLOAT_SCOPE_KEY = "lvl-floating-scope-v2";
 const floatingPrefs = {
   auto: localStorage.getItem(FLOAT_AUTO_KEY) !== "0",
-  // Site-floating has no browser-controlled origin/title strip. Keep an
-  // explicitly saved desktop choice for users who need cross-app topmost PiP.
-  scope: localStorage.getItem(FLOAT_SCOPE_KEY) === "desktop" ? "desktop" : "site",
+  // One floating player: the pop-up window above other apps (LVL's borderless window with
+  // the installed app; the browser's own pop-up otherwise). The player inside LVL is only
+  // the fallback when neither can open.
+  scope: "desktop",
 };
 let floatingManual = false;
 let floatingSiteBounds = null;
@@ -11143,7 +11149,8 @@ function updateFloatingControls() {
   const actions = $("#floating-player-actions");
   if (actions) {
     const wasHidden = actions.hidden;
-    actions.hidden = !$("#view-watch")?.classList.contains("is-floating") && !floatingDesktopWindow;
+    actions.hidden = !$("#view-watch")?.classList.contains("is-floating") && !floatingDesktopWindow
+      && !frame.classList.contains("is-popup-window");
     if (!actions.hidden && wasHidden) revealFloatingControls();
     if (actions.hidden) {
       window.clearTimeout(floatingControlsIdleTimer);
@@ -11235,17 +11242,230 @@ function restoreDocumentFloating({ closeWindow = false } = {}) {
 
 function closeDesktopFloating() {
   floatingDesiredDesktop = false;
+  if (typeof popupPlayer !== "undefined" && popupPlayer.open) void takeBackPopupPlayer();
   if (floatingDesktopWindow) restoreDocumentFloating({ closeWindow: true });
   if (document.pictureInPictureElement === video) {
     void document.exitPictureInPicture().catch(() => {});
   }
 }
 
+// ---- The borderless pop-up player: LVL-Popup.exe shows this page (/watch?popup=<token>)
+// in its own always-on-top window with no frame (backend/media/popup-window.js).
+// LVL's window sends what is playing, pauses, and continues from the pop-up's position
+// when it comes back. The pop-up window shows only the player and plays from there. It
+// saves nothing itself: LVL's window keeps Continue Watching current from its reports.
+const popupPlayer = { available: false, open: false, id: null, pollTimer: null, warmed: false };
+
+function popupPlayableSource() {
+  const source = state.currentSource;
+  return source?.kind === "torrent" && /^[0-9a-f]{40}$/.test(String(source.libraryId || ""))
+    && Number.isInteger(Number(source.fileIndex)) && Number(source.fileIndex) >= 0;
+}
+
+async function refreshPopupAvailability() {
+  if (POPUP_HANDOFF) return;
+  try { popupPlayer.available = Boolean((await fetchJson("/api/popup/status")).available); } catch { popupPlayer.available = false; }
+}
+
+// Starts the pop-up program hidden, so the first pop-out only loads the page. After an
+// update, an installed LVL downloads the program first; until then the browser's pop-up is used.
+function warmPopupPlayer() {
+  if (POPUP_HANDOFF || popupPlayer.warmed) return;
+  popupPlayer.warmed = true;
+  void postJson("/api/popup/warm", {}).then((answer) => {
+    popupPlayer.available = Boolean(answer?.available);
+    // Still downloading: ask again on the next play.
+    if (!popupPlayer.available && answer?.downloading) popupPlayer.warmed = false;
+  }).catch(() => { popupPlayer.warmed = false; });
+}
+
+function popupStorageSnapshot() {
+  const out = {};
+  try {
+    for (let index = 0; index < localStorage.length; index += 1) {
+      const key = localStorage.key(index);
+      if (key && (/^lvl[-_]/i.test(key) || key === APP_DB_MIGRATION_KEY || key === "blackline-db-preferences-v2")) out[key] = localStorage.getItem(key);
+    }
+  } catch {}
+  return out;
+}
+
+async function openPopupPlayer() {
+  const source = state.currentSource;
+  const playback = {
+    libraryId: source.libraryId, fileIndex: Number(source.fileIndex), title: source.title || "",
+    positionSeconds: Math.max(0, absolutePlaybackSeconds()), paused: !playerIsPlaying(),
+    volume: video.volume, muted: playerWantsMuted(), rate: video.playbackRate || 1,
+  };
+  floatingDesiredDesktop = true;
+  floatingDesktopPending = true;
+  try {
+    const opened = await postJson("/api/popup/open", { playback, storage: popupStorageSnapshot() });
+    if (!floatingDesiredDesktop) {
+      void postJson("/api/popup/close", {}).catch(() => {});
+      return false;
+    }
+    popupPlayer.open = true;
+    popupPlayer.id = opened.id;
+    suspendPlayerForPopup();
+    frame.classList.add("is-popped-out");
+    const placeholder = $("#floating-player-placeholder");
+    if (placeholder) placeholder.hidden = false;
+    showSiteFloating(false);
+    updateFloatingControls();
+    schedulePopupPoll();
+    return true;
+  } catch (error) {
+    console.warn("Pop-up player unavailable:", error);
+    popupPlayer.available = false;
+    return null;
+  } finally {
+    floatingDesktopPending = false;
+  }
+}
+
+function schedulePopupPoll() {
+  window.clearTimeout(popupPlayer.pollTimer);
+  popupPlayer.pollTimer = window.setTimeout(() => { void pollPopupPlayer(); }, 1000);
+}
+
+// While the pop-up has the video, nothing in LVL's window may start it again: its frame is
+// hidden, Chromium pauses hidden muted video "to save power", and a seek or recovery still
+// in progress then ended in a "Video synchronization unavailable" error. Same as a pause
+// by the user, plus any pending start or seek is dropped.
+function suspendPlayerForPopup() {
+  cancelTranscodeStart();
+  recoveryPlaybackRequested = false;
+  recoveryPauseSerial += 1;
+  video.pause();
+  clearBufferingTimer();
+}
+
+// The video comes back to LVL's window: drop a loading or error panel left from before.
+function clearPlayerPanelForPopupReturn() {
+  resetRecoveryDisplay();
+  const overlay = $("#video-loading");
+  if (overlay && !overlay.hidden) {
+    overlay.classList.remove("is-error");
+    overlay.hidden = true;
+    stopPlayerLoadingAnimation();
+  }
+}
+
+async function pollPopupPlayer() {
+  if (!popupPlayer.open) return;
+  let status = null;
+  try { status = await fetchJson("/api/popup/status"); } catch {}
+  if (!popupPlayer.open) return;
+  if (status && status.id !== popupPlayer.id) {
+    finishPopupPlayer({ action: "close" });
+    return;
+  }
+  if (status?.result) {
+    finishPopupPlayer(status.result);
+    return;
+  }
+  // The pop-up plays; this window keeps Continue Watching current.
+  if (Number.isFinite(status?.position)) recordWatchProgress({ positionSeconds: status.position, playing: true });
+  schedulePopupPoll();
+}
+
+// The pop-up ended (Return, ✕, the video ended, or LVL's window took it back): continue here
+// from where it was. Return continues playing on Watch; ✕ leaves it paused, as before.
+function finishPopupPlayer(result = {}) {
+  if (!popupPlayer.open) return;
+  popupPlayer.open = false;
+  popupPlayer.id = null;
+  window.clearTimeout(popupPlayer.pollTimer);
+  floatingDesiredDesktop = false;
+  frame.classList.remove("is-popped-out");
+  const placeholder = $("#floating-player-placeholder");
+  if (placeholder) placeholder.hidden = true;
+  clearPlayerPanelForPopupReturn();
+  const seconds = Number(result.positionSeconds);
+  if (Number.isFinite(seconds) && seconds > 0) {
+    recordWatchProgress({ force: true, positionSeconds: seconds, playing: false });
+    seekTo(seconds * 1000);
+  }
+  floatingManual = false;
+  if (result.action === "return") {
+    if (!viewActive("watch")) switchView("watch");
+    if (!result.paused) resumePlayback();
+  }
+  updateFloatingControls();
+}
+
+async function takeBackPopupPlayer() {
+  if (!popupPlayer.open) return;
+  let result = null;
+  try { result = (await postJson("/api/popup/close", {})).result; } catch {}
+  finishPopupPlayer({ ...(result || {}), action: "return" });
+}
+
+// Another video started in LVL's window: the pop-up closes without moving this one.
+function dismissPopupPlayer() {
+  if (!popupPlayer.open) return;
+  popupPlayer.open = false;
+  popupPlayer.id = null;
+  window.clearTimeout(popupPlayer.pollTimer);
+  frame.classList.remove("is-popped-out");
+  const placeholder = $("#floating-player-placeholder");
+  if (placeholder) placeholder.hidden = true;
+  void postJson("/api/popup/close", {}).catch(() => {});
+}
+
+// In the pop-up window.
+let popupReportTimer = null;
+let popupDragStart = null;
+let popupDragged = false;
+
+function popupHost(message) {
+  try { window.chrome?.webview?.postMessage(message); } catch {}
+}
+
+function popupReport(action = "") {
+  if (!POPUP_HANDOFF) return;
+  const body = { token: POPUP_HANDOFF.token, positionSeconds: Math.max(0, absolutePlaybackSeconds()), paused: !playerIsPlaying(), ...(action ? { action } : {}) };
+  void fetch("/api/popup/report", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
+}
+
+function finishPopupWindow(action) {
+  window.clearInterval(popupReportTimer);
+  popupReportTimer = null;
+  popupReport(action);
+  video.pause();
+}
+
+async function startPopupPlayback() {
+  const playback = POPUP_HANDOFF?.playback;
+  if (!playback) return;
+  document.body.append(frame);
+  frame.classList.add("is-document-pip", "is-popup-window");
+  updateFloatingControls();
+  video.volume = playback.volume;
+  setPlayerMutePreference(playback.muted);
+  const started = await playLibraryEpisode(playback.libraryId, playback.fileIndex, { resumeAtSeconds: playback.positionSeconds });
+  if (!started) {
+    finishPopupWindow("close");
+    return;
+  }
+  video.playbackRate = playback.rate;
+  if (playback.paused) video.pause();
+  popupReportTimer = window.setInterval(() => { if (frame.classList.contains("has-video")) popupReport(); }, 1000);
+  window.addEventListener("pagehide", () => popupReport("close"), { once: true });
+}
+
 // This function MUST be called synchronously during a click/keypress when
 // requesting PiP: browsers require transient user activation.
 async function openDesktopFloating() {
-  if (floatingDesktopPending || floatingDesktopWindow || document.pictureInPictureElement === video) return true;
+  const popupReady = typeof popupPlayer !== "undefined";
+  if (floatingDesktopPending || floatingDesktopWindow || (popupReady && popupPlayer.open) || document.pictureInPictureElement === video) return true;
   if (!floatMayDisplay()) return false;
+  if (popupReady && popupPlayer.available && popupPlayableSource()) {
+    const opened = await openPopupPlayer();
+    if (opened !== null) return opened;
+    // The pop-up program failed: the browser's own pop-up below.
+  }
   floatingDesiredDesktop = true;
   floatingDesktopPending = true;
   try {
@@ -11322,7 +11542,7 @@ function updateFloatingPlayback(destination) {
   }
   if (floatingPrefs.scope === "desktop") {
     showSiteFloating(false);
-    if (!floatingDesktopWindow && !floatingDesktopPending && document.pictureInPictureElement !== video) void openDesktopFloating();
+    if (!floatingDesktopWindow && !floatingDesktopPending && !(typeof popupPlayer !== "undefined" && popupPlayer.open) && document.pictureInPictureElement !== video) void openDesktopFloating();
   } else {
     closeDesktopFloating();
     showSiteFloating(true);
@@ -11334,7 +11554,7 @@ function stopPlaybackIfHiddenAfterNavigation(destination) {
   // A source may still be resolving when Home is opened. The popup decision
   // was made before media could play: never let that old request start hidden
   // audio later unless an actual floating/PiP surface remains active.
-  if ($("#view-watch")?.classList.contains("is-floating") || floatingDesktopWindow
+  if ($("#view-watch")?.classList.contains("is-floating") || floatingDesktopWindow || (typeof popupPlayer !== "undefined" && popupPlayer.open)
     || floatingDesktopPending || document.pictureInPictureElement === video) return;
   playbackLoadRequestId += 1;
   cancelTranscodeStart();
@@ -18266,6 +18486,8 @@ let libraryPlaybackResolveController = null;
 let libraryPlaybackPendingMagnet = "";
 
 async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = null } = {}) {
+  // Another video in LVL's window: the pop-up player closes.
+  if (typeof dismissPopupPlayer === "function") dismissPopupPlayer();
   // A direct torrent selection supersedes a pending Library resolution too.
   // Do not abort the Library request that just handed us this same load ID.
   if (requestId === null) {
@@ -19440,30 +19662,18 @@ $("#settings-float-auto")?.addEventListener("change", (event) => {
   floatingPrefs.auto = event.target.checked;
   localStorage.setItem(FLOAT_AUTO_KEY, floatingPrefs.auto ? "1" : "0");
 });
-$("#settings-float-scope")?.addEventListener("change", (event) => {
-  floatingPrefs.scope = event.target.value === "desktop" ? "desktop" : "site";
-  localStorage.setItem(FLOAT_SCOPE_KEY, floatingPrefs.scope);
-  if (floatingDesktopWindow || $("#view-watch")?.classList.contains("is-floating")) {
-    floatingManual = true;
-    updateFloatingPlayback(viewActive("watch") ? "watch" : "library");
-  }
-});
 $("#settings-float-auto").checked = floatingPrefs.auto;
-$("#settings-float-scope").value = floatingPrefs.scope;
 
 $("#player-float")?.addEventListener("click", () => {
   if (!floatMayDisplay()) return;
   floatingManual = true;
-  // The explicit pop-out button is a request for a window above other apps.
-  // Remember that choice for automatic pop-outs too. The in-app mode remains
-  // selectable in Settings if a user prefers it for future navigation.
-  floatingPrefs.scope = "desktop";
-  localStorage.setItem(FLOAT_SCOPE_KEY, "desktop");
-  const scope = $("#settings-float-scope");
-  if (scope) scope.value = "desktop";
   void openDesktopFloating();
 });
 $("#floating-player-return")?.addEventListener("click", () => {
+  if (typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) {
+    finishPopupWindow("return");
+    return;
+  }
   floatingManual = false;
   closeDesktopFloating();
   switchView("watch");
@@ -19504,6 +19714,10 @@ floatingProgress?.addEventListener("change", (event) => {
 });
 floatingProgress?.addEventListener("pointercancel", () => { floatingSeekScrubbing = false; updateFloatingControls(); });
 $("#floating-player-close")?.addEventListener("click", () => {
+  if (typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) {
+    finishPopupWindow("close");
+    return;
+  }
   floatingManual = false;
   video.pause();
   closeDesktopFloating();
@@ -19518,6 +19732,66 @@ video.addEventListener("play", updateFloatingControls);
 video.addEventListener("pause", updateFloatingControls);
 video.addEventListener("volumechange", updateFloatingControls);
 video.addEventListener("timeupdate", updateFloatingControls);
+// The borderless pop-up player window (its functions are with the floating player code).
+if (POPUP_HANDOFF) {
+  // The window hides itself if the page never says it's ready (it has no frame to close).
+  popupHost({ type: "ready" });
+  // Drag the video to move the window; from an edge, resize it. The window follows the
+  // pointer while the left button is held.
+  frame.addEventListener("pointerdown", (event) => {
+    popupDragged = false;
+    if (event.button !== 0 || event.target.closest?.("button, input, select, a, label, .floating-player-bottom, #player-subtitle-menu")) return;
+    const edge = siteFloatEdge(frame.getBoundingClientRect(), event.clientX, event.clientY);
+    if (edge) {
+      event.preventDefault();
+      popupDragged = true;
+      popupHost({ type: "resize", edge });
+      return;
+    }
+    popupDragStart = { x: event.clientX, y: event.clientY };
+  }, true);
+  window.addEventListener("pointermove", (event) => {
+    if (popupDragStart && event.buttons & 1) {
+      if (Math.hypot(event.clientX - popupDragStart.x, event.clientY - popupDragStart.y) < 4) return;
+      popupDragStart = null;
+      popupDragged = true;
+      popupHost({ type: "move" });
+      return;
+    }
+    if (event.buttons) return;
+    const edge = siteFloatEdge(frame.getBoundingClientRect(), event.clientX, event.clientY);
+    frame.style.cursor = edge === "n" || edge === "s" ? "ns-resize"
+      : edge === "e" || edge === "w" ? "ew-resize"
+      : edge === "nw" || edge === "se" ? "nwse-resize"
+      : edge ? "nesw-resize" : "";
+  });
+  window.addEventListener("pointerup", () => { popupDragStart = null; });
+  // A drag or resize that ends over the video isn't a click (play/pause).
+  frame.addEventListener("click", (event) => {
+    if (!popupDragged) return;
+    popupDragged = false;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  // No fullscreen inside the pop-up.
+  frame.addEventListener("dblclick", (event) => {
+    event.preventDefault();
+    event.stopImmediatePropagation();
+  }, true);
+  // Escape closes the pop-up, as ✕ does.
+  window.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape" || event.defaultPrevented || $("#player-subtitle-menu")?.hidden === false) return;
+    event.preventDefault();
+    finishPopupWindow("close");
+  });
+  video.addEventListener("loadedmetadata", () => {
+    if (video.videoWidth > 0 && video.videoHeight > 0) popupHost({ type: "aspect", ratio: video.videoWidth / video.videoHeight });
+  });
+  video.addEventListener("ended", () => finishPopupWindow("ended"));
+} else {
+  // The first video played in LVL's window starts the pop-up program hidden.
+  video.addEventListener("play", warmPopupPlayer);
+}
 video.addEventListener("durationchange", updateFloatingControls);
 
 // The in-app window moves from any non-control interior point, and resizes from
@@ -20961,6 +21235,10 @@ renderAll();
 void refreshCoachProviders();
 void hydratePersistentAppState().then(() => {
   watchRestoreReady = true;
+  if (POPUP_HANDOFF) {
+    void startPopupPlayback();
+    return;
+  }
   restoreLastWatchOnVisit();
   backfillAniListCommunityScores();
   if (viewActive("calendar")) calendarUi.refresh();
@@ -20980,6 +21258,7 @@ void hydratePersistentAppState().then(() => {
   console.warn("AniList initialization deferred:", error?.message);
 });
 switchView(viewFromLocation(), { historyMode: "replace" });
+if (!POPUP_HANDOFF) void refreshPopupAvailability();
 window.addEventListener("online", () => scheduleAniListAutoSync(1000));
 window.addEventListener("focus", () => {
   if (Date.now() - readAniListPreference(localStorage).lastPull >= 60 * 60_000) scheduleAniListAutoSync(1000);

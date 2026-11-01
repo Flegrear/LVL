@@ -26,7 +26,9 @@ const unsafeFile = /\.(?:exe|dll|sys|node|msi|msp|msix|appx|bat|cmd|ps1|vbs|wsf|
 const developerFile = /(?:^|\/)(?:__tests__|tests?|specs?|fixtures?|devtools|docs|examples|benchmarks|coverage)(?:\/|$)|(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/i;
 // Repository, CI and release tooling that is never installed. Changing it
 // doesn't touch the installed app, so it never forces the full installer.
-const notInstalled = /^(?:README(?:\.[^/]*)?|LICENSE(?:\.[^/]*)?|\.gitignore|\.gitattributes|\.editorconfig|\.github\/.+|scripts\/.+|docs\/.+|tests\/.+|devtools\/.+|learning\/build-presets\.mjs)$/i;
+// launcher/LvlPopup.cs is the pop-up player window: the release workflow builds it into its
+// own release asset, which LVL downloads (backend/media/popup-program.js); not part of LVL.exe.
+const notInstalled = /^(?:README(?:\.[^/]*)?|LICENSE(?:\.[^/]*)?|\.gitignore|\.gitattributes|\.editorconfig|\.github\/.+|scripts\/.+|docs\/.+|tests\/.+|devtools\/.+|learning\/build-presets\.mjs|launcher\/LvlPopup\.cs)$/i;
 const windowsReserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 function versionParts(value) {

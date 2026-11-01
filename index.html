@@ -13,6 +13,34 @@
         window.history.replaceState({ view: "settings" }, "", "/settings");
       }
     </script>
+    <script>
+      // LVL's pop-up player window opens /watch?popup=<token>. Before the app loads, read what
+      // to play and the player's settings from LVL's window (the pop-up has its own profile).
+      (function () {
+        var token = new URLSearchParams(window.location.search).get("popup");
+        if (!token || !/^[A-Za-z0-9_-]{22,64}$/.test(token)) return;
+        var hideWindow = function () {
+          // The pop-up window has no frame: without a video it must close itself.
+          try { window.chrome.webview.postMessage({ type: "hide" }); } catch (error) {}
+        };
+        try {
+          var request = new XMLHttpRequest();
+          request.open("GET", "/api/popup/handoff?token=" + encodeURIComponent(token), false);
+          request.send();
+          if (request.status !== 200) return hideWindow();
+          var handoff = JSON.parse(request.responseText);
+          var storage = handoff.storage || {};
+          Object.keys(storage).forEach(function (key) {
+            try { localStorage.setItem(key, String(storage[key])); } catch (error) {}
+          });
+          handoff.token = token;
+          window.__lvlPopupHandoff = handoff;
+          document.documentElement.classList.add("lvl-popup-window");
+        } catch (error) {
+          hideWindow();
+        }
+      })();
+    </script>
     <title>LVL</title>
     <meta name="theme-color" content="#000000" />
     <link rel="icon" href="/favicon.ico?v=2" sizes="any" />
@@ -657,14 +685,6 @@
                 <span class="ui-switch__track" aria-hidden="true"></span>
                 <span class="settings-learning-copy"><strong>Pop out when leaving Watch</strong><small>Only while playing. Turn off to pop out manually using the player button.</small></span>
               </label>
-              <label class="settings-field" for="settings-float-scope">
-                <span>Show floating player</span>
-                <select id="settings-float-scope">
-                  <option value="site">Borderless inside LVL - movable and resizable</option>
-                  <option value="desktop">Above other apps - Browser PiP (browser title bar)</option>
-                </select>
-              </label>
-              <p id="settings-float-message" class="settings-floating-hint" role="status" aria-live="polite">Borderless mode stays inside LVL. Browser PiP can float above other applications where supported; the browser controls its title bar and window placement.</p>
             </section>
             <form id="settings-subdl-form" class="settings-card">
               <div class="settings-card__head"><h2 data-i18n="Languages">Languages</h2></div>
