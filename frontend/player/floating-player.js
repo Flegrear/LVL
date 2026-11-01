@@ -15,7 +15,7 @@ import { closePlayerPopovers } from "./player-menus.js";
 import { seekTo } from "./subtitle-display.js";
 import { playLibraryEpisode } from "./torrent-playback.js";
 import { recordWatchProgress } from "../watch/watched-status.js";
-import { linePreview } from "../learning/study-decks.js";
+import { linePreview } from "../learning/index.js";
 
 // A single live video/subtitle DOM is shared by the normal, site-floating and
 // browser-managed always-on-top Document PiP surfaces. No playback recreation.

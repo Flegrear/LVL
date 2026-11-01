@@ -38,8 +38,7 @@ import {
   buildLibrarySeries, currentChapterSources, libraryEntryById, librarySeriesKey,
 } from "../library/library-data.js";
 import { homeTitleIndex } from "../home/home-page.js";
-import { scheduleClipStep } from "../learning/clips.js";
-import { linePreview } from "../learning/study-decks.js";
+import { linePreview, scheduleClipStep } from "../learning/index.js";
 
 let playerControlsHideTimer = null;
 

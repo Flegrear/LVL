@@ -8,18 +8,18 @@ import { $, $$, setToolStatus } from "../app/dom.js";
 import { postJson } from "../app/http.js";
 import { renderSettings } from "../settings/settings-page.js";
 import {
-  applyLanguagePreferencesToTracks, currentSourceTracks, episodeIdentity, normalizeCollectionTitle,
-  normalizeTrackLanguage, preferredLanguagePair,
+  applyLanguagePreferencesToTracks, currentSourceTracks, episodeIdentity, languageName,
+  normalizeCollectionTitle, normalizeTrackLanguage, preferredLanguagePair,
 } from "./player-tracks.js";
 import { ensureTrackRomanization, isRomanizableLanguage } from "./subtitle-display.js";
 import {
   alignCurrentSubtitleSet, subtitleFingerprint, subtitleTimelineFit, syncTrackToBestReference,
 } from "./subtitle-timing.js";
 import { applySavedSubtitleSync, scheduleAudioSync } from "./audio-sync.js";
-import { closeLiveCoachSession, stopVoiceSpeech, voiceChat, voiceRecognition } from "../learning/voice-coach.js";
-import { touchLearningState } from "../learning/learning-state.js";
-import { ensureLearningPreset, learningPresetCache, saveCurrentEpisodeAnalysis } from "../learning/vocabulary-cards.js";
-import { languageName, stopStudySounds } from "../learning/study-decks.js";
+import {
+  closeLiveCoachSession, ensureLearningPreset, learningPresetCache, saveCurrentEpisodeAnalysis,
+  stopStudySounds, stopVoiceSpeech, touchLearningState, voiceChat, voiceRecognition,
+} from "../learning/index.js";
 
 function subtitleSearchLanguages() {
   return preferredLanguagePair().join(",");

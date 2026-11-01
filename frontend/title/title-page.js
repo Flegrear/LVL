@@ -46,7 +46,7 @@ import { homeTitleIndex, markHomeTitleInLibrary } from "../home/home-page.js";
 import { resolveAnimeBrowserCatalog } from "../home/anime-browser.js";
 import { addBestCatalogMovie, compareStreamsByPeers, setButtonText } from "../catalog/catalog-search.js";
 import { authenticatedTitleAniList } from "../anilist/anilist-sync.js";
-import { showLibraryVocabulary } from "../learning/vocabulary-cards.js";
+import { showLibraryVocabulary } from "../learning/index.js";
 
 let titleMovieView = null;
 let titleRenderQueued = false;

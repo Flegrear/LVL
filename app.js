@@ -122,21 +122,15 @@ import {
   scheduleAniListAutoSync, showAniListAutoStatus, syncAniListLibrary, wireAniListAutoSettings,
 } from "./frontend/anilist/anilist-sync.js";
 import {
-  browserCoachChecking, changeReviewTargetLanguage, connectBrowserCoach,
-  openBrowserCoachExtensionFolder, refreshBrowserCoachStatus, refreshCoachProviders,
-  refreshVoiceUsageStatus, renderVoiceChatStage, reviewMode, selectedCoachProvider, setCoachProvider,
-  setReviewTab, stopVoiceUsageClock, voiceUsageActiveSince, wireBrowserCoachMessages,
-} from "./frontend/learning/voice-coach.js";
-import { migrateLearningState, saveLearningExposure } from "./frontend/learning/learning-state.js";
-import { currentAnalysis, ensureLearningPreset } from "./frontend/learning/vocabulary-cards.js";
-import { renderStudy } from "./frontend/learning/study-vocabulary.js";
-import {
-  closeLinePreview, exportCardsToAnki, importAnkiFile, playNextStudySound, playStudySounds,
-  replayLinePreview, revealStudyAnswer, studyAudio,
-} from "./frontend/learning/study-decks.js";
-import { renderReview } from "./frontend/learning/review-quiz.js";
-import { renderTest } from "./frontend/learning/scored-tests.js";
-import { handleQuizKey, handleStudyKey, handleTestKey, wireLearningViews } from "./frontend/learning/learning-views.js";
+  browserCoachChecking, changeReviewTargetLanguage, closeLinePreview, connectBrowserCoach,
+  currentAnalysis, ensureLearningPreset, exportCardsToAnki, handleQuizKey, handleStudyKey,
+  handleTestKey, importAnkiFile, migrateLearningState, openBrowserCoachExtensionFolder,
+  playNextStudySound, playStudySounds, refreshBrowserCoachStatus, refreshCoachProviders,
+  refreshVoiceUsageStatus, renderReview, renderStudy, renderTest, renderVoiceChatStage,
+  replayLinePreview, revealStudyAnswer, reviewMode, saveLearningExposure, selectedCoachProvider,
+  setCoachProvider, setReviewTab, stopVoiceUsageClock, studyAudio, voiceUsageActiveSince,
+  wireBrowserCoachMessages, wireLearningViews,
+} from "./frontend/learning/index.js";
 
 // An older server that is still running may lack the static route for
 // /frontend/player/progressive-seek.js. A mandatory ESM import of an unserved

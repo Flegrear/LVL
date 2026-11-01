@@ -10,7 +10,7 @@ import { renderAniListAutoSettings } from "../anilist/anilist-sync.js";
 import {
   browserCoachStatus, coachProviders, coachProviderShortLabel, renderBrowserCoachStatus,
   selectedCoachProvider,
-} from "../learning/voice-coach.js";
+} from "../learning/index.js";
 
 export function renderSettingsTabs() {
   if (!learningEnabled && settingsView.tab === "coach") settingsView.tab = "general";

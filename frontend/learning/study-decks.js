@@ -11,7 +11,7 @@ import { persistentAppStateReady, saveState } from "../app/saved-state.js";
 import { $, $$ } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
 import { viewActive } from "../app/navigation.js";
-import { activeTrack } from "../player/player-tracks.js";
+import { activeTrack, languageName } from "../player/player-tracks.js";
 import { renderSubtitles } from "../player/subtitle-display.js";
 import { allPrimaryCues, cuePlaybackBounds } from "../player/subtitle-timing.js";
 import { audioSyncSource } from "../player/audio-sync.js";
@@ -783,8 +783,6 @@ export async function deleteStudyDeck(deck) {
 
 /* ---------------------------------------------------------------- Study: Top words and AnkiWeb */
 
-export const LANGUAGE_NAMES = { EN: "English", ES: "Spanish", FR: "French", DE: "German", IT: "Italian", PT: "Portuguese", JA: "Japanese", KO: "Korean", ZH: "Chinese", RU: "Russian", NL: "Dutch", PL: "Polish", TR: "Turkish" };
-export const languageName = (code) => LANGUAGE_NAMES[String(code || "").toUpperCase()] || String(code || "");
 
 export async function openTopWordsDialog() {
   const dialog = $("#top-words-dialog");

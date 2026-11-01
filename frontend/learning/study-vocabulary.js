@@ -6,7 +6,7 @@ import { empty, state } from "../../app.js";
 import { saveLibrary, saveState } from "../app/saved-state.js";
 import { $, $$ } from "../app/dom.js";
 import { postJson } from "../app/http.js";
-import { normalizeTrackLanguage } from "../player/player-tracks.js";
+import { languageName, normalizeTrackLanguage } from "../player/player-tracks.js";
 import { isRomanizableLanguage } from "../player/subtitle-display.js";
 import { episodeSortKey } from "../player/torrent-playback.js";
 import { buildLibrarySeries, groupLibraryChapters } from "../library/library-data.js";
@@ -17,7 +17,6 @@ import {
   touchLearningState,
 } from "./learning-state.js";
 import { enrichPresetItem, ensureLearningPreset, renderAnalysisRows, wireAnalysisRows } from "./vocabulary-cards.js";
-import { languageName } from "./study-decks.js";
 
 const studyRomanizationCache = new Map();
 const studyRomanizationRequests = new Map();

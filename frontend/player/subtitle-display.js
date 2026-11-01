@@ -19,7 +19,7 @@ import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import { noteSubtitleVisibilityIntent } from "./embedded-subtitles.js";
 import {
   cardKeySet, learningItemKey, learningRevision, masteredCardKeySet, recordCueExposure,
-} from "../learning/learning-state.js";
+} from "../learning/index.js";
 
 const cueTokenCache = new WeakMap();
 

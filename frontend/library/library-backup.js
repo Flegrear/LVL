@@ -5,14 +5,11 @@ import { persistentAppStateReady, saveLibrary, saveState, saveTestResults } from
 import { $ } from "../app/dom.js";
 import { renderLibrary, updateLibrarySummary } from "./library-page.js";
 import { renderHome } from "../home/home-page.js";
-import { migrateLearningState, saveLearningExposure } from "../learning/learning-state.js";
 import {
   addDiscardedAutoCardKeys, backfillPersistedChapterAutoCards, discardedAutoCardKeys,
-  persistDiscardedAutoCardKeys,
-} from "../learning/vocabulary-cards.js";
-import { renderStudy } from "../learning/study-vocabulary.js";
-import { renderReview } from "../learning/review-quiz.js";
-import { renderTest } from "../learning/scored-tests.js";
+  migrateLearningState, persistDiscardedAutoCardKeys, renderReview, renderStudy, renderTest,
+  saveLearningExposure,
+} from "../learning/index.js";
 
 export function exportLibraryDatabase() {
   if (!persistentAppStateReady) {

@@ -5,8 +5,7 @@ import { $ } from "../app/dom.js";
 import { postJson } from "../app/http.js";
 import { activeTrack, currentSourceTracks, normalizeTrackLanguage } from "./player-tracks.js";
 import { renderSubtitles, renderTracks, subtitleRenderMemo } from "./subtitle-display.js";
-import { currentExposureMediaKey } from "../learning/learning-state.js";
-import { saveCurrentEpisodeAnalysis } from "../learning/vocabulary-cards.js";
+import { currentExposureMediaKey, saveCurrentEpisodeAnalysis } from "../learning/index.js";
 
 export function allPrimaryCues() {
   return activeTrack()?.cues || [];

@@ -5,8 +5,7 @@ import { saveState } from "../app/saved-state.js";
 import { currentSourceTracks, normalizeTrackLanguage } from "./player-tracks.js";
 import { cuePlaybackBounds } from "./subtitle-timing.js";
 import { audioSyncSource } from "./audio-sync.js";
-import { touchLearningState } from "../learning/learning-state.js";
-import { renderReview } from "../learning/review-quiz.js";
+import { renderReview, touchLearningState } from "../learning/index.js";
 
 export function trackTimingTrusted(track) {
   if (!track) return false;

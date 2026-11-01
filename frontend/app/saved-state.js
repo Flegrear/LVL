@@ -8,14 +8,11 @@ import { renderLibrary } from "../library/library-page.js";
 import { refreshTitlePage } from "../title/title-page.js";
 import { scheduleAniListAutoSync } from "../anilist/anilist-sync.js";
 import {
-  applyVoicePreferences, coachProviderId, refreshVoiceUsageStatus, restoreVoiceSession, reviewMode,
-  voiceAudio, voiceChat, voiceLiveAssistance, voiceLivePresetId, voiceUsageSegments,
-} from "../learning/voice-coach.js";
-import { migrateLearningState, touchLearningState } from "../learning/learning-state.js";
-import {
-  backfillPersistedChapterAutoCards, discardedAutoCardKeys, ensureLearningPreset,
-  restoreDiscardedAutoCardKeys,
-} from "../learning/vocabulary-cards.js";
+  applyVoicePreferences, backfillPersistedChapterAutoCards, coachProviderId, discardedAutoCardKeys,
+  ensureLearningPreset, migrateLearningState, refreshVoiceUsageStatus, restoreDiscardedAutoCardKeys,
+  restoreVoiceSession, reviewMode, touchLearningState, voiceAudio, voiceChat, voiceLiveAssistance,
+  voiceLivePresetId, voiceUsageSegments,
+} from "../learning/index.js";
 
 export function readStorageArray(key) {
   try {

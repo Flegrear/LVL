@@ -19,8 +19,8 @@ import {
 } from "./learning-state.js";
 import { ensureLearningPreset } from "./vocabulary-cards.js";
 import { ensureStudyRomanizations, studyChapterCatalog } from "./study-vocabulary.js";
-import { languageName } from "./study-decks.js";
 import { renderReview } from "./review-quiz.js";
+import { languageName } from "../player/player-tracks.js";
 
 export let reviewMode = localStorage.getItem("blackline-review-mode") === "voice" ? "voice" : "cards";
 

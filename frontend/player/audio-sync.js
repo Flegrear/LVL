@@ -9,7 +9,7 @@ import { renderSubtitles, renderTracks, subtitleRenderMemo } from "./subtitle-di
 import { subtitleFingerprint, syncTrackToBestReference } from "./subtitle-timing.js";
 import { refreshEpisodeCardPairs } from "./subtitle-pairing.js";
 import { currentLibraryEpisode } from "../watch/watched-status.js";
-import { saveCurrentEpisodeAnalysis } from "../learning/vocabulary-cards.js";
+import { saveCurrentEpisodeAnalysis } from "../learning/index.js";
 
 /* ---------------------------------------------------------------- Subtitle sync to the audio */
 

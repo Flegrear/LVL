@@ -116,6 +116,7 @@ export function addBuiltInAssets() {
     "frontend/home/home-page.js",
     "frontend/home/random-pick.js",
     "frontend/learning/clips.js",
+    "frontend/learning/index.js",
     "frontend/learning/learning-state.js",
     "frontend/learning/learning-views.js",
     "frontend/learning/review-quiz.js",

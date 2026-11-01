@@ -17,7 +17,7 @@ import { renderSubtitles, subtitleRenderMemo, trackLanguageName } from "./subtit
 import { subtitleFingerprint } from "./subtitle-timing.js";
 import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import { addSubtitleText } from "./subtitle-search.js";
-import { saveCurrentEpisodeAnalysis } from "../learning/vocabulary-cards.js";
+import { saveCurrentEpisodeAnalysis } from "../learning/index.js";
 
 export function embeddedSubtitleLabel(track, index) {
   const title = String(track?.title || "").trim();

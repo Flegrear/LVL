@@ -5,8 +5,10 @@ import { renderSubtitleWorkspace, state, video } from "../../app.js";
 import { $ } from "../app/dom.js";
 import { audioOutputMode, preferredAudioLanguage } from "./player-menus.js";
 import { libraryChapterName } from "../library/library-page.js";
-import { saveCurrentEpisodeAnalysis } from "../learning/vocabulary-cards.js";
-import { LANGUAGE_NAMES, languageName } from "../learning/study-decks.js";
+import { saveCurrentEpisodeAnalysis } from "../learning/index.js";
+
+export const LANGUAGE_NAMES = { EN: "English", ES: "Spanish", FR: "French", DE: "German", IT: "Italian", PT: "Portuguese", JA: "Japanese", KO: "Korean", ZH: "Chinese", RU: "Russian", NL: "Dutch", PL: "Polish", TR: "Turkish" };
+export const languageName = (code) => LANGUAGE_NAMES[String(code || "").toUpperCase()] || String(code || "");
 
 export function preferredLanguagePair() {
   return [state.targetLanguage, state.baseLanguage].filter((value, index, array) => value && array.indexOf(value) === index);

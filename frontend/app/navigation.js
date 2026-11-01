@@ -21,13 +21,9 @@ import { loadHomeCatalog, saveHomePlace } from "../home/home-page.js";
 import { refreshRandomPickIndicator } from "../home/random-pick.js";
 import { catalogSearchIsOpen, closeCatalogSearch } from "../catalog/catalog-search.js";
 import {
-  browserCoachChecking, browserCoachStatus, coachProviders, refreshBrowserCoachStatus,
-  refreshCoachProviders, reviewMode,
-} from "../learning/voice-coach.js";
-import { linePreview } from "../learning/study-decks.js";
-import { renderStudyPage } from "../learning/study-page.js";
-import { renderReview } from "../learning/review-quiz.js";
-import { renderTest } from "../learning/scored-tests.js";
+  browserCoachChecking, browserCoachStatus, coachProviders, linePreview, refreshBrowserCoachStatus,
+  refreshCoachProviders, renderReview, renderStudyPage, renderTest, reviewMode,
+} from "../learning/index.js";
 
 export function viewActive(name) {
   return Boolean($(`#view-${name}`)?.classList.contains("is-active"));

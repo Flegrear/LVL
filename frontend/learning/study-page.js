@@ -9,11 +9,12 @@ import { fetchJson } from "../app/http.js";
 import { viewActive } from "../app/navigation.js";
 import { renderStudy } from "./study-vocabulary.js";
 import {
-  languageName, loadStoredDecks, playStudySounds, renderStudyDecks, renderStudySession,
-  storedDecksState, studyDecks, updateDueCount,
+  loadStoredDecks, playStudySounds, renderStudyDecks, renderStudySession, storedDecksState,
+  studyDecks, updateDueCount,
 } from "./study-decks.js";
 import { renderQuiz } from "./review-quiz.js";
 import { renderTest } from "./scored-tests.js";
+import { languageName } from "../player/player-tracks.js";
 
 /* ---------------------------------------------------------------- Study: page and dictation */
 

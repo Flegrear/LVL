@@ -9,8 +9,9 @@ import { saveState } from "../app/saved-state.js";
 import { $, $$ } from "../app/dom.js";
 import { viewActive } from "../app/navigation.js";
 import { refreshBrowserCoachStatus, renderVoiceChatStage, reviewMode, reviewTabId, voiceChat } from "./voice-coach.js";
-import { languageName, reviewSentenceMarkup, studyDecks, updateDueCount } from "./study-decks.js";
+import { reviewSentenceMarkup, studyDecks, updateDueCount } from "./study-decks.js";
 import { dictation, loadDictationClips, renderStudyLanguageSelect, renderStudyPage } from "./study-page.js";
+import { languageName } from "../player/player-tracks.js";
 
 function quizDeckOptions() {
   return studyDecks().filter((deck) => quizPool(deck.cards).length >= 4);
