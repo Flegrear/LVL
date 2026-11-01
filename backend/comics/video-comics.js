@@ -19,7 +19,9 @@ import { WORK_ID } from "../../shared/reading/ids.js";
 export const VIDEO_ID = /^tt\d{5,12}$/;
 export const VIDEO_TYPES = Object.freeze(["series", "movie"]);
 export const NOT_IN_LIBRARY = "NONE";
-const SOURCE_KEY = /^video:(tt\d{5,12})#\d{1,4}$/;
+// Comics read from their sources: made on a video page, or imported from Mihon.
+export const SOURCE_TITLE_KEY = /^(?:video:(tt\d{5,12})#\d{1,4}|mihon:-?\d{1,20}:\/.{1,280})$/;
+const SOURCE_KEY = SOURCE_TITLE_KEY;
 const NAME_STOP = new Set(["the", "a", "an", "of", "and"]);
 
 const words = (title) => normalizeSeriesName(title).split(" ").filter(Boolean);
@@ -119,6 +121,11 @@ export function createVideoComics({ db, now = Date.now, local, linked }) {
   return {
     draftFor, comicsFor, originOf, linkTarget, linkedFirst, isSourceTitle,
     sourceTitle: (workId) => q.title.get(String(workId)) || null,
+    // A comic imported from Mihon that AniList doesn't have (no video): its cover comes from the source.
+    importTitle(workId, { cover = "", sourceId = "" } = {}) {
+      q.addTitle.run(String(workId), "", now());
+      if (cover && !q.title.get(String(workId))?.cover_url) q.cover.run(String(cover), String(sourceId), String(workId));
+    },
     hide(workId, video, hidden = true) { q.hide.run(String(workId), video.id, video.type, video.title, hidden ? 1 : 0, now()); },
     showAll: (videoId) => q.showAll.run(String(videoId)).changes,
     // The source titles in the Library (a status was set or reading started) with at least one source.

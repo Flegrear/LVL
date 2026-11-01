@@ -1,4 +1,4 @@
-// Settings › Comics › Use Comics (on by default). When it's off, Comics is hidden
+// Settings › Comics › Enable Comics (on by default). When it's off, Comics is hidden
 // everywhere except its Settings tab: the Home and Library tabs (comics.css), the
 // Library's All view, the Manga and Comics chips on title pages, and comic pages.
 // The server answers 409 for every other comics route and stops the extension runner,

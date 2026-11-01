@@ -79,7 +79,7 @@ export function createComicsStore({ db, now = Date.now } = {}) {
     settings() {
       const rows = settingsAll.all();
       const value = Object.fromEntries(rows.map((row) => [row.key, parse(row.value_json)]));
-      // enabled: Settings › Comics › Use Comics, on unless turned off.
+      // enabled: Settings › Comics › Enable Comics, on unless turned off.
       return { showAdult: value.showAdult === true, enabled: value.enabled !== false };
     },
     saveSettings(input = {}) {

@@ -28,6 +28,19 @@ export const comicsApi = Object.freeze({
   addFolder: (folderPath) => call("/api/comics/folders", { method: "POST", body: { path: folderPath } }),
   removeFolder: (folderPath) => call("/api/comics/folders", { method: "DELETE", body: { path: folderPath } }),
   rescan: () => call("/api/comics/folders/rescan", { method: "POST", body: {} }),
+  // Settings › Comics › Import from Mihon or Tachiyomi: the file goes as it is.
+  async mihonImport(file) {
+    const response = await fetch("/api/comics/import/mihon", {
+      method: "POST", body: file, signal: AbortSignal.timeout(120_000),
+      headers: { Accept: "application/json", "Content-Type": "application/octet-stream", "X-File-Name": encodeURIComponent(String(file?.name || "").slice(0, 120)) },
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(payload?.error || `Request failed (${response.status})`), { status: response.status });
+    return payload;
+  },
+  mihonImportState: () => call("/api/comics/import/mihon"),
+  mihonImportApply: () => call("/api/comics/import/mihon/apply", { method: "POST", body: {}, timeoutMs: 180_000 }),
+  mihonImportCancel: () => call("/api/comics/import/mihon", { method: "DELETE" }),
   readerFile: (fileId, { workId = "", name = "", describe = false } = {}) => (String(fileId).startsWith("f")
     ? call(`/api/reader/files/${encodeURIComponent(fileId)}`)
     : call(`/api/reader/remote/${encodeURIComponent(fileId)}?${new URLSearchParams({ work: workId, name, ...(describe ? { describe: "1" } : {}) })}`, { timeoutMs: 120_000 })),

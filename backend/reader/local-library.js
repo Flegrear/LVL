@@ -18,6 +18,8 @@ const WATCH_DEBOUNCE_MS = 2000;
 const hash = (value, size = 12) => crypto.createHash("sha1").update(String(value)).digest("hex").slice(0, size);
 export const fileIdFor = (fullPath) => `f${hash(path.resolve(fullPath).toLowerCase(), 16)}`;
 export const localIdFor = (seriesKey) => `local-${hash(seriesKey)}`;
+// A chapter or volume number as stored with a read chapter ("12", "12.5"), else null.
+const unitNumber = (value) => (/^\d{1,5}(?:\.\d{1,2})?$/.test(String(value ?? "")) ? String(value) : null);
 
 export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console } = {}) {
   db.exec(`
@@ -288,8 +290,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       const total = Math.max(1, Math.min(Number(pages) || 1, 10_000));
       const at = Math.max(0, Math.min(Number(page) || 0, total - 1));
       q.saveProgress.run(String(id), String(workId), at, total, at >= total - 1 ? 1 : 0, now());
-      const clean = (value) => (/^\d{1,5}(?:\.\d{1,2})?$/.test(String(value ?? "")) ? String(value) : null);
-      if (at >= total - 1) q.markRead.run(String(workId), String(id), clean(volume), clean(chapter), now());
+      if (at >= total - 1) q.markRead.run(String(workId), String(id), unitNumber(volume), unitNumber(chapter), now());
       const row = q.progress.get(String(id));
       return { id: row.file_id, page: row.page, pages: row.pages, finished: Boolean(row.finished) };
     },
@@ -305,6 +306,19 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       return { chapters, volumes, units: rows.length, readChapters: [...new Set(rows.map((row) => row.chapter).filter(Boolean))], readVolumes: [...new Set(rows.filter((row) => !row.chapter).map((row) => row.volume).filter(Boolean))] };
     },
     remoteProgress: (id) => q.progress.get(String(id)) || null,
+    // A source chapter's progress from elsewhere: an import (keepFurther: never moves it back)
+    // or another device (the newest change, given as at, already won). Finished stays finished.
+    importRemoteProgress({ id, workId, page = 0, pages = 1, finished = false, chapter = null, volume = null, at = now(), keepFurther = false }) {
+      if (!EXT_CHAPTER_ID.test(String(id)) || !WORK_ID.test(String(workId))) return null;
+      const old = q.progress.get(String(id));
+      const total = Math.max(1, Math.min(Math.max(Number(pages) || 1, Number(old?.pages) || 0), 10_000));
+      const spot = Math.max(0, Math.min(Number(page) || 0, total - 1));
+      if (old && keepFurther && (old.finished || (!finished && old.page >= spot))) return { id: String(id), saved: false };
+      const when = Math.max(0, Math.round(Number(at) || now()));
+      q.saveProgress.run(String(id), String(workId), spot, total, finished ? 1 : 0, when);
+      if (finished) q.markRead.run(String(workId), String(id), unitNumber(volume), unitNumber(chapter), when);
+      return { id: String(id), saved: true };
+    },
     start({ search, ensureLibrary } = {}) {
       const run = () => scanAll({ search, ensureLibrary }).catch((problem) => log.warn?.("Comic scan failed:", problem?.message));
       void run();

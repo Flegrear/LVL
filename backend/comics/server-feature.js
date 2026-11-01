@@ -24,6 +24,7 @@ import { createExtRunner } from "./ext-runner.js";
 import { readSignedImage, signedImage } from "./ext-routes.js";
 import { LEGACY_ENGINE_PATHS } from "./runner-engine.js";
 import { createVideoComics, handleVideoRoutes, NOT_IN_LIBRARY } from "./video-comics.js";
+import { createMihonImport } from "./mihon-import.js";
 import nodePath from "node:path";
 
 const HOUR = 60 * 60 * 1000;
@@ -273,6 +274,16 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       const videoComics = createVideoComics({ db: ctx.db, now, local, linked: sourceDeps.linked });
       sourceDeps.videoComics = videoComics;
       sourceDeps.readSignedImage = readSignedImage;
+      // Settings › Comics › Import from Mihon or Tachiyomi.
+      const mihonImport = createMihonImport({
+        query: (text, variables) => { if (!anilist?.query) throw new Error("AniList is not available"); return anilist.query(text, variables); },
+        store, snapshot: cardSnapshot, local, linked: sourceDeps.linked, ext, videoComics, now,
+        showAdult: () => store.settings().showAdult,
+        repositories: () => sources.list().filter((source) => source.kind === "mihon-repo").map((source) => source.config.url),
+        extensions: async () => (await Promise.all(sources.enabled("mihon-repo").map(async (repo) => {
+          try { return ((await extensionRepoCache.get(repo.config.url))?.extensions || []).map((item) => ({ ...item, repo: repo.id })); } catch { return []; }
+        }))).flat(),
+      });
 
       // ---- Tracking
       const tracking = createTracking({ db: ctx.db, now });
@@ -292,7 +303,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       }
       sourceDeps.onProgress = onProgress;
 
-      // Settings › Comics › Use Comics. Off: every route but the settings answers 409, and
+      // Settings › Comics › Enable Comics. Off: every route but the settings answers 409, and
       // the folder scans, comic downloads, the source browser and the extension runner stop.
       const comicsOn = () => store.settings().enabled;
       function pause() { local.stop(); closeAllArchives(); downloads.stop(); remote.stop?.(); sourceDeps.runner?.stop?.(); }
@@ -302,6 +313,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
         if (path !== "/api/comics/settings" && !comicsOn()) {
           return ctx.json(res, 409, { error: "Comics is turned off. Turn it on in Settings › Comics.", code: "comics-off" }), true;
         }
+        if (path === "/api/comics/import/mihon" || path === "/api/comics/import/mihon/apply") return (await mihonImport.handle(req, res, path, ctx), true);
         if (await handleLocalRoutes(req, res, url, { ctx, local, ensureEntry, rescan, onProgress })) return true;
         if (await handleSourceRoutes(req, res, url, sourceDeps)) return true;
         const tracked = /^\/api\/comics\/work\/(anilist-[1-9]\d{0,9}|local-[0-9a-f]{12})\/(ratings|read)$/.exec(path);

@@ -1,4 +1,4 @@
-// Sources. Like Mihon: the user stars sources from the
+// Sources. Like Mihon: the user adds sources from the
 // extension repositories in Settings › Comics; a comic's Sources tab searches
 // each favorite for that comic and the user picks the right entry. Torrent
 // indexers find packs to download.
@@ -147,7 +147,7 @@ export async function comicSourcesSection(holder, data, ctx) {
     const holderEl = section.querySelector(".comic-sources__favorites");
     if (!holderEl) return;
     holderEl.innerHTML = favorites.length ? favorites.map((source) => sourceResultMarkup(source, results.get(source.id), counts)).join("")
-      : emptyMarkup({ icon: "star", title: "No favorite sources yet", text: "Star sources in Settings › Comics. Their results for this comic appear here.", compact: true,
+      : emptyMarkup({ icon: "plus", title: "No favorite sources yet", text: "Add sources in Settings › Comics. Their results for this comic appear here.", compact: true,
         action: buttonMarkup({ label: "Choose sources", attrs: { "data-comics-open-settings": "" } }) });
   };
   const paint = () => {
@@ -293,7 +293,8 @@ export async function comicSourcesSection(holder, data, ctx) {
         markLinked();
         data.refreshChapters?.();
         toast(t("{source} added. Its chapters open from the list.", { source: choice.name }));
-        if (data.onLinked) { dialog?.open && dialog.close(); data.onLinked(result); }
+        if (dialog?.open) dialog.close();
+        data.onLinked?.(result);
         return;
       }
       if (button.dataset.comicsUnlink) {
@@ -337,7 +338,7 @@ function sourceRow(source) {
     + buttonMarkup({ label: "Remove", variant: "ghost", size: "sm", attrs: { "data-source-remove": source.id } }) + "</li>";
 }
 
-const starMarkup = (source, label) => iconButtonMarkup({ icon: "star", label: source.favorite ? "Remove from favorites" : "Add to favorites", size: "sm", pressed: Boolean(source.favorite),
+const starMarkup = (source, label) => iconButtonMarkup({ icon: "check", label: source.favorite ? "Remove from favorites" : "Add to favorites", size: "sm", pressed: Boolean(source.favorite),
   className: "comics-star", tooltip: label || "", attrs: { "data-favorite": source.id, "data-on": source.favorite ? "1" : "0" } });
 
 const SPEEDS = [["normal", "Normal"], ["slow", "Slow (one request every 1.5 s)"], ["slower", "Slower (one request every 4 s)"]];
@@ -385,13 +386,13 @@ function addToggleMarkup(source, name) {
   const on = Boolean(source.favorite);
   return `<button class="ui-btn ui-btn--secondary ui-btn--sm comics-add-toggle" type="button" data-favorite="${escapeHtml(source.id)}" data-on="${on ? "1" : "0"}" data-name="${escapeHtml(name)}"`
     + ` aria-pressed="${on}" aria-label="${escapeHtml(favoriteName(on, name))}"><span class="comics-toggle__off">${icon("plus")}${escapeHtml(t("Add"))}</span>`
-    + `<span class="comics-toggle__on">${icon("star")}${escapeHtml(t("Added"))}</span></button>`;
+    + `<span class="comics-toggle__on">${icon("check")}${escapeHtml(t("Added"))}</span></button>`;
 }
 
 function languageChipMarkup(source, label, name, extra) {
   const on = Boolean(source.favorite);
   return `<button class="ui-chip comics-lang-chip${extra ? " is-extra" : ""}" type="button" data-favorite="${escapeHtml(source.id)}" data-on="${on ? "1" : "0"}" data-name="${escapeHtml(name)}"`
-    + ` aria-pressed="${on}" aria-label="${escapeHtml(favoriteName(on, name))}"><span class="comics-toggle__off" aria-hidden="true">${icon("plus")}</span><span class="comics-toggle__on" aria-hidden="true">${icon("star")}</span><span>${escapeHtml(label)}</span></button>`;
+    + ` aria-pressed="${on}" aria-label="${escapeHtml(favoriteName(on, name))}"><span class="comics-toggle__off" aria-hidden="true">${icon("plus")}</span><span class="comics-toggle__on" aria-hidden="true">${icon("check")}</span><span>${escapeHtml(label)}</span></button>`;
 }
 
 // Chip order: added ones, then the interface language and English, then "all", then by name.
@@ -430,7 +431,7 @@ export async function sourcesSettingsSection(container) {
   container.append(holder);
   const openSettings = new Set(); // favorites whose settings are open
   const favoritesBody = (favorites) => (favorites.length ? `<ul class="comics-rows">${favorites.map((source) => favoriteRow(source, { open: openSettings.has(source.id) })).join("")}</ul>`
-    : `<p class="settings-hint">${escapeHtml(t("Star sources below. A comic's Sources tab searches your favorites for it."))}</p>`);
+    : `<p class="settings-hint">${escapeHtml(t("Add sources below. A comic's Sources tab searches them for it."))}</p>`);
   const favoritesCard = (favorites) => cardMarkup({ title: t("Favorite sources"), badge: favorites.length ? String(favorites.length) : "",
     hint: favorites.length ? t("A comic's Sources tab searches these for it. Each site can have its own settings.") : "", body: favoritesBody(favorites), attrs: " data-favorites-section" });
   const render = async () => {

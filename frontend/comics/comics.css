@@ -1,6 +1,6 @@
 /* Comics. Uses the core UI tokens; black/white Inter UI. */
 
-/* Settings › Comics › Use Comics off (comics-enabled.js): the Home and Library tabs go; Settings › Comics stays. */
+/* Settings › Comics › Enable Comics off (comics-enabled.js): the Home and Library tabs go; Settings › Comics stays. */
 html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-comics) { display:none !important; }
 /* Main Library "Comics" filter: statuses and sort apply; video-only rows and actions don't. */
 #view-library[data-feature-filter="comics"] #library-continue,
@@ -100,6 +100,12 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
 
 /* Settings › Comics: core settings cards; lists are rows split by thin lines, like Storage */
 .comics-settings__extra, .comics-settings__group { display:grid; gap:14px; align-content:start; }
+/* Settings › Comics › Import from Mihon or Tachiyomi */
+.comics-import__body { display:grid; gap:12px; }
+.comics-import__facts { display:grid; gap:6px; margin:0; padding-left:18px; color:var(--ui-text-2); font:500 13px/1.5 var(--font-sans); }
+.comics-import__repos { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.comics-import__repos li { display:flex; align-items:center; justify-content:space-between; gap:12px; min-width:0; }
+.comics-import__repos .comics-row__mono { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .comics-settings__extra:empty, .comics-settings__group:empty { display:none; }
 .comics-rows { display:grid; margin:0; padding:0; list-style:none; }
 .comics-row { display:grid; grid-template-columns:minmax(0, 1fr) auto; align-items:center; gap:6px 14px; padding:12px 0; border-top:1px solid var(--ui-line-subtle); }
@@ -152,7 +158,7 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
 .comic-source__meta { color:var(--ui-muted); font-size:13px; font-variant-numeric:tabular-nums; }
 .comic-source__error { margin:0; color:#ff8a80; font-size:13px; }
 
-/* Extension sources: a star per source, like Mihon's pinned sources */
+/* Extension sources: one row per extension; added ones show a check */
 .comics-ext { grid-template-columns:36px minmax(0, 1fr) auto; column-gap:14px; }
 .comics-ext__icon { width:36px; height:36px; border-radius:9px; background:var(--ui-surface-raised, rgba(255,255,255,.06)); object-fit:cover; }
 /* Several languages: the chips go under the name, across the text and action columns. */
@@ -162,7 +168,7 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
 .comics-lang-chip { gap:5px; }
 .comics-ext:not(.is-open) .comics-lang-chip.is-extra { display:none; }
 .comics-lang-more { border-style:dashed; color:var(--ui-muted); }
-/* Not added: "+"; added: a star (chips and the Add button), with the pressed colours. */
+/* Not added: "+"; added: a check (chips and the Add button), with the pressed colours. */
 .comics-toggle__off, .comics-toggle__on { display:inline-flex; align-items:center; gap:6px; }
 .comics-toggle__on, [aria-pressed="true"] > .comics-toggle__off { display:none; }
 [aria-pressed="true"] > .comics-toggle__on { display:inline-flex; }
@@ -177,7 +183,6 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
 .comics-filters__row { display:grid; grid-template-columns:minmax(0, 2fr) minmax(180px, 1fr); gap:12px; margin-bottom:6px; }
 @media (max-width:680px) { .comics-filters__row { grid-template-columns:minmax(0, 1fr); } .comics-ext { grid-template-columns:36px minmax(0, 1fr); } .comics-ext > .comics-row__actions { grid-column:2; justify-self:start; } }
 .comics-star { color:var(--ui-muted); }
-.comics-star[aria-pressed="true"] { color:#f5c451; }
 .comics-star[aria-pressed="true"] svg { fill:currentColor; }
 
 /* Sources tab: each favorite source with the entries it found for this comic */

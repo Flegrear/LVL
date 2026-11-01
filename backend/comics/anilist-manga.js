@@ -35,6 +35,18 @@ export const searchQuery = ({ adult = false } = {}) => `query ($q: String, $genr
     media(type: MANGA, format_in: ${COMIC_FORMATS}, ${adultArg(adult)}search: $q, genre: $genre, sort: $sort) { ${CARD_FIELDS} } } }`;
 export const SEARCH_QUERY = searchQuery();
 
+// The Mihon import (mihon-import.js): works by AniList or MyAnimeList id, 50 a request, and
+// several exact-title searches in one request. Adult titles come back too; the import decides.
+const MATCH_FIELDS = `id idMal title { romaji english native userPreferred } synonyms coverImage { large extraLarge color }
+  format status chapters volumes averageScore popularity genres countryOfOrigin startDate { year } isAdult siteUrl`;
+export const IDS_QUERY = `query ($ids: [Int]) { Page(perPage: 50) { media(type: MANGA, id_in: $ids) { ${MATCH_FIELDS} } } }`;
+export const MAL_IDS_QUERY = `query ($ids: [Int]) { Page(perPage: 50) { media(type: MANGA, idMal_in: $ids) { ${MATCH_FIELDS} } } }`;
+export function titleSearchQuery(count) {
+  const slots = Array.from({ length: count }, (_, n) => n);
+  return `query (${slots.map((n) => `$q${n}: String`).join(", ")}) { ${slots.map((n) =>
+    `t${n}: Page(perPage: 5) { media(type: MANGA, format_in: ${COMIC_FORMATS}, search: $q${n}, sort: [SEARCH_MATCH]) { ${MATCH_FIELDS} } }`).join(" ")} }`;
+}
+
 // Home's comic browser (like the anime browser): the query names only the filters that are set,
 // since AniList rejects some arguments given as null ("Illegal operator and value combination").
 const BROWSE_ARGS = Object.freeze({
