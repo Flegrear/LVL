@@ -186,4 +186,3 @@ const defaultClient = createAnkiwebClient();
 export const searchSharedDecks = (...args) => defaultClient.searchSharedDecks(...args);
 export const sharedDeckInfo = (...args) => defaultClient.sharedDeckInfo(...args);
 export const downloadSharedDeck = (...args) => defaultClient.downloadSharedDeck(...args);
-

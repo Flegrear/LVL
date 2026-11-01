@@ -210,4 +210,3 @@ export function anilistRatingText(info) {
   const score = ratings.reduce((sum, season) => sum + season.score, 0) / ratings.length;
   return `Your rating: ${Number(score.toFixed(1))}/10`;
 }
-
