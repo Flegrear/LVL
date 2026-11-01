@@ -1018,56 +1018,11 @@ function applyPersistentAppState(snapshot = {}) {
     state.studyPhraseTier = [100, 1000].includes(Number(prefs.studyPhraseTier)) ? Number(prefs.studyPhraseTier) : 100;
     state.studyFilter = ["all", "unknown", "known", "review"].includes(prefs.studyFilter) ? prefs.studyFilter : "all";
     state.wordColoring = prefs.wordColoring !== false;
-    reviewMode = prefs.reviewMode === "voice" ? "voice" : "cards";
-    coachProviderId = String(prefs.coachProviderId || "chatgpt-browser");
-    voiceChat.mode = prefs.voiceMode === "practice" ? "practice" : "live";
-    voiceLivePresetId = String(prefs.voiceLivePresetId || "top-100");
-    voiceLiveAssistance = prefs.voiceLiveAssistance === "unassisted" ? "unassisted" : "assisted";
-    discardedAutoCardKeys = new Set((Array.isArray(prefs.discardedAutoCardKeys) ? prefs.discardedAutoCardKeys : []).map(String).filter(Boolean).slice(-20_000));
-    voiceAudio.speakReplies = prefs.voiceAudio?.speakReplies !== false;
-    voiceAudio.autoContinue = prefs.voiceAudio?.autoContinue !== false;
-    voiceAudio.voiceURI = String(prefs.voiceAudio?.voiceURI || "");
-    voiceAudio.rate = Math.max(0.7, Math.min(1.3, Number(prefs.voiceAudio?.rate) || 0.96));
-    voiceAudio.inputLanguage = String(prefs.voiceAudio?.inputLanguage || "auto");
-    if (Array.isArray(prefs.voiceUsageSegments)) voiceUsageSegments = prefs.voiceUsageSegments.slice(-256);
+    applyVoicePreferences(prefs);
+    restoreDiscardedAutoCardKeys(prefs.discardedAutoCardKeys);
     mirrorPersistentPreferencesToLocalStorage(prefs);
   }
-  const transcriptCandidates = state.coachTranscripts
-    .filter((session) => session && String(session.providerId || coachProviderId) === coachProviderId
-      && String(session.targetLanguage || state.targetLanguage) === state.targetLanguage
-      && String(session.baseLanguage || state.baseLanguage) === state.baseLanguage)
-    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
-  const persistedSessions = Array.isArray(snapshot.coachSessions) ? snapshot.coachSessions : [];
-  const activeNative = persistedSessions
-    .filter((session) => session?.nativeVoice === true
-      && session?.conversationId
-      && String(session.providerId || "") === coachProviderId
-      && String(session.targetLanguage || "") === state.targetLanguage
-      && String(session.baseLanguage || "") === state.baseLanguage
-      && normalizeLearningLocale(state.targetLanguage, session.targetLocale) === state.targetLocale
-      && normalizeLearningLocale(state.baseLanguage, session.baseLocale) === state.baseLocale
-      && Date.now() - Number(session.updatedAt || 0) < COACH_LIVE_IDLE_TIMEOUT_MS)
-    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0] || null;
-  const transcript = activeNative
-    ? transcriptCandidates.find((session) => session.id === activeNative.chatId) || null
-    : transcriptCandidates[0];
-  if (transcript) {
-    voiceChat.chatId = activeNative?.chatId || transcript.id || voiceChat.chatId;
-    voiceChat.messages = (Array.isArray(transcript.messages) ? transcript.messages : []).slice(-200).map((message) => ({
-      ...message,
-      mode: message.mode === "live" || message.mode === "practice" ? message.mode : (transcript.mode === "live" ? "live" : "practice"),
-    }));
-    voiceChat.liveSeen = new Set(voiceChat.messages.map((message) => message.providerEntryId).filter(Boolean));
-  }
-  if (activeNative) {
-    voiceChat.chatId = activeNative.chatId;
-    voiceChat.providerConversationId = String(activeNative.conversationId || "");
-    voiceChat.livePresetId = String(activeNative.presetId || "");
-    voiceChat.livePresetLabel = String(activeNative.presetLabel || "");
-    voiceChat.livePresetContext = String(activeNative.presetContext || "");
-    voiceLiveAssistance = activeNative.assistanceMode === "unassisted" ? "unassisted" : "assisted";
-    if (voiceChat.livePresetId) voiceLivePresetId = voiceChat.livePresetId;
-  }
+  restoreVoiceSession(snapshot);
   storeLocalCopy("blackline-cards", state.cards);
   storeLocalCopy("blackline-known", [...state.known]);
   storeLocalCopy("blackline-library", state.library);
@@ -1286,6 +1241,61 @@ const COACH_LIVE_IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 function speechLocale(language = state.targetLanguage) {
   const code = String(language || "").toUpperCase();
   return normalizeLearningLocale(code, code === state.targetLanguage ? state.targetLocale : code === state.baseLanguage ? state.baseLocale : "");
+}
+
+// The voice coach's saved preferences, from the server's copy of the app state.
+function applyVoicePreferences(prefs) {
+  reviewMode = prefs.reviewMode === "voice" ? "voice" : "cards";
+  coachProviderId = String(prefs.coachProviderId || "chatgpt-browser");
+  voiceChat.mode = prefs.voiceMode === "practice" ? "practice" : "live";
+  voiceLivePresetId = String(prefs.voiceLivePresetId || "top-100");
+  voiceLiveAssistance = prefs.voiceLiveAssistance === "unassisted" ? "unassisted" : "assisted";
+  voiceAudio.speakReplies = prefs.voiceAudio?.speakReplies !== false;
+  voiceAudio.autoContinue = prefs.voiceAudio?.autoContinue !== false;
+  voiceAudio.voiceURI = String(prefs.voiceAudio?.voiceURI || "");
+  voiceAudio.rate = Math.max(0.7, Math.min(1.3, Number(prefs.voiceAudio?.rate) || 0.96));
+  voiceAudio.inputLanguage = String(prefs.voiceAudio?.inputLanguage || "auto");
+  if (Array.isArray(prefs.voiceUsageSegments)) voiceUsageSegments = prefs.voiceUsageSegments.slice(-256);
+}
+
+// The latest conversation for the current languages, and a live session that is still open.
+function restoreVoiceSession(snapshot) {
+  const transcriptCandidates = state.coachTranscripts
+    .filter((session) => session && String(session.providerId || coachProviderId) === coachProviderId
+      && String(session.targetLanguage || state.targetLanguage) === state.targetLanguage
+      && String(session.baseLanguage || state.baseLanguage) === state.baseLanguage)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0));
+  const persistedSessions = Array.isArray(snapshot.coachSessions) ? snapshot.coachSessions : [];
+  const activeNative = persistedSessions
+    .filter((session) => session?.nativeVoice === true
+      && session?.conversationId
+      && String(session.providerId || "") === coachProviderId
+      && String(session.targetLanguage || "") === state.targetLanguage
+      && String(session.baseLanguage || "") === state.baseLanguage
+      && normalizeLearningLocale(state.targetLanguage, session.targetLocale) === state.targetLocale
+      && normalizeLearningLocale(state.baseLanguage, session.baseLocale) === state.baseLocale
+      && Date.now() - Number(session.updatedAt || 0) < COACH_LIVE_IDLE_TIMEOUT_MS)
+    .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0] || null;
+  const transcript = activeNative
+    ? transcriptCandidates.find((session) => session.id === activeNative.chatId) || null
+    : transcriptCandidates[0];
+  if (transcript) {
+    voiceChat.chatId = activeNative?.chatId || transcript.id || voiceChat.chatId;
+    voiceChat.messages = (Array.isArray(transcript.messages) ? transcript.messages : []).slice(-200).map((message) => ({
+      ...message,
+      mode: message.mode === "live" || message.mode === "practice" ? message.mode : (transcript.mode === "live" ? "live" : "practice"),
+    }));
+    voiceChat.liveSeen = new Set(voiceChat.messages.map((message) => message.providerEntryId).filter(Boolean));
+  }
+  if (activeNative) {
+    voiceChat.chatId = activeNative.chatId;
+    voiceChat.providerConversationId = String(activeNative.conversationId || "");
+    voiceChat.livePresetId = String(activeNative.presetId || "");
+    voiceChat.livePresetLabel = String(activeNative.presetLabel || "");
+    voiceChat.livePresetContext = String(activeNative.presetContext || "");
+    voiceLiveAssistance = activeNative.assistanceMode === "unassisted" ? "unassisted" : "assisted";
+    if (voiceChat.livePresetId) voiceLivePresetId = voiceChat.livePresetId;
+  }
 }
 
 function resetVoiceChat({ preserveMode = true, nextMode = null, persistCurrent = true } = {}) {
@@ -5333,6 +5343,11 @@ function currentRecoveryKey() {
   return source?.kind === "torrent" ? playbackRecoverySourceKey(source.libraryId, source.fileIndex) : "";
 }
 
+// A new source starts its own recovery history (sourceGeneration: the load it belongs to).
+function changeRecoverySource(sourceGeneration) {
+  playbackRecovery = changePlaybackRecoverySource(playbackRecovery, currentRecoveryKey(), { sourceGeneration });
+}
+
 function markPlaybackMotion() {
   if (!currentRecoveryKey() || state.pendingSeek) return;
   const position = absolutePlaybackSeconds();
@@ -8995,6 +9010,17 @@ function addCard(item, type) {
   if ($("#view-study")?.classList.contains("is-active")) renderStudy();
 }
 
+function restoreDiscardedAutoCardKeys(keys) {
+  discardedAutoCardKeys = new Set((Array.isArray(keys) ? keys : []).map(String).filter(Boolean).slice(-20_000));
+}
+
+function addDiscardedAutoCardKeys(keys) {
+  discardedAutoCardKeys = new Set([
+    ...discardedAutoCardKeys,
+    ...keys.map(String).filter(Boolean),
+  ].slice(-20_000));
+}
+
 function persistDiscardedAutoCardKeys({ immediate = false } = {}) {
   const values = [...discardedAutoCardKeys].slice(-20_000);
   localStorage.setItem("blackline-discarded-auto-cards", JSON.stringify(values));
@@ -10718,6 +10744,10 @@ function finishTestSession() {
   renderTest();
 }
 
+function endTestSession() {
+  testSession = null;
+}
+
 function testHistorySvg(results) {
   if (!results.length) return '<p class="learn-footnote">Scores appear here after your first test.</p>';
   const recent = results.slice(-20);
@@ -10928,7 +10958,7 @@ function wireLearningViews() {
     const button = event.target.closest("button");
     if (!button) return;
     if (button.id === "test-start" || button.id === "test-restart") startTestSession();
-    else if (button.id === "test-setup-back" || button.id === "test-quit") { testSession = null; stopStudySounds(); renderTest(); }
+    else if (button.id === "test-setup-back" || button.id === "test-quit") { endTestSession(); stopStudySounds(); renderTest(); }
     else if (button.dataset.testSize) { testSetup.size = Number(button.dataset.testSize); renderTest(); }
     else if (button.dataset.testOption !== undefined) answerTestQuestion(Number(button.dataset.testOption));
     else if (button.hasAttribute("data-test-play")) { const question = currentTestQuestion(); if (question?.audioUrl) playStudySounds([question.audioUrl]); }
@@ -11210,6 +11240,11 @@ function closeDesktopFloating() {
   if (document.pictureInPictureElement === video) {
     void document.exitPictureInPicture().catch(() => {});
   }
+}
+
+// Going to Watch ends a float the user asked for.
+function clearManualFloating() {
+  floatingManual = false;
 }
 
 // ---- The borderless pop-up player: LVL-Popup.exe shows this page (/watch?popup=<token>)
@@ -11539,7 +11574,7 @@ function switchView(view, { historyMode = "push", restoreScroll = false, query }
   if (view === "watch" && (linePreview.active || linePreview.pending)) return;
   if (catalogSearchIsOpen()) closeCatalogSearch();
   if (view === "watch") linePreview.preventBackgroundPlayback = false;
-  if (view === "watch") floatingManual = false;
+  if (view === "watch") clearManualFloating();
   if (!VIEW_ROUTES[view]) view = "home";
   updateFloatingPlayback(view);
   stopPlaybackIfHiddenAfterNavigation(view);
@@ -11555,7 +11590,7 @@ function switchView(view, { historyMode = "push", restoreScroll = false, query }
   }
   if (lastViewKey) viewScroll.set(lastViewKey, window.scrollY);
   if (view !== "home" && state.homeLoaded && $("#view-home")?.classList.contains("is-active")) {
-    homeSavedPlace = captureHomePlace($("#home-hero"), $("#home-rows"));
+    saveHomePlace();
   }
   $$(".view").forEach((element) => element.classList.toggle("is-active", element.id === `view-${view}`));
   paintAppUpdateCard();
@@ -13106,7 +13141,7 @@ function invalidateAutoNextAfterEpisodeEdit(series, code) {
   // A watched-state edit is a new user intent, even if it does not replace
   // the media URL. Stop both an armed timer and an already-in-flight lookup.
   cancelAutoNext();
-  manualCatalogPlaybackId += 1;
+  invalidateManualCatalogPlayback();
 }
 
 function playAutoNextNow() {
@@ -15688,6 +15723,11 @@ function captureHomePlace(hero, rows) {
   return place;
 }
 
+// Remember where Home is before another view replaces it.
+function saveHomePlace() {
+  homeSavedPlace = captureHomePlace($("#home-hero"), $("#home-rows"));
+}
+
 function restoreHomePlace(place, hero, feed) {
   if (place.heroTitleId && homeHeroController) {
     const index = feed.hero.findIndex((meta) => meta.id === place.heroTitleId);
@@ -16102,10 +16142,7 @@ function mergeImportedLibrary(payload) {
       ? payload.preferences.discardedAutoCardKeys
       : [];
   if (importedDiscarded.length) {
-    discardedAutoCardKeys = new Set([
-      ...discardedAutoCardKeys,
-      ...importedDiscarded.map(String).filter(Boolean),
-    ].slice(-20_000));
+    addDiscardedAutoCardKeys(importedDiscarded);
     persistDiscardedAutoCardKeys({ immediate: true });
   }
   if (payload?.learningExposure && typeof payload.learningExposure === "object" && !Array.isArray(payload.learningExposure)) {
@@ -18033,6 +18070,11 @@ async function addCatalogChapterSource(view, chapter, stream, { play = false, bu
   }
 }
 
+// A newer user action (another source, or an episode edit) makes a lookup in flight stale.
+function invalidateManualCatalogPlayback() {
+  manualCatalogPlaybackId += 1;
+}
+
 function catalogFetchAllLabel(view, shownCount) {
   const run = view.fetchAll;
   if (run?.running && run.season === view.season) return `Fetching ${run.done} of ${run.total}…`;
@@ -18375,9 +18417,7 @@ function setCurrentTorrentSource(session, file) {
     catalogType: entry?.catalogType || "",
   };
   rememberWatchSelection(state.currentSource.libraryId, file.index);
-  playbackRecovery = changePlaybackRecoverySource(playbackRecovery, currentRecoveryKey(), {
-    sourceGeneration: playbackLoadRequestId,
-  });
+  changeRecoverySource(playbackLoadRequestId);
   applyLanguagePreferencesToTracks();
   resetAudioSync();
   updatePlayerIdentity(collectionTitle, episode);
