@@ -4,7 +4,7 @@
 // Pages come from api.pageUrl(id, n); progress is saved per page.
 import { escapeHtml } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
-import { atEnd, chapterNeighbours, clickAction, comfortFilter, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, isNight, keyAction, normalizeComfort, normalizeMode, spreadOf, startPage, step, stripStep } from "./reader-core.js";
+import { atEnd, chapterNeighbours, clickAction, comfortFilter, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, isNight, keyAction, normalizeComfort, normalizeMode, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
 
 const COMFORT_KEY = "lvl-reader-comfort-v1";
 const SIDEBAR_KEY = "lvl-reader-sidebar-v1";
@@ -410,7 +410,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     const control = event.target.closest("button[data-reader]");
     if (control) return actions[control.dataset.reader]?.(control);
     if (!event.target.closest(".reader__pop")) for (const pop of root.querySelectorAll(".reader__pop")) pop.hidden = true;
-    if (mode.layout === "vertical" || !event.target.closest(".reader__stage")) return undefined;
+    if (!event.target.closest(".reader__stage")) return undefined;
     const box = stage.getBoundingClientRect();
     return actions[clickAction(event.clientX - box.left, box.width, mode)]?.();
   });
@@ -450,15 +450,18 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       return;
     }
     if (zoom > 1) return;
-    // A page taller than the window scrolls first, then turns.
-    if (mode.fit !== "height") {
+    // A page taller than the window scrolls first, then turns at its edge.
+    const sideways = Math.abs(event.deltaX) > Math.abs(event.deltaY);
+    const overflow = mode.fit !== "height" && stage.scrollHeight - stage.clientHeight > 2;
+    if (overflow && !sideways) {
       const room = event.deltaY > 0 ? stage.scrollHeight - stage.clientHeight - stage.scrollTop : stage.scrollTop;
       if (room > 2) return;
     }
     event.preventDefault();
     if (Date.now() - wheelAt < 250) return;
     wheelAt = Date.now();
-    actions[event.deltaY > 0 ? "next" : "prev"]();
+    const action = wheelAction(event, mode, { overflow });
+    if (action) actions[action]();
   }, { passive: false });
   let touch = null;
   stage.addEventListener("touchstart", (event) => { touch = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null; }, { passive: true });

@@ -107,14 +107,18 @@ export function step(page, delta, pages, mode) {
 export const atEnd = (page, pages, mode) => (mode.layout === "double"
   ? spreadOf(page, pages, mode).includes(pages - 1) : page >= pages - 1);
 
-// Keyboard → action. Arrow keys follow the reading direction.
+// Keyboard → action. The arrow pointing where the story goes moves forward (Right when
+// reading left to right, Left when right to left), in every layout. In the long strip,
+// Up, Down, Space and Page keys keep scrolling the page.
 export function keyAction(event, mode) {
   if (event.ctrlKey || event.metaKey || event.altKey) return null;
   const forward = mode.direction === "rtl" ? "ArrowLeft" : "ArrowRight";
   const back = mode.direction === "rtl" ? "ArrowRight" : "ArrowLeft";
+  if (event.key === forward) return "next";
+  if (event.key === back) return "prev";
   if (mode.layout !== "vertical") {
-    if (event.key === forward || event.key === "PageDown" || (event.code === "Space" && !event.shiftKey)) return "next";
-    if (event.key === back || event.key === "PageUp" || (event.code === "Space" && event.shiftKey)) return "prev";
+    if (event.key === "PageDown" || (event.code === "Space" && !event.shiftKey)) return "next";
+    if (event.key === "PageUp" || (event.code === "Space" && event.shiftKey)) return "prev";
   }
   const key = String(event.key || "").toLowerCase();
   if (event.key === "Home") return "first";
@@ -145,13 +149,27 @@ export function stripStep({ scrollTop = 0, scrollHeight = 0, clientHeight = 0 } 
   return Math.sign(direction) * Math.min(room, Math.round(clientHeight * share));
 }
 
-// Click on the left or right third turns the page; the middle toggles the bars.
+// Click on the left or right third turns the page (scrolls the long strip); the middle
+// toggles the bars. The third on the side the story goes moves forward.
 export function clickAction(x, width, mode) {
   if (!(width > 0)) return "bars";
   const third = x / width;
   if (third > 1 / 3 && third < 2 / 3) return "bars";
   const left = third <= 1 / 3;
   return (mode.direction === "rtl") === left ? "next" : "prev";
+}
+
+// Mouse wheel on pages (user, 2026-11-01): reading left to right, wheel up moves forward;
+// right to left, wheel down does. A sideways swipe on a touchpad moves the way it points
+// (right goes forward when reading left to right). overflow: the page is taller than the
+// window; it scrolled to its edge first, and turns the natural way (down at the bottom
+// goes forward), so reading down a tall page never jumps back.
+export function wheelAction({ deltaX = 0, deltaY = 0 } = {}, mode, { overflow = false } = {}) {
+  const ltr = mode.direction !== "rtl";
+  if (Math.abs(deltaX) > Math.abs(deltaY)) return (deltaX > 0) === ltr ? "next" : "prev";
+  if (!deltaY) return null;
+  if (overflow) return deltaY > 0 ? "next" : "prev";
+  return (deltaY < 0) === ltr ? "next" : "prev";
 }
 
 // Warm: scale down blue (and a little green); Dim: brightness. Values 0..100.
