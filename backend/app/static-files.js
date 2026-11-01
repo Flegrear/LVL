@@ -74,6 +74,7 @@ export const PUBLIC_ASSETS = new Map([
   ["/frontend/player/remux-mse.js", { file: "frontend/player/remux-mse.js", cacheControl: "no-cache" }],
   ["/frontend/player/embedded-subtitle-default.js", { file: "frontend/player/embedded-subtitle-default.js", cacheControl: "no-cache" }],
   ["/frontend/player/media-startup.js", { file: "frontend/player/media-startup.js", cacheControl: "no-cache" }],
+  ["/shared/html.js", { file: "shared/html.js", cacheControl: "no-cache" }],
   ["/shared/media/audio-policy.js", { file: "shared/media/audio-policy.js", cacheControl: "no-cache" }],
   ["/shared/media/video-profile.js", { file: "shared/media/video-profile.js", cacheControl: "no-cache" }],
   ["/frontend/player/playback-recovery.js", { file: "frontend/player/playback-recovery.js", cacheControl: "no-cache" }],

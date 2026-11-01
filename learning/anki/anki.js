@@ -14,6 +14,7 @@ import zlib from "node:zlib";
 import { DatabaseSync } from "node:sqlite";
 import AdmZip from "adm-zip";
 import { DAY_MS, dayStartMs } from "../browser/review-scheduler.js";
+import { escapeHtmlText as escapeHtml } from "../../shared/html.js";
 
 export const MAX_ANKI_IMPORT_CARDS = 50_000;
 const MAX_COLLECTION_BYTES = 1024 * 1024 * 1024;
@@ -42,10 +43,6 @@ export function htmlToText(value) {
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
-}
-
-function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[char]);
 }
 
 /* ---------------------------------------------------------------- templates */

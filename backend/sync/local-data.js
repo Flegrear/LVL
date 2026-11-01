@@ -10,12 +10,11 @@
 // time two devices with their own data meet.
 import { joinId, splitId } from "../../shared/sync/records.js";
 import { parseStamp } from "../../shared/sync/clock.js";
-import { COMIC_TYPES, createComicsData } from "./comics-data.js";
+import { COMIC_TYPES, createComicsData, present } from "./comics-data.js";
 
 const TITLE_FIELDS = ["title", "displayTitle", "rawName", "seriesKey", "magnet", "coverUrl", "catalogId", "catalogType", "mediaKind", "aliases", "sourceMeta",
   "addedAt", "trackingStatus", "artworkIndex", "artworkSource", "artworkPinned", "chapterFileIndexes", "chapterLabels"];
 const HASH_ID = /^[0-9a-f]{40}$/;
-const present = (value) => value !== undefined && value !== null && value !== "";
 const pick = (object, keys) => Object.fromEntries(keys.filter((key) => present(object?.[key])).map((key) => [key, object[key]]));
 // An episode's metadata as synced: not its position (video.progress) and not this device's analysis of the file.
 const episodeMeta = ({ progress, analysis, ...rest } = {}) => rest;

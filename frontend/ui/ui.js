@@ -4,12 +4,9 @@
 // app and runs under Node tests. Behaviors (bind*, toast) only touch
 // the DOM when they are called, never at import time.
 import { t, UI_TRANSLATIONS } from "./ui-i18n.js";
+import { escapeHtml } from "../../shared/html.js";
 
-const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" };
-
-export function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, (char) => ESCAPES[char]);
-}
+export { escapeHtml };
 
 function attrs(map = {}) {
   return Object.entries(map)

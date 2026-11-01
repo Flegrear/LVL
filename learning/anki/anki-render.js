@@ -7,8 +7,9 @@
 // cloze deletions with hints, [sound:…] tags and media file references (img/audio/video/script
 // src and CSS url()) rewritten to the app's media route.
 
-const HTML_ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;" };
-export const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
+import { escapeHtml } from "../../shared/html.js";
+
+export { escapeHtml };
 
 // Anki treats a field as empty when it holds only whitespace, <br> and <div> tags.
 const EMPTY_FIELD = /^(?:[\s\u200b]|&nbsp;|<\/?(?:br|div)\s*\/?>)*$/i;
