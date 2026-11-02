@@ -1,6 +1,6 @@
 # LVL Changelog
 
-## 0.2.3 — 2026-11-01
+## 0.2.3 — 2026-11-02
 
 - Make Library rename prompts match the rest of LVL.
 - Make confirmations for storage, imports and AniList changes open inside LVL.
