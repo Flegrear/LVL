@@ -23,7 +23,7 @@ import { localIdFor } from "../reader/local-library.js";
 
 // Applied in this order, so a comic exists before its sources and progress.
 export const COMIC_TYPES = Object.freeze(["comic.repository", "comic.favorite", "comic.library", "comic.source", "comic.read", "comic.rating"]);
-const present = (value) => value !== undefined && value !== null && value !== "";
+export const present = (value) => value !== undefined && value !== null && value !== "";
 const compact = (object) => Object.fromEntries(Object.entries(object).filter(([, value]) => present(value)));
 const parse = (text) => { try { const value = JSON.parse(text || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; } };
 const stampMs = (change) => parseStamp(change.at)?.ms || 0;

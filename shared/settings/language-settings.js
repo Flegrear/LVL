@@ -41,11 +41,6 @@ export function normalizeLearningLocale(language, locale) {
     || LANGUAGE_DEFAULT_LOCALES[code];
 }
 
-export function speechLocaleFor(language, targetLanguage, targetLocale) {
-  const code = normalizeLanguageCode(language);
-  return normalizeLearningLocale(code, code === normalizeLanguageCode(targetLanguage) ? targetLocale : "");
-}
-
 export function resolveInterfaceLanguage(preference = "auto", baseLanguage = "EN") {
   const choice = String(preference || "auto").trim().toLowerCase();
   if (choice === "en" || choice === "es") return choice;

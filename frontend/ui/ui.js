@@ -4,12 +4,9 @@
 // app and runs under Node tests. Behaviors (bind*, toast) only touch
 // the DOM when they are called, never at import time.
 import { t, UI_TRANSLATIONS } from "./ui-i18n.js";
+import { escapeHtml } from "../../shared/html.js";
 
-const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" };
-
-export function escapeHtml(value) {
-  return String(value ?? "").replace(/[&<>'"]/g, (char) => ESCAPES[char]);
-}
+export { escapeHtml };
 
 function attrs(map = {}) {
   return Object.entries(map)
@@ -78,8 +75,6 @@ const ICON_PATHS = Object.freeze({
   library: '<path d="M5 4.5v15M9.5 4.5v15"/><path d="m13.5 5.2 3.8-1 3.2 14.6-3.8 1z"/>',
   bookmark: '<path d="M7 4.5h10v15l-5-3.5-5 3.5z"/>',
 });
-
-export const ICON_NAMES = Object.freeze(Object.keys(ICON_PATHS));
 
 export function icon(name, { className = "" } = {}) {
   const paths = ICON_PATHS[name];
@@ -401,37 +396,6 @@ export function bindTabs(tablist, { onChange } = {}) {
     if (!next) return;
     event.preventDefault();
     select(next, { focus: true });
-  });
-}
-
-// Single-select groups (segmented controls) and multi-select chips, driven by aria-pressed.
-export function bindPressables(root = document) {
-  root?.querySelectorAll?.("[data-ui-toggle-group]").forEach((group) => {
-    if (group.dataset.uiBound === "1") return;
-    group.dataset.uiBound = "1";
-    const single = group.dataset.uiToggleGroup === "single";
-    group.addEventListener("click", (event) => {
-      const button = event.target.closest("button[aria-pressed]");
-      if (!button || !group.contains(button)) return;
-      if (single) group.querySelectorAll("button[aria-pressed]").forEach((item) => item.setAttribute("aria-pressed", String(item === button)));
-      else button.setAttribute("aria-pressed", String(button.getAttribute("aria-pressed") !== "true"));
-      group.dispatchEvent(new CustomEvent("ui-change", { bubbles: true, detail: { value: button.dataset.value || "" } }));
-    });
-  });
-}
-
-export function bindRanges(root = document) {
-  root?.querySelectorAll?.("input.ui-range").forEach((input) => {
-    const update = () => {
-      const min = Number(input.min) || 0;
-      const max = Number(input.max) || 100;
-      const percent = max > min ? ((Number(input.value) - min) / (max - min)) * 100 : 0;
-      input.style.setProperty("--ui-range-fill", `${Math.max(0, Math.min(100, percent))}%`);
-    };
-    update();
-    if (input.dataset.uiBound === "1") return;
-    input.dataset.uiBound = "1";
-    input.addEventListener("input", update);
   });
 }
 
@@ -870,5 +834,37 @@ export function confirmDialog({ title = "", text = "", confirmLabel = "Continue"
     document.body.append(box);
     box.showModal();
     box.querySelector('[data-confirm="yes"]')?.focus();
+  });
+}
+
+// An in-app text prompt in LVL's dialog style. Resolves the trimmed text, or null when cancelled.
+export function promptDialog({ title = "", label = "", value = "", confirmLabel = "Save", cancelLabel = "Cancel", maxLength = 200 } = {}) {
+  if (typeof document === "undefined") return Promise.resolve(null);
+  return new Promise((resolve) => {
+    const box = document.createElement("dialog");
+    box.className = "detail-dialog app-dialog ui-confirm-dialog";
+    box.setAttribute("aria-labelledby", "ui-prompt-title");
+    box.innerHTML = `<button class="dialog-close" type="button" data-prompt="no" aria-label="${escapeHtml(t("Close"))}">×</button>`
+      + `<form class="app-dialog__body" method="dialog"><h2 class="app-dialog__title" id="ui-prompt-title">${escapeHtml(t(title))}</h2>`
+      + `<label class="settings-field"><span>${escapeHtml(t(label || title))}</span><input name="value" type="text" maxlength="${Number(maxLength) || 200}" autocomplete="off" spellcheck="false" /></label>`
+      + `<div class="app-dialog__actions">${buttonMarkup({ label: cancelLabel, variant: "ghost", attrs: { "data-prompt": "no" } })}`
+      + `${buttonMarkup({ label: confirmLabel, variant: "primary", type: "submit" })}</div></form>`;
+    const input = box.querySelector("input");
+    input.value = String(value ?? "");
+    let result = null;
+    box.addEventListener("click", (event) => {
+      if (event.target.closest('[data-prompt="no"]')) box.close();
+      else if (event.target === box) box.close();
+    });
+    box.querySelector("form").addEventListener("submit", (event) => {
+      event.preventDefault();
+      result = input.value.trim();
+      box.close();
+    });
+    box.addEventListener("close", () => { box.remove(); resolve(result); });
+    document.body.append(box);
+    box.showModal();
+    input.focus();
+    input.select();
   });
 }

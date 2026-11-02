@@ -169,66 +169,6 @@ export function normalizeProgressiveSeekStatus(status, expected) {
   return normalized;
 }
 
-/**
- * Adapter for PRIME's backend worker12 committed GOP-index status:
- * {status:'building'|'ready',identityKey:<sha256>,complete,
- *  ranges:[{id:<sha256>,sequence,start,end,mediaStart,baseSeconds:0,
- *           seekOffsetSeconds:0,initHash:<sha256>,bytes}]}.
- *
- * The server's readIndex() must already have atomically verified the source,
- * init, IDR, timestamps and committed file. Never adapt arbitrary torrent
- * download maps. captureContext is taken when issuing the STATUS GET; compare
- * liveContext from getContext() immediately before drawing or seeking. The
- * exact avcC-derived MIME must be supplied as raw.mime or verifiedMime from
- * the same backend-verified init; never guess High profile.
- *
- * A ready snapshot is only for this precise source, audio, generation, and
- * 64-hex index identity. A refreshed status from an earlier request therefore
- * cannot become bright or seekable after source/audio navigation.
- */
-export function normalizeCommittedProgressiveIndexStatus(raw, captureContext,
-  liveContext, { verifiedMime = '' } = {}) {
-  const hex = /^[0-9a-f]{64}$/i;
-  if (!raw || !validContext(captureContext)
-    || !sameContext(captureContext, liveContext)
-    || !hex.test(raw.identityKey)
-    || (captureContext.identityKey && captureContext.identityKey !== raw.identityKey)
-    || !['building', 'partial', 'ready'].includes(raw.status)
-    || !Array.isArray(raw.ranges) || raw.ranges.length > MAX_SEGMENTS)
-    return null;
-  const mime = raw.mime || verifiedMime;
-  if (!AVC_AAC_MIME.test(mime)) return null;
-  const segments = raw.ranges.map(section => {
-    if (!section || !hex.test(section.id) || !hex.test(section.initHash)
-      || !boundedInt(section.sequence, MAX_SEGMENTS * 4)
-      || !finite(section.start) || !finite(section.end)
-      || !finite(section.mediaStart) || !finite(section.baseSeconds)
-      || !finite(section.seekOffsetSeconds)
-      || section.baseSeconds !== (section.timelineOffsetSeconds??0)
-      || section.seekOffsetSeconds !== 0)
-      return null;
-    return {
-      id: section.id, startSeconds: section.start, endSeconds: section.end,
-      mediaStartSeconds: section.mediaStart,
-      timelineOffsetSeconds: section.timelineOffsetSeconds??0,
-      initHash: section.initHash,
-      bytes: section.bytes,
-      // These are server-published *completed and indexed* files, not
-      // a claim about arbitrary unverified partial torrent content.
-      complete: true, verified: true, independentlyDecodable: true,
-      keyframeStart: true, movieClockVerified: true,
-    };
-  });
-  const snapshot = normalizeProgressiveSeekStatus({
-    ...captureContext, kind:'indexed-video-segments',
-    status:raw.status==='partial'?'partial-ready':raw.status,
-    identityKey:raw.identityKey,
-    videoCodec:'h264', audioCodec:'aac', container:'fmp4',
-    mime, initVerified:true, sourceVerified:true, segments,
-  }, captureContext);
-  return snapshot;
-}
-
 /** UI-only bright intervals; retain every disjoint section. */
 export function progressiveReadyRanges(snapshot) {
   return snapshot && validatedSnapshots.has(snapshot)

@@ -186,9 +186,3 @@ const defaultClient = createAnkiwebClient();
 export const searchSharedDecks = (...args) => defaultClient.searchSharedDecks(...args);
 export const sharedDeckInfo = (...args) => defaultClient.sharedDeckInfo(...args);
 export const downloadSharedDeck = (...args) => defaultClient.downloadSharedDeck(...args);
-
-// Search words that find decks for each app language on AnkiWeb.
-export const ANKIWEB_LANGUAGE_QUERIES = Object.freeze({
-  EN: "english", ES: "spanish", FR: "french", DE: "german", IT: "italian", PT: "portuguese", JA: "japanese",
-  KO: "korean", ZH: "chinese", RU: "russian", NL: "dutch", PL: "polish", TR: "turkish",
-});

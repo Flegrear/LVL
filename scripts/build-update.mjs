@@ -1,5 +1,7 @@
 // Source-only incremental LVL release archive. It never edits Git history or
 // publishes a release; every archive byte comes from an audited HEAD Git blob.
+// Added and changed installed sources are packed; deleted ones (and the old path of a
+// moved one) go in the manifest's deletes, which the installed updater removes.
 // Usage: node scripts/build-update.mjs --from v0.1.0 [--out-dir dist]
 import fs from "node:fs";
 import path from "node:path";
@@ -23,12 +25,12 @@ const MAX_MANIFEST_BYTES = 512 * 1024;
 // An incremental payload never carries an installer, a binary runtime, native
 // modules, generated executables or unreviewed developer fixtures.
 const unsafeFile = /\.(?:exe|dll|sys|node|msi|msp|msix|appx|bat|cmd|ps1|vbs|wsf|com|scr|so|dylib|jar|zip|7z|rar|tar|tgz|gz)$/i;
+// Top-level files the installed updater (runtime/update-apply.mjs, TOP) never deletes.
+const TOP_LEVEL_FILES = new Set(["app.js", "index.html", "server.js", "package.json", "CHANGELOG.md"]);
 const developerFile = /(?:^|\/)(?:__tests__|tests?|specs?|fixtures?|devtools|docs|examples|benchmarks|coverage)(?:\/|$)|(?:^|\/)[^/]+\.(?:test|spec)\.[cm]?[jt]sx?$/i;
 // Repository, CI and release tooling that is never installed. Changing it
 // doesn't touch the installed app, so it never forces the full installer.
-// launcher/LvlPopup.cs is the pop-up player window: the release workflow builds it into its
-// own release asset, which LVL downloads (backend/media/popup-program.js); not part of LVL.exe.
-const notInstalled = /^(?:README(?:\.[^/]*)?|LICENSE(?:\.[^/]*)?|\.gitignore|\.gitattributes|\.editorconfig|\.github\/.+|scripts\/.+|docs\/.+|tests\/.+|devtools\/.+|learning\/build-presets\.mjs|launcher\/LvlPopup\.cs)$/i;
+const notInstalled = /^(?:README(?:\.[^/]*)?|LICENSE(?:\.[^/]*)?|\.gitignore|\.gitattributes|\.editorconfig|\.github\/.+|scripts\/.+|docs\/.+|tests\/.+|devtools\/.+|learning\/build-presets\.mjs)$/i;
 const windowsReserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 function versionParts(value) {
@@ -202,18 +204,29 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, toVersion = 
 
   const changed = changedEntries(root, oldCommit);
   const files = new Map();
+  const deletes = new Set();
   const casefold = new Map();
   let totalBytes = 0;
   let changedPackage = false;
+  // A deleted installed source goes in the manifest's deletes; the installed updater
+  // (runtime/update-apply.mjs) removes it in the same transaction. The top-level files the
+  // launcher and updater need can't be deleted by a patch.
+  const removeSource = (source) => {
+    const kind = inspectChangedPath(source, "D");
+    if (kind === "ignore") return;
+    if (kind === "lockfile" || TOP_LEVEL_FILES.has(source)) throw new Error(`Full installer required: ${source} can't be deleted by a patch`);
+    deletes.add(source);
+  };
+  // A rename or copy is a deleted source (rename only) and an added destination.
+  const expanded = [];
   for (const change of changed) {
+    if (change.to === null) { expanded.push(change); continue; }
+    if (/^R/.test(change.status)) expanded.push({ status: "D", from: change.from, to: null });
+    expanded.push({ status: "A", from: change.to, to: null });
+  }
+  for (const change of expanded) {
     const source = change.from;
-    const destination = change.to;
-    if (destination !== null) {
-      const a = inspectChangedPath(source, change.status);
-      const b = inspectChangedPath(destination, change.status);
-      if (a === "ignore" && b === "ignore") continue;
-      throw new Error(`Full installer required: renamed/copied source is not supported: ${source} -> ${destination}`);
-    }
+    if (change.status === "D") { removeSource(source); continue; }
     const kind = inspectChangedPath(source, change.status);
     if (kind === "ignore") continue;
     if (kind === "lockfile") {
@@ -224,7 +237,6 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, toVersion = 
         throw new Error("Full installer required: package-lock.json dependency tree changed");
       continue; // Installer has runtime node_modules, never ships lockfile.
     }
-    if (change.status === "D") throw new Error(`Full installer required: deletion of installed source ${source} (deletes not supported)`);
     if (change.status !== "A" && change.status !== "M")
       throw new Error(`Full installer required: unsupported Git change ${change.status} on ${source}`);
     if (files.size >= MAX_FILE_COUNT) throw new Error(`Patch exceeds ${MAX_FILE_COUNT} files`);
@@ -239,9 +251,15 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, toVersion = 
     if (source === "package.json") changedPackage = true;
   }
   if (!changedPackage) throw new Error("Updated HEAD package.json must be included in every versioned patch");
+  for (const name of deletes) if (files.has(name)) deletes.delete(name);
+  for (const name of deletes) {
+    const folded = name.normalize("NFC").toLowerCase();
+    if (casefold.has(folded)) throw new Error(`Case-insensitive path collision between a deleted and a patched file: ${name}`);
+  }
+  if (files.size + deletes.size > MAX_FILE_COUNT) throw new Error(`Patch exceeds ${MAX_FILE_COUNT} files`);
   const manifest = { format: "lvl-patch-v1", fromVersion: from, toVersion: to,
     files: [...files].sort(([a], [b]) => a.localeCompare(b, "en")).map(([relative, contents]) =>
-      ({ path: relative, sha256: SHA256(contents) })), deletes: [] };
+      ({ path: relative, sha256: SHA256(contents) })), deletes: [...deletes].sort((a, b) => a.localeCompare(b, "en")) };
   const manifestBytes = Buffer.from(JSON.stringify(manifest, null, 2) + "\n", "utf8");
   if (manifestBytes.length > MAX_MANIFEST_BYTES) throw new Error("Oversized update manifest");
   const zip = new AdmZip();

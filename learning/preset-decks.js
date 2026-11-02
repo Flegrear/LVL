@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledMeaning } from "./browser/vocabulary-meanings.js";
+import { escapeHtmlText as escapeHtml } from "../shared/html.js";
 
 const dataRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), "data");
 export const PRESET_WORD_SIZES = Object.freeze([100, 1000, 5000]);
@@ -47,8 +48,6 @@ export const PRESET_NOTETYPE = Object.freeze({
   templates: [{ name: "Recognition", qfmt: PRESET_QFMT, afmt: PRESET_AFMT }],
   css: PRESET_CSS,
 });
-
-const escapeHtml = (value) => String(value ?? "").replace(/[&<>"]/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;" })[char]);
 
 export async function loadGlosses(language) {
   const code = String(language || "").toUpperCase();

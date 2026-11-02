@@ -140,23 +140,6 @@ export function parseAniListPinToken(value, now = Date.now()) {
   return { token, expiresAt };
 }
 
-export function startAniListAuthorization({ clientId, origin, sessionStorage, now = Date.now(), nonce }) {
-  const id = String(clientId || "").trim();
-  if (!CLIENT_ID_PATTERN.test(id)) throw new Error("Set an AniList application Client ID first.");
-  const parsed = new URL(origin);
-  if (!["127.0.0.1", "localhost"].includes(parsed.hostname) || parsed.protocol !== "http:")
-    throw new Error("AniList login requires a locally hosted LVL page.");
-  const state = String(nonce || "").trim();
-  if (!/^[a-zA-Z0-9_-]{24,160}$/.test(state)) throw new Error("Could not create a secure login request.");
-  sessionStorage.setItem(ANILIST_OAUTH_PENDING, JSON.stringify({ state, issuedAt: now, origin: parsed.origin }));
-  const url = new URL("https://anilist.co/api/v2/oauth/authorize");
-  url.searchParams.set("client_id", id);
-  url.searchParams.set("response_type", "token");
-  url.searchParams.set("redirect_uri", parsed.origin + ANILIST_CALLBACK_PATH);
-  url.searchParams.set("state", state);
-  return url.toString();
-}
-
 // Consume the URL fragment before the app router can replace the callback
 // location. The fragment is NOT sent in HTTP requests or retained in history.
 export function consumeAniListCallback({ hash, sessionStorage, origin, now = Date.now() }) {

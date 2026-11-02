@@ -1,5 +1,11 @@
 # LVL Changelog
 
+## 0.2.3 — 2026-11-01
+
+- Make Library rename prompts match the rest of LVL.
+- Make confirmations for storage, imports and AniList changes open inside LVL.
+- Keep the pop-up player available across updates without downloading it again for each version.
+
 ## 0.2.2 — 2026-11-01
 
 - Add sync between your devices in Settings › Library: your Library, where you are in each video and chapter, your ratings and your comics, kept in a private GitHub repository.
