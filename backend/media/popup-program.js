@@ -1,7 +1,7 @@
 // Where LVL's pop-up player program (LVL-Popup.exe and the WebView2 SDK libraries) comes
 // from. A source checkout builds it with `node scripts/build-popup.mjs` (build/popup).
-// An installed LVL downloads it once from the GitHub release of its own version
-// (LVL-Popup-v<version>.zip, published by the release workflow), checks it against the
+// An installed LVL downloads the pinned program release once
+// (LVL-Popup-v<version>.zip), independently of the app version, checks it against the
 // checksum published with it, the way the updater checks updates, and keeps it in
 // <data root>/runtime/popup-program/<first 12 hex of the zip's SHA-256>/. In-app patches can't
 // carry programs; this is how the pop-up still arrives with a patch. The copy from an
@@ -18,6 +18,8 @@ export const POPUP_FILES = Object.freeze([
 ]);
 const RUNNABLE = POPUP_FILES.filter((name) => /\.(?:exe|dll)$/.test(name));
 export const RELEASE_DOWNLOADS = "https://github.com/Flegrear/LVL/releases/download";
+// Reuse this published program across app updates; those releases contain only patches.
+export const POPUP_RELEASE_VERSION = "0.2.2";
 const MAX_ZIP_BYTES = 8 * 1024 * 1024;
 const MAX_FILE_BYTES = 4 * 1024 * 1024;
 // After a failed download, the next try waits this long (LVL restarts try at once).
@@ -48,8 +50,9 @@ async function readLimited(response, limit) {
 }
 
 // root: LVL's folder; installed: an installed copy (installed-app.json), which downloads.
-export function createPopupProgram({ root = "", dataRoot, version, installed = false, env = process.env,
+export function createPopupProgram({ root = "", dataRoot, programVersion = POPUP_RELEASE_VERSION, installed = false, env = process.env,
   fetchImpl = fetch, now = Date.now, log = console, platform = process.platform } = {}) {
+  const version = programVersion;
   // runtime/popup is the window's own browser profile (server.js); programs live next to it.
   const store = path.join(dataRoot, "runtime", "popup-program");
   const pointer = path.join(store, "current.json");
@@ -129,7 +132,7 @@ export function createPopupProgram({ root = "", dataRoot, version, installed = f
     return current;
   }
 
-  // Makes sure this version's program is here (installed copies download it once).
+  // Makes sure the pinned program is here (installed copies download it once).
   async function ensure() {
     if (!installed || platform !== "win32" || !VERSION.test(String(version)) || built()) return home();
     const have = downloaded();

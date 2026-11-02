@@ -65,9 +65,9 @@ const appDataRoot = process.env.LANGUAGE_VIDEO_LEARNER_DATA_ROOT
   : path.join(root, "data");
 export const appDatabase = createAppDatabase(path.join(appDataRoot, "language-video-learner.sqlite3"));
 // The borderless pop-up player window (LVL-Popup.exe, WebView2) and its own browser profile.
-// An installed LVL downloads the program from its release (patches can't carry programs).
+// An installed LVL reuses the pinned program release (patches can't carry programs).
 const popupProgram = createPopupProgram({
-  root, dataRoot: appDataRoot, version: APP_VERSION,
+  root, dataRoot: appDataRoot,
   installed: fs.existsSync(path.join(root, "installed-app.json")),
 });
 const popupWindow = createPopupWindow({
