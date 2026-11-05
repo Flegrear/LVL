@@ -23,13 +23,17 @@ export function hardwareVideoEncodingArgs(encoder, height = 1080) {
 
 function verifyEncoder(binary, encoder, timeoutMs, spawnFn = spawn) {
   return new Promise((resolve) => {
+    const android = encoder === "h264_mediacodec";
     const args = [
       "-hide_banner", "-loglevel", "error",
+      // Some Android encoders accept frames into the null muxer but emit no
+      // video into MP4. Probe playback's container and reject empty output.
+      ...(android ? ["-abort_on", "empty_output"] : []),
       "-nostdin", "-f", "rawvideo", "-pix_fmt", "yuv420p",
-      "-s:v", "64x64", "-r", "1", "-i", "pipe:0",
-      "-frames:v", "1", "-pix_fmt", "yuv420p",
+      "-s:v", "64x64", "-r", android ? "4" : "1", "-i", "pipe:0",
+      "-frames:v", android ? "8" : "1", "-pix_fmt", "yuv420p",
       ...hardwareVideoEncodingArgs(encoder),
-      "-f", "null", "-",
+      ...(android ? ["-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"] : ["-f", "null", "-"]),
     ];
     let settled = false;
     let job;
@@ -58,7 +62,7 @@ function verifyEncoder(binary, encoder, timeoutMs, spawnFn = spawn) {
     job.once("error", () => done(false));
     job.once("close", (code) => done(!timedOut && code === 0));
     job.stdin?.on("error", () => {}); // FFmpeg may close stdin before reading it.
-    try { job.stdin?.end(PROBE_FRAME); } catch { done(false); }
+    try { job.stdin?.end(android ? Buffer.concat(Array(8).fill(PROBE_FRAME)) : PROBE_FRAME); } catch { done(false); }
   });
 }
 

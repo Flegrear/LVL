@@ -135,9 +135,13 @@ jobs:
           LVL_ANDROID_KEYSTORE_BASE64: ${{ secrets.LVL_ANDROID_KEYSTORE_BASE64 }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $manager = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
-          if (-not (Test-Path $manager)) { throw 'Android SDK command-line tools unavailable' }
-          & $manager 'platforms;android-37' 'build-tools;37.0.0'
+          $bootstrap = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
+          if (-not (Test-Path $bootstrap)) { throw 'Android SDK command-line tools unavailable' }
+          & $bootstrap 'cmdline-tools;23.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android command-line tools provisioning failed' }
+          $manager = Join-Path $env:ANDROID_HOME 'cmdline-tools/23.0/bin/sdkmanager.bat'
+          if (-not (Test-Path $manager)) { throw 'Android command-line tools 23 unavailable' }
+          & $manager 'platforms;android-37.0' 'build-tools;37.0.0'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK provisioning failed' }
           New-Item -ItemType Directory -Force -Path build/keys | Out-Null
           node android/tools/native-artifact.mjs verify-bundle --bundle-dir build/native-download --sha $env:LVL_ANDROID_NATIVE_SHA256.ToLowerInvariant() --source-sha $env:LVL_NATIVE_SOURCE_SHA --extract-dir build/android-native
