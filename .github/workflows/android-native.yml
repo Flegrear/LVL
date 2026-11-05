@@ -16,7 +16,83 @@ jobs:
   build-native-inputs:
     if: github.repository == 'Flegrear/LVL' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
-    timeout-minutes: 360
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            abi: arm64-v8a
+          - arch: x86_64
+            abi: x86_64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile one ABI using the reviewed Android NDK and source recipes
+        shell: bash
+        env:
+          LVL_NATIVE_ARCH: ${{ matrix.arch }}
+          LVL_NATIVE_ABI: ${{ matrix.abi }}
+        run: |
+          set -euo pipefail
+          arch="$LVL_NATIVE_ARCH"
+          abi="$LVL_NATIVE_ABI"
+          case "$arch:$abi" in
+            arm64:arm64-v8a|x86_64:x86_64) ;;
+            *) echo 'Unsupported native architecture' >&2; exit 1 ;;
+          esac
+          docker build --tag lvl-android-native:ci android/native
+          mkdir -p build/android-native
+          volume="lvl-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${arch}"
+          docker volume create "$volume" >/dev/null
+          trap 'docker volume rm "$volume" >/dev/null' EXIT
+          # Verify the container-to-runner ownership handoff before compiling.
+          docker run --rm --volume "$PWD/build/android-native:/out" \
+            lvl-android-native:ci bash -c 'mkdir -p /out/ownership-probe; touch /out/ownership-probe/container'
+          docker run --rm --volume "$PWD/build/android-native:/out" \
+            lvl-android-native:ci chown -R "$(id -u):$(id -g)" /out
+          touch build/android-native/ownership-probe/runner
+          rm -r build/android-native/ownership-probe
+          for kind in node ffmpeg; do
+            docker run --rm \
+              --volume "$volume:/build" \
+              --volume "$PWD/build/android-native:/out" \
+              --volume "$PWD/android/native:/scripts:ro" \
+              --env "JOBS=4" \
+              lvl-android-native:ci bash "/scripts/build-$kind.sh" "$arch"
+          done
+          # Recipe outputs belong to root inside Docker. Return ownership before
+          # the hosted runner creates the deployable FFmpeg directories.
+          docker run --rm --volume "$PWD/build/android-native:/out" \
+            lvl-android-native:ci chown -R "$(id -u):$(id -g)" /out
+          mkdir -p "build/android-native/ffmpeg/$abi"
+          for name in ffmpeg ffprobe BUILDINFO.txt LICENSE.ffmpeg.txt LICENSE.libwebp.txt; do
+            cp "build/android-native/ffmpeg/candidates/$abi/$name" "build/android-native/ffmpeg/$abi/$name"
+          done
+      - name: Preserve exact ABI inputs for the combined verifier
+        uses: actions/upload-artifact@v4
+        with:
+          name: lvl-android-native-abi-${{ matrix.abi }}
+          path: |
+            build/android-native/node/${{ matrix.abi }}/node
+            build/android-native/node/${{ matrix.abi }}/BUILDINFO.txt
+            build/android-native/node/${{ matrix.abi }}/LICENSE.node.txt
+            build/android-native/ffmpeg/${{ matrix.abi }}/ffmpeg
+            build/android-native/ffmpeg/${{ matrix.abi }}/ffprobe
+            build/android-native/ffmpeg/${{ matrix.abi }}/BUILDINFO.txt
+            build/android-native/ffmpeg/${{ matrix.abi }}/LICENSE.ffmpeg.txt
+            build/android-native/ffmpeg/${{ matrix.abi }}/LICENSE.libwebp.txt
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+
+  package-native-inputs:
+    needs: build-native-inputs
+    if: github.repository == 'Flegrear/LVL' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -27,36 +103,11 @@ jobs:
           cache: npm
       - name: Install build manifest dependencies
         run: npm ci --no-audit --no-fund
-      - name: Compile both ABIs using the reviewed Android NDK and source recipes
-        shell: bash
-        run: |
-          set -euo pipefail
-          docker build --tag lvl-android-native:ci android/native
-          mkdir -p build/android-native
-          for arch in arm64 x86_64; do
-            case "$arch" in
-              arm64) abi=arm64-v8a ;;
-              x86_64) abi=x86_64 ;;
-            esac
-            # Reclaim the complete native build tree between ABIs on hosted runners.
-            volume="lvl-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${arch}"
-            docker volume create "$volume" >/dev/null
-            for kind in node ffmpeg; do
-              docker run --rm \
-                --volume "$volume:/build" \
-                --volume "$PWD/build/android-native:/out" \
-                --volume "$PWD/android/native:/scripts:ro" \
-                --env "JOBS=4" \
-                lvl-android-native:ci bash "/scripts/build-$kind.sh" "$arch"
-            done
-            # FFmpeg recipe intentionally leaves candidates separate. The fresh
-            # CI run copies exactly the two executables and three build records.
-            mkdir -p "build/android-native/ffmpeg/$abi"
-            for name in ffmpeg ffprobe BUILDINFO.txt LICENSE.ffmpeg.txt LICENSE.libwebp.txt; do
-              cp "build/android-native/ffmpeg/candidates/$abi/$name" "build/android-native/ffmpeg/$abi/$name"
-            done
-            docker volume rm "$volume" >/dev/null
-          done
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: lvl-android-native-abi-*
+          path: build/android-native
+          merge-multiple: true
       - name: Package exact source-pinned native inputs and verify extraction
         shell: bash
         run: |
