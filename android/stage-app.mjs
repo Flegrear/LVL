@@ -17,11 +17,14 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
+import https from "node:https";
 import path from "node:path";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
 import { isSetupSourceFile } from "../scripts/release-inputs.mjs";
-import { readAndroidVersion, stampAndroidRuntime } from "./tools/release-check.mjs";
+import { checkNativeSources, readAndroidVersion, stampAndroidRuntime } from "./tools/release-check.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE = path.join(ROOT, "build", "android-stage");
@@ -30,6 +33,194 @@ const ASSETS = path.join(STAGE, "assets");
 const JNILIBS = path.join(STAGE, "jniLibs");
 const NATIVE = path.join(ROOT, "build", "android-native");
 
+// Immutable upstream sources of the LGPL command-line programs shipped inside
+// every *release* APK. Sources remain in APK assets, not the app-code ZIP.
+const NATIVE_SOURCES = [
+  { name: "ffmpeg-7.1.5.tar.xz", url: "https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz",
+    sha256: "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f", maxBytes: 40 * 1024 * 1024 },
+  { name: "libwebp-1.6.0.tar.gz", url: "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
+    sha256: "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564", maxBytes: 25 * 1024 * 1024 },
+];
+const SOURCE_RECIPES = ["Dockerfile", "build-node.sh", "build-ffmpeg.sh", "docker-build.ps1"];
+const nativeSha256 = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
+
+function readNativeFile(file, maxBytes, description) {
+  const stat = fs.lstatSync(file, { throwIfNoEntry: false });
+  if (!stat?.isFile() || stat.isSymbolicLink() || !stat.size || stat.size > maxBytes) {
+    throw new Error(`Missing, non-ordinary or oversized ${description}`);
+  }
+  return fs.readFileSync(file);
+}
+
+async function downloadPinnedSource(source, destination) {
+  // No arbitrary mirror, environment URL, HTTP downgrade, or cross-host redirect.
+  // Each source has a fixed approved origin, bounded transfer and exact hash.
+  const origin = new URL(source.url);
+  const partial = destination + `.partial-${process.pid}-${crypto.randomBytes(5).toString("hex")}`;
+  const started = Date.now();
+  let current = origin;
+  try {
+    for (let redirects = 0; redirects <= 2; redirects++) {
+      const remaining = 125_000 - (Date.now() - started);
+      if (remaining <= 0) throw new Error(`Timed out downloading ${source.name}`);
+      const response = await new Promise((resolve, reject) => {
+        const req = https.get(current, {
+          headers: { "User-Agent": "LVL-Android-source/0.1.0", Accept: "application/octet-stream" },
+          timeout: Math.min(20_000, remaining), signal: AbortSignal.timeout(remaining),
+        }, resolve);
+        req.on("timeout", () => req.destroy(new Error(`Timed out downloading ${source.name}`)));
+        req.on("error", reject);
+      });
+      if ([301, 302, 303, 307, 308].includes(response.statusCode)) {
+        const redirect = new URL(response.headers.location || "", current);
+        response.resume();
+        if (redirect.protocol !== "https:" || redirect.hostname !== origin.hostname ||
+            redirect.port !== origin.port || redirect.username || redirect.password || redirects === 2) {
+          throw new Error(`Unapproved redirect for ${source.name}`);
+        }
+        current = redirect;
+        continue;
+      }
+      if (response.statusCode !== 200 || Number(response.headers["content-length"] || 0) > source.maxBytes) {
+        response.resume();
+        throw new Error(`Invalid HTTP response or oversized ${source.name} source archive`);
+      }
+      let bytes = 0;
+      const hash = crypto.createHash("sha256");
+      const gate = new Transform({ transform(chunk, _encoding, done) {
+        bytes += chunk.length;
+        if (bytes > source.maxBytes) return done(new Error(`Oversized ${source.name} source archive`));
+        hash.update(chunk);
+        done(null, chunk);
+      } });
+      await pipeline(response, gate, fs.createWriteStream(partial, { flags: "wx" }));
+      if (!bytes || hash.digest("hex") !== source.sha256) {
+        throw new Error(`SHA-256 hash mismatch for downloaded ${source.name}`);
+      }
+      if (fs.existsSync(destination)) throw new Error(`Source cache already exists: ${source.name}`);
+      fs.renameSync(partial, destination);
+      return;
+    }
+  } finally {
+    fs.rmSync(partial, { force: true });
+  }
+}
+
+// Exported for narrow release tests; importing the module must not execute the
+// ordinary CLI staging (npm, extension fetch, native copy). No extra helper file.
+export async function stageNativeReleaseAssets({ projectRoot = ROOT, assetsDir = ASSETS,
+  nativeDir = NATIVE, cacheDir = path.join(projectRoot, "build", "android-source-cache") } = {}) {
+  const sourceDir = path.join(assetsDir, "lvl-native-source");
+  const licenseDir = path.join(assetsDir, "lvl-native-licenses");
+  if (fs.existsSync(sourceDir) || fs.existsSync(licenseDir)) {
+    throw new Error("Native release asset destination must be empty");
+  }
+  const licenses = new Map();
+  const buildRecords = new Map();
+  for (const abi of ["arm64-v8a", "x86_64"]) {
+    for (const [name, kind, max] of [["LICENSE.node.txt", "node", 512 * 1024],
+      ["LICENSE.ffmpeg.txt", "ffmpeg", 128 * 1024], ["LICENSE.libwebp.txt", "ffmpeg", 32 * 1024]]) {
+      const content = readNativeFile(path.join(nativeDir, kind, abi, name), max, `${abi} ${name}`);
+      if (licenses.has(name) && !licenses.get(name).equals(content)) {
+        throw new Error(`Native original license differs between ABIs: ${name}`);
+      }
+      licenses.set(name, content);
+    }
+    for (const kind of ["node", "ffmpeg"]) {
+      const file = `BUILDINFO.${kind}.${abi}.txt`;
+      buildRecords.set(file, readNativeFile(path.join(nativeDir, kind, abi, "BUILDINFO.txt"),
+        128 * 1024, `${abi} ${kind} build record`));
+    }
+  }
+  if (!licenses.get("LICENSE.node.txt").toString("utf8").startsWith("Node.js is licensed for use as follows:") ||
+      !licenses.get("LICENSE.ffmpeg.txt").toString("utf8").includes("GNU LESSER GENERAL PUBLIC LICENSE") ||
+      !licenses.get("LICENSE.libwebp.txt").toString("utf8").startsWith("Copyright (c) 2010, Google Inc.")) {
+    throw new Error("Invalid original native license notice");
+  }
+  const notice = readNativeFile(path.join(projectRoot, "android", "RELEASE-NOTICE.txt"),
+    64 * 1024, "Android release notice");
+  const recipes = new Map(SOURCE_RECIPES.map(name => [name,
+    readNativeFile(path.join(projectRoot, "android", "native", name), 128 * 1024, `build recipe ${name}`)]));
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const archivePaths = new Map();
+  for (const source of NATIVE_SOURCES) {
+    const cached = path.join(cacheDir, source.name);
+    if (!fs.existsSync(cached)) await downloadPinnedSource(source, cached);
+    const bytes = readNativeFile(cached, source.maxBytes, `upstream ${source.name}`);
+    if (nativeSha256(bytes) !== source.sha256) throw new Error(`SHA-256 hash mismatch for cached ${source.name}`);
+    archivePaths.set(source.name, cached);
+  }
+  // No general-purpose archive extractor: select only these known licensed
+  // upstream members from already hash-verified source archives, with hard caps.
+  const extract = (archive, member, maxBytes) => {
+    const archivePath = archivePaths.get(archive);
+    // npm can put GNU tar ahead of Windows tar on PATH. A drive-qualified
+    // archive name would be interpreted as a remote host by GNU tar.
+    const content = execFileSync("tar", ["-xOf", path.basename(archivePath), member],
+      { cwd: path.dirname(archivePath), windowsHide: true, timeout: 20_000, maxBuffer: maxBytes + 4096 });
+    if (!content.length || content.length > maxBytes) throw new Error(`Invalid upstream archive member ${member}`);
+    return content;
+  };
+  // The bundled FFmpeg LGPL text comes from the checked native build's
+  // COPYING.LGPLv2.1 output; this Windows tar lacks an XZ decoder, so source
+  // authenticity is established by the pinned full-archive SHA-256 instead.
+  if (!extract("libwebp-1.6.0.tar.gz", "libwebp-1.6.0/COPYING", 32 * 1024)
+    .equals(licenses.get("LICENSE.libwebp.txt"))) {
+    throw new Error("Original native license differs from verified upstream source archive");
+  }
+  const patents = extract("libwebp-1.6.0.tar.gz", "libwebp-1.6.0/PATENTS", 64 * 1024);
+  const readme = [
+    "LVL for Android 0.1.0: corresponding source and native build instructions",
+    "",
+    "Each Android APK is a ZIP archive. Open it and locate assets/lvl-native-source/",
+    "for the complete original ffmpeg-7.1.5.tar.xz and libwebp-1.6.0.tar.gz",
+    "source archives, build recipes, per-ABI build records, and SHA256SUMS.",
+    "Original license texts and the libwebp patent grant are in",
+    "assets/lvl-native-licenses/. The separate Node.js 24.22.2 executable",
+    "has its complete third-party LICENSE.node.txt in that directory.",
+    "",
+    "The original upstream FFmpeg and libwebp archives are unmodified.",
+    "The Android executable binaries were built with Android NDK r28c (API 31)",
+    "and Ubuntu 24.04, using the included Dockerfile, build-node.sh,",
+    "build-ffmpeg.sh and docker-build.ps1 recipes from the same LVL revision.",
+    "For either ABI, build the Dockerfile as android/native/Dockerfile, then run",
+    "build-ffmpeg.sh with arm64 or x86_64 inside that build environment,",
+    "mounting writable /build (source cache/objects) and /out (build results).",
+    "Its exact configure flags, enabled components, static libwebp build,",
+    "strip commands and toolchain settings are in build-ffmpeg.sh; the script",
+    "independently fetches these fixed archives and verifies their hashes.",
+    "Place the included archives under /build/cache to reuse them offline.",
+    "The command also builds FFprobe. Per-ABI BUILDINFO.ffmpeg.*.txt files",
+    "record compiler/API, archive digests and resulting executable details.",
+    "The included build-node.sh documents the separate Node.js build and its",
+    "reproducible V8 trap-handler source adjustment.",
+    "",
+  ].join("\n");
+  const sourceFiles = new Map([...NATIVE_SOURCES.map(spec => [spec.name,
+    fs.readFileSync(archivePaths.get(spec.name))]), ...recipes, ...buildRecords]);
+  const sums = [...sourceFiles].sort(([a], [b]) => a.localeCompare(b, "en"))
+    .map(([name, content]) => `${nativeSha256(content)}  ${name}\n`).join("");
+  const licenseFiles = new Map([...licenses,
+    ["PATENTS.libwebp.txt", patents], ["LVL-Android-RELEASE-NOTICE.txt", notice]]);
+  try {
+    fs.mkdirSync(sourceDir, { recursive: true });
+    fs.mkdirSync(licenseDir, { recursive: true });
+    for (const [name, content] of sourceFiles) fs.writeFileSync(path.join(sourceDir, name), content, { flag: "wx" });
+    fs.writeFileSync(path.join(sourceDir, "README.txt"), readme, { flag: "wx" });
+    fs.writeFileSync(path.join(sourceDir, "SHA256SUMS"), sums, { flag: "wx" });
+    for (const [name, content] of licenseFiles) fs.writeFileSync(path.join(licenseDir, name), content, { flag: "wx" });
+  } catch (error) {
+    fs.rmSync(sourceDir, { recursive: true, force: true });
+    fs.rmSync(licenseDir, { recursive: true, force: true });
+    throw error;
+  }
+  return { archiveSha256: Object.fromEntries(NATIVE_SOURCES.map(source => [source.name, source.sha256])),
+    sourceFileCount: sourceFiles.size, licenseFileCount: licenseFiles.size,
+    bytes: [...sourceFiles.values(), ...licenseFiles.values()].reduce((n, b) => n + b.length, 0) +
+      Buffer.byteLength(readme) + Buffer.byteLength(sums) };
+}
+
+async function stageApp() {
 const argv = process.argv.slice(2);
 const abis = argv.flatMap((arg, i) => (arg === "--abi" && argv[i + 1] ? [argv[i + 1]] : []));
 if (!abis.length) abis.push("x86_64");
@@ -180,4 +371,19 @@ for (const abi of abis) {
       log(`${abi}/${to} missing (${path.relative(ROOT, source)} not built yet)`);
     }
   }
+}
+
+// Release-only, after verifying both ABI-native inputs. Debug stage never
+// downloads source archives, and neither folder enters lvl-app.zip.
+removeInStage(path.join(ASSETS, "lvl-native-source"));
+removeInStage(path.join(ASSETS, "lvl-native-licenses"));
+if (release) {
+  checkNativeSources(NATIVE);
+  const nativeDistribution = await stageNativeReleaseAssets();
+  log(`native source/licenses embedded in APK assets: ${nativeDistribution.bytes} bytes`);
+}
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await stageApp();
 }
