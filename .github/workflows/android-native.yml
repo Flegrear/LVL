@@ -54,7 +54,7 @@ jobs:
             lvl-android-native:ci chown -R "$(id -u):$(id -g)" /out
           touch build/android-native/ownership-probe/runner
           rm -r build/android-native/ownership-probe
-          for kind in node ffmpeg; do
+          for kind in ffmpeg node; do
             docker run --rm \
               --volume "$volume:/build" \
               --volume "$PWD/build/android-native:/out" \

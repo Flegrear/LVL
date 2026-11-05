@@ -57,7 +57,7 @@ fetch() { # url file
   esac
   if [ ! -f "$CACHE/$2" ]; then
     log "downloading $2"
-    curl -fsSL --retry 2 -o "$CACHE/$2.part" "$1"
+    curl -fsSL --connect-timeout 15 --max-time 120 --retry 2 -o "$CACHE/$2.part" "$1"
     mv "$CACHE/$2.part" "$CACHE/$2"
   fi
   local actual
@@ -69,7 +69,9 @@ fetch() { # url file
 }
 : > "$WORK/sources.txt"
 fetch "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$WEBP_VERSION.tar.gz" "libwebp-$WEBP_VERSION.tar.gz"
-fetch "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz" "ffmpeg-$FFMPEG_VERSION.tar.xz"
+# Debian redistributes the byte-identical upstream archive; the reviewed digest
+# above remains authoritative. Fetch it before spending hours compiling Node.
+fetch "https://deb.debian.org/debian/pool/main/f/ffmpeg/ffmpeg_$FFMPEG_VERSION.orig.tar.xz" "ffmpeg-$FFMPEG_VERSION.tar.xz"
 
 export CC="$TOOLCHAIN/bin/$TRIPLE$API-clang"
 export CXX="$TOOLCHAIN/bin/$TRIPLE$API-clang++"

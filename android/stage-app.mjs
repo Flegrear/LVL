@@ -36,7 +36,7 @@ const NATIVE = path.join(ROOT, "build", "android-native");
 // Immutable upstream sources of the LGPL command-line programs shipped inside
 // every *release* APK. Sources remain in APK assets, not the app-code ZIP.
 const NATIVE_SOURCES = [
-  { name: "ffmpeg-7.1.5.tar.xz", url: "https://ffmpeg.org/releases/ffmpeg-7.1.5.tar.xz",
+  { name: "ffmpeg-7.1.5.tar.xz", url: "https://deb.debian.org/debian/pool/main/f/ffmpeg/ffmpeg_7.1.5.orig.tar.xz",
     sha256: "de668509caf9e35e3cd162473441fdb29538c6d96ed080292b3cf9e6fc5d558f", maxBytes: 40 * 1024 * 1024 },
   { name: "libwebp-1.6.0.tar.gz", url: "https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-1.6.0.tar.gz",
     sha256: "e4ab7009bf0629fd11982d4c2aa83964cf244cffba7347ecd39019a9e38c4564", maxBytes: 25 * 1024 * 1024 },
