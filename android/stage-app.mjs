@@ -173,8 +173,10 @@ export async function stageNativeReleaseAssets({ projectRoot = ROOT, assetsDir =
     "LVL for Android 0.1.0: corresponding source and native build instructions",
     "",
     "Each Android APK is a ZIP archive. Open it and locate assets/lvl-native-source/",
-    "for the complete original ffmpeg-7.1.5.tar.xz and libwebp-1.6.0.tar.gz",
+    "for the complete original ffmpeg-7.1.5.tar.xz and libwebp-1.6.0.tar.gz.source",
     "source archives, build recipes, per-ABI build records, and SHA256SUMS.",
+    "Verify SHA256SUMS, then rename libwebp-1.6.0.tar.gz.source to libwebp-1.6.0.tar.gz",
+    "before using it. The .source suffix prevents Android from unpacking the archive.",
     "Original license texts and the libwebp patent grant are in",
     "assets/lvl-native-licenses/. The separate Node.js 24.22.2 executable",
     "has its complete third-party LICENSE.node.txt in that directory.",
@@ -196,7 +198,9 @@ export async function stageNativeReleaseAssets({ projectRoot = ROOT, assetsDir =
     "reproducible V8 trap-handler source adjustment.",
     "",
   ].join("\n");
-  const sourceFiles = new Map([...NATIVE_SOURCES.map(spec => [spec.name,
+  // Android expands .gz assets and removes their suffix. An opaque suffix
+  // preserves the original archive bytes and their reviewed checksum.
+  const sourceFiles = new Map([...NATIVE_SOURCES.map(spec => [spec.name.endsWith(".gz") ? spec.name + ".source" : spec.name,
     fs.readFileSync(archivePaths.get(spec.name))]), ...recipes, ...buildRecords]);
   const sums = [...sourceFiles].sort(([a], [b]) => a.localeCompare(b, "en"))
     .map(([name, content]) => `${nativeSha256(content)}  ${name}\n`).join("");
