@@ -5,6 +5,7 @@
 // browser module also needs a static route; declare it in the feature's server
 // entry in backend/features/registry.js, not in server.js.
 import { comicsFeature } from "../comics/feature.js";
+import { phoneLayoutFeature } from "../phone/phone-layout.js";
 import { syncFeature } from "../sync/feature.js";
 
-export const CLIENT_FEATURES = Object.freeze([comicsFeature, syncFeature]);
+export const CLIENT_FEATURES = Object.freeze([comicsFeature, phoneLayoutFeature, syncFeature]);

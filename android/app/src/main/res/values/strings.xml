@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">LVL</string>
+    <string name="starting">Starting LVL…</string>
+    <string name="start_timeout">LVL didn\'t start in time.</string>
+</resources>

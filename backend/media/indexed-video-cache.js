@@ -18,7 +18,9 @@ const CANCELLED = Symbol('indexed-cache-cancelled');
 
 const inBounds = (n, max) => Number.isSafeInteger(n) && n >= 0 && n <= max;
 
-export function indexedCacheEligibility({ session, fileIndex, media, audioIndex, audioMode, enabled }) {
+// canEncode: false (LVL's Android app, whose FFmpeg has no H.264 encoder) leaves only the copied
+// H.264 renditions; sources that would need encoding are unsupported there.
+export function indexedCacheEligibility({ session, fileIndex, media, audioIndex, audioMode, enabled, canEncode = true }) {
   const file = session?.torrent?.files?.[fileIndex];
   if (!enabled) return { eligible: false, reason: 'disabled' };
   if (!UUID.test(String(session?.id || '')) || !HASH.test(String(session?.infoHash || ''))
@@ -39,7 +41,7 @@ export function indexedCacheEligibility({ session, fileIndex, media, audioIndex,
   // an entire episode. Unsupported H264 profiles/bit depths stay native/MSE.
   const copyH264 = codec === 'h264' && depth === 8 && pixel.toLowerCase() === 'yuv420p'
     && ['baseline','constrained baseline','main','high'].includes(profile);
-  const encodeMain10 = codec === 'hevc' && depth === 10 && profile === 'main 10'
+  const encodeMain10 = canEncode !== false && codec === 'hevc' && depth === 10 && profile === 'main 10'
     && ['yuv420p10le','yuv420p10be','p010le'].includes(pixel.toLowerCase());
   if ((!copyH264 && !encodeMain10) || video?.dolbyVision || video?.hdrKind
     || media?.compatibility?.video?.hdr || media?.compatibility?.video?.hdrKind
@@ -78,6 +80,7 @@ export function indexedCacheEligibility({ session, fileIndex, media, audioIndex,
 export function createIndexedVideoCache({
   sessionsRoot, enabled, allowance, sourceUrl, ffmpegPath, ffprobePath,
   isCurrent, foregroundBusy = () => false, spawn = systemSpawn,
+  canEncode = () => true,
   onSpawn = () => {}, onClose = () => {},
   checkEveryMs = CHECK_MS,
   removeIndexedDir = (dir, options) => fsp.rm(dir, options),
@@ -333,7 +336,7 @@ export function createIndexedVideoCache({
     }
   }
   async function status(params, { start = true } = {}) {
-    const info = indexedCacheEligibility({ ...params, enabled: enabled() });
+    const info = indexedCacheEligibility({ ...params, enabled: enabled(), canEncode: canEncode() });
     if (!info.eligible) return { status: info.reason };
     const complete = await finished(info);
     if (complete) return { status: 'ready', bytes: complete.bytes,

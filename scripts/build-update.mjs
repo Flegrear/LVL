@@ -31,6 +31,12 @@ const developerFile = /(?:^|\/)(?:__tests__|tests?|specs?|fixtures?|devtools|doc
 // Repository, CI and release tooling that is never installed. Changing it
 // doesn't touch the installed app, so it never forces the full installer.
 const notInstalled = /^(?:README(?:\.[^/]*)?|LICENSE(?:\.[^/]*)?|\.gitignore|\.gitattributes|\.editorconfig|\.github\/.+|scripts\/.+|docs\/.+|tests\/.+|devtools\/.+|learning\/build-presets\.mjs)$/i;
+// Android production build inputs are never installed by the Windows launcher.
+// This intentionally excludes the Android local development/QA helpers and
+// arbitrary android/* files: only reviewed Android source/build paths qualify.
+// Never extend this exception to launcher/, installer/, runtime/ or dependencies.
+const androidBuildOnly = /^android\/(?:RELEASE-NOTICE\.txt|app-version\.json|build\.gradle\.kts|gradle\.properties|server-preload\.cjs|settings\.gradle\.kts|stage-app\.mjs|update-apply\.mjs|app\/(?:build\.gradle\.kts|src\/main\/(?:AndroidManifest\.xml|kotlin\/[\w./-]+\.kt|res\/[\w./-]+\.xml))|native\/(?:Dockerfile|build-(?:node|ffmpeg)\.sh|docker-build\.ps1)|tools\/(?:build-release\.ps1|native-artifact\.mjs|release-assets\.mjs|release-check\.mjs))$/;
+const windowsNotInstalled = (relative) => notInstalled.test(relative) || androidBuildOnly.test(relative);
 const windowsReserved = /^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 
 function versionParts(value) {
@@ -142,7 +148,7 @@ function changedEntries(repoRoot, oldCommit) {
     if (/^[RC]/.test(status) && to === undefined) throw new Error("Truncated Git rename/copy");
     // Never-installed files may use dot folders (.github); skip them before
     // the strict path check that installed files must pass.
-    if (notInstalled.test(from) && (to === null || notInstalled.test(to))) continue;
+    if (windowsNotInstalled(from) && (to === null || windowsNotInstalled(to))) continue;
     validatePatchPath(from);
     if (to !== null) validatePatchPath(to);
     changes.push({ status, from, to });
@@ -152,7 +158,7 @@ function changedEntries(repoRoot, oldCommit) {
 }
 
 function inspectChangedPath(relative, change) {
-  if (notInstalled.test(relative)) return "ignore";
+  if (windowsNotInstalled(relative)) return "ignore";
   if (/^package-lock\.json$/i.test(relative)) return "lockfile";
   if (/^(?:launcher|installer|runtime|node_modules|build|dist)\//i.test(relative)
     || /^installed-app\.json$/i.test(relative) || /^THIRD_PARTY_NOTICES\.txt$/i.test(relative))

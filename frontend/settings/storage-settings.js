@@ -5,8 +5,9 @@ import { $, setToolStatus } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
 import { renderSettingsTabs } from "./settings-page.js";
 import {
-  absolutePlaybackSeconds, closeProgressiveEventStream, playerIsPlaying, restartTranscodeAt,
+  absolutePlaybackSeconds, closeProgressiveEventStream, playerFastSeekAvailability, playerIsPlaying, restartTranscodeAt,
 } from "../player/player-core.js";
+import { evaluateFastSeekState } from "../player/fast-seek-state.js";
 
 let settingsStorageLoading = false;
 
@@ -45,6 +46,36 @@ function paintStorageReport(report) {
   const clipInput = $("#storage-clip-gb");
   const remuxCacheSwitch = $("#storage-remux-cache-enabled");
   if (remuxCacheSwitch) remuxCacheSwitch.checked = report?.limits?.remuxCacheEnabled === true;
+  if (remuxCacheSwitch) remuxCacheSwitch.disabled = report?.remuxCacheAvailable === false;
+  // Android cannot infer ready seek ranges from a persisted preference. Show
+  // the currently verified full index or exact segment status for this source.
+  const fastSeekNote = $("#storage-remux-cache-effective");
+  if (fastSeekNote) {
+    const androidPhone = /\bLVL-Android\//.test(navigator.userAgent || "") || Boolean(window.LvlAndroid);
+    fastSeekNote.hidden = !androidPhone;
+    if (androidPhone) {
+      const { fullIndexed, exactRange, ranges, targetSeconds, sourceMatches, audioMatches } = playerFastSeekAvailability();
+      const fastSeek = evaluateFastSeekState({
+        configuredEnabled: report?.limits?.remuxCacheEnabled === true,
+        serverEnabled: report?.remuxCacheAvailable !== false && remuxMseCacheAllowed,
+        sourceMatches, audioMatches,
+        mode: fullIndexed ? "indexed" : video.dataset.mode === "transcode" ? "remux" : "direct",
+        verifiedSource: fullIndexed || exactRange,
+        canCopyVideo: fullIndexed || exactRange,
+        fullIndexAvailable: fullIndexed,
+        sectionIndexAvailable: false,
+        remuxWindowAvailable: exactRange,
+        readyRanges: ranges,
+        targetSeconds,
+      });
+      fastSeekNote.dataset.reason = fastSeek.reason;
+      fastSeekNote.textContent = !fastSeek.configured
+        ? "Fast seek preference is off."
+        : fastSeek.readyAtTarget
+          ? "Fast seek is ready for the current verified playback range."
+          : "Fast seek is enabled, but this episode has no verified ready range at the current position. Ordinary seeking still works; Android cache space and source readiness may limit preparation.";
+    }
+  }
   if (playerInput && document.activeElement !== playerInput) playerInput.value = toGB(report.limits.playerBytes);
   if (clipInput && document.activeElement !== clipInput) clipInput.value = toGB(report.limits.clipBytes);
   if (playerInput) { playerInput.min = toGB(report.ranges.playerBytes.min); playerInput.max = toGB(report.ranges.playerBytes.max); }
@@ -154,7 +185,8 @@ export let remuxMseCacheAllowed = false;
 export async function playerStorageLimit() {
   if (Date.now() - playerStorageLimitCache.at < 60_000 && playerStorageLimitCache.value) return playerStorageLimitCache.value;
   try {
-    const report = await fetchJson("/api/storage");
+    // Reading only limits avoids scanning every downloaded torrent on startup.
+    const report = await fetchJson("/api/storage/limits");
     // Missing/malformed Settings responses cannot authorize disk-backed
     // conversion or falsely paint any progressive section as seek-ready.
     remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled === true;

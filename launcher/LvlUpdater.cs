@@ -19,6 +19,8 @@ namespace LanguageVideoLearner
     internal sealed class PackagedUpdater
     {
         private const string ReleasesUrl = "https://api.github.com/repos/Flegrear/LVL/releases?per_page=20";
+        private const int ReleasesPerPage = 20;
+        private const int MaxReleasePages = 10;
         private const string ReleaseAssetsPrefix = "https://github.com/Flegrear/LVL/releases/download/";
         private const int MaxJsonBytes = 524288;
         private const int AutomaticCheckIntervalDays = 1;
@@ -469,83 +471,120 @@ namespace LanguageVideoLearner
 
         private Release FindRelease()
         {
-            // A freshly launched Windows process can hit a transient DNS/TLS
-            // connection or GitHub gateway failure on its first request. Retry
-            // the read-only feed lookup here so the user does not need to press
-            // Check for updates a second time. Never retry malformed metadata,
-            // invalid TLS certificates, authorization or other hard failures.
-            object[] releases = json.DeserializeObject(Encoding.UTF8.GetString(ReadReleaseFeed(
-                delegate { return ReadBounded(ReleasesUrl, MaxJsonBytes); }, Thread.Sleep))) as object[];
-            if (releases == null) throw new InvalidDataException("Invalid LVL release feed");
-            Release next = null;
-            foreach (object item in releases)
-            {
-                Dictionary<string, object> release = item as Dictionary<string, object>;
-                if (release == null || Flag(release, "draft")) continue;
-                string version = Value(release, "tag_name");
-                // The public channel accepts only exact release versions, not
-                // rc tags or similarly named unversioned release assets.
-                if (!Regex.IsMatch(version ?? "", @"\A[vV]?\d+\.\d+\.\d+\z")) continue;
-                if (CompareVersions(version, installedVersion) <= 0) continue;
-                object entries;
-                if (!release.TryGetValue("assets", out entries)) continue;
-                object[] assets = entries as object[];
-                if (assets == null) continue;
-                string setupName = null, setupUrl = null, checksumUrl = null;
-                bool patch = false;
-                bool patchSupported = File.Exists(Path.Combine(root, "runtime", "update-apply.mjs"));
-                if (patchSupported)
-                {
-                    foreach (object assetEntry in assets)
-                    {
-                        Dictionary<string, object> asset = assetEntry as Dictionary<string, object>;
-                        if (asset == null) continue;
-                        string name = Value(asset, "name");
-                        string url = Value(asset, "browser_download_url");
-                        if (name != null && name.Equals("LVL-update-v" + version.TrimStart('v', 'V') + ".zip", StringComparison.OrdinalIgnoreCase)
-                            && ValidAssetUrl(url))
-                        { setupName = name; setupUrl = url; patch = true; break; }
-                    }
-                }
-                foreach (object assetEntry in assets)
-                {
-                    if (setupName != null) break;
-                    Dictionary<string, object> asset = assetEntry as Dictionary<string, object>;
-                    if (asset == null) continue;
-                    string name = Value(asset, "name");
-                    string url = Value(asset, "browser_download_url");
-                    if (name != null && name.Equals("LVL-Setup.exe", StringComparison.OrdinalIgnoreCase) && ValidAssetUrl(url))
-                    { setupName = name; setupUrl = url; break; }
-                }
-                if (setupName == null) continue;
-                foreach (object assetEntry in assets)
-                {
-                    Dictionary<string, object> asset = assetEntry as Dictionary<string, object>;
-                    if (asset == null) continue;
-                    string name = Value(asset, "name");
-                    string url = Value(asset, "browser_download_url");
-                    if (!ValidAssetUrl(url) || name == null) continue;
-                    if (name.Equals(setupName + ".sha256", StringComparison.OrdinalIgnoreCase) ||
-                        Regex.IsMatch(name, @"^(?:SHA256SUMS(?:\.txt)?|checksums\.txt)$", RegexOptions.IgnoreCase))
-                    { checksumUrl = url; break; }
-                }
-                // An unsigned/unchecked setup is never offered for installation.
-                if (checksumUrl == null) continue;
-                Release candidate = new Release {
-                    Version = version.TrimStart('v', 'V'), SetupName = setupName,
-                    SetupUrl = setupUrl, ChecksumUrl = checksumUrl, IsPatch = patch,
-                };
-                // Deltas are built against exactly one previous release. Apply
-                // versions in ascending order rather than skipping over a base.
-                if (next == null || CompareVersions(candidate.Version, next.Version) < 0) next = candidate;
-            }
-            return next;
+            return FindRelease(installedVersion, File.Exists(Path.Combine(root, "runtime", "update-apply.mjs")),
+                delegate(int page) { return ReadBounded(ReleasePageUrl(page), MaxJsonBytes); }, Thread.Sleep);
         }
 
-        private static bool Flag(Dictionary<string, object> obj, string key)
+        private static string ReleasePageUrl(int page)
         {
-            object value;
-            return obj.TryGetValue(key, out value) && value is bool && (bool)value;
+            if (page < 1 || page > MaxReleasePages) throw new ArgumentOutOfRangeException("page");
+            return page == 1 ? ReleasesUrl : ReleasesUrl + "&page=" + page;
+        }
+
+        private static bool ValidReleaseFeedUrl(string url)
+        {
+            for (int page = 1; page <= MaxReleasePages; page++)
+                if (string.Equals(url, ReleasePageUrl(page), StringComparison.Ordinal)) return true;
+            return false;
+        }
+
+        // Scan all available pages: newer releases can be interleaved with
+        // Android/native tags, while sequential patches require the LOWEST
+        // newer Windows version, even when it is on an older GitHub page.
+        // Supplied readers allow isolated native tests without network access.
+        private static Release FindRelease(string installed, bool patchSupported,
+            Func<int, byte[]> readPage, Action<int> pause)
+        {
+            Release next = null;
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            for (int page = 1; page <= MaxReleasePages; page++)
+            {
+                // Retry only transient reads, for each page independently.
+                // Never convert a failed or malformed later page to UpToDate.
+                byte[] body = ReadReleaseFeed(delegate { return readPage(page); }, pause);
+                object[] releases;
+                try { releases = serializer.DeserializeObject(Encoding.UTF8.GetString(body)) as object[]; }
+                catch (ArgumentException issue) { throw new InvalidDataException("Invalid LVL release feed", issue); }
+                catch (InvalidOperationException issue) { throw new InvalidDataException("Invalid LVL release feed", issue); }
+                if (releases == null || releases.Length > ReleasesPerPage)
+                    throw new InvalidDataException("Invalid LVL release feed");
+                foreach (object item in releases)
+                {
+                    Dictionary<string, object> release = item as Dictionary<string, object>;
+                    if (release == null) throw new InvalidDataException("Invalid LVL release feed");
+                    object draft, prerelease;
+                    if (!release.TryGetValue("draft", out draft) || !(draft is bool) ||
+                        !release.TryGetValue("prerelease", out prerelease) || !(prerelease is bool))
+                        throw new InvalidDataException("Invalid LVL release feed");
+                    // Never offer drafts or prereleases on the stable channel.
+                    if ((bool)draft || (bool)prerelease) continue;
+                    string tag = Value(release, "tag_name");
+                    if (tag == null) throw new InvalidDataException("Invalid LVL release feed");
+                    // Only canonical Windows tags: Android/native/rc tags are not updates.
+                    if (!Regex.IsMatch(tag, @"\Av\d+\.\d+\.\d+\z")) continue;
+                    string version = tag.Substring(1);
+                    if (CompareVersions(version, version) != 0)
+                        throw new InvalidDataException("Invalid LVL release feed: unrepresentable Windows version");
+                    if (CompareVersions(version, installed) <= 0) continue;
+                    object entries;
+                    if (!release.TryGetValue("assets", out entries) || !(entries is object[]))
+                        throw new InvalidDataException("Invalid LVL release feed");
+                    object[] assets = (object[])entries;
+                    string setupName = null, setupUrl = null, checksumUrl = null;
+                    bool patch = false;
+                    foreach (object assetEntry in assets)
+                        if (!(assetEntry is Dictionary<string, object>))
+                            throw new InvalidDataException("Invalid LVL release feed");
+                    if (patchSupported)
+                    {
+                        foreach (object assetEntry in assets)
+                        {
+                            Dictionary<string, object> asset = (Dictionary<string, object>)assetEntry;
+                            string name = Value(asset, "name");
+                            string url = Value(asset, "browser_download_url");
+                            if (name != null && name.Equals("LVL-update-v" + version + ".zip", StringComparison.OrdinalIgnoreCase)
+                                && ValidReleaseAssetUrl(url, tag, name))
+                            { setupName = name; setupUrl = url; patch = true; break; }
+                        }
+                    }
+                    foreach (object assetEntry in assets)
+                    {
+                        if (setupName != null) break;
+                        Dictionary<string, object> asset = (Dictionary<string, object>)assetEntry;
+                        string name = Value(asset, "name");
+                        string url = Value(asset, "browser_download_url");
+                        if (name != null && name.Equals("LVL-Setup.exe", StringComparison.OrdinalIgnoreCase)
+                            && ValidReleaseAssetUrl(url, tag, name))
+                        { setupName = name; setupUrl = url; break; }
+                    }
+                    if (setupName == null) continue;
+                    foreach (object assetEntry in assets)
+                    {
+                        Dictionary<string, object> asset = (Dictionary<string, object>)assetEntry;
+                        string name = Value(asset, "name");
+                        string url = Value(asset, "browser_download_url");
+                        if (name == null || !ValidReleaseAssetUrl(url, tag, name)) continue;
+                        if (name.Equals(setupName + ".sha256", StringComparison.OrdinalIgnoreCase) ||
+                            Regex.IsMatch(name, @"^(?:SHA256SUMS(?:\.txt)?|checksums\.txt)$", RegexOptions.IgnoreCase))
+                        { checksumUrl = url; break; }
+                    }
+                    // Never offer an update without a verified checksum asset.
+                    if (checksumUrl == null) continue;
+                    Release candidate = new Release {
+                        Version = version, SetupName = setupName,
+                        SetupUrl = setupUrl, ChecksumUrl = checksumUrl, IsPatch = patch,
+                    };
+                    if (next == null || CompareVersions(candidate.Version, next.Version) < 0) next = candidate;
+                }
+                if (releases.Length < ReleasesPerPage) return next;
+            }
+            throw new InvalidDataException("LVL release search incomplete: the first 200 releases fill the page limit. Try again later.");
+        }
+
+        private static bool ValidReleaseAssetUrl(string url, string tag, string name)
+        {
+            return ValidAssetUrl(url) &&
+                string.Equals(url, ReleaseAssetsPrefix + tag + "/" + name, StringComparison.Ordinal);
         }
 
         private static bool ValidAssetUrl(string url)
@@ -620,13 +659,16 @@ namespace LanguageVideoLearner
 
         private static byte[] ReadBounded(string url, int limit)
         {
-            if (!url.Equals(ReleasesUrl, StringComparison.Ordinal) && !ValidAssetUrl(url))
+            if (!ValidReleaseFeedUrl(url) && !ValidAssetUrl(url))
                 throw new InvalidOperationException("Invalid LVL update URL");
             // .NET Framework can cache an HTTPS service point's TLS settings at
             // WebRequest.Create. Opt in to TLS 1.2 before creating that request.
             ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(url);
             request.Method = "GET";
+            // Follow only canonical, locally constructed release API pages.
+            // GitHub asset checksum downloads still use their normal CDN redirect.
+            request.AllowAutoRedirect = !ValidReleaseFeedUrl(url);
             request.UserAgent = "LVL-Windows-Launcher/0.1";
             request.Accept = "application/vnd.github+json, */*";
             request.Timeout = 12000;

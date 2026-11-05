@@ -96,6 +96,7 @@ export function switchView(view, { historyMode = "push", restoreScroll = false, 
     clearAutoNext();
     closePlayerPopovers();
     if ($("#player-subtitle-dialog")?.open) $("#player-subtitle-dialog").close();
+    phonePlayerNavigationHook?.();
   }
   if (lastViewKey) viewScroll.set(lastViewKey, window.scrollY);
   if (view !== "home" && state.homeLoaded && $("#view-home")?.classList.contains("is-active")) {
@@ -152,6 +153,13 @@ export function switchView(view, { historyMode = "push", restoreScroll = false, 
   if (view === "review" && reviewMode === "voice" && !coachProviders.length) void refreshCoachProviders();
   if (view === "home") void loadHomeCatalog();
   if (view === "watch") restoreLastWatchOnVisit();
+}
+
+// The phone popover state lives in the app shell, not the router. Register its
+// dismissal hook at startup rather than importing app.js into navigation.
+let phonePlayerNavigationHook = null;
+export function registerPhonePlayerNavigationHook(callback) {
+  phonePlayerNavigationHook = typeof callback === "function" ? callback : null;
 }
 
 export let lastViewKey = "";

@@ -1,5 +1,13 @@
 # LVL Changelog
 
+## 0.2.4 — 2026-11-05
+
+- Fix Windows update checks when Android releases appear between Windows versions.
+- Improve Watch playback when seeking, pausing and returning to a video.
+- Make phone browsing more comfortable with smaller posters and easier filters.
+- Refine the comic reader and chapter navigation on smaller screens.
+- Fix importing a public AniList list while a different account is connected.
+
 ## 0.2.3 — 2026-11-02
 
 - Make Library rename prompts match the rest of LVL.

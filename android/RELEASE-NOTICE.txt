@@ -1,0 +1,18 @@
+LVL for Android — distribution notice
+
+Each ABI-specific LVL APK bundles Android-native Node.js, FFmpeg and ffprobe
+executables. Node.js is licensed under its bundled license and third-party
+notices. FFmpeg 7.1.5 and libwebp 1.6.0 are built under LGPL 2.1-or-later
+terms, as recorded in the matching BUILDINFO.txt files.
+
+Source and build recipes for these executables are provided in this
+repository under android/native/. The exact native build inputs, license
+files and their checksums must be retained with the release build records.
+Do not publish a build unless the LGPL and other bundled dependency
+attribution, corresponding source availability and any relinking obligations
+have been reviewed for that exact binary.
+
+An Android APK updates an existing LVL installation only if its package ID
+and release signing certificate match the installed APK. Keep the production
+signing key protected and backed up. Android requires user confirmation when
+installing a replacement APK.

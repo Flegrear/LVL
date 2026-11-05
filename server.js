@@ -35,6 +35,7 @@ import { addBuiltInAssets, PUBLIC_ASSETS, serveStatic } from "./backend/app/stat
 import { handleApi } from "./backend/app/api-routes.js";
 import { internalTorrentSource, removeTorrentSession } from "./backend/torrents/torrent-sessions.js";
 import { emitProgressiveReady } from "./backend/streaming/torrent-stream.js";
+import { isVideoConversionAvailable } from "./backend/streaming/transcode.js";
 import { catalogSearchResults } from "./backend/catalog/catalog-api.js";
 import { requestNativeUpdate } from "./backend/app-updates/updates-api.js";
 import { enforcePlayerStorage } from "./backend/persistence/storage-api.js";
@@ -43,6 +44,7 @@ import { collectClipGarbage } from "./backend/learning/learning-store.js";
 
 export const root = path.dirname(fileURLToPath(import.meta.url));
 export const port = Number(process.env.PORT || 4173);
+export const IS_ANDROID_RUNTIME = process.platform === "android";
 export const APP_VERSION = (() => { try { return String(JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8")).version || ""); } catch { return ""; } })();
 // Started by the Windows tray launcher (launcher/Launcher.cs), which stops the app by closing stdin.
 export const STARTED_BY_LAUNCHER = process.env.LANGUAGE_VIDEO_LEARNER_LAUNCHER === "1";
@@ -105,6 +107,10 @@ export const storage = createStorageManager({
   sessionsRoot: torrentRoot,
   sharedRoot: torrentShareRoot,
   dataRoot: appDataRoot,
+  ...(IS_ANDROID_RUNTIME ? {
+    defaults: { playerBytes: 4 * 1024 ** 3 },
+    keepsSessionFiles: true,
+  } : {}),
   // Called later (torrentSessions is set up further down).
   sessions: () => [...torrentSessions.values()].map((session) => ({
     id: session.id,
@@ -234,7 +240,10 @@ export const ffprobePath = ffprobeStatic?.path || null;
 // start unless there is no active foreground conversion.
 export const indexedVideoCache = createIndexedVideoCache({
   sessionsRoot: torrentRoot, ffmpegPath, ffprobePath,
-  enabled: () => storage.limits().remuxCacheEnabled === true,
+  // A complete indexed MP4 duplicates the source episode. The phone's small
+  // storage budget must instead preserve downloaded pieces for the next play.
+  enabled: () => !IS_ANDROID_RUNTIME && storage.limits().remuxCacheEnabled === true,
+  canEncode: isVideoConversionAvailable,
   allowance: bytes => storage.playerCacheAllowance({ additionalBytes: bytes }),
   isCurrent: identity => {
     const session = torrentSessions.get(identity.sessionId);
@@ -277,7 +286,10 @@ export const progressiveVerifiedSource = createProgressiveVerifiedSource({
 export const progressiveIndexCache = createProgressiveIndexCache({
   sessionsRoot: torrentRoot, ffmpegPath, ffprobePath,
   verifiedSource:progressiveVerifiedSource,
-  enabled: () => storage.limits().remuxCacheEnabled === true,
+  // Keep per-play streaming/remux recording available, but do not continuously
+  // produce duplicate GOP sections on resource-constrained phones.
+  enabled: () => !IS_ANDROID_RUNTIME && storage.limits().remuxCacheEnabled === true,
+  canEncode: isVideoConversionAvailable,
   allowance: bytes => storage.playerCacheAllowance({ additionalBytes: bytes }),
   isCurrent: identity => {
     const session = torrentSessions.get(identity.sessionId);
@@ -304,9 +316,9 @@ export const progressiveIndexCache = createProgressiveIndexCache({
 // A Windows cache file can remain locked by an in-flight HTTP reader when the
 // user disables retention. Retry safe indexed-only cleanup on next startup;
 // never touch selected torrent source pieces or other player data.
-if (storage.limits().remuxCacheEnabled === false)
+if (IS_ANDROID_RUNTIME || storage.limits().remuxCacheEnabled === false)
   void indexedVideoCache.purgeAll().catch(error => console.warn("Indexed-cache cleanup:", error?.message || error));
-if (storage.limits().remuxCacheEnabled === false)
+if (IS_ANDROID_RUNTIME || storage.limits().remuxCacheEnabled === false)
   void progressiveIndexCache.purgeAll().catch(error => console.warn("Progressive-index cleanup:", error?.message || error));
 
 torrentClient.on("error", (error) => {
@@ -360,7 +372,8 @@ let shuttingDown = false;
 async function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  // Downloads are deleted on the way out; never hang there.
+  // Close active torrent readers promptly. On Android the session manager
+  // retains verified downloads for reuse; desktop keeps its normal cleanup.
   setTimeout(() => process.exit(0), 8000).unref();
   popupWindow.stop();
   await serverFeatures.stop();
@@ -385,9 +398,17 @@ if (STARTED_BY_LAUNCHER) {
 server.listen(port, "127.0.0.1", () => {
   console.log(`LVL running at http://127.0.0.1:${port}`);
   // Only after listening: a second copy on the same port fails to start and never gets here.
-  storage.clearOrphans()
-    .then((removed) => { if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`); })
-    .catch((error) => console.warn("Startup cleanup failed:", error.message));
+  // Android keeps torrent pieces between restarts. Trim idle downloads to its
+  // storage allowance rather than treating every retained folder as orphaned.
+  if (IS_ANDROID_RUNTIME) {
+    void storage.enforcePlayer()
+      .then(({ evicted }) => { if (evicted.length) console.log(`Player storage: trimmed ${evicted.length} older download(s) over the limit`); })
+      .catch((error) => console.warn("Startup cleanup failed:", error.message));
+  } else {
+    void storage.clearOrphans()
+      .then((removed) => { if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`); })
+      .catch((error) => console.warn("Startup cleanup failed:", error.message));
+  }
   // Automatic recommendation updates (only when switched on in Settings).
   recs.startScheduler();
   if (updatePolicy) {

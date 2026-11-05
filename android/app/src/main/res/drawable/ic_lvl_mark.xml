@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- LVL's V mark (assets/brand/marks/lvl_v_mark_white_transparent.svg) on the 108 dp
+     adaptive-icon canvas. The SVG's transform is kept; the mark spans about 56 dp, inside
+     the 66 dp safe zone. Solid fills stand in for the SVG's gradients. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <group
+        android:scaleX="2.12"
+        android:scaleY="2.12"
+        android:translateX="-32"
+        android:translateY="278">
+        <path
+            android:fillColor="#B0B0B0"
+            android:pathData="M318 28 H359 C371 28 376 33 368 46 L272 203 C259 226 252 234 240 230 C231 227 223 218 219 208 L238 176 L311 39 C314 32 314 30 318 28 Z" />
+        <path
+            android:fillColor="#FFFFFF"
+            android:pathData="M136 28 H161 C178 28 185 34 196 52 L267 168 C283 194 269 211 254 227 C243 239 229 229 219 211 L124 51 C118 39 120 28 136 28 Z" />
+    </group>
+</vector>

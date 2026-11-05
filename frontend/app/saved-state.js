@@ -275,6 +275,19 @@ function alertPersistentLibraryConflict() {
   alert.textContent = "Library changed in another tab. Some edits remain saved only here. Back them up via Library → ⋯ → Export the library before reloading. New nonconflicting changes can still be saved.";
 }
 
+// A stopped WebView may retain a dirty marker even if its last Library save
+// completed in SQLite. Compare records independent of object-key ordering so
+// an acknowledged identical copy is never treated as a multi-tab conflict.
+function sameLibraryContent(a, b) {
+  const canonical = (value) => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.keys(value).filter((key) => value[key] !== undefined)
+        .sort().map((key) => [key, canonical(value[key])]))
+      : value;
+  return Array.isArray(a) && Array.isArray(b)
+    && JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
 function rebasePersistentLibrary(base, local, remote) {
   // Whole-record comparisons deliberately reject simultaneous edits to the
   // same entry, including a remote deletion. That may defer compatible field
@@ -802,6 +815,10 @@ export async function hydratePersistentAppState() {
             payload.state.library = localOverlay.library;
           }
         } else if (section === "library") {
+          if (sameLibraryContent(localOverlay.library, payload.state.library)) {
+            setPersistentSectionDirty("library", false);
+            continue;
+          }
           // Legacy dirty data may include an item already removed by another
           // tab. Preserve local intent without retrying an unprovable replace.
           if (typeof persistentAppUnresolvedConflicts !== "undefined")

@@ -165,6 +165,14 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       let workId = q.override.get(key)?.work_id || null;
       let reason = workId ? "manual" : "";
       if (!workId && row.anilist_hint) { workId = `anilist-${row.anilist_hint}`; reason = "comicinfo"; }
+      // Once an unmatched series has a local Library title, newly scanned
+      // chapters belong to that same title. Later provider recovery must not
+      // silently rematch it or discard its status; Match is an explicit action.
+      if (!workId) {
+        const localId = localIdFor(key);
+        const existing = q.localTitle.get(localId);
+        if (existing?.series_key === key) { workId = localId; reason = "unmatched"; }
+      }
       if (!workId && search) {
         try {
           const wanted = normalizeSeriesName(row.series);
@@ -172,7 +180,9 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
           if (hit) { workId = `anilist-${hit.anilistId}`; reason = "title"; }
         } catch (problem) {
           log.warn?.("Comic match search failed:", problem?.message);
-          continue; // Stay pending; the next scan tries again.
+          // Online title metadata is optional. Keep readable archives visible
+          // through the same local-only fallback as an unmatched search result;
+          // users can explicitly Match that local title later.
         }
       }
       if (workId?.startsWith("anilist-")) {

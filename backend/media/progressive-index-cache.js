@@ -221,23 +221,43 @@ function fragmentVideoRAP(moof,mdat,track) {
 }
 
 class AtomParser {
-  constructor(maxWindowBytes,onReject=()=>{}){this.pending=Buffer.alloc(0);this.init=[];this.initBytes=0;
+  constructor(maxWindowBytes,onReject=()=>{}){this.chunks=[];this.pendingLength=0;this.init=[];this.initBytes=0;
     this.moof=null;this.track=null;this.onReject=onReject;
     this.maxWindowBytes=maxWindowBytes;this.sectionIndex=0;}
+  // Bytes received but not yet parsed. Kept as the chunks FFmpeg wrote and joined once per atom:
+  // joining everything pending with each new 64 KB chunk copied a 2 MB GOP about 30 times.
+  get pending(){return{length:this.pendingLength};}
+  peek(bytes){
+    const head=this.chunks[0];
+    if(head.length>=bytes)return head;
+    const parts=[];let got=0;
+    for(const chunk of this.chunks){parts.push(chunk);got+=chunk.length;if(got>=bytes)break;}
+    return Buffer.concat(parts,got);
+  }
+  take(bytes){
+    const parts=[];let got=0;
+    while(got<bytes){
+      const chunk=this.chunks[0],need=bytes-got;
+      if(chunk.length<=need){parts.push(chunk);got+=chunk.length;this.chunks.shift();}
+      else{parts.push(chunk.subarray(0,need));this.chunks[0]=chunk.subarray(need);got+=need;}
+    }
+    this.pendingLength-=bytes;
+    return parts.length===1?parts[0]:Buffer.concat(parts,bytes);
+  }
   feed(chunk) {
-    if(this.pending.length+chunk.length>this.maxWindowBytes+MAX_INIT+MAX_ATOM)
+    if(this.pendingLength+chunk.length>this.maxWindowBytes+MAX_INIT+MAX_ATOM)
       throw Error('MP4 parser memory cap');
-    this.pending=Buffer.concat([this.pending,chunk]);
+    if(chunk.length){this.chunks.push(chunk);this.pendingLength+=chunk.length;}
     const completed=[];
-    while(this.pending.length>=8){
-      const raw=this.pending.readUInt32BE(0),wide=raw===1;
-      if(wide&&this.pending.length<16)break;
-      const size=wide?Number(this.pending.readBigUInt64BE(8)):raw;
-      const kind=this.pending.toString('ascii',4,8);
+    while(this.pendingLength>=8){
+      const head=this.peek(this.pendingLength>=16?16:8);
+      const raw=head.readUInt32BE(0),wide=raw===1;
+      if(wide&&this.pendingLength<16)break;
+      const size=wide?Number(head.readBigUInt64BE(8)):raw;
+      const kind=head.toString('ascii',4,8);
       if(!Number.isSafeInteger(size)||size<(wide?16:8)||size>MAX_ATOM)throw Error('Invalid MP4 atom');
-      if(this.pending.length<size)break;
-      const box=this.pending.subarray(0,size);
-      this.pending=this.pending.subarray(size);
+      if(this.pendingLength<size)break;
+      const box=this.take(size);
       if(!this.track){
         if(!['ftyp','moov','free'].includes(kind)||this.initBytes+size>MAX_INIT)
           throw Error('Unexpected MP4 init');
@@ -269,6 +289,8 @@ class AtomParser {
     return completed;
   }
 }
+// For tests: the windows must not depend on how FFmpeg's output is split into chunks.
+export { AtomParser };
 
 async function probeWindow(ffprobePath, spawn, file, job) {
   if(job.cancelled)return null;
@@ -344,7 +366,7 @@ function verifiedWindow(probe,info,rap) {
 
 export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath,
   enabled=()=>false,allowance=async()=>({allowed:false}),sourceUrl=null,
-  verifiedSource=null,
+  verifiedSource=null,canEncode=()=>true,
   isCurrent=()=>false,foregroundBusy=()=>false,spawn=systemSpawn,
   onSpawn=()=>{},onClose=()=>{},onReady=()=>{},
   onDiagnostic=()=>{},
@@ -386,7 +408,7 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     },1000);
     retiredTimer.unref?.();
   }
-  const toInfo=params=>progressiveIndexEligibility({...params,enabled:enabled()},verifiedSource);
+  const toInfo=params=>progressiveIndexEligibility({...params,enabled:enabled(),canEncode:canEncode()},verifiedSource);
   function snapshot(stat){
     return [stat.size,stat.mtimeMs,stat.ctimeMs,stat.birthtimeMs,stat.ino,stat.dev,stat.mode].join(':');
   }

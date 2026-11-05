@@ -1,11 +1,12 @@
 // What a torrent's video file holds (ffprobe), with a cache.
+import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { inspectMediaCompatibility } from "../../shared/media/media-compat.js";
 import { dolbyVisionFromProbe } from "../../shared/media/video-profile.js";
 import { normalizeEmbeddedChapterMarkers } from "../../shared/media/embedded-chapter-markers.js";
 import { isTorrentFileFullyVerified } from "./verified-torrent-file.js";
-import { ffprobePath, MAX_TORRENT_VIDEO_BYTES, mediaProbeCache, port, VIDEO_EXTENSIONS } from "../../server.js";
+import { ffprobePath, MAX_TORRENT_VIDEO_BYTES, mediaProbeCache, port, torrentRoot, torrentSessions, VIDEO_EXTENSIONS } from "../../server.js";
 import { internalTorrentSource } from "../torrents/torrent-sessions.js";
 
 const MAX_PROBE_JOBS = 2;
@@ -13,11 +14,58 @@ const MAX_PROBE_CACHE_ENTRIES = 32;
 const MEDIA_PROBE_TIMEOUT_MS = 20 * 1000;
 const MEDIA_PROBE_CACHE_TTL_MS = 30 * 60 * 1000;
 const MAX_PROBE_OUTPUT_BYTES = 256 * 1024;
+const KEEP_DOWNLOADS = process.platform === "android";
+const MAX_SAVED_PROBE_BYTES = 256 * 1024;
+const probeChapterScan = new WeakMap();
 
 let activeProbeJobs = 0;
 
 function probeCacheKey(sessionId, fileIndex) {
   return `${sessionId}:${fileIndex}`;
+}
+
+function savedProbeFile(session, fileIndex) {
+  return path.join(torrentRoot, session.id, `lvl-probe-${fileIndex}.json`);
+}
+
+function readSavedMediaProbe(session, fileIndex, file, includeChapters) {
+  if (!KEEP_DOWNLOADS || !session?.id || !/^[0-9a-f]{40}$/.test(session.infoHash || "")) return null;
+  try {
+    const filename = savedProbeFile(session, fileIndex);
+    const bytes = fs.statSync(filename).size;
+    if (!(bytes > 0 && bytes <= MAX_SAVED_PROBE_BYTES)) return null;
+    const saved = JSON.parse(fs.readFileSync(filename, "utf8"));
+    if (![1, 2].includes(saved?.version) || saved.name !== file.name
+      || saved.length !== Number(file.length) || saved.includeChapters !== includeChapters
+      || !Number.isFinite(saved.value?.durationSeconds) || saved.value.durationSeconds <= 0) return null;
+    if (saved.version === 2) {
+      if (saved.infoHash !== session.infoHash || saved.path !== file.path
+        || saved.downloadedBytes !== Number(file.downloaded)) return null;
+    } else if (file.done !== true || Number(file.downloaded) !== Number(file.length)) {
+      // Old persisted probes had no piece-progress stamp; reuse only for a
+      // completed file, where the source can no longer gain missing pieces.
+      return null;
+    }
+    return saved.value;
+  } catch { return null; }
+}
+
+function saveMediaProbe(session, fileIndex, file, includeChapters, value) {
+  if (!KEEP_DOWNLOADS || !session?.id || !value || !/^[0-9a-f]{40}$/.test(session.infoHash || "")) return;
+  const filename = savedProbeFile(session, fileIndex);
+  try {
+    fs.mkdirSync(path.dirname(filename), { recursive: true });
+    const payload = JSON.stringify({
+      version: 2, infoHash: session.infoHash, path: file.path, name: file.name,
+      length: Number(file.length), downloadedBytes: Number(file.downloaded), includeChapters, value,
+    });
+    if (Buffer.byteLength(payload) > MAX_SAVED_PROBE_BYTES) return;
+    const temporary = `${filename}.tmp`;
+    fs.writeFileSync(temporary, payload);
+    fs.renameSync(temporary, filename);
+  } catch (error) {
+    console.warn(`Could not save media details for ${session.id}:`, error.message);
+  }
 }
 
 function pruneMediaProbeCache() {
@@ -42,6 +90,15 @@ export function getCachedMediaProbe(sessionId, fileIndex) {
   if (entry.expiresAt <= Date.now()) {
     mediaProbeCache.delete(key);
     return null;
+  }
+  // A partial-file probe does not contain the chapters that become available
+  // once WebTorrent verifies the complete file. Refresh on that transition.
+  if (entry.verifiedAtProbe === false) {
+    const session = torrentSessions.get(sessionId);
+    if (session && isTorrentFileFullyVerified(session.torrent, fileIndex)) {
+      mediaProbeCache.delete(key);
+      return null;
+    }
   }
   entry.lastAccess = Date.now();
   return entry.value;
@@ -227,12 +284,16 @@ function runFfprobe(sourceUrl, file, { includeChapters = false } = {}) {
 
 async function runFfprobeWithRetry(sourceUrl, file, { includeChapters = false } = {}) {
   try {
-    return await runFfprobe(sourceUrl, file, { includeChapters });
+    const value = await runFfprobe(sourceUrl, file, { includeChapters });
+    probeChapterScan.set(value, includeChapters);
+    return value;
   } catch (error) {
     if (error.statusCode !== 502 && error.statusCode !== 504) throw error;
     await new Promise((resolve) => setTimeout(resolve, 250));
     // A failed optional chapter scan must not be repeated during startup.
-    return runFfprobe(sourceUrl, file, { includeChapters: false });
+    const value = await runFfprobe(sourceUrl, file, { includeChapters: false });
+    probeChapterScan.set(value, false);
+    return value;
   }
 }
 
@@ -277,25 +338,48 @@ export async function probeTorrentFile(session, fileIndex) {
     throw error;
   }
 
+  const verified = isTorrentFileFullyVerified(session.torrent, fileIndex);
+  const saved = readSavedMediaProbe(session, fileIndex, file, verified);
+  if (saved) {
+    mediaProbeCache.set(key, {
+      value: saved, promise: null,
+      verifiedAtProbe: verified,
+      expiresAt: Date.now() + MEDIA_PROBE_CACHE_TTL_MS,
+      lastAccess: Date.now(),
+    });
+    return saved;
+  }
+
   const tagged = typeof internalTorrentSource === "function"
     ? internalTorrentSource(session, fileIndex, "probe") : null;
   const sourceUrl = tagged?.url || `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   activeProbeJobs += 1;
   // Hash-verified completion is the only safe admission for the optional
   // chapter scan; the ordinary codec probe remains the original short path.
-  const includeChapters = isTorrentFileFullyVerified(session.torrent, fileIndex);
+  const includeChapters = verified;
+  const downloadedAtProbeStart = Number(file.downloaded);
   const promise = runFfprobeWithRetry(sourceUrl, file, { includeChapters })
     .then((value) => {
-      mediaProbeCache.set(key, {
-        value,
-        promise: null,
-        expiresAt: Date.now() + MEDIA_PROBE_CACHE_TTL_MS,
-        lastAccess: Date.now(),
-      });
+      // A retained session id can be reopened while an older FFprobe is still
+      // exiting. Only the current session may publish into that shared key.
+      if (torrentSessions.get(session.id) === session && !session.torrent.destroyed
+        && mediaProbeCache.get(key)?.promise === promise) {
+        mediaProbeCache.set(key, {
+          value,
+          promise: null,
+          verifiedAtProbe: verified,
+          expiresAt: Date.now() + MEDIA_PROBE_CACHE_TTL_MS,
+          lastAccess: Date.now(),
+        });
+        // A moving download can expose new metadata after probing begins.
+        if (Number(file.downloaded) === downloadedAtProbeStart) {
+          saveMediaProbe(session, fileIndex, file, probeChapterScan.get(value) === true, value);
+        }
+      }
       return value;
     })
     .catch((error) => {
-      mediaProbeCache.delete(key);
+      if (mediaProbeCache.get(key)?.promise === promise) mediaProbeCache.delete(key);
       throw error;
     })
     .finally(() => {

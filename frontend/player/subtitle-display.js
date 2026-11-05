@@ -31,26 +31,41 @@ export function isRomanizableLanguage(language) {
 
 export async function ensureTrackRomanization(track) {
   if (!track?.cues?.length || !isRomanizableLanguage(track.language) || state.subtitleStyle.romanization === false) return;
-  if (track.romanizationState === "ready" || track.romanizationState === "loading") return;
+  if (track.romanizationState === "loading"
+    || !track.cues.some((cue) => !Object.hasOwn(cue, "romanizedText"))) return;
   track.romanizationState = "loading";
   try {
-    let cursor = 0;
-    while (cursor < track.cues.length) {
+    for (;;) {
+      // Extraction can replace and reorder cues while awaiting the service.
+      // Match each response against the original cue ID and text snapshot.
+      const pending = track.cues.filter((cue) => !Object.hasOwn(cue, "romanizedText"));
+      if (!pending.length) break;
       const chunk = [];
-      const indexes = [];
+      const requested = [];
       let charCount = 0;
-      while (cursor < track.cues.length && chunk.length < 60) {
-        const text = String(track.cues[cursor]?.text || "");
+      for (const cue of pending) {
+        const text = String(cue.text || "");
+        if (chunk.length >= 60) break;
         if (chunk.length && charCount + text.length > 8_000) break;
         chunk.push(text);
-        indexes.push(cursor);
+        requested.push({ cue, id: cue.id, text });
         charCount += text.length;
-        cursor += 1;
       }
       const result = await postJson("/api/subtitles/romanize", { language: track.language, texts: chunk });
-      (result.romanized || []).forEach((text, index) => {
-        const cue = track.cues[indexes[index]];
-        if (cue) cue.romanizedText = String(text || "").trim();
+      if (!Array.isArray(result?.romanized) || result.romanized.length !== requested.length)
+        throw new Error("Incomplete subtitle romanization response");
+      const liveCues = new Set(track.cues);
+      const assigned = new Set();
+      result.romanized.forEach((text, index) => {
+        const original = requested[index];
+        const cue = liveCues.has(original.cue) && original.cue.text === original.text
+          ? original.cue : track.cues.find((candidate) => !assigned.has(candidate)
+            && !Object.hasOwn(candidate, "romanizedText")
+            && candidate.id === original.id && candidate.text === original.text);
+        if (cue && !assigned.has(cue) && cue.text === original.text) {
+          assigned.add(cue);
+          cue.romanizedText = String(text || "").trim();
+        }
       });
     }
     track.romanizationState = "ready";

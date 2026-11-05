@@ -76,6 +76,8 @@ const ICON_PATHS = Object.freeze({
   bookmark: '<path d="M7 4.5h10v15l-5-3.5-5 3.5z"/>',
 });
 
+export const ICON_NAMES = Object.freeze(Object.keys(ICON_PATHS));
+
 export function icon(name, { className = "" } = {}) {
   const paths = ICON_PATHS[name];
   if (!paths) return "";
@@ -399,16 +401,32 @@ export function bindTabs(tablist, { onChange } = {}) {
   });
 }
 
-export function updateShelf(shelf) {
+// Read every shelf's geometry before changing any shelf classes or buttons.
+// On a phone Home can render many shelves at once; alternating layout reads
+// and writes across them forces repeated synchronous layout calculations.
+function measureShelf(shelf) {
   const track = shelf?.querySelector(".ui-shelf__track");
-  if (!track) return;
-  const max = track.scrollWidth - track.clientWidth;
+  if (!track) return null;
+  return { shelf, max: track.scrollWidth - track.clientWidth, left: track.scrollLeft };
+}
+
+function applyShelf({ shelf, max, left }) {
   const overflow = max > 2;
   shelf.classList.toggle("is-static", !overflow);
   const prev = shelf.querySelector("[data-ui-shelf-prev]");
   const next = shelf.querySelector("[data-ui-shelf-next]");
-  if (prev) prev.disabled = !overflow || track.scrollLeft <= 2;
-  if (next) next.disabled = !overflow || track.scrollLeft >= max - 2;
+  if (prev) prev.disabled = !overflow || left <= 2;
+  if (next) next.disabled = !overflow || left >= max - 2;
+}
+
+export function updateShelf(shelf) {
+  const measured = measureShelf(shelf);
+  if (measured) applyShelf(measured);
+}
+
+export function updateShelves(shelves) {
+  const measured = [...shelves].map(measureShelf).filter(Boolean);
+  measured.forEach(applyShelf);
 }
 
 function shelfPage(track) {
@@ -432,19 +450,17 @@ function observeShelfRoot(root) {
     if (frame) return;
     frame = requestAnimationFrame(() => {
       frame = 0;
-      target.querySelectorAll("[data-ui-shelf]").forEach(updateShelf);
+      updateShelves(target.querySelectorAll("[data-ui-shelf]"));
     });
   }).observe(target);
 }
 
 export function bindShelves(root = document) {
   if (!root?.querySelectorAll) return;
-  root.querySelectorAll("[data-ui-shelf]").forEach((shelf) => {
+  const shelves = [...root.querySelectorAll("[data-ui-shelf]")];
+  shelves.forEach((shelf) => {
     const track = shelf.querySelector(".ui-shelf__track");
-    if (!track || shelf.dataset.uiBound === "1") {
-      updateShelf(shelf);
-      return;
-    }
+    if (!track || shelf.dataset.uiBound === "1") return;
     shelf.dataset.uiBound = "1";
     shelf.addEventListener("click", (event) => {
       const button = event.target.closest("[data-ui-shelf-prev], [data-ui-shelf-next]");
@@ -460,8 +476,8 @@ export function bindShelves(root = document) {
         updateShelf(shelf);
       });
     }, { passive: true });
-    updateShelf(shelf);
   });
+  updateShelves(shelves);
   observeShelfRoot(root);
 }
 

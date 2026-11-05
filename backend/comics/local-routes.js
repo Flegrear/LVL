@@ -1,9 +1,59 @@
 // Routes for local comic files. Mounted by server-feature.js.
 import path from "node:path";
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import { createWriteStream } from "node:fs";
+import { Transform } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { listPages, readPage } from "../reader/pages.js";
 import { WORK_ID } from "../../shared/reading/ids.js";
 
 const FILE_ID = /^f[0-9a-f]{16}$/;
+
+// Adding comic files by picking them (LVL's Android app can't read a folder of yours on the
+// phone): each picked CBZ or ZIP is copied into the default comics folder and scanned like any
+// file there. Names are reduced to a plain file name; an existing file is never replaced.
+export const MAX_UPLOAD_BYTES = 4 * 1024 ** 3;
+const UPLOAD_NAME = /^[^\\/:*?"<>|\u0000-\u001f]{1,180}\.(?:cbz|zip)$/i;
+export function uploadName(value) {
+  const name = path.basename(String(value || "").replace(/\\/g, "/")).trim();
+  return UPLOAD_NAME.test(name) && !name.startsWith(".") ? name : null;
+}
+
+async function freeTarget(folder, name) {
+  const ext = path.extname(name);
+  const stem = name.slice(0, -ext.length);
+  for (let n = 1; n < 100; n++) {
+    const candidate = path.join(folder, n === 1 ? name : `${stem} (${n})${ext}`);
+    try { await fs.access(candidate); } catch { return candidate; }
+  }
+  throw Object.assign(new Error("Too many files with this name"), { statusCode: 409 });
+}
+
+export async function saveUpload(req, folder, name, length) {
+  await fs.mkdir(folder, { recursive: true });
+  const target = await freeTarget(folder, name);
+  // The scanner reads only .cbz/.zip files, so the unfinished copy is never picked up.
+  const part = `${target}.${crypto.randomBytes(4).toString("hex")}.lvl-part`;
+  let written = 0;
+  const counter = new Transform({
+    transform(chunk, _encoding, done) {
+      written += chunk.length;
+      done(written > length ? Object.assign(new Error("The file is larger than announced"), { statusCode: 400 }) : null, chunk);
+    },
+  });
+  try {
+    await pipeline(req, counter, createWriteStream(part, { flags: "wx" }));
+    if (written !== length) throw Object.assign(new Error("The file didn't arrive completely"), { statusCode: 400 });
+    // Taken in the meantime: the next free name.
+    const final = await freeTarget(folder, path.basename(target));
+    await fs.rename(part, final);
+    return final;
+  } catch (error) {
+    await fs.rm(part, { force: true }).catch(() => {});
+    throw error;
+  }
+}
 
 export function localTitleEntry(row, files, cover) {
   return {
@@ -41,6 +91,22 @@ export async function handleLocalRoutes(req, res, url, deps) {
     if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]), true;
     const result = await rescan({ wait: true });
     return ctx.json(res, 200, { ...result, folders: local.folders() }), true;
+  }
+  if (p === "/api/comics/files") {
+    if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]), true;
+    const name = uploadName(url.searchParams.get("name"));
+    if (!name) return bad("Only CBZ or ZIP files can be added");
+    const length = Number(req.headers["content-length"]);
+    if (!Number.isSafeInteger(length) || length < 1) return bad("The file is empty or its size is unknown", 411);
+    if (length > MAX_UPLOAD_BYTES) return bad("This file is larger than 4 GB", 413);
+    try {
+      const saved = await saveUpload(req, local.defaultFolder, name, length);
+      rescan();
+      return ctx.json(res, 200, { file: path.basename(saved), folders: local.folders() }), true;
+    } catch (error) {
+      if (res.headersSent || res.destroyed) return true;
+      return bad(error.message || "Couldn't add the file", error.statusCode || 500);
+    }
   }
 
   const files = /^\/api\/comics\/work\/([^/]+)\/files$/.exec(p);

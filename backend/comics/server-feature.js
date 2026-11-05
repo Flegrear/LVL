@@ -20,6 +20,7 @@ import { createRepositoryCache, fetchRepository, filterExtensions } from "./exte
 import { createExtSources } from "./ext-sources.js";
 import { checkHost, createRemoteFetch, isBotCheck } from "./remote-fetch.js";
 import { createSourceBrowser, withBrowserFallback } from "./source-browser.js";
+import { createAppBrowser } from "./app-browser.js";
 import { createExtRunner } from "./ext-runner.js";
 import { readSignedImage, signedImage } from "./ext-routes.js";
 import { LEGACY_ENGINE_PATHS } from "./runner-engine.js";
@@ -54,6 +55,7 @@ export const COMICS_ASSETS = Object.freeze([
   asset("frontend/comics/comics-extensions.js"),
   asset("frontend/comics/comics-links.js"),
   asset("frontend/comics/comics-sources.js"),
+  asset("frontend/comics/comics-source-filter.js"),
   asset("frontend/comics/comics-tracking.js"),
   asset("frontend/reader/reader.js"),
   asset("frontend/reader/reader-core.js"),
@@ -79,7 +81,8 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
   mangadexReaderFactory = () => createMangaDexReader(),
   downloadsFactory = (options) => createComicDownloads(options), wikipediaFetch = (titles) => fetchWikipediaList(titles),
   repositoryFetch = (repoUrl) => fetchRepository(repoUrl), remoteFactory = () => createRemoteFetch(),
-  browserFactory = (options) => createSourceBrowser(options), runnerFactory = (options) => createExtRunner(options) } = {}) {
+  browserFactory = (options) => (process.env.LVL_EXT_HOST_SOCKET ? createAppBrowser({ dataDir: options.dir }) : createSourceBrowser(options)),
+  runnerFactory = (options) => createExtRunner(options) } = {}) {
   const extensionRepoCache = createRepositoryCache({ load: repositoryFetch, now });
   return {
     id: "comics",
@@ -237,7 +240,8 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       const sources = createSourcesStore({ db: ctx.db, now });
       const mangadexReader = mangadexReaderFactory();
       const images = createImageCache({ dir: nodePath.join(ctx.dataRoot || ".", "comics-cache") });
-      // Sites behind a browser check (Cloudflare) go through a headless browser, like Mihon's WebView.
+      // Sites behind a browser check (Cloudflare) go through a headless browser, like Mihon's WebView;
+      // in LVL's Android app the app itself is that browser (app-browser.js).
       const sourceBrowser = browserFactory({ dir: nodePath.join(ctx.dataRoot || ".", "runtime", "source-browser") });
       const remote = withBrowserFallback(remoteFactory(), sourceBrowser, { checkHost, isBotCheck });
       const ext = createExtSources({ db: ctx.db, now, adult: () => store.settings().showAdult });

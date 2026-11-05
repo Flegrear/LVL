@@ -4,10 +4,14 @@
 // has no engine for. It starts when a source needs it, talks over stdin/stdout (one
 // JSON object per line, no network port), and stops after 10 idle minutes or when the
 // Comics feature stops. Nothing runs when the runner isn't installed or Comics is off.
+// In LVL's Android app the same protocol goes to the app's extension host (connectHost).
 import { spawn } from "node:child_process";
+import { EventEmitter } from "node:events";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import readline from "node:readline";
+import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -39,7 +43,24 @@ export function runnerArgs(home, dataDir) {
 
 const failure = (message, status = 502, code = "") => Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
 
-export function createExtRunner({ home = runnerHome(), java = runnerJava(home), dataDir, spawnImpl = spawn, idleMs = IDLE_MS, log = console } = {}) {
+// In LVL's Android app the extensions run inside the app itself (Android loads them as
+// they are, as Mihon does), and the app passes the Unix socket of its extension host in
+// LVL_EXT_HOST_SOCKET. It speaks the same protocol as the Java runner; this wraps the
+// connection so it looks like that runner's process.
+export function connectHost(socketPath, connect = (target) => net.connect(target)) {
+  const socket = connect(socketPath);
+  const proc = new EventEmitter();
+  proc.stdin = socket;
+  proc.stdout = socket;
+  proc.stderr = new PassThrough();
+  proc.kill = () => socket.destroy();
+  socket.on("error", (error) => proc.emit("error", error));
+  socket.on("close", () => proc.emit("exit", null));
+  return proc;
+}
+
+export function createExtRunner({ home = runnerHome(), java = runnerJava(home), dataDir, spawnImpl = spawn, idleMs = IDLE_MS, log = console,
+  hostSocket = process.env.LVL_EXT_HOST_SOCKET || "", connectImpl = connectHost } = {}) {
   let child = null;
   let ready = null;
   let nextId = 0;
@@ -50,7 +71,7 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
   const stderr = [];
   const loaded = new Map(); // "pkg@version" -> Promise<load result>
 
-  const available = () => Boolean(home && java && dataDir);
+  const available = () => Boolean(dataDir && (hostSocket || (home && java)));
 
   function settleAll(error) {
     for (const [, entry] of pending) { clearTimeout(entry.timer); entry.reject(error); }
@@ -61,7 +82,7 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
     if (ready) return ready;
     if (!available()) return Promise.reject(failure("The extension runner isn't installed", 503, "no-runner"));
     fs.mkdirSync(dataDir, { recursive: true });
-    const proc = spawnImpl(java, runnerArgs(home, dataDir), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    const proc = hostSocket ? connectImpl(hostSocket) : spawnImpl(java, runnerArgs(home, dataDir), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     child = proc;
     ready = new Promise((resolve, reject) => {
       const timer = setTimeout(() => { reject(failure("The extension runner didn't start")); stop(); }, START_TIMEOUT_MS);
@@ -73,7 +94,8 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
         reject(error);
         settleAll(error);
       });
-      readline.createInterface({ input: proc.stdout }).on("line", (line) => {
+      // readline re-emits its input's errors; the process's own "error" handler reports them.
+      readline.createInterface({ input: proc.stdout }).on("error", () => {}).on("line", (line) => {
         let message;
         try { message = JSON.parse(line); } catch { return; }
         if (message.ready) { clearTimeout(timer); resolve(message); return; }
@@ -117,9 +139,11 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
   }
 
   // Loads an extension once per version (the runner converts it on first use and keeps the result).
-  function load(apkPath, key) {
+  // fingerprint: the repository's signing-key fingerprint; the Android host refuses an APK
+  // signed with another key (the Java runner doesn't check signatures).
+  function load(apkPath, key, { fingerprint = "" } = {}) {
     if (!loaded.has(key)) {
-      const loading = call("load", { apk: apkPath }, { timeoutMs: 180_000 });
+      const loading = call("load", { apk: apkPath, ...(fingerprint ? { fingerprint } : {}) }, { timeoutMs: 180_000 });
       loaded.set(key, loading);
       loading.catch(() => loaded.delete(key));
     }
@@ -142,6 +166,6 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
   return {
     available, call, load, stop,
     running: () => Boolean(child),
-    status: () => ({ available: available(), running: Boolean(child), home, lastError, log: [...stderr] }),
+    status: () => ({ available: available(), running: Boolean(child), home: hostSocket ? "android-app" : home, lastError, log: [...stderr] }),
   };
 }

@@ -1,0 +1,87 @@
+name: Build-only LVL Android native inputs
+
+# Technical build inputs are immutable Actions artifacts, never GitHub Releases.
+# Expiry affects future builds only; published APKs already embed their native tools.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-native-inputs
+  cancel-in-progress: false
+
+jobs:
+  build-native-inputs:
+    if: github.repository == 'Flegrear/LVL' && github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install build manifest dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Compile both ABIs using the reviewed Android NDK and source recipes
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag lvl-android-native:ci android/native
+          mkdir -p build/android-native
+          for arch in arm64 x86_64; do
+            case "$arch" in
+              arm64) abi=arm64-v8a ;;
+              x86_64) abi=x86_64 ;;
+            esac
+            # Reclaim the complete native build tree between ABIs on hosted runners.
+            volume="lvl-native-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${arch}"
+            docker volume create "$volume" >/dev/null
+            for kind in node ffmpeg; do
+              docker run --rm \
+                --volume "$volume:/build" \
+                --volume "$PWD/build/android-native:/out" \
+                --volume "$PWD/android/native:/scripts:ro" \
+                --env "JOBS=4" \
+                lvl-android-native:ci bash "/scripts/build-$kind.sh" "$arch"
+            done
+            # FFmpeg recipe intentionally leaves candidates separate. The fresh
+            # CI run copies exactly the two executables and three build records.
+            mkdir -p "build/android-native/ffmpeg/$abi"
+            for name in ffmpeg ffprobe BUILDINFO.txt LICENSE.ffmpeg.txt LICENSE.libwebp.txt; do
+              cp "build/android-native/ffmpeg/candidates/$abi/$name" "build/android-native/ffmpeg/$abi/$name"
+            done
+            docker volume rm "$volume" >/dev/null
+          done
+      - name: Package exact source-pinned native inputs and verify extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          node android/tools/native-artifact.mjs pack \
+            --native-dir build/android-native \
+            --out-dir build/native-input-artifact \
+            --source-sha "$GITHUB_SHA"
+          sha="$(awk '$2 == "LVL-android-native.zip" { print $1 }' build/native-input-artifact/LVL-android-native.zip.sha256)"
+          test "${#sha}" -eq 64
+          node android/tools/native-artifact.mjs verify-bundle \
+            --bundle-dir build/native-input-artifact \
+            --sha "$sha" \
+            --source-sha "$GITHUB_SHA" \
+            --extract-dir build/native-verified
+          node android/tools/release-check.mjs --native-dir build/native-verified
+      - name: Upload immutable native build inputs (maximum 90-day retention)
+        uses: actions/upload-artifact@v4
+        with:
+          name: lvl-android-native-inputs
+          path: |
+            build/native-input-artifact/LVL-android-native.zip
+            build/native-input-artifact/LVL-android-native.zip.sha256
+            build/native-input-artifact/LVL-android-native.build-manifest.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
+          overwrite: false

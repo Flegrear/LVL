@@ -18,6 +18,8 @@ import {
   preferredAudioTrackIndex, releaseNeedsAudioTranscode, sourceTagFor, updatePlayerIdentity,
 } from "./player-tracks.js";
 import { audioOutputMode, renderPlayerAudioMenu, switchAudioTrack } from "./player-menus.js";
+import { cancelPhoneTimelineScrub } from "./phone-seek-lifecycle.js";
+import { serverCanConvertVideo } from "./video-conversion-capability.js";
 import { refreshSubtitleTimelineFits } from "./subtitle-timing.js";
 import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import {
@@ -176,6 +178,7 @@ function torrentFileIdentity(entry, file, collectionTitle) {
 }
 
 function setCurrentTorrentSource(session, file) {
+  cancelPhoneTimelineScrub();
   // Theater is a temporary viewing choice, not the default for a new chapter.
   setWatchTheaterMode(false);
   watchPendingSelection = null;
@@ -255,7 +258,10 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
   const metadataRequest = fetchJson(metadataUrl);
   setPlayerLoading(Math.max(68, state.loadingProgress), "Reading media");
   try {
-    probedMedia = await waitForStartupMediaProbe(metadataRequest);
+    // Without video conversion, wait longer for codec details so an unknown
+    // format does not immediately select an unavailable encoder.
+    const canConvertVideo = serverCanConvertVideo();
+    probedMedia = await waitForStartupMediaProbe(metadataRequest, canConvertVideo ? undefined : { timeoutMs: 15_000 });
     if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return false;
     if (probedMedia) {
       state.currentMediaProbe = probedMedia;
@@ -282,11 +288,17 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
     file, media: probedMedia, canPlayType: (mime) => video.canPlayType(mime),
     audioTrackOrder: state.selectedAudioTrack, audioMode: audioOutputMode,
     decodingInfo: window.navigator?.mediaCapabilities?.decodingInfo?.bind(window.navigator.mediaCapabilities),
+    canConvert: serverCanConvertVideo(),
   });
   if (loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id || Number(state.currentSource?.fileIndex) !== Number(file.index)) return false;
   // The fallback conversion exists for HEVC/HDR files when the OS lacks the
   // decoder; native play is preferable when Edge advertises compatible support.
   const needsTranscode = !playbackDecision.direct || (filenameNeedsAudioTranscode && !probedMedia);
+  if (!serverCanConvertVideo() && needsTranscode && !playbackDecision.copyVideo) {
+    setPlayerLoading(100, "This video can't play here yet",
+      "Its video format needs converting, which LVL on this device can't do yet. Try another source.", { error: true });
+    return false;
+  }
   if (typeof playbackMetrics !== "undefined") playbackMetrics?.selection({ playbackMode: needsTranscode ? (playbackDecision.mode === "remux" ? "remux" : "transcode") : "direct",
     playbackReason: filenameNeedsAudioTranscode && !probedMedia ? "audio-unknown" : playbackDecision.reason });
   const action = needsTranscode ? "transcode" : "stream";
@@ -425,15 +437,19 @@ export async function resolveTorrentMagnet(magnet, onProgress, { timeoutMs = 0, 
   onSession?.(session);
   signal?.throwIfAborted();
   const startedAt = Date.now();
+  // Sessions restored from disk usually need little more than an initial poll.
+  let polls = 0;
   while (session.state !== "ready" && session.state !== "error") {
     onProgress?.(session, Math.floor((Date.now() - startedAt) / 1000));
     if (timeoutMs > 0 && Date.now() - startedAt >= timeoutMs) {
       if (releaseOnFailure && ownedSession) await releaseTorrentSession(session.id);
       throw new Error("Torrent metadata timed out. Trying another source may work.");
     }
+    const delay = polls === 0 ? 150 : polls === 1 ? 400 : 1500;
+    polls += 1;
     await new Promise((resolve, reject) => {
       const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
-      const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, 1500);
+      const timer = setTimeout(() => { signal?.removeEventListener("abort", onAbort); resolve(); }, delay);
       signal?.addEventListener("abort", onAbort, { once: true });
       if (signal?.aborted) onAbort();
     });
@@ -543,6 +559,7 @@ export function wireLocalVideoInput() {
   $("#video-input").addEventListener("change", (event) => {
     const file = event.target.files?.[0];
     if (!file) return;
+    cancelPhoneTimelineScrub();
     const abandonedSessionId = state.currentSource?.sessionId;
     // Local selection supersedes any torrent resolve/metadata response that
     // could otherwise install the old source after the file is chosen.

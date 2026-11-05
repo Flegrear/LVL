@@ -65,7 +65,7 @@ async function repositorySources(deps, { force = false } = {}) {
   const repos = await Promise.all(deps.sources.enabled("mihon-repo").map(async (repo) => {
     try { return { repo, value: await deps.extensionRepos.get(repo.config.url, { force }) }; } catch (error) { return { repo, error: error.message }; }
   }));
-  const extensions = repos.flatMap((item) => (item.value?.extensions || []).map((ext) => ({ ...ext, repo: item.repo.id })));
+  const extensions = repos.flatMap((item) => (item.value?.extensions || []).map((ext) => ({ ...ext, repo: item.repo.id, fingerprint: item.value?.fingerprint || "" })));
   return { repos, extensions };
 }
 
@@ -247,7 +247,9 @@ export async function handleExtRoutes(req, res, url, deps) {
   if (p === "/api/comics/extensions/index") {
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
     const lang = /^[a-z]{2,3}(?:-[a-z0-9]{2,4})?$|^all$/i.test(url.searchParams.get("lang") || "") ? url.searchParams.get("lang") : "";
-    const filter = { q: String(url.searchParams.get("q") || "").slice(0, 80), lang, adult: ext.showAdult?.() === true,
+    const selectedSource = String(url.searchParams.get("source") || "");
+    if (selectedSource && !SOURCE_ID.test(selectedSource)) return bad("Invalid source ID");
+    const filter = { q: String(url.searchParams.get("q") || "").slice(0, 80), lang, source: selectedSource, adult: ext.showAdult?.() === true,
       offset: Math.max(0, Math.min(5000, Number(url.searchParams.get("offset")) || 0)), limit: 60 };
     const { repos, extensions } = await repositorySources(deps, { force: url.searchParams.get("refresh") === "1" });
     ext.refresh(extensions);
@@ -261,12 +263,13 @@ export async function handleExtRoutes(req, res, url, deps) {
       languages: Object.entries(languages).sort((a, b) => b[1] - a[1]).map(([code, count]) => ({ code, count })),
       extensions: items.map((item) => {
         const known = ext.support(item.pkg);
-        const shown = filter.lang && filter.lang !== "all" ? item.sources.filter((source) => source.lang === filter.lang || source.lang === "all") : item.sources;
+        const scoped = filter.source ? item.sources.filter((source) => String(source.id) === filter.source) : item.sources;
+        const shown = filter.lang && filter.lang !== "all" ? scoped.filter((source) => source.lang === filter.lang || source.lang === "all") : scoped;
         return {
           name: item.name, pkg: item.pkg, lang: item.lang, version: item.version, rating: item.rating, repo: item.repo, icon: signedImage(item.icon),
           supported: known ? Boolean(known.theme) || Boolean(runnerEngineFor(deps)) : runnerEngineFor(deps) ? true : null, theme: known?.theme || null,
           viaExtension: !known?.theme && Boolean(runnerEngineFor(deps)),
-          sources: (shown.length ? shown : item.sources).slice(0, 40).map((source) => ({ id: source.id, name: source.name, lang: source.lang, host: hostOf(source.baseUrl), favorite: ext.isFavorite(source.id) })),
+          sources: (filter.source ? shown : shown.length ? shown : item.sources).slice(0, 40).map((source) => ({ id: source.id, name: source.name, lang: source.lang, host: hostOf(source.baseUrl), favorite: ext.isFavorite(source.id) })),
         };
       }),
     });

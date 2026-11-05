@@ -18,6 +18,7 @@ import {
 } from "./embedded-subtitles.js";
 import { resetAudioSync, scheduleAudioSync, updatePlayerSyncStatus } from "./audio-sync.js";
 import { floatingDesktopWindow } from "./floating-player.js";
+import { cancelPhoneTimelineScrub } from "./phone-seek-lifecycle.js";
 import { playLibraryEpisode } from "./torrent-playback.js";
 import { currentChapterSources, librarySourceDetails } from "../library/library-data.js";
 
@@ -204,6 +205,7 @@ export async function switchAudioTrack(index, { force = false, remember = false 
   const tracks = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks : [];
   if (!tracks[index]) return;
   if (!force && index === state.selectedAudioTrack && video.dataset.mode === "transcode") return;
+  cancelPhoneTimelineScrub();
   const wasPlaying = playerIsPlaying();
   const target = absolutePlaybackSeconds();
   const previous = {

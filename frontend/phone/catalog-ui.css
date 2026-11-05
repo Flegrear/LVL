@@ -1,0 +1,145 @@
+/* A restrained mobile catalog. Loaded AFTER styles.css/ui.css, phone.css and
+   comics.css by the integration owner; never changes laptop/tablet layout. */
+@media (max-width: 680px) and (hover: none) and (pointer: coarse) {
+  /* Browsing shelves expose three entire posters at 320/360/412px rather than
+     large cropped posters. Only poster art changes; wide 16:9 banners keep crop. */
+  #view-home .home-page { --ui-card-w: clamp(88px, 28vw, 116px); }
+  #view-home .ui-shelf__track { gap: 8px; }
+  #view-home .ui-card:not(.ui-card--wide) .ui-card__img,
+  #view-library .ui-card:not(.ui-card--wide) .ui-card__img,
+  #view-home .anime-browser-art img,
+  #view-home .catalog-search-result__art img,
+  .app-topbar .catalog-search-result__art img {
+    object-fit: contain;
+    object-position: center;
+    transform: none;
+    background: #101010;
+  }
+  #view-home .anime-browser-art,
+  #view-home .ui-card:not(.ui-card--wide) .ui-card__media { aspect-ratio: 2 / 3; }
+  #view-home .anime-browser-card:hover img { transform: none; }
+  #view-home .home-rows { min-width: 0; }
+  #view-home .home-rows > .anime-browser {
+    min-width: 0;
+    width: auto;
+    margin-inline: var(--ui-gutter, 16px);
+  }
+  #view-home .anime-browser-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px 9px;
+    min-width: 0;
+    width: 100%;
+  }
+  #view-home .anime-browser-card { min-width: 0; max-width: 100%; overflow-wrap: anywhere; }
+  #view-home .anime-browser-card > strong { font-size: 12px; }
+  #view-home .anime-browser-card > span:last-child { font-size: 10px; }
+  #view-library .lib-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 19px 9px;
+    min-width: 0;
+  }
+  #view-library .lib-grid.is-grouped { grid-template-columns: minmax(0, 1fr); }
+  #view-library .lib-grid.is-grouped .lib-category .ui-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+  #view-library .lib-grid .ui-card__title { font-size: 12px; }
+  .app-topbar .catalog-search-result { box-sizing: border-box; min-width: 0; max-width: 100%; }
+  .app-topbar .catalog-search-result__art { flex: none; }
+
+  /* The persistent topbar is the title finder. Keep the old field in the DOM
+     so the application's FormData and desktop state remain intact; any hidden
+     active query is visible in the disclosure summary and removable via Reset. */
+  #view-home #anime-browser-form > label:first-child,
+  #view-home #comic-browser [data-comic-browser] > label:first-child,
+  #view-library .lib-toolbar__tools .lib-search { display: none !important; }
+
+  .phone-catalog-disclosure {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-width: 0;
+    min-height: 40px;
+    padding: 3px 0;
+    color: var(--ui-text-2, #bbb);
+    font: 500 12px/1.35 var(--font-sans);
+  }
+  .phone-catalog-disclosure[hidden] { display: none !important; }
+  .phone-catalog-disclosure__toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 0 12px;
+    border: 1px solid var(--ui-line-strong, #444);
+    border-radius: 8px;
+    background: var(--ui-surface, #151515);
+    color: var(--ui-text, #fff);
+    font: 600 12px/1.3 var(--font-sans);
+    cursor: pointer;
+  }
+  .phone-catalog-disclosure__toggle::after {
+    content: "⌄";
+    font-size: 15px;
+    line-height: 1;
+    transition: transform .15s ease;
+  }
+  .phone-catalog-disclosure__toggle[aria-expanded="true"]::after { transform: rotate(180deg); }
+  .phone-catalog-disclosure__summary {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #aaa;
+  }
+  .phone-catalog-disclosure__reset {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding: 0 5px;
+    border: 0;
+    border-radius: 6px;
+    background: none;
+    color: #ddd;
+    font: 600 12px/1.3 var(--font-sans);
+    cursor: pointer;
+  }
+  .phone-catalog-disclosure__reset[hidden] { display: none !important; }
+  .phone-catalog-disclosure__toggle:focus-visible,
+  .phone-catalog-disclosure__reset:focus-visible {
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+  #view-home .anime-browser-filters[data-phone-catalog-enhanced="true"] {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+    min-width: 0;
+    align-items: end;
+  }
+  #view-home .anime-browser-filters[data-phone-catalog-enhanced="true"][hidden] { display: none !important; }
+  #view-home .anime-browser-filters[data-phone-catalog-enhanced="true"] > label {
+    min-width: 0;
+    width: 100%;
+  }
+  #view-home .anime-browser-filters[data-phone-catalog-enhanced="true"] > .ui-btn {
+    width: fit-content;
+    max-width: 100%;
+  }
+  #view-home .anime-browser-filters[data-phone-catalog-enhanced="true"] > [data-comic-browser-reset] {
+    display: none !important; /* the disclosure owns Reset on phones */
+  }
+  #view-library .lib-page > .phone-library-disclosure { grid-column: 1 / -1; }
+  #view-library .lib-page.phone-library-filters-collapsed > .lib-status-sidebar,
+  #view-library .lib-page.phone-library-filters-collapsed .lib-toolbar__tools .lib-sort {
+    display: none !important;
+  }
+  /* Keep library type tabs, Add magnet and More visible and fully operable. */
+  #view-library .lib-toolbar { min-width: 0; }
+  #view-library .lib-toolbar__tools { min-width: 0; }
+}
+
+@media (max-width: 680px) and (hover: none) and (pointer: coarse) and (prefers-reduced-motion: reduce) {
+  .phone-catalog-disclosure__toggle::after { transition: none; }
+}

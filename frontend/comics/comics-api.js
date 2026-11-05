@@ -28,6 +28,16 @@ export const comicsApi = Object.freeze({
   addFolder: (folderPath) => call("/api/comics/folders", { method: "POST", body: { path: folderPath } }),
   removeFolder: (folderPath) => call("/api/comics/folders", { method: "DELETE", body: { path: folderPath } }),
   rescan: () => call("/api/comics/folders/rescan", { method: "POST", body: {} }),
+  // A picked CBZ/ZIP file is copied into the default comics folder (LVL's Android app).
+  addFile: async (file, { timeoutMs = 30 * 60_000 } = {}) => {
+    const response = await fetch(`/api/comics/files?${new URLSearchParams({ name: file.name })}`, {
+      method: "POST", headers: { Accept: "application/json", "Content-Type": "application/octet-stream" },
+      body: file, signal: AbortSignal.timeout(timeoutMs),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw Object.assign(new Error(payload?.error || `Request failed (${response.status})`), { status: response.status });
+    return payload;
+  },
   // Settings › Comics › Import from Mihon or Tachiyomi: the file goes as it is.
   async mihonImport(file) {
     const response = await fetch("/api/comics/import/mihon", {

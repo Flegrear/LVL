@@ -1,0 +1,135 @@
+/* Phone-only persistent search and honest player loading presentation.
+   Linked AFTER phone.css by the phone feature integration owner. */
+@media (max-width: 680px) and (hover: none) and (pointer: coarse) {
+  html.phone-shell-active .app-topbar {
+    isolation: isolate;
+    overflow: visible;
+  }
+  html.phone-shell-active .app-topbar:has(.catalog-search-shell:not([hidden])) { z-index: 110; }
+  html.phone-shell-active .home-topbar #home-tabs {
+    flex: 1 1 0;
+    width: 0;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    white-space: nowrap;
+    overscroll-behavior-x: contain;
+    scroll-padding-inline: 12px;
+    -webkit-overflow-scrolling: touch;
+  }
+  html.phone-shell-active .home-topbar #home-tabs .ui-tab { flex: 0 0 auto; }
+  html.phone-shell-active .app-topbar .ui-topbar__actions {
+    flex: 0 0 auto;
+    min-width: max-content;
+    position: relative;
+    z-index: 2;
+    margin-left: auto;
+    gap: 5px;
+  }
+  html.phone-shell-active .app-topbar .catalog-search-host,
+  html.phone-shell-active .app-topbar :is(#topbar-catalog-search-host,#section-catalog-search-host) {
+    position: static;
+    width: 0 !important;
+    min-width: 0;
+    flex: 0 0 0 !important;
+  }
+  html.phone-shell-active :is(#home-search-title,#section-search-title) { display: none !important; }
+  html.phone-shell-active .app-sidebar #phone-nav-search { display: none !important; }
+  html.phone-shell-active .app-topbar .phone-top-search,
+  html.phone-shell-active .app-topbar .nav-notification-btn {
+    display: grid;
+    place-items: center;
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    min-width: 40px;
+    padding: 0;
+    border: 1px solid var(--ui-line-strong);
+    border-radius: 50%;
+    background: var(--ui-surface);
+    color: var(--ui-text-2);
+    -webkit-tap-highlight-color: transparent;
+  }
+  html.phone-shell-active .phone-top-search .ui-icon {
+    width: 19px;
+    height: 19px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+  }
+  html.phone-shell-active .phone-top-search[aria-expanded="true"],
+  html.phone-shell-active .phone-top-search:focus-visible {
+    border-color: #ddd;
+    background: #222;
+    color: #fff;
+    outline: 2px solid #fff;
+    outline-offset: 2px;
+  }
+  html.phone-shell-active .app-topbar .catalog-search-shell:not([hidden]) {
+    position: fixed;
+    z-index: 100;
+    box-sizing: border-box;
+    top: calc(var(--ui-topbar-h, 56px) + env(safe-area-inset-top, 0px) + 5px);
+    left: 12px;
+    right: 12px;
+    width: auto;
+    max-width: none;
+    border-radius: 12px;
+    padding: 8px;
+    border: 1px solid #333;
+    background: #080808;
+    box-shadow: 0 12px 35px rgba(0,0,0,.85);
+  }
+  html.phone-shell-active .app-topbar .catalog-search-shell .catalog-search-panel {
+    position: static;
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 100%;
+    margin-top: 7px;
+    border-radius: 8px;
+    box-shadow: none;
+  }
+  html.phone-shell-active .catalog-search-results {
+    max-height: min(52dvh, calc(100dvh - var(--ui-topbar-h, 56px) - 120px));
+    overflow-y: auto;
+  }
+}
+
+/* Android's player loader exists in normal portrait and fullscreen landscape.
+   Keep the stable monochrome logo without the former under-logo animated line.
+   app.js still supplies real state via aria-live; missing-logo fallback and
+   explicit errors remain visible rather than leaving a blank recovery screen. */
+@media (hover: none) and (pointer: coarse) {
+  html.lvl-android .video-loading:not(.is-error) .video-loading-brand__fill { display: none !important; }
+  html.lvl-android .video-loading:not(.is-error) .video-loading-brand__ghost {
+    filter: grayscale(1) brightness(.82);
+    opacity: .92;
+    clip-path: none;
+  }
+  html.lvl-android .video-loading:not(.is-error):has(.video-loading-brand:not([hidden])) .video-loading-fallback {
+    display: none !important;
+  }
+  html.lvl-android .video-loading:not(.is-error):has(.video-loading-brand:not([hidden])) .video-loading-title {
+    /* Keep the existing accessible text in the live status region. */
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    clip: rect(0,0,0,0);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  html.lvl-android .video-loading:not(.is-error):has(.video-loading-brand[hidden]) .video-loading-title {
+    position: static;
+    width: auto;
+    height: auto;
+    margin: 3px 0 0;
+    clip: auto;
+    overflow: visible;
+    white-space: normal;
+    font: 500 12px/1.4 var(--font-sans);
+    color: #ddd;
+  }
+}

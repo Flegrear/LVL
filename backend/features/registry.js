@@ -4,6 +4,7 @@
 //   import { readerServerFeature } from "../reader/server-feature.js";
 //   export const SERVER_FEATURES = Object.freeze([readerServerFeature]);
 import { comicsServerFeature } from "../comics/server-feature.js";
+import { phoneServerFeature } from "../phone/server-feature.js";
 import { syncServerFeature } from "../sync/server-feature.js";
 
-export const SERVER_FEATURES = Object.freeze([comicsServerFeature, syncServerFeature]);
+export const SERVER_FEATURES = Object.freeze([comicsServerFeature, phoneServerFeature, syncServerFeature]);

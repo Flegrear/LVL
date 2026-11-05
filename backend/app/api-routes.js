@@ -14,7 +14,7 @@ import {
   copiedSeekOriginEndpoint, serveIndexedSeek, serveProgressiveSeek, serveRemuxWarmWindow,
   streamTorrentFile,
 } from "../streaming/torrent-stream.js";
-import { transcodeTorrentFile } from "../streaming/transcode.js";
+import { isVideoConversionAvailable, transcodeTorrentFile } from "../streaming/transcode.js";
 import { getCachedMediaProbe, probeTorrentFile } from "../media/torrent-probe.js";
 import { speechActivityWindow } from "../media/speech-activity.js";
 import { extractTorrentSubtitle } from "../subtitles/embedded-subtitles.js";
@@ -95,6 +95,7 @@ function healthEndpoint(req, res) {
     app: "language-video-learner",
     appId: fs.existsSync(path.join(root, "installed-app.json")) ? "lvl-public" : null,
     version: APP_VERSION, pid: process.pid, launcher: STARTED_BY_LAUNCHER,
+    videoConversion: isVideoConversionAvailable(),
   });
   return true;
 }

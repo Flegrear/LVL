@@ -38,7 +38,7 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
     });
     if (response.status === 304) return { notModified: true, etag };
     const data = await response.json().catch(() => ({}));
-    if (response.ok) return { data, etag: response.headers.get("etag") || "" };
+    if (response.ok) return { data, etag: response.headers.get("etag") || "", link: response.headers.get("link") || "" };
     const remaining = response.headers.get("x-ratelimit-remaining");
     if ((response.status === 403 || response.status === 429) && (remaining === "0" || response.headers.get("retry-after")))
       throw githubError("GitHub's request limit is reached; LVL tries again later", response.status, "rate-limited");
@@ -47,6 +47,18 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
   }
 
   const encodePath = (path) => path.split("/").map(encodeURIComponent).join("/");
+
+  async function allPages(token, path, field = null) {
+    const entries = [];
+    for (let page = 1; page <= 100; page += 1) {
+      const { data, link } = await call(token, "GET", `${path}${page > 1 ? `&page=${page}` : ""}`);
+      const items = field ? data?.[field] : data;
+      if (!Array.isArray(items)) throw githubError("GitHub returned an unreadable repository list", 502, "invalid-list");
+      entries.push(...items);
+      if (!/rel="next"/.test(link)) return entries;
+    }
+    throw githubError("GitHub's repository list is too long to search", 502, "too-many-pages");
+  }
 
   return {
     // Step 1 of the device flow: a code for the user to enter at github.com/login/device.
@@ -61,14 +73,13 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
     // a personal access token, the ones the token can see.
     async repositories(token, { app = true } = {}) {
       if (!app) {
-        const { data } = await call(token, "GET", "/user/repos?per_page=100&sort=updated");
-        return (Array.isArray(data) ? data : []).map(repoOf);
+        return (await allPages(token, "/user/repos?per_page=100&sort=updated")).map(repoOf);
       }
-      const { data } = await call(token, "GET", "/user/installations?per_page=100");
+      const installations = await allPages(token, "/user/installations?per_page=100", "installations");
       const repos = [];
-      for (const installation of data.installations || []) {
-        const page = await call(token, "GET", `/user/installations/${installation.id}/repositories?per_page=100`);
-        repos.push(...(page.data.repositories || []).map(repoOf));
+      for (const installation of installations) {
+        const page = await allPages(token, `/user/installations/${installation.id}/repositories?per_page=100`, "repositories");
+        repos.push(...page.map(repoOf));
       }
       return repos;
     },

@@ -105,7 +105,9 @@ function startProgressiveWhenNewPieces(params, status) {
 const fullIndexFirst = new Map(); // `${sessionId}:${fileIndex}` -> { since, gaveUp, stopped, ... }
 const FULL_INDEX_FIRST_GRACE_MS = 20_000;
 function fullIndexFirstChoice(params) {
-  if (storage.limits().remuxCacheEnabled !== true) return null;
+  // Android does not build full-episode indexed copies in the background.
+  // Preserve the desktop optimization and any already verified cache reads.
+  if (process.platform === "android" || storage.limits().remuxCacheEnabled !== true) return null;
   const key = `${params.session?.id}:${params.fileIndex}`;
   const known = fullIndexFirst.get(key);
   if (known) return known.gaveUp ? null : known;
@@ -218,7 +220,7 @@ export async function serveIndexedSeek(req, res, session, fileIndex, url, status
   const media = getCachedMediaProbe(session.id, fileIndex);
   const params = { session, fileIndex, media, audioIndex,
     audioMode: equivalentIndexedAudioMode(media,audioIndex,audioMode) };
-  let startFullIndex = statusOnly && req.method === "GET";
+  let startFullIndex = process.platform !== "android" && statusOnly && req.method === "GET";
   const first = startFullIndex ? fullIndexFirstChoice(params) : null;
   if (first) {
     // The player sends sections=1 while it plays from prepared sections; then

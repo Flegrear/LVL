@@ -6,6 +6,8 @@ import { $ } from "../app/dom.js";
 import { audioOutputMode, preferredAudioLanguage } from "./player-menus.js";
 import { libraryChapterName } from "../library/library-page.js";
 import { saveCurrentEpisodeAnalysis } from "../learning/index.js";
+import { browserCanPlay } from "./browser-media.js";
+import { serverCanConvertVideo } from "./video-conversion-capability.js";
 
 export const LANGUAGE_NAMES = { EN: "English", ES: "Spanish", FR: "French", DE: "German", IT: "Italian", PT: "Portuguese", JA: "Japanese", KO: "Korean", ZH: "Chinese", RU: "Russian", NL: "Dutch", PL: "Polish", TR: "Turkish" };
 export const languageName = (code) => LANGUAGE_NAMES[String(code || "").toUpperCase()] || String(code || "");
@@ -174,9 +176,10 @@ export function transcodeQuery(startSeconds, audioIndex = state.selectedAudioTra
     params.set("video", "copy");
   }
   if (codec === "hevc" && state.transcodeContext?.copyVideo) {
-    const supported = video.canPlayType(bitDepth > 8 ? 'video/mp4; codecs="hvc1.2.4.L153.B0"' : 'video/mp4; codecs="hvc1.1.6.L120.B0"');
+    const supported = browserCanPlay(bitDepth > 8 ? 'video/mp4; codecs="hvc1.2.4.L153.B0"' : 'video/mp4; codecs="hvc1.1.6.L120.B0"',
+      (mime) => video.canPlayType(mime));
     if (supported) { params.set("video", "copy"); params.set("hevc", "1"); }
-    else if (!state.currentMediaProbe?.compatibility?.video?.hdr
+    else if (serverCanConvertVideo() && !state.currentMediaProbe?.compatibility?.video?.hdr
       && !state.currentMediaProbe?.compatibility?.video?.hdrKind
       && !state.currentMediaProbe?.video?.dolbyVision) {
       // A missing client HEVC opt-in makes server.js encode H264 even if this
@@ -186,8 +189,16 @@ export function transcodeQuery(startSeconds, audioIndex = state.selectedAudioTra
       state.transcodeContext.forceH264 = true;
     }
   }
-  if (codec === "av1" && state.transcodeContext?.copyVideo && video.canPlayType(bitDepth > 8 ? 'video/mp4; codecs="av01.0.12M.10"' : 'video/mp4; codecs="av01.0.12M.08"')) {
-    params.set("video", "copy"); params.set("av1", "1");
+  if (codec === "av1" && state.transcodeContext?.copyVideo) {
+    const supported = browserCanPlay(bitDepth > 8 ? 'video/mp4; codecs="av01.0.12M.10"' : 'video/mp4; codecs="av01.0.12M.08"',
+      (mime) => video.canPlayType(mime));
+    if (supported) { params.set("video", "copy"); params.set("av1", "1"); }
+    else if (serverCanConvertVideo() && !state.currentMediaProbe?.compatibility?.video?.hdr
+      && !state.currentMediaProbe?.compatibility?.video?.hdrKind
+      && !state.currentMediaProbe?.video?.dolbyVision) {
+      // Keep the seek clock aligned if the server must actually re-encode AV1.
+      state.transcodeContext.forceH264 = true;
+    }
   }
   // A codec that was advertised as playable may still fail on this PC.
   // An error-triggered compatibility retry must not select that codec again.

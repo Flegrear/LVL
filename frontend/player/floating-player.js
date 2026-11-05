@@ -102,9 +102,21 @@ export function updateFloatingControls() {
   if (time) time.textContent = `${formatTime((floatingSeekScrubbing ? Number(progress?.value) || 0 : elapsed) * 1000)} / ${durationMs ? formatTime(durationMs) : "--:--"}`;
 }
 
+function phoneSizedSiteFloat() {
+  return typeof window.matchMedia === "function"
+    && window.matchMedia("(hover: none) and (pointer: coarse)").matches
+    && Math.min(window.innerWidth, window.innerHeight) <= 600;
+}
+
+function siteFloatDefaultWidth() {
+  if (!phoneSizedSiteFloat()) return 380;
+  return Math.round(Math.min(300, window.innerWidth * 0.46, window.innerHeight * 0.4 * 16 / 9));
+}
+
 function clampSiteFloatBounds(bounds) {
   const maxWidth = Math.max(180, Math.min(window.innerWidth - 16, (window.innerHeight - 16) * 16 / 9));
-  const width = Math.min(maxWidth, Math.max(Math.min(260, maxWidth), Number(bounds?.width) || 380));
+  const minimum = phoneSizedSiteFloat() ? 160 : 260;
+  const width = Math.min(maxWidth, Math.max(Math.min(minimum, maxWidth), Number(bounds?.width) || siteFloatDefaultWidth()));
   const height = width * 9 / 16;
   return {
     width,
@@ -117,7 +129,7 @@ function positionSiteFloating() {
   const watch = $("#view-watch");
   if (!watch) return;
   if (!floatingSiteBounds) {
-    const width = Math.min(380, Math.max(180, window.innerWidth - 16));
+    const width = Math.min(siteFloatDefaultWidth(), Math.max(180, window.innerWidth - 16));
     floatingSiteBounds = {
       width,
       x: Math.max(8, window.innerWidth - width - 16),
@@ -552,7 +564,8 @@ function resizedSiteFloatBounds(original, edge, dx, dy) {
   const maxHorizontal = edge.includes("w") ? right - 8 : window.innerWidth - original.x - 8;
   const maxVertical = (edge.includes("n") ? bottom - 8 : window.innerHeight - original.y - 8) * ratio;
   const maxWidth = Math.max(180, Math.min(window.innerWidth - 16, (window.innerHeight - 16) * ratio, maxHorizontal, maxVertical));
-  const width = Math.max(Math.min(260, maxWidth), Math.min(maxWidth, original.width + delta));
+  const minimum = phoneSizedSiteFloat() ? 160 : 260;
+  const width = Math.max(Math.min(minimum, maxWidth), Math.min(maxWidth, original.width + delta));
   return {
     width,
     x: edge.includes("w") ? right - width : original.x,

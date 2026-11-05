@@ -97,6 +97,16 @@ export function relationsMarkup(comic) {
 
 const VIEWS = [{ value: "chapters", label: "Chapters" }, { value: "sources", label: "Sources" }];
 
+// The real Add handler calls this only after the server confirms its linked
+// work. Switching tabs is immediate; the chapter fetch is awaited so failures
+// can be shown in that chapter panel (with retry) rather than losing context.
+export async function showLinkedChapters({ show, refresh, onLinked, result }) {
+  show("chapters");
+  const availability = await refresh?.();
+  await onLinked?.(result);
+  return availability;
+}
+
 // About a manga, for the bottom of its own title page (like a video title's
 // About): facts, staff, your files, matching, and related anime and manga.
 export function comicAboutMarkup(comic, files = [], index = null) {
@@ -199,7 +209,20 @@ export function mountMangaBlock(element, ctx, { workId, comic, index, files = []
   if (head) { head.innerHTML = ""; head.append(tools); }
   const viewOf = (name) => element.querySelector(`[data-manga-view="${name}"]`);
   const block = { workId: id, comic, chapterList: null, element };
-  const data = { comic, id, files, index, refreshChapters: () => block.chapterList?.refresh(), onLinked: onLinked || null };
+  const data = {
+    comic, id, files, index,
+    refreshChapters: () => block.chapterList?.refresh(),
+    onLinked: (result) => showLinkedChapters({
+      show, refresh: () => block.chapterList?.refresh(), onLinked, result,
+    }),
+    onDifferentWork: async (target, result) => {
+      // Video Comics drafts can be adopted by an existing work. Let that
+      // section update its chosen work and redraw the real Chapters tab,
+      // instead of sending the user to an unrelated copy of the title.
+      if (onLinked) return onLinked(result);
+      return ctx.openFeatureTitle({ feature: "comics", item: target, historyMode: "replace" });
+    },
+  };
   const loaded = new Set();
   const open = (readerId, page) => ctx.switchView("comic", { query: `?id=${encodeURIComponent(id)}&read=${encodeURIComponent(readerId)}${Number(page) > 0 ? `&page=${Number(page)}` : ""}&back=1` });
   function show(name) {
@@ -218,14 +241,14 @@ export function mountMangaBlock(element, ctx, { workId, comic, index, files = []
   });
   // First unread chapter after the furthest one read, resolved like any chapter.
   block.continueReading = () => {
-    const chapters = block.chapterList?.chapters || [];
+    const chapters = block.chapterList?.readingOrder || [];
     if (!chapters.length) return show("sources");
     const read = block.chapterList.readChapters();
     let last = -1;
     chapters.forEach((item, at) => { if (read.has(item.chapter)) last = at; });
     const next = chapters[last + 1] || chapters[chapters.length - 1];
     show("chapters");
-    return block.chapterList.read(next.chapter);
+    return block.chapterList.read(next.chapter, next.volume ?? "");
   };
   show(view);
   bindTabs(element.querySelector(".ui-tabs"), { onChange: (value) => show(value) });

@@ -30,7 +30,13 @@ export async function handleStorageApi(req, res, url) {
     return true;
   }
   if (pathname === "/api/storage/limits") {
-    if (req.method !== "POST") return methodNotAllowed(res, ["POST"]);
+    // The Android player checks the limit before each video. The complete
+    // storage report scans download directories and is expensive on a phone.
+    if (req.method === "GET") {
+      json(res, 200, { limits: storage.limits() });
+      return true;
+    }
+    if (req.method !== "POST") return methodNotAllowed(res, ["GET", "POST"]);
     const body = await readJsonBody(req);
     if (body.remuxCacheEnabled !== undefined && typeof body.remuxCacheEnabled !== "boolean") {
       json(res, 400, { error: "remuxCacheEnabled must be a boolean" });

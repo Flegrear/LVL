@@ -27,6 +27,45 @@ export function chapterNeighbours(chapters = [], chapter = null) {
   return { prev: chapters[at - 1]?.chapter ?? null, next: chapters[at + 1]?.chapter ?? null };
 }
 
+// A chapter label alone is not a unit identity: Volumes 1 and 2 can both have
+// "Chapter 1". Keep the supplied index order (also in flat/no-volume mode),
+// with no deduplication. `volume: undefined` means the reader did not know the
+// current volume; `volume: null` means an explicitly unvolumed chapter.
+const chapterLabel = (value) => {
+  if (value === null || value === undefined || String(value).trim() === "") return null;
+  const label = String(value).trim();
+  const numeric = Number(label);
+  return Number.isFinite(numeric) ? `n:${numeric}` : `s:${label}`;
+};
+const volumeLabel = (value) => chapterLabel(value) ?? "unvolumed";
+export function readerChapterIdentity(chapter, volume = null) {
+  return { chapter: chapter == null ? null : String(chapter), volume: volume == null || String(volume).trim() === "" ? null : String(volume) };
+}
+export function readerChapterPosition(chapters = [], { chapter = null, volume = undefined } = {}) {
+  const items = Array.isArray(chapters) ? chapters : [];
+  const label = chapterLabel(chapter);
+  if (label === null) return { index: -1, ambiguous: false };
+  const byNumber = items.map((item, i) => ({ item, i }))
+    .filter(({ item }) => chapterLabel(item?.chapter) === label);
+  // An absent current volume is safe only when this chapter number is unique.
+  // An explicitly known unvolumed unit is not the same as an unknown volume.
+  const matches = volume === undefined ? byNumber
+    : byNumber.filter(({ item }) => volumeLabel(item?.volume) === volumeLabel(volume));
+  return { index: matches.length === 1 ? matches[0].i : -1, ambiguous: matches.length > 1 };
+}
+export function readerChapterNeighbours(chapters = [], current = {}) {
+  const { index, ambiguous } = readerChapterPosition(chapters, current);
+  const items = Array.isArray(chapters) ? chapters : [];
+  const at = (i) => {
+    const item = items[i];
+    if (!item || chapterLabel(item.chapter) === null) return null;
+    const { index: unique } = readerChapterPosition(items, { chapter: item.chapter, volume: item.volume ?? null });
+    return unique === i ? readerChapterIdentity(item.chapter, item.volume) : null;
+  };
+  return { index, ambiguous, prev: index > 0 ? at(index - 1) : null,
+    next: index >= 0 && index + 1 < items.length ? at(index + 1) : null };
+}
+
 // MangaFox adds a credit strip to the bottom of each page file: on a white band,
 // 2–6 centered lines of 13 px text, 6 px apart, 6 px from the bottom and 10 px
 // below the page (measured on its files: 3 lines add 67 px, 4 lines 86 px, at
@@ -149,6 +188,57 @@ export function stripStep({ scrollTop = 0, scrollHeight = 0, clientHeight = 0 } 
   return Math.sign(direction) * Math.min(room, Math.round(clientHeight * share));
 }
 
+// The reader's real stage scroll listener uses this intent gate. A scroll event
+// alone is not a gesture: restore, resize and native Back can all scroll an
+// element after the browser has finished laying it out. Only recent, explicit
+// navigation can collapse the chrome, and revealing it revokes pending intent.
+export function createReaderScrollIntentController(stage, { onScroll, enterImmersive, now = Date.now,
+  intentMs = 1200, wheelQuietMs = 240 } = {}) {
+  let armedUntil = -1;
+  let lastWheelAt = -Infinity;
+  let ignoreWheelMomentum = false;
+  let touchRevoked = false;
+  let disconnected = false;
+  const arm = () => { armedUntil = now() + intentMs; };
+  const onStageScroll = () => {
+    if (disconnected) return;
+    // Consume this intent once; subsequent momentum/resize events cannot
+    // re-enter after a center reveal or native Back acknowledgement.
+    if (armedUntil >= now()) {
+      armedUntil = -1;
+      enterImmersive?.();
+    }
+    onScroll?.();
+  };
+  stage.addEventListener("scroll", onStageScroll, { passive: true });
+  return {
+    wheel() {
+      const at = now();
+      const continuation = at - lastWheelAt <= wheelQuietMs;
+      lastWheelAt = at;
+      // Wheel deltas already in flight at reveal must not instantly undo it.
+      if (ignoreWheelMomentum && continuation) return false;
+      ignoreWheelMomentum = false;
+      arm();
+      return true;
+    },
+    touchStart() { touchRevoked = false; },
+    touchDrag() { if (touchRevoked) return false; arm(); return true; },
+    keyboard() { arm(); },
+    scrollbar() { arm(); },
+    reveal() {
+      armedUntil = -1;
+      touchRevoked = true; // requires a fresh touchstart after reveal
+      ignoreWheelMomentum = now() - lastWheelAt <= wheelQuietMs;
+    },
+    disconnect() {
+      disconnected = true;
+      armedUntil = -1;
+      stage.removeEventListener("scroll", onStageScroll);
+    },
+  };
+}
+
 // Click on the left or right third turns the page (scrolls the long strip); the middle
 // toggles the bars. The third on the side the story goes moves forward.
 export function clickAction(x, width, mode) {
@@ -172,21 +262,71 @@ export function wheelAction({ deltaX = 0, deltaY = 0 } = {}, mode, { overflow = 
   return (deltaY < 0) === ltr ? "next" : "prev";
 }
 
-// Warm: scale down blue (and a little green); Dim: brightness. Values 0..100.
-export function comfortFilter({ warm = 0, dim = 0 } = {}) {
-  const w = Math.max(0, Math.min(100, Number(warm) || 0)) / 100;
-  const d = Math.max(0, Math.min(100, Number(dim) || 0)) / 100;
-  return {
-    matrix: `1 0 0 0 0  0 ${(1 - 0.18 * w).toFixed(3)} 0 0 0  0 0 ${(1 - 0.62 * w).toFixed(3)} 0 0  0 0 0 1 0`,
-    brightness: Number((1 - 0.6 * d).toFixed(3)),
-    active: w > 0 || d > 0,
-  };
+// Reader brightness increases to the right: 100 is unchanged, 0 is 40%
+// brightness. Old Dim 0..100 decreased brightness in the opposite direction.
+// Existing stored values migrate to the exact same effective luminance.
+export function normalizeComfort(value = {}) {
+  const clamp = (n, fallback) => Number.isFinite(Number(n))
+    ? Math.max(0, Math.min(100, Math.round(Number(n)))) : fallback;
+  const brightness = value?.brightness !== undefined && value?.brightness !== null
+    ? clamp(value.brightness, 100) : 100 - clamp(value?.dim, 0);
+  return { brightness, theme: THEMES.includes(value?.theme) ? value.theme : "black" };
 }
 
-// "Warm at night": on from 20:00 to 07:00 local time.
-export const isNight = (date = new Date()) => date.getHours() >= 20 || date.getHours() < 7;
+export function comfortFilter(value = {}) {
+  const { brightness } = normalizeComfort(value);
+  const factor = Number((0.4 + brightness * 0.006).toFixed(3));
+  return { brightness: factor, active: factor < 1 };
+}
 
-export function normalizeComfort(value = {}) {
-  const clamp = (n) => Math.max(0, Math.min(100, Math.round(Number(n) || 0)));
-  return { warm: clamp(value.warm), dim: clamp(value.dim), theme: THEMES.includes(value.theme) ? value.theme : "black", night: value.night === true };
+// Serialized local source navigation: the target's metadata must be verified
+// before the current reader is replaced. A newer click, source change or
+// closing the old reader invalidates every outstanding async preflight.
+export function createReaderUnitTransition({
+  currentUnit, getWorkId, loadUnit, navigate, onError = () => {},
+  onBusy = () => {}, isCurrentReader = () => true,
+} = {}) {
+  if (typeof currentUnit !== "function" || typeof getWorkId !== "function"
+    || typeof loadUnit !== "function" || typeof navigate !== "function")
+    throw new TypeError("Reader transition requires exact unit identity, work and navigation callbacks");
+  let sequence = 0, pending = null, closed = false;
+  const validId = id => typeof id === "string" && /^f[0-9a-f]{16}$/.test(id);
+  const fail = (error, when) => {
+    if (when !== sequence || closed || !isCurrentReader()) return false;
+    pending = null; onBusy(false);
+    onError(error?.message || "Could not open the selected chapter. Your current page is unchanged.");
+    return false;
+  };
+  return {
+    get busy() { return pending !== null; },
+    get target() { return pending; },
+    async open(targetId) {
+      if (closed || !isCurrentReader()) return false;
+      const from = currentUnit(), work = getWorkId();
+      if (!validId(targetId) || targetId === from || typeof work !== "string" || !work)
+        return fail(new Error("This adjacent chapter is unavailable."), ++sequence);
+      if (pending === targetId) return false;
+      const generation = ++sequence;
+      pending = targetId;
+      onBusy(true);
+      try {
+        const info = await loadUnit(targetId);
+        if (generation !== sequence || closed || !isCurrentReader()
+            || currentUnit() !== from || getWorkId() !== work) return false;
+        if (!info || info.workId !== work || info.file?.id !== targetId
+            || !(Number.isSafeInteger(Number(info.pages)) && Number(info.pages) > 0))
+          return fail(new Error("This chapter is not ready or no longer belongs to this series."), generation);
+        const moved = await navigate(targetId, info, { isCurrent: () =>
+          generation === sequence && !closed && isCurrentReader()
+          && currentUnit() === from && getWorkId() === work });
+        if (generation !== sequence || closed || !isCurrentReader()) return false;
+        if (moved === false) return fail(new Error("The selected chapter could not be opened."), generation);
+        pending = null;
+        onBusy(false);
+        return true;
+      } catch (error) { return fail(error, generation); }
+    },
+    cancel() { sequence++; pending = null; if (!closed) onBusy(false); },
+    close() { closed = true; sequence++; pending = null; },
+  };
 }

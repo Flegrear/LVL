@@ -3,6 +3,8 @@ import { formatTime } from "../../learning/browser/core.js";
 import { toast } from "../ui/ui.js";
 import { logoUrl } from "../catalog/home-feed.js";
 import { torrentSeekPieceStatus } from "./torrent-piece-wait.js";
+import { notifyPhonePlayerControlsHidden } from "./phone-seek-lifecycle.js";
+import { serverCanConvertVideo } from "./video-conversion-capability.js";
 import { canUseEncodedH264Mse, canUseRemuxMse, createRemuxMseSession } from "./remux-mse.js";
 import { normalizeAudioMode } from "../../shared/media/audio-policy.js";
 import {
@@ -197,8 +199,20 @@ function renderProgressiveSeekableRanges() {
       && progressiveSeekReady?.audioMode === expected.audioMode
       ? progressiveReadyRanges(progressiveSeekReady.snapshot) : []) : [];
   const duration = expected?.durationSeconds || 0;
+  // Avoid forcing layout during each timeupdate. ResizeObserver updates the
+  // cached size when a phone rotates or the progress bar changes width.
+  if (!layer.__lvlWidth || typeof ResizeObserver !== "function") {
+    layer.__lvlWidth = layer.getBoundingClientRect?.().width || layer.clientWidth || 600;
+    if (typeof ResizeObserver === "function" && !layer.__lvlWidthObserver) {
+      layer.__lvlWidthObserver = new ResizeObserver((entries) => {
+        const measured = entries[0]?.contentRect?.width;
+        if (measured) { layer.__lvlWidth = measured; renderProgressiveSeekableRanges(); }
+      });
+      layer.__lvlWidthObserver.observe(layer);
+    }
+  }
   const width = Math.max(1,Math.min(16384,
-    Math.ceil((layer.getBoundingClientRect?.().width || layer.clientWidth || 600)
+    Math.ceil(layer.__lvlWidth
       * Math.min(3,window.devicePixelRatio || 1))));
   // The entire disjoint interval map is fingerprinted ONCE per verified
   // status response; ordinary timeupdate repaint checks use only its version.
@@ -336,6 +350,29 @@ function readyIndexedVideo() {
   return Boolean(remuxMseCacheAllowed && cache?.url
     && cache.context === context && cache.source === state.currentSource
     && cache.audioIndex === context?.audioIndex && cache.audioMode === normalizeAudioMode(audioOutputMode));
+}
+
+// A snapshot for the Storage screen. Only the authenticated exact source,
+// audio plan and generation can mark cached positions as available.
+export function playerFastSeekAvailability() {
+  const context = progressiveSeekContext();
+  const selection = progressiveSeekReady;
+  const fullIndexed = readyIndexedVideo();
+  const exactRange = Boolean(context && selection?.snapshot
+    && selection.source === state.currentSource && selection.context === state.transcodeContext
+    && selection.generation === context.generation
+    && selection.audioIndex === context.audioIndex
+    && selection.audioMode === context.audioMode);
+  return {
+    fullIndexed,
+    exactRange,
+    ranges: fullIndexed && context?.durationSeconds
+      ? [{ start: 0, end: context.durationSeconds }]
+      : exactRange ? progressiveReadyRanges(selection.snapshot) : [],
+    sourceMatches: Boolean(state.currentSource && (fullIndexed || exactRange)),
+    audioMatches: Boolean(context && (fullIndexed || exactRange)),
+    targetSeconds: absolutePlaybackSeconds(),
+  };
 }
 function checkIndexedSeekCache() {
   // The server now atomically arbitrates the encoder slot in favor of
@@ -647,6 +684,7 @@ function finishPlayerLoading() {
   window.clearTimeout(playerLoadingHideTimer);
   // If playback was ready quickly, let the gray-to-color sweep visibly finish
   // instead of abruptly concealing the loader with only a few colored pixels.
+  const quickHide = Boolean(window.LvlAndroid);
   let artworkWaitChecks = 0;
   const hideWhenRevealed = () => {
     if (state.loadingProgress !== 100 || overlay.hidden) { playerLoadingHideTimer = 0; return; }
@@ -655,11 +693,11 @@ function finishPlayerLoading() {
     // the loader disappeared during that image request and never showed a
     // gray-to-color transition at all. Allow one brief, bounded grace period
     // for the current show's logo, without holding an absent logo indefinitely.
-    if (playerLoadingArtworkPending && artworkWaitChecks++ < 12) {
+    if (!quickHide && playerLoadingArtworkPending && artworkWaitChecks++ < 12) {
       playerLoadingHideTimer = window.setTimeout(hideWhenRevealed, 100);
       return;
     }
-    if (brand && !brand.hidden && playerLoadingColorProgress < 99.5 && playerLoadingVisualFrame) {
+    if (!quickHide && brand && !brand.hidden && playerLoadingColorProgress < 99.5 && playerLoadingVisualFrame) {
       playerLoadingHideTimer = window.setTimeout(hideWhenRevealed, 100);
       return;
     }
@@ -667,7 +705,7 @@ function finishPlayerLoading() {
     stopPlayerLoadingAnimation();
     playerLoadingHideTimer = 0;
   };
-  playerLoadingHideTimer = window.setTimeout(hideWhenRevealed, 550);
+  playerLoadingHideTimer = window.setTimeout(hideWhenRevealed, quickHide ? 120 : 550);
 }
 
 export function clearPlayerControlsHideTimer() {
@@ -679,6 +717,7 @@ export function hidePlayerControls() {
   clearPlayerControlsHideTimer();
   if (!frame.classList.contains("has-video")) return;
   frame.classList.add("controls-hidden");
+  notifyPhonePlayerControlsHidden();
 }
 
 export function schedulePlayerControlsHide() {
@@ -719,6 +758,8 @@ let streamStatusGeneration = 0;
 let streamStatusController = null;
 let latestTorrentPieceSnapshot = null;
 let waitingTorrentSeek = null;
+let waitingTorrentSeekNudge = 0;
+let waitingTorrentSeekNudging = false;
 
 function currentTorrentSeekPieceStatus(target) {
   const snapshot = latestTorrentPieceSnapshot;
@@ -737,23 +778,53 @@ function currentTorrentSeekPieceStatus(target) {
   } catch { return "unknown"; }
 }
 
-function clearWaitingTorrentSeek() {
-  waitingTorrentSeek = null;
+// A missing torrent position can be prioritized by rechecking its copy start;
+// the verified probe response, not the approximate downloaded-piece bitmap,
+// decides when an unusually slow read can resume.
+async function nudgeWaitingTorrentSeek() {
+  const waiting = waitingTorrentSeek;
+  if (!waiting?.context?.sessionId || waitingTorrentSeekNudging) return;
+  const target = Math.max(0, Number(waiting.target) || 0);
+  if (!target) return;
+  waitingTorrentSeekNudging = true;
+  try {
+    const result = await fetchJson(`/api/torrents/${encodeURIComponent(waiting.context.sessionId)}/files/${waiting.context.fileIndex}/transcode-start?start=${target.toFixed(3)}&video=copy`,
+      { signal: AbortSignal.timeout(20_000) });
+    if (waitingTorrentSeek !== waiting || result?.verified !== true) return;
+    if (state.currentSource !== waiting.source || state.transcodeContext !== waiting.context) return;
+    clearWaitingTorrentSeek();
+    void openTranscodeAt(target, { wasPlaying: waiting.wasPlaying, forceNative: true });
+  } catch { /* The torrent can still be downloading; retry on the next nudge. */ }
+  finally { waitingTorrentSeekNudging = false; }
 }
 
-function waitForMissingTorrentSeek(target, wasPlaying) {
+function clearWaitingTorrentSeek() {
+  waitingTorrentSeek = null;
+  if (waitingTorrentSeekNudge) clearInterval(waitingTorrentSeekNudge);
+  waitingTorrentSeekNudge = 0;
+}
+
+function waitForMissingTorrentSeek(target, wasPlaying, { slowSeek = false } = {}) {
   // MediaError4 does not prove an HEVC decode failure: a missing BitTorrent
   // piece may make FFmpeg finish without a usable fMP4 atom after HTTP 200.
   // Do not repeatedly start a converter while the byte-range is still absent.
-  if (currentTorrentSeekPieceStatus(target) !== "missing") return false;
+  const pieceStatus = currentTorrentSeekPieceStatus(target);
+  const noConversion = !serverCanConvertVideo();
+  const waitAnyway = noConversion && Number(target) > 0 && (pieceStatus === "unknown" || slowSeek);
+  if (pieceStatus !== "missing" && !waitAnyway) return false;
   const source = state.currentSource;
   const context = state.transcodeContext;
   if (!source?.sessionId || !context) return false;
   cancelTranscodeStart();
   video.pause();
-  waitingTorrentSeek = { source, context, target, wasPlaying };
-  setPlayerLoading(90, "Waiting for torrent data",
-    "Video pieces near this position are still downloading. Playback will retry when available; you can also choose another source.",
+  waitingTorrentSeek = { source, context, target, wasPlaying, nudgeOnly: slowSeek };
+  if (waitingTorrentSeekNudge) clearInterval(waitingTorrentSeekNudge);
+  void nudgeWaitingTorrentSeek();
+  waitingTorrentSeekNudge = setInterval(() => { void nudgeWaitingTorrentSeek(); }, 8000);
+  const dataHere = pieceStatus === "likely-ready" || pieceStatus === "verified-complete";
+  setPlayerLoading(90, dataHere ? "Loading this part of the video" : "Waiting for torrent data",
+    dataHere ? "Reading this position is taking longer than usual. Playback will continue by itself; you can also choose another source."
+      : "Video pieces near this position are still downloading. Playback will retry when available; you can also choose another source.",
     { error: true });
   return true;
 }
@@ -766,6 +837,7 @@ function resumeWaitingTorrentSeek(payload, source) {
     clearWaitingTorrentSeek();
     return;
   }
+  if (waiting.nudgeOnly) return;
   // A verified complete file is safe immediately. Otherwise, the approximate
   // bucket must include the target AND its preceding possible keyframe window.
   if (currentTorrentSeekPieceStatus(waiting.target) === "missing") return;
@@ -922,8 +994,29 @@ function beginRecoveryWatch() {
     });
     const frozen = !video.paused && recoveryLastMotionAt && now - recoveryLastMotionAt >= 16_000
       && (!state.mediaDurationMs || absolutePlaybackSeconds() < state.mediaDurationMs / 1000 - 3);
+    if ((stalled || frozen) && waitOutTorrentBuffering(now)) return;
     if (stalled || frozen) void recoverPlayback("stall");
   }, 2000);
+}
+
+// On devices without a video encoder, repeatedly reconnecting a torrent that
+// is still buffering loses useful downloaded data. Give a progressing buffer
+// time to catch up while keeping a bounded timeout when growth stops.
+const TORRENT_BUFFERING_IDLE_MS = 20_000;
+const LOADED_VIDEO_STALL_MS = 60_000;
+let torrentBufferingMark = null;
+function waitOutTorrentBuffering(now = Date.now()) {
+  if (serverCanConvertVideo() || !state.currentSource?.sessionId || video.error) return false;
+  let bufferedEnd = 0;
+  try { bufferedEnd = video.buffered?.length ? video.buffered.end(video.buffered.length - 1) : 0; } catch {}
+  const mark = torrentBufferingMark;
+  if (!mark || mark.src !== video.currentSrc || mark.at < recoveryLastMotionAt
+    || bufferedEnd > mark.bufferedEnd + 0.25 || bufferedEnd < mark.bufferedEnd - 1) {
+    torrentBufferingMark = { src: video.currentSrc, bufferedEnd, at: now };
+    return true;
+  }
+  const loadedAhead = bufferedEnd - (Number(video.currentTime) || 0);
+  return now - mark.at < (loadedAhead >= 5 ? LOADED_VIDEO_STALL_MS : TORRENT_BUFFERING_IDLE_MS);
 }
 
 export function stopRecoveryWatch() {
@@ -1021,7 +1114,8 @@ export async function recoverPlayback(reason = "error") {
       // A browser may report a decode/source error after torrent starvation.
       // Observed missing pieces cannot be fixed by changing the video codec.
       const strategy = playbackRetryStrategy(video.dataset.mode,
-        (recoveryStallDiagnosis?.networkStarvation ? "stall" : reason), video.error?.code);
+        (recoveryStallDiagnosis?.networkStarvation ? "stall" : reason), video.error?.code,
+        { canConvert: serverCanConvertVideo() });
       if (strategy === "compatibility") {
         if (!await forceCompatibilityTranscode()) throw new Error("Compatibility playback could not start");
       } else if (strategy === "restart-direct") {
@@ -1918,6 +2012,7 @@ export function cancelTranscodeStart({ preservePending = false } = {}) {
     else attempt.overlay.setAttribute("aria-hidden", attempt.previousOverlayAriaHidden);
   }
   if (attempt.mutedForPreroll) video.muted = attempt.wantedMuted;
+  if (attempt.fastPreroll) video.playbackRate = attempt.wantedRate;
   if (!preservePending && state.pendingSeek === attempt.pending) state.pendingSeek = null;
 }
 
@@ -2112,9 +2207,11 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
       if (reconnectExpiredTorrentPlayback(error, { source, target, isCurrent: current,
         wasPlaying: pending.wasPlaying, onPreflightFailure })) return true;
       if (retryTransient(error, { onlyWhenBusy: true })) return true;
+      const slowSeek = !serverCanConvertVideo()
+        && (Number(error?.httpStatus) === 504 || error?.name === "TimeoutError");
       if (!onPreflightFailure && typeof waitForMissingTorrentSeek === "function"
-        && [502, 503, 504].includes(Number(error?.httpStatus))
-        && waitForMissingTorrentSeek(target, pending.wasPlaying)) return true;
+        && ([502, 503, 504].includes(Number(error?.httpStatus)) || slowSeek)
+        && waitForMissingTorrentSeek(target, pending.wasPlaying, { slowSeek })) return true;
       // Audio switching may still be able to play the prior URL. Report the
       // latest user intent BEFORE cancelling the seek's pending state.
       onPreflightFailure?.({ wasPlaying: pending.wasPlaying });
@@ -2340,6 +2437,11 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
   }
   attempt.mutedForPreroll = true;
   attempt.wantedMuted = video.muted;
+  if (!serverCanConvertVideo()) {
+    attempt.fastPreroll = true;
+    attempt.wantedRate = Number(video.defaultPlaybackRate) || 1;
+    video.playbackRate = Math.max(attempt.wantedRate, 4);
+  }
   frame.classList.add("is-sync-preroll");
   attempt.overlay = $("#subtitle-overlay");
   if (attempt.overlay) {
@@ -2907,7 +3009,7 @@ export function wirePlayerVideoEvents() {
       const isHdr = Boolean(probeCompatibility.hdr || probeCompatibility.hdrKind
         || probeVideo.dolbyVision || ["smpte2084", "arib-std-b67"].includes(String(probeVideo.colorTransfer || "").toLowerCase()));
       const tryCompatibleVideoFallback = ({ requireHttpSuccess = false } = {}) => {
-        if (mediaCode !== 4 || !failedCopy || isHdr
+        if (mediaCode !== 4 || !failedCopy || isHdr || !serverCanConvertVideo()
           || !["hevc", "h265", "av1"].includes(inputCodec)
           || (responseStatus !== 0 && responseStatus !== 200)
           || (requireHttpSuccess && responseStatus !== 200)) return false;
@@ -2987,6 +3089,8 @@ export function wirePlayerSourceButtons() {
 }
 
 export function syncPlayerSpeed() {
+  // Temporary fast preroll must not overwrite the user's speed selection.
+  if (transcodeStartAttempt?.fastPreroll) return;
   const rate = Number(video.playbackRate) || 1;
   const label = `${Number(rate.toFixed(2))}×`;
   const trigger = $("#speed-select");

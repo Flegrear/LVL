@@ -79,10 +79,11 @@ async function showSection(element, payload, ctx, video, { adding = false } = {}
     onSwitch: (target) => { pickVideoComic(video.id, target); void redraw(); },
     view: draft ? "sources" : "chapters", library: !draft, label: "Comic", actions, note,
     // A draft that got its first source (or joined a comic that had it) is now a comic here.
-    onLinked: (result) => {
+    onLinked: async (result) => {
       if (!draft && result.workId === workId) return;
       pickVideoComic(video.id, result.workId);
-      void redraw().then(() => ctx.refreshTitle?.());
+      await redraw();
+      ctx.refreshTitle?.();
     },
   });
   holder.addEventListener("click", async (event) => {

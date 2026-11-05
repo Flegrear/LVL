@@ -1,0 +1,319 @@
+name: Signed LVL Android release
+
+# Independent Android channel. Windows vX.Y.Z releases are not modified.
+on:
+  push:
+    tags:
+      - 'android-v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-release
+  cancel-in-progress: false
+
+jobs:
+  signed-apks:
+    runs-on: windows-2022
+    timeout-minutes: 120
+    permissions:
+      # This job runs for BOTH triggers, including manual build-only requests.
+      # A manual run never receives a release-writing GITHUB_TOKEN.
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LVL_ANDROID_RELEASE_ENABLED: ${{ vars.LVL_ANDROID_RELEASE_ENABLED }}
+      LVL_ANDROID_PROVENANCE_APPROVED: ${{ vars.LVL_ANDROID_PROVENANCE_APPROVED }}
+      LVL_ANDROID_NATIVE_ARTIFACT_ID: ${{ vars.LVL_ANDROID_NATIVE_ARTIFACT_ID }}
+      LVL_ANDROID_NATIVE_SHA256: ${{ vars.LVL_ANDROID_NATIVE_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.8.2'
+      - name: Require exact Android event, source, signing and legal approval
+        shell: pwsh
+        env:
+          LVL_ANDROID_KEYSTORE_BASE64: ${{ secrets.LVL_ANDROID_KEYSTORE_BASE64 }}
+          LVL_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.LVL_ANDROID_KEYSTORE_PASSWORD }}
+          LVL_ANDROID_KEY_ALIAS: ${{ secrets.LVL_ANDROID_KEY_ALIAS }}
+          LVL_ANDROID_KEY_PASSWORD: ${{ secrets.LVL_ANDROID_KEY_PASSWORD }}
+          LVL_ANDROID_CERT_SHA256: ${{ secrets.LVL_ANDROID_CERT_SHA256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'Flegrear/LVL') { throw 'Android builds run only in the official public repository' }
+          $config = Get-Content android/app-version.json -Raw | ConvertFrom-Json
+          if ($config.version -cnotmatch '^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$') {
+            throw 'Android source version must be canonical plain MAJOR.MINOR.PATCH'
+          }
+          if (($config.versionCode -isnot [int] -and $config.versionCode -isnot [long]) -or
+              $config.versionCode -lt 205 -or $config.runtimeGeneration -cne 'android-v1') {
+            throw 'Android version code must be an integer >=205 with android-v1 runtime'
+          }
+          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_dispatch') {
+            if ($env:GITHUB_REF -cne 'refs/heads/main' -or $env:GITHUB_REF_NAME -cne 'main') {
+              throw 'Manual Android signed builds require trusted public main'
+            }
+            # Future manual builds use their reviewed source config, never an
+            # arbitrary workflow input, tag or publication permission.
+            $version = [string]$config.version
+          } elseif ($env:GITHUB_EVENT_NAME -ceq 'push') {
+            $tag = $env:GITHUB_REF_NAME
+            if ($tag -cnotmatch '^android-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or
+                $env:GITHUB_REF -cne "refs/tags/$tag") {
+              throw 'Only exact android-vMAJOR.MINOR.PATCH pushed tags can publish Android'
+            }
+            $version = $tag.Substring(9)
+            if ($config.version -cne $version) { throw 'Android tag and configured source version disagree' }
+            "LVL_ANDROID_TAG=$tag" >> $env:GITHUB_ENV
+          } else {
+            throw 'Unsupported Android release workflow event'
+          }
+          $desktop = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($config.desktopSourceVersion -cne $desktop) { throw 'Android desktop source baseline mismatch' }
+          if ($env:LVL_ANDROID_RELEASE_ENABLED -cne 'true' -or $env:LVL_ANDROID_PROVENANCE_APPROVED -cne 'true') { throw 'Android publishing and native source/legal approval must be enabled' }
+          if ($env:LVL_ANDROID_NATIVE_ARTIFACT_ID -cnotmatch '^[1-9][0-9]{0,15}$' -or $env:LVL_ANDROID_NATIVE_SHA256 -cnotmatch '^[a-fA-F0-9]{64}$') { throw 'An immutable native Actions artifact ID and its inner ZIP SHA-256 are required' }
+          foreach ($name in @('LVL_ANDROID_KEYSTORE_BASE64','LVL_ANDROID_KEYSTORE_PASSWORD','LVL_ANDROID_KEY_ALIAS','LVL_ANDROID_KEY_PASSWORD','LVL_ANDROID_CERT_SHA256')) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) { throw "Missing production signing input $name" }
+          }
+          if ($env:LVL_ANDROID_CERT_SHA256 -cnotmatch '^[a-fA-F0-9]{64}$') { throw 'Production signer certificate SHA-256 is invalid' }
+          # A descendant of main can still contain unreviewed commits.
+          # Require the release commit itself to be reachable from public main.
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Android release commit is not present on public main' }
+          "LVL_ANDROID_VERSION=$version" >> $env:GITHUB_ENV
+      - name: Install app build dependencies before native metadata verification
+        run: npm ci --no-audit --no-fund
+      - name: Verify trusted main native artifact metadata before any download or signing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'Flegrear/LVL') { throw 'Native inputs can only come from the official repository' }
+          $id = $env:LVL_ANDROID_NATIVE_ARTIFACT_ID
+          New-Item -ItemType Directory -Force -Path build/native-metadata | Out-Null
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/artifacts/$id" > build/native-metadata/artifact.json
+          if ($LASTEXITCODE -ne 0) { throw 'Pinned native artifact ID is unavailable' }
+          $artifact = Get-Content build/native-metadata/artifact.json -Raw | ConvertFrom-Json
+          $runId = [string]$artifact.workflow_run.id
+          if ($runId -cnotmatch '^[1-9][0-9]{0,15}$') { throw 'Native artifact has no valid workflow run ID' }
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/runs/$runId" > build/native-metadata/run.json
+          if ($LASTEXITCODE -ne 0) { throw 'Native artifact workflow run could not be verified' }
+          gh api "repos/$env:GITHUB_REPOSITORY/actions/workflows/android-native.yml" > build/native-metadata/workflow.json
+          if ($LASTEXITCODE -ne 0) { throw 'Trusted native workflow identity could not be verified' }
+          $verified = (& node android/tools/native-artifact.mjs verify-metadata --artifact-file build/native-metadata/artifact.json --run-file build/native-metadata/run.json --workflow-file build/native-metadata/workflow.json --artifact-id $id --repo $env:GITHUB_REPOSITORY --repo-id $env:GITHUB_REPOSITORY_ID) | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$verified) { throw 'Untrusted, failed, expired or foreign native artifact' }
+          git merge-base --is-ancestor $verified.headSha origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Native build source commit is not reachable from trusted public main' }
+          "LVL_NATIVE_RUN_ID=$($verified.runId)" >> $env:GITHUB_ENV
+          "LVL_NATIVE_SOURCE_SHA=$($verified.headSha)" >> $env:GITHUB_ENV
+      - name: Download only the verified immutable native Actions artifact ID
+        uses: actions/download-artifact@v4
+        with:
+          artifact-ids: ${{ env.LVL_ANDROID_NATIVE_ARTIFACT_ID }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ env.LVL_NATIVE_RUN_ID }}
+          path: build/native-download
+          merge-multiple: true
+      - name: Provision pinned Android native inputs and SDK
+        shell: pwsh
+        env:
+          LVL_ANDROID_KEYSTORE_BASE64: ${{ secrets.LVL_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manager = Join-Path $env:ANDROID_HOME 'cmdline-tools/latest/bin/sdkmanager.bat'
+          if (-not (Test-Path $manager)) { throw 'Android SDK command-line tools unavailable' }
+          & $manager 'platforms;android-37' 'build-tools;37.0.0'
+          if ($LASTEXITCODE -ne 0) { throw 'Android SDK provisioning failed' }
+          New-Item -ItemType Directory -Force -Path build/keys | Out-Null
+          node android/tools/native-artifact.mjs verify-bundle --bundle-dir build/native-download --sha $env:LVL_ANDROID_NATIVE_SHA256.ToLowerInvariant() --source-sha $env:LVL_NATIVE_SOURCE_SHA --extract-dir build/android-native
+          if ($LASTEXITCODE -ne 0) { throw 'Native ZIP, recipe versions, provenance or exact input hash mismatch' }
+          node android/tools/release-check.mjs
+          if ($LASTEXITCODE -ne 0) { throw 'Native ELF/license/build provenance checks failed' }
+          $key = Join-Path (Get-Location) 'build/keys/android-release.jks'
+          [IO.File]::WriteAllBytes($key, [Convert]::FromBase64String($env:LVL_ANDROID_KEYSTORE_BASE64))
+          "LVL_ANDROID_KEYSTORE=$key" >> $env:GITHUB_ENV
+          Remove-Item Env:LVL_ANDROID_KEYSTORE_BASE64 -ErrorAction SilentlyContinue
+      - name: Assemble and verify two production-signed APKs
+        shell: pwsh
+        env:
+          LVL_ANDROID_KEYSTORE_PASSWORD: ${{ secrets.LVL_ANDROID_KEYSTORE_PASSWORD }}
+          LVL_ANDROID_KEY_ALIAS: ${{ secrets.LVL_ANDROID_KEY_ALIAS }}
+          LVL_ANDROID_KEY_PASSWORD: ${{ secrets.LVL_ANDROID_KEY_PASSWORD }}
+          LVL_ANDROID_CERT_SHA256: ${{ secrets.LVL_ANDROID_CERT_SHA256 }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          ./android/tools/build-release.ps1
+          if ($LASTEXITCODE -ne 0) { throw 'Signed Android release build failed' }
+          node android/tools/release-assets.mjs --verify-out tmp/android-batch/release/assets --version $env:LVL_ANDROID_VERSION --evidence tmp/android-batch/release/signature-evidence.json
+          if ($LASTEXITCODE -ne 0) { throw 'APK-only assets, checksum or signer verification failed' }
+      - name: Record signed review bytes, source commit and certificate without secrets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $version = $env:LVL_ANDROID_VERSION
+          $config = Get-Content android/app-version.json -Raw | ConvertFrom-Json
+          $local = 'tmp/android-batch/release/assets'
+          $signature = 'tmp/android-batch/release/signature-evidence.json'
+          $proof = Get-Content -LiteralPath $signature -Raw | ConvertFrom-Json
+          $expected = @("LVL-$version-arm64.apk","LVL-$version-x86_64.apk",'LVL-Android-RELEASE-NOTICE.txt','SHA256SUMS')
+          $files = @(Get-ChildItem -LiteralPath $local -File)
+          if ($files.Count -ne 4 -or @($files | Where-Object { $_.Name -cnotin $expected }).Count -ne 0) { throw 'Review artifact requires exactly four signed app assets' }
+          if ($proof.version -cne $version -or $proof.signerSha256 -cnotmatch '^[a-f0-9]{64}$') { throw 'Verified signer evidence is missing' }
+          $hashes = [ordered]@{}
+          foreach ($name in $expected) { $hashes[$name] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $local $name)).Hash.ToLowerInvariant() }
+          if ($hashes["LVL-$version-arm64.apk"] -cne $proof.apks.'arm64-v8a' -or $hashes["LVL-$version-x86_64.apk"] -cne $proof.apks.x86_64) { throw 'Review APK bytes differ from verified signed APKs' }
+          [ordered]@{
+            format = 'lvl-android-signed-review-v1'
+            repository = $env:GITHUB_REPOSITORY
+            sourceCommit = $env:GITHUB_SHA
+            eventName = $env:GITHUB_EVENT_NAME
+            gitRef = $env:GITHUB_REF
+            workflowRunId = [string]$env:GITHUB_RUN_ID
+            workflowAttempt = [int]$env:GITHUB_RUN_ATTEMPT
+            version = $version
+            versionCode = [int]$config.versionCode
+            runtimeGeneration = [string]$config.runtimeGeneration
+            desktopSourceVersion = [string]$config.desktopSourceVersion
+            signerSha256 = [string]$proof.signerSha256
+            signatureEvidenceSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $signature).Hash.ToLowerInvariant()
+            nativeArtifactId = [string]$env:LVL_ANDROID_NATIVE_ARTIFACT_ID
+            nativeZipSha256 = $env:LVL_ANDROID_NATIVE_SHA256.ToLowerInvariant()
+            assetHashes = $hashes
+            releaseNotes = (Get-Content -LiteralPath 'build/android-stage/app/CHANGELOG.md' -Raw)
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath 'tmp/android-batch/release/build-evidence.json' -Encoding utf8
+      - name: Upload immutable signed APK and evidence review artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lvl-android-signed-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            tmp/android-batch/release/assets/LVL-${{ env.LVL_ANDROID_VERSION }}-arm64.apk
+            tmp/android-batch/release/assets/LVL-${{ env.LVL_ANDROID_VERSION }}-x86_64.apk
+            tmp/android-batch/release/assets/LVL-Android-RELEASE-NOTICE.txt
+            tmp/android-batch/release/assets/SHA256SUMS
+            tmp/android-batch/release/signature-evidence.json
+            tmp/android-batch/release/build-evidence.json
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          overwrite: false
+      - name: Remove temporary CI signing key
+        if: always()
+        shell: pwsh
+        run: |
+          $key = Join-Path (Get-Location) 'build/keys/android-release.jks'
+          if (Test-Path -LiteralPath $key) { Remove-Item -LiteralPath $key -Force }
+
+  publish-android:
+    # The build job above has contents:read, so a manual dispatch cannot get a
+    # release-writing token. Only an Android tag push enters this separate job.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/android-v')
+    needs: signed-apks
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LVL_ANDROID_RELEASE_ENABLED: ${{ vars.LVL_ANDROID_RELEASE_ENABLED }}
+      LVL_ANDROID_PROVENANCE_APPROVED: ${{ vars.LVL_ANDROID_PROVENANCE_APPROVED }}
+      LVL_ANDROID_NATIVE_ARTIFACT_ID: ${{ vars.LVL_ANDROID_NATIVE_ARTIFACT_ID }}
+      LVL_ANDROID_NATIVE_SHA256: ${{ vars.LVL_ANDROID_NATIVE_SHA256 }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - name: Install reviewed asset verifier dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Download exactly the signed APK review artifact from this run
+        uses: actions/download-artifact@v4
+        with:
+          name: lvl-android-signed-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/android-signed-review
+      - name: Validate review identity and publish only four verified Android assets
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tag = $env:GITHUB_REF_NAME
+          if ($env:GITHUB_EVENT_NAME -cne 'push' -or $env:GITHUB_REPOSITORY -cne 'Flegrear/LVL' -or
+              $tag -cnotmatch '^android-v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$' -or
+              $env:GITHUB_REF -cne "refs/tags/$tag") { throw 'Only official pushed Android release tags may publish' }
+          if ($env:LVL_ANDROID_RELEASE_ENABLED -cne 'true' -or $env:LVL_ANDROID_PROVENANCE_APPROVED -cne 'true') {
+            throw 'Android publication approval was not maintained through the tag release job'
+          }
+          $version = $tag.Substring(9)
+          $config = Get-Content android/app-version.json -Raw | ConvertFrom-Json
+          if ($config.version -cne $version -or $config.versionCode -lt 205 -or $config.runtimeGeneration -cne 'android-v1' -or
+              $config.desktopSourceVersion -cne (Get-Content package.json -Raw | ConvertFrom-Json).version) { throw 'Public Android release source identity mismatch' }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Release commit is not reachable from trusted public main' }
+          $review = 'build/android-signed-review'
+          $local = Join-Path $review 'assets'
+          $signature = Join-Path $review 'signature-evidence.json'
+          $buildFile = Join-Path $review 'build-evidence.json'
+          if (@(Get-ChildItem -LiteralPath $review -Force).Count -ne 3 -or
+              !(Test-Path -LiteralPath $signature -PathType Leaf) -or !(Test-Path -LiteralPath $buildFile -PathType Leaf)) { throw 'Incomplete or unexpected signed review artifact' }
+          $proof = Get-Content -LiteralPath $signature -Raw | ConvertFrom-Json
+          $record = Get-Content -LiteralPath $buildFile -Raw | ConvertFrom-Json
+          if ($record.format -cne 'lvl-android-signed-review-v1' -or $record.repository -cne $env:GITHUB_REPOSITORY -or
+              $record.sourceCommit -cne $env:GITHUB_SHA -or $record.eventName -cne 'push' -or
+              $record.gitRef -cne $env:GITHUB_REF -or $record.workflowRunId -cne $env:GITHUB_RUN_ID -or
+              $record.workflowAttempt -ne [int]$env:GITHUB_RUN_ATTEMPT -or $record.version -cne $version -or
+              $record.versionCode -ne [int]$config.versionCode -or $record.runtimeGeneration -cne $config.runtimeGeneration -or
+              $record.desktopSourceVersion -cne $config.desktopSourceVersion -or
+              $record.signerSha256 -cnotmatch '^[a-f0-9]{64}$' -or $record.signerSha256 -cne $proof.signerSha256 -or
+              $record.signatureEvidenceSha256 -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $signature).Hash.ToLowerInvariant() -or
+              $record.releaseNotes -cnotmatch "(?m)^## $([regex]::Escape($version)) — \d{4}-\d{2}-\d{2}$" -or
+              $record.nativeArtifactId -cne $env:LVL_ANDROID_NATIVE_ARTIFACT_ID -or
+              $record.nativeZipSha256 -cne $env:LVL_ANDROID_NATIVE_SHA256.ToLowerInvariant()) { throw 'Signed review source, certificate, run or native provenance mismatch' }
+          node android/tools/release-assets.mjs --verify-out $local --version $version --evidence $signature
+          if ($LASTEXITCODE -ne 0) { throw 'Signed review assets did not pass exact APK-only verification' }
+          $expected = @("LVL-$version-arm64.apk","LVL-$version-x86_64.apk",'LVL-Android-RELEASE-NOTICE.txt','SHA256SUMS')
+          if (@($record.assetHashes.PSObject.Properties).Count -ne 4) { throw 'Build evidence must pin exactly four asset hashes' }
+          foreach ($name in $expected) {
+            $entry = $record.assetHashes.PSObject.Properties[$name]
+            $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $local $name)).Hash.ToLowerInvariant()
+            if (!$entry -or $entry.Value -cne $actual) { throw "Signed review bytes differ from source build: $name" }
+          }
+          $notes = 'build/android-publish-notes.md'
+          [IO.File]::WriteAllText((Join-Path (Get-Location) $notes), [string]$record.releaseNotes, [Text.UTF8Encoding]::new($false))
+          $files = @($expected | ForEach-Object { (Resolve-Path -LiteralPath (Join-Path $local $_)).Path })
+          gh release create $tag @files --repo $env:GITHUB_REPOSITORY --verify-tag --title "LVL for Android $version" --notes-file $notes --draft --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create complete Android draft' }
+          $remote = gh release view $tag --repo $env:GITHUB_REPOSITORY --json tagName,isDraft,isPrerelease,assets | ConvertFrom-Json
+          if ($remote.tagName -cne $tag -or !$remote.isDraft -or $remote.isPrerelease -or $remote.assets.Count -ne 4 -or @($remote.assets | Where-Object { $_.name -cnotin $expected }).Count -ne 0) { throw 'Draft release inventory is not the exact Android channel' }
+          $download = 'build/android-draft-verify'
+          New-Item -ItemType Directory -Force -Path $download | Out-Null
+          if (@(Get-ChildItem -LiteralPath $download -Force).Count -ne 0) { throw 'Remote verification destination not empty' }
+          gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern '*' --dir $download
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot re-download draft for byte verification' }
+          node android/tools/release-assets.mjs --verify-out $download --version $version --evidence $signature
+          if ($LASTEXITCODE -ne 0) { throw 'Remote draft bytes or signing evidence mismatch' }
+          foreach ($name in $expected) {
+            $original = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $local $name)).Hash
+            $received = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $download $name)).Hash
+            if ($original -cne $received) { throw "Remote draft bytes changed: $name" }
+          }
+          # Failure above leaves a draft, never a partially published Android release.
+          gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Verified Android draft could not be published' }

@@ -38,7 +38,7 @@ function mainProfilePixelsSupported(pixelFormat, depth) {
 // The browser and FFmpeg do different jobs: decide whether the *video* is
 // decodable before deciding whether the original *container/audio* is usable.
 // A supported HEVC video in MKV should be remuxed, not re-encoded to H.264.
-export function selectBrowserPlayback({ file = {}, media = null, canPlayType = () => "", audioTrackOrder = 0, audioMode = "auto" } = {}) {
+export function selectBrowserPlayback({ file = {}, media = null, canPlayType = () => "", audioTrackOrder = 0, audioMode = "auto", canConvert = true } = {}) {
   const name = String(file.name || "").toLowerCase();
   const extension = name.match(/\.[^.]+$/)?.[0] || "";
   if (!VIDEO_CONTAINERS.has(extension)) {
@@ -93,6 +93,9 @@ export function selectBrowserPlayback({ file = {}, media = null, canPlayType = (
   }
   if (extension === ".webm" && directWebm && audioFriendlyForContainer(audio, extension) && !audioNeedsConversion && !audioNeedsSelection) return result("direct", codec);
   if (codec) return result("transcode", "unsupported-decoder");
+  // Without video conversion (LVL's Android app, for now), video details that couldn't be
+  // read in time leave one way to play: copy the video and let the browser decode it.
+  if (!canConvert) return result(mp4 && !file.needsTranscode ? "direct" : "remux", "no-conversion");
   // If FFprobe fails, defer to the conservative server hint. Never guess
   // that a named HEVC/HDR source can run on this machine.
   if (/\b(?:hevc|h[. -]?265|x265|av1|1[026]bit|1[026]-bit|hdr|dovi|dolby.?vision)\b/i.test(name)) {
@@ -106,10 +109,11 @@ export function directVideoDecision(options = {}) {
 }
 
 export async function selectBrowserPlaybackWithCapabilities({
-  file = {}, media = null, canPlayType = () => "", decodingInfo = null, audioTrackOrder = 0, audioMode = "auto",
+  file = {}, media = null, canPlayType = () => "", decodingInfo = null, audioTrackOrder = 0, audioMode = "auto", canConvert = true,
 } = {}) {
-  const selected = selectBrowserPlayback({ file, media, canPlayType, audioTrackOrder, audioMode });
-  if (!selected.copyVideo || typeof decodingInfo !== "function") return selected;
+  const selected = selectBrowserPlayback({ file, media, canPlayType, audioTrackOrder, audioMode, canConvert });
+  // Without conversion there is no other way to play: canPlayType's answer stands.
+  if (!selected.copyVideo || typeof decodingInfo !== "function" || !canConvert) return selected;
   const video = media?.video;
   const codec = String(video?.codec || "").toLowerCase();
   const depth = Number(media?.compatibility?.video?.bitDepth) || Number(video?.bitDepth)

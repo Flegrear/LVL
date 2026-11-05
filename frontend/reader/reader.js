@@ -4,10 +4,12 @@
 // Pages come from api.pageUrl(id, n); progress is saved per page.
 import { escapeHtml } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
-import { atEnd, chapterNeighbours, clickAction, comfortFilter, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, isNight, keyAction, normalizeComfort, normalizeMode, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
+import { atEnd, clickAction, comfortFilter, createReaderScrollIntentController, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, normalizeComfort, normalizeMode, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
 
 const COMFORT_KEY = "lvl-reader-comfort-v1";
 const SIDEBAR_KEY = "lvl-reader-sidebar-v1";
+// Keep in step with the max-width:900px block in reader.css.
+const NARROW_QUERY = "(max-width: 900px)";
 // Page previews in the bottom bar can be turned off (they give away what's coming).
 const PREVIEWS_KEY = "lvl-reader-previews-v1";
 const modeKey = (workId) => `lvl-reader-mode-v1:${workId}`;
@@ -34,14 +36,13 @@ const ICONS = {
 const svg = (name) => `<svg class="reader__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name]}</svg>`;
 const iconButton = (name, label, extra = "") => `<button class="reader__icon-btn" type="button" data-reader="${name}" aria-label="${escapeHtml(t(label))}" title="${escapeHtml(t(label))}"${extra}>${svg(name)}</button>`;
 
-function markup(comic, pages) {
+export function readerMarkup(comic, pages) {
   const cover = SAFE_IMAGE.test(comic.cover || "") ? `<img class="reader__series-cover" src="${escapeHtml(comic.cover)}" alt="" />` : "";
   const genres = (comic.genres || []).slice(0, 3).map((genre) => `<span class="reader__badge">${escapeHtml(t(genre))}</span>`).join("");
   const facts = [comic.year, comic.chapters ? t("{count} chapters", { count: comic.chapters }) : "", comic.volumes ? t("{count} volumes", { count: comic.volumes }) : ""].filter(Boolean).join(" · ");
   const synopsis = String(comic.description || "").split(/\n{2,}/).filter(Boolean).slice(0, 3).map((paragraph) => `<p>${escapeHtml(paragraph)}</p>`).join("");
   const fits = [["height", "Fit height"], ["width", "Fit width"], ["original", "Original size"]];
-  return `<svg class="reader__defs" width="0" height="0" aria-hidden="true"><filter id="reader-warm"><feColorMatrix type="matrix" values="1 0 0 0 0 0 1 0 0 0 0 0 1 0 0 0 0 0 1 0"/></filter></svg>`
-    + `<aside class="reader__side" aria-label="${escapeHtml(t("Chapters"))}">`
+  return `<aside class="reader__side" aria-label="${escapeHtml(t("Chapters"))}">`
     + `<button class="reader__back" type="button" data-reader="close">${svg("back")}<span>${escapeHtml(t("Back to series"))}</span></button>`
     + `<div class="reader__series">${cover}<div><strong>${escapeHtml(comic.title || "")}</strong>${genres ? `<span class="reader__badges">${genres}</span>` : ""}</div></div>`
     + `<div class="reader__side-tabs" role="tablist"><button type="button" role="tab" data-side-tab="chapters" aria-selected="true">${escapeHtml(t("Chapters"))}</button>`
@@ -61,29 +62,35 @@ function markup(comic, pages) {
     + `<label class="reader__check"><input type="checkbox" data-reader="offset" /> ${escapeHtml(t("Shift spread"))}</label>`
     + `<p class="reader__hint">${escapeHtml(t("Click the middle of the page to hide the bars."))}</p></div>`
     + `<div class="reader__comfort reader__pop" hidden>`
-    + `<label>${escapeHtml(t("Warm"))} <input type="range" min="0" max="100" data-comfort="warm" /></label>`
-    + `<label>${escapeHtml(t("Dim"))} <input type="range" min="0" max="100" data-comfort="dim" /></label>`
-    + `<label>${escapeHtml(t("Background"))} <select class="reader__select" data-comfort="theme"><option value="black">${escapeHtml(t("Black"))}</option><option value="dark">${escapeHtml(t("Dark"))}</option><option value="sepia">${escapeHtml(t("Sepia"))}</option><option value="white">${escapeHtml(t("White"))}</option></select></label>`
-    + `<label class="reader__check"><input type="checkbox" data-comfort="night" /> ${escapeHtml(t("Warm at night (20:00–07:00)"))}</label></div>`
-    + `<main class="reader__stage" tabindex="0"></main>`
+    + `<label>${escapeHtml(t("Brightness"))} <input type="range" min="0" max="100" step="1" data-comfort="brightness" aria-label="${escapeHtml(t("Brightness"))}" /></label>`
+    + `<label>${escapeHtml(t("Background"))} <select class="reader__select" data-comfort="theme"><option value="black">${escapeHtml(t("Black"))}</option><option value="dark">${escapeHtml(t("Dark"))}</option><option value="sepia">${escapeHtml(t("Sepia"))}</option><option value="white">${escapeHtml(t("White"))}</option></select></label></div>`
+    + `<main class="reader__stage" tabindex="0" aria-label="${escapeHtml(t("Reader pages. Tap the middle or press Escape to show controls."))}"></main>`
     + `<footer class="reader__foot"><div class="reader__progress"><span class="reader__end-num" data-reader-start>1</span>`
     + `<input class="reader__slider" type="range" min="1" max="${Math.max(1, pages)}" aria-label="${escapeHtml(t("Page"))}" /><span class="reader__end-num" data-reader-last>${Math.max(1, pages)}</span></div>`
-    + `<div class="reader__footrow"><button class="reader__chapter-btn" type="button" data-reader="prevChapter">${svg("left")}<span>${escapeHtml(t("Previous"))}</span></button>`
+    + `<div class="reader__footrow"><button class="reader__chapter-btn reader__back-footer" type="button" data-reader="close" aria-label="${escapeHtml(t("Back to series"))}">${svg("back")}<span>${escapeHtml(t("Back"))}</span></button>`
+    + `<button class="reader__chapter-btn" type="button" data-reader="prevChapter">${svg("left")}<span>${escapeHtml(t("Previous"))}</span></button>`
     + `<div class="reader__strip"><button class="reader__strip-toggle" type="button" data-reader="previews" aria-pressed="true">${svg("collapse")}<span data-previews-label>${escapeHtml(t("Hide pages"))}</span></button>`
     + `<div class="reader__thumbs" role="list" aria-label="${escapeHtml(t("Pages"))}"></div></div>`
     + `<button class="reader__chapter-btn" type="button" data-reader="nextChapter"><span>${escapeHtml(t("Next"))}</span>${svg("right")}</button>`
     + `<div class="reader__icons"><div class="reader__modes" role="group" aria-label="${escapeHtml(t("Reading mode"))}">${iconButton("single", "One page", ' aria-pressed="false"')}${iconButton("double", "Two pages", ' aria-pressed="false"')}${iconButton("vertical", "Cascade", ' aria-pressed="false"')}</div>`
-    + `${iconButton("comfort", "Comfort", ' aria-expanded="false"')}${iconButton("direction", "Reading direction")}${iconButton("settings", "Reader settings", ' aria-expanded="false"')}</div></div></footer>`
+    + `${iconButton("comfort", "Comfort", ' aria-expanded="false"')}${iconButton("direction", "Reading direction")}${iconButton("settings", "Reader settings", ' aria-expanded="false"')}</div></div><p class="reader__transition-status" role="status" aria-live="polite" hidden></p></footer>`
     + `</section>`;
 }
 
 // options: { fileId, page, comic, api: { readerFile, saveProgress, pageUrl }, chapter, chapters (array or promise of
 //   [{ chapter, volume, title, cover }]), source (name of what's open), sources() -> [{ readerId, name, lang, page }]
-//   (this chapter elsewhere), onSource(readerId, page), onChapter(chapter), onClose(), onPage(fileId, page), onOpenFile(fileId) }
-export async function openReader(host, { fileId, page = null, comic = {}, api, chapter = null, chapters = [], source = "", sources = null, onSource, onChapter, onClose, onPage, onOpenFile }) {
+//   (this chapter elsewhere), onSource(readerId, page), onChapter(chapter, {volume,isCurrent}),
+//   onClose(), onPage(fileId, page), onOpenFile(fileId) }. A source's exact volume
+//   can come from options.volume or the verified reader metadata. Missing volume
+//   (undefined) means unknown; explicit null means this unit has no volume.
+export async function openReader(host, { fileId, page = null, comic = {}, api, chapter = null, volume = undefined, chapters = [], source = "", sources = null, onSource, onChapter, onClose, onPage, onOpenFile }) {
   const info = await api.readerFile(fileId);
   // Opened from its address alone: the server says which chapter and source this is.
-  if (chapter === null || chapter === undefined) chapter = info.chapter ?? null;
+  if (chapter === null || chapter === undefined) chapter = info.chapter ?? info.file?.chapter ?? null;
+  if (volume === undefined) {
+    if (Object.hasOwn(info, "volume")) volume = info.volume;
+    else if (Object.hasOwn(info.file || {}, "volume")) volume = info.file.volume;
+  }
   if (!source && info.source) source = info.source;
   const pages = Number(info.pages) || 0;
   let mode = normalizeMode(read(modeKey(info.workId), {}), defaultMode(comic, { wide: window.innerWidth >= 1280 && window.innerWidth > window.innerHeight * 1.3 }));
@@ -95,29 +102,111 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   let zoom = 1;
   let closed = false;
   let bottomSince = 0;
+  let suppressStageClickUntil = 0;
+  let autoFullscreenDenied = false;
+  let nativeImmersiveWasAcknowledged = false;
+  let ownsNativeImmersive = false;
+  // A C-owned atomic handover first opens this reader into a detached staging
+  // host. If initialization throws, no handle exists for C to close. Keep every
+  // global/root listener and observer inside one abortable initialization.
+  const listeners = new AbortController();
+  let observeNative = null;
+  let thumbObserver = null;
+  const trimmed = new Map();
+  let scrollIntent = null;
+  let unitTransition = null;
+  let chapterTransitionGeneration = 0;
   // Pages found to be wider than tall; two-page mode shows them alone.
   const wide = new Set();
   const pairing = () => ({ ...mode, wide });
 
   const root = document.createElement("div");
+  try {
   root.className = "reader";
   root.setAttribute("role", "dialog");
   root.setAttribute("aria-label", t("Reader"));
   root.tabIndex = -1;
-  root.innerHTML = markup(comic, pages);
-  root.dataset.sidebar = read(SIDEBAR_KEY, window.innerWidth >= 1100) ? "open" : "closed";
+  root.innerHTML = readerMarkup(comic, pages);
+  // Up to 900px wide the chapter list covers the page (reader.css), so it starts closed there
+  // and closes after a chapter is picked; the saved choice is for the wide layout beside the page.
+  const narrow = () => Boolean(window.matchMedia?.(NARROW_QUERY).matches);
+  root.dataset.sidebar = !narrow() && read(SIDEBAR_KEY, window.innerWidth >= 1100) ? "open" : "closed";
+  root.querySelector('button[data-reader="sidebar"]')?.setAttribute("aria-expanded", String(root.dataset.sidebar === "open"));
   host.append(root);
   const stage = root.querySelector(".reader__stage");
   const count = root.querySelector(".reader__count");
   const slider = root.querySelector(".reader__slider");
   const thumbs = root.querySelector(".reader__thumbs");
-  const matrix = root.querySelector("feColorMatrix");
+  const transitionStatus = root.querySelector(".reader__transition-status");
+
+  // The Android bridge hides system bars only; this reader keeps ownership of its
+  // image, scroll position and chrome. A browser denied fullscreen still reads normally.
+  const nativeImmersive = (on) => {
+    try {
+      const accepted = window.lvlAndroid?.requestReaderImmersive?.(on) === true;
+      if (accepted && on && root.isConnected) ownsNativeImmersive = true;
+      if (accepted && !on) ownsNativeImmersive = false;
+      return accepted;
+    } catch { return false; }
+  };
+  function setChromeHidden(hidden, { notifyNative = true } = {}) {
+    if (closed || root.classList.contains("is-chrome-hidden") === hidden) return;
+    // Explicit center reveal and native Back cancel any queued touch/wheel
+    // momentum; layout-driven scroll events must not hide controls again.
+    if (!hidden) scrollIntent?.reveal();
+    root.classList.toggle("is-chrome-hidden", hidden);
+    // Hidden toolbar buttons must not become invisible keyboard tab stops.
+    for (const selector of [".reader__bar", ".reader__foot"]) {
+      const bar = root.querySelector(selector);
+      if (bar) bar.inert = hidden;
+    }
+    if (hidden) {
+      for (const pop of root.querySelectorAll(".reader__pop")) pop.hidden = true;
+      for (const name of ["more", "settings", "comfort"])
+        root.querySelector(`button[data-reader="${name}"]`)?.setAttribute("aria-expanded", "false");
+      // A focused hidden toolbar would otherwise reopen itself via :focus-within.
+      stage.focus({ preventScroll: true });
+    }
+    if (notifyNative) nativeImmersive(hidden);
+  }
+  function browserFullscreen({ explicit = false } = {}) {
+    if (closed || document.fullscreenElement || !root.requestFullscreen || (!explicit && autoFullscreenDenied)) return;
+    // Fullscreen API needs a live user gesture. Scroll listeners have none, so
+    // scrolling uses the always-available in-page immersive layout instead.
+    if (window.navigator?.userActivation?.isActive === false) return;
+    if (!explicit && (!narrow() || !window.matchMedia?.("(pointer: coarse)")?.matches)) return;
+    try { Promise.resolve(root.requestFullscreen()).catch(() => { autoFullscreenDenied = true; }); }
+    catch { autoFullscreenDenied = true; }
+  }
+  function enterImmersive({ gesture = false } = {}) {
+    if (closed) return;
+    const wasHidden = root.classList.contains("is-chrome-hidden");
+    if (!wasHidden) setChromeHidden(true);
+    if (gesture && !window.lvlAndroid?.requestReaderImmersive) browserFullscreen();
+  }
+  // Android Back leaves native immersive before navigating. Its acknowledgement
+  // restores the toolbar without initiating a second bridge request.
+  observeNative = typeof MutationObserver === "function"
+    ? new MutationObserver(() => {
+      const acknowledged = document.documentElement.classList.contains("android-reader-immersive");
+      if (acknowledged) nativeImmersiveWasAcknowledged = true;
+      else if (nativeImmersiveWasAcknowledged) {
+        nativeImmersiveWasAcknowledged = false;
+        setChromeHidden(false, { notifyNative: false });
+      }
+    }) : null;
+  observeNative?.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  const onFullscreenChange = () => {
+    if (!document.fullscreenElement && !window.lvlAndroid?.requestReaderImmersive)
+      setChromeHidden(false, { notifyNative: false });
+  };
+  document.addEventListener("fullscreenchange", onFullscreenChange, { signal: listeners.signal });
 
   const url = (n) => api.pageUrl(fileId, n);
   // Sources that stamp a credit strip onto their page files (MangaFox): each page is
   // shown without it, cropped once in a canvas (pages come through LVL, same origin).
   const trim = info.trim === "credit-strip";
-  const trimmed = new Map(); // page -> object URL of the cropped page
+  // Cropped-page object URLs are owned by this attempt, even before it returns.
   const trimming = new Map(); // page -> Promise<object URL | null>
   const src = (n) => trimmed.get(n) || url(n);
   async function cropStrip(img) {
@@ -170,7 +259,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   // Thumbnails are the pages themselves: load only the ones the strip shows,
   // and none while previews are off.
   let previews = read(PREVIEWS_KEY, true) !== false;
-  const thumbObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+  thumbObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
     if (!previews) return;
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
@@ -203,14 +292,15 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     event.preventDefault();
     event.stopPropagation();
     thumbs.scrollLeft += event.deltaY;
-  }, { passive: false });
+  }, { passive: false, signal: listeners.signal });
 
 
   function applyComfort() {
-    const effective = comfort.night && isNight() ? { ...comfort, warm: Math.max(comfort.warm, 45) } : comfort;
-    const filter = comfortFilter(effective);
-    matrix.setAttribute("values", filter.matrix);
-    root.style.filter = filter.active ? `url(#reader-warm) brightness(${filter.brightness})` : "";
+    const filter = comfortFilter(comfort);
+    // Filter individual pages, not the fixed reader container. Filtering the
+    // whole container can turn a WebView compositor failure into a blank screen.
+    root.style.removeProperty("filter");
+    root.style.setProperty("--reader-page-filter", filter.active ? `brightness(${filter.brightness})` : "none");
     root.dataset.theme = comfort.theme;
     for (const input of root.querySelectorAll("[data-comfort]")) {
       if (input.type === "checkbox") input.checked = comfort[input.dataset.comfort];
@@ -229,27 +319,32 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
 
   // Local files go to the next file on disk; source chapters follow the chapter index.
   function chapterTargets() {
-    if (/^f[0-9a-f]{16}$/.test(fileId) && (info.next || info.prev)) return { prev: info.prev ? { file: info.prev } : null, next: info.next ? { file: info.next } : null };
-    const near = chapterNeighbours(chapterList, chapter);
-    return { prev: near.prev ? { chapter: near.prev } : null, next: near.next ? { chapter: near.next } : null };
+    // A local file never silently falls back to a remote/source chapter, even
+    // at the boundary where it has no neighbour.
+    if (/^f[0-9a-f]{16}$/.test(fileId)) return { prev: info.prev ? { file: info.prev } : null, next: info.next ? { file: info.next } : null };
+    const near = readerChapterNeighbours(chapterList, { chapter, volume });
+    return { prev: near.prev, next: near.next };
   }
 
   function paintChapters() {
     const list = root.querySelector(".reader__chapters");
-    const entry = chapterList.find((item) => String(item.chapter) === String(chapter));
+    const { index: currentIndex } = readerChapterPosition(chapterList, { chapter, volume });
+    const entry = currentIndex >= 0 ? chapterList[currentIndex] : null;
     root.querySelector(".reader__chapter-title").textContent = entry
       ? [t("Chapter {number}", { number: entry.chapter }), entry.title].filter(Boolean).join(" · ") : info.file?.name || "";
     const targets = chapterTargets();
     root.querySelector('[data-reader="prevChapter"]').disabled = !targets.prev;
     root.querySelector('[data-reader="nextChapter"]').disabled = !targets.next;
     if (!chapterList.length) { list.innerHTML = `<li class="reader__note">${escapeHtml(info.file?.name || t("No chapter list yet"))}</li>`; return; }
-    list.innerHTML = chapterList.map((item) => `<li><button class="reader__ch" type="button" data-reader-chapter="${escapeHtml(item.chapter)}"${String(item.chapter) === String(chapter) ? ' aria-current="true"' : ""}>`
+    list.innerHTML = chapterList.map((item, index) => `<li><button class="reader__ch" type="button" data-reader-chapter="${escapeHtml(item.chapter)}" data-reader-chapter-index="${index}"${index === currentIndex ? ' aria-current="true"' : ""}>`
       + `<span class="reader__ch-number">${escapeHtml(item.chapter)}</span><span><strong>${escapeHtml(item.title || t("Chapter {number}", { number: item.chapter }))}</strong>`
       + `${item.volume ? `<span>${escapeHtml(t("Volume {number}", { number: item.volume }))}</span>` : ""}</span></button></li>`).join("");
     list.querySelector('[aria-current="true"]')?.scrollIntoView({ block: "center" });
   }
 
   function render() {
+    // Render and scrollIntoView never arm immersive intent. The stage listener
+    // only responds to fresh wheel/touch/keyboard/scrollbar navigation.
     root.dataset.layout = mode.layout;
     root.dataset.direction = mode.direction;
     root.dataset.fit = mode.fit;
@@ -293,7 +388,10 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     for (const n of shown) thumbs.children[n]?.setAttribute("aria-current", "true");
     const active = thumbs.children[shown[0]];
     if (active) thumbs.scrollLeft += active.getBoundingClientRect().left - thumbs.getBoundingClientRect().left - (thumbs.clientWidth - active.offsetWidth) / 2;
-    onPage?.(fileId, current);
+    // Detached atomic staging readers have no accepted route yet; C will set
+    // the initial URL once it mounts. Do not announce a page from a failed or
+    // still-unmounted candidate reader.
+    if (root.isConnected) onPage?.(fileId, current);
   }
 
   function showEnd() {
@@ -310,6 +408,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   function go(target) {
     const next = Math.max(0, Math.min(pages - 1, target));
     if (next === current) { if (atEnd(current, pages, pairing())) showEnd(); return; }
+    unitTransition?.cancel(); // user kept reading; a stale target must not replace the scene
     current = next;
     render();
     saveSoon();
@@ -321,18 +420,72 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   function scrollStrip(direction) {
     const by = stripStep(stage, direction);
     if (by === "end") return showEnd();
-    if (by) stage.scrollBy({ top: by, behavior: "smooth" });
+    if (by) { enterImmersive(); stage.scrollBy({ top: by, behavior: "smooth" }); }
     return undefined;
   }
 
+  function transitionMessage(message = "") {
+    if (closed) return;
+    transitionStatus.textContent = message;
+    transitionStatus.hidden = !message;
+  }
+  unitTransition = createReaderUnitTransition({
+    currentUnit: () => fileId,
+    getWorkId: () => info.workId,
+    loadUnit: (id) => api.readerFile(id),
+    isCurrentReader: () => !closed && root.isConnected,
+    onBusy: (busy) => {
+      root.dataset.unitLoading = busy ? "true" : "false";
+      if (busy) transitionMessage(t("Opening chapter…"));
+      else if (transitionStatus.textContent === t("Opening chapter…")) transitionMessage();
+    },
+    onError: (message) => {
+      setChromeHidden(false); // a failed cascade auto-next must be readable, not hidden under immersive chrome
+      transitionMessage(message);
+    },
+    navigate: async (id, _verified, { isCurrent }) => {
+      if (!isCurrent() || typeof onOpenFile !== "function")
+        throw Error("Cannot open the selected chapter.");
+      // Never close the old reader first: the routing owner closes it only
+      // AFTER the next valid route is accepted. Failures keep current/page.
+      await saveSoon(true);
+      if (!isCurrent()) return false;
+      const result = await onOpenFile(id);
+      return result !== false;
+    },
+  });
   async function openTarget(target) {
-    if (!target) return;
-    saveSoon(true);
-    if (target.file) { close({ keepUrl: true }); onOpenFile?.(target.file); return; }
-    await onChapter?.(target.chapter);
+    if (!target || closed) return false;
+    if (target.file) {
+      chapterTransitionGeneration++;
+      return unitTransition.open(target.file);
+    }
+    if (target.chapter === null || target.chapter === undefined) return false;
+    const selected = readerChapterPosition(chapterList, { chapter: target.chapter, volume: target.volume });
+    if (selected.index < 0) {
+      transitionMessage("This chapter cannot be identified uniquely by chapter and volume.");
+      return false;
+    }
+    unitTransition.cancel();
+    const serial = ++chapterTransitionGeneration;
+    transitionMessage(t("Opening chapter…"));
+    try {
+      if (typeof onChapter !== "function") throw Error("No chapter source is available.");
+      const result = await onChapter(target.chapter, { volume: target.volume ?? null,
+        isCurrent: () => !closed && serial === chapterTransitionGeneration });
+      if (closed || serial !== chapterTransitionGeneration) return false;
+      if (result === false) throw Error("This chapter could not be opened.");
+      transitionMessage();
+      return true;
+    } catch (error) {
+      if (closed || serial !== chapterTransitionGeneration) return false;
+      transitionMessage(error?.message || "This chapter could not be opened.");
+      return false;
+    }
   }
 
   function togglePop(selector, button) {
+    setChromeHidden(false);
     for (const pop of root.querySelectorAll(".reader__pop")) if (!pop.matches(selector)) pop.hidden = true;
     const pop = root.querySelector(selector);
     pop.hidden = !pop.hidden;
@@ -362,23 +515,32 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   }
 
   const actions = {
-    next: () => (mode.layout === "vertical" ? scrollStrip(1) : go(step(current, 1, pages, pairing()))),
-    prev: () => (mode.layout === "vertical" ? scrollStrip(-1) : go(step(current, -1, pages, pairing()))),
+    next: () => { enterImmersive(); return mode.layout === "vertical" ? scrollStrip(1) : go(step(current, 1, pages, pairing())); },
+    prev: () => { enterImmersive(); return mode.layout === "vertical" ? scrollStrip(-1) : go(step(current, -1, pages, pairing())); },
     // Header arrows point at the side of the page they turn to.
     left: () => actions[mode.direction === "rtl" ? "next" : "prev"](),
     right: () => actions[mode.direction === "rtl" ? "prev" : "next"](),
-    first: () => go(0),
-    last: () => go(pages - 1),
+    first: () => { enterImmersive(); return go(0); },
+    last: () => { enterImmersive(); return go(pages - 1); },
     close: () => close(),
-    fullscreen: () => (document.fullscreenElement ? document.exitFullscreen() : root.requestFullscreen?.())?.catch?.(() => {}),
+    fullscreen: () => {
+      if (document.fullscreenElement === root) {
+        Promise.resolve(document.exitFullscreen?.()).catch(() => {});
+        setChromeHidden(false);
+      } else if (root.classList.contains("is-chrome-hidden")) setChromeHidden(false);
+      else {
+        enterImmersive();
+        if (!window.lvlAndroid?.requestReaderImmersive) browserFullscreen({ explicit: true });
+      }
+    },
     nextFile: () => openTarget(chapterTargets().next),
     prevFile: () => openTarget(chapterTargets().prev),
     nextChapter: () => openTarget(chapterTargets().next),
     prevChapter: () => openTarget(chapterTargets().prev),
-    bars: () => root.classList.toggle("is-chrome-hidden"),
+    bars: () => root.classList.contains("is-chrome-hidden") ? setChromeHidden(false) : enterImmersive({ gesture: true }),
     sidebar: () => {
       root.dataset.sidebar = root.dataset.sidebar === "open" ? "closed" : "open";
-      localStorage.setItem(SIDEBAR_KEY, JSON.stringify(root.dataset.sidebar === "open"));
+      if (!narrow()) localStorage.setItem(SIDEBAR_KEY, JSON.stringify(root.dataset.sidebar === "open"));
       root.querySelector('button[data-reader="sidebar"]').setAttribute("aria-expanded", String(root.dataset.sidebar === "open"));
     },
     single: () => setMode({ layout: "single" }),
@@ -403,17 +565,35 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       for (const panel of root.querySelectorAll("[data-side-panel]")) panel.hidden = panel.dataset.sidePanel !== tab.dataset.sideTab;
       return undefined;
     }
-    const chapterButton = event.target.closest("[data-reader-chapter]");
-    if (chapterButton) return String(chapterButton.dataset.readerChapter) === String(chapter) ? undefined : openTarget({ chapter: chapterButton.dataset.readerChapter });
+    const chapterButton = event.target.closest("[data-reader-chapter-index]");
+    if (chapterButton && narrow()) {
+      root.dataset.sidebar = "closed";
+      root.querySelector('button[data-reader="sidebar"]')?.setAttribute("aria-expanded", "false");
+    }
+    if (chapterButton) {
+      const index = Number(chapterButton.dataset.readerChapterIndex);
+      if (!Number.isSafeInteger(index) || index < 0 || index >= chapterList.length) return undefined;
+      const chosen = chapterList[index];
+      const identity = readerChapterIdentity(chosen.chapter, chosen.volume);
+      if (readerChapterPosition(chapterList, { chapter: chosen.chapter, volume: chosen.volume ?? null }).index !== index) {
+        transitionMessage("This chapter cannot be identified uniquely by chapter and volume.");
+        return undefined;
+      }
+      const currentIndex = readerChapterPosition(chapterList, { chapter, volume }).index;
+      return index === currentIndex ? undefined : openTarget(identity);
+    }
     const thumb = event.target.closest("[data-reader-page]");
     if (thumb) return go(Number(thumb.dataset.readerPage));
     const control = event.target.closest("button[data-reader]");
     if (control) return actions[control.dataset.reader]?.(control);
     if (!event.target.closest(".reader__pop")) for (const pop of root.querySelectorAll(".reader__pop")) pop.hidden = true;
     if (!event.target.closest(".reader__stage")) return undefined;
+    if (Date.now() < suppressStageClickUntil) return undefined;
     const box = stage.getBoundingClientRect();
-    return actions[clickAction(event.clientX - box.left, box.width, mode)]?.();
-  });
+    const selected = clickAction(event.clientX - box.left, box.width, mode);
+    if (selected !== "bars") enterImmersive({ gesture: true });
+    return actions[selected]?.();
+  }, { signal: listeners.signal });
   root.addEventListener("change", (event) => {
     const name = event.target.dataset.reader;
     if (name === "source") return event.target.value !== fileId ? onSource?.(event.target.value, current) : undefined;
@@ -426,14 +606,14 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       applyComfort();
     }
     return undefined;
-  });
+  }, { signal: listeners.signal });
   root.addEventListener("input", (event) => {
     if (event.target === slider) go(Number(slider.value) - 1);
     else if (event.target.dataset.comfort && event.target.type === "range") {
       comfort = normalizeComfort({ ...comfort, [event.target.dataset.comfort]: event.target.value });
       applyComfort();
     }
-  });
+  }, { signal: listeners.signal });
   stage.addEventListener("wheel", (event) => {
     if (event.ctrlKey) {
       event.preventDefault();
@@ -441,6 +621,8 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       stage.querySelector(".reader__spread")?.style.setProperty("--reader-zoom", String(zoom));
       return;
     }
+    // Pinch-to-zoom (Ctrl+wheel) is not reading scroll intent.
+    scrollIntent?.wheel();
     if (mode.layout === "vertical") {
       // Cascade: at the bottom of a chapter, scrolling on continues into the next one.
       const atBottom = stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2;
@@ -462,33 +644,74 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     wheelAt = Date.now();
     const action = wheelAction(event, mode, { overflow });
     if (action) actions[action]();
-  }, { passive: false });
+  }, { passive: false, signal: listeners.signal });
   let touch = null;
-  stage.addEventListener("touchstart", (event) => { touch = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY } : null; }, { passive: true });
+  stage.addEventListener("touchstart", (event) => {
+    scrollIntent?.touchStart();
+    touch = event.touches.length === 1 ? { x: event.touches[0].clientX, y: event.touches[0].clientY, moved: false } : null;
+  }, { passive: true, signal: listeners.signal });
+  stage.addEventListener("touchmove", (event) => {
+    if (!touch || event.touches.length !== 1) return;
+    const dx = event.touches[0].clientX - touch.x;
+    const dy = event.touches[0].clientY - touch.y;
+    if (Math.hypot(dx, dy) > 12) {
+      touch.moved = true;
+      scrollIntent?.touchDrag();
+    }
+  }, { passive: true, signal: listeners.signal });
   stage.addEventListener("touchend", (event) => {
-    if (!touch || mode.layout === "vertical" || zoom > 1) return;
-    const dx = event.changedTouches[0].clientX - touch.x;
-    const dy = event.changedTouches[0].clientY - touch.y;
+    if (!touch) return;
+    const started = touch;
     touch = null;
+    if (started.moved) suppressStageClickUntil = Date.now() + 350;
+    if (mode.layout === "vertical" || zoom > 1 || !event.changedTouches.length) return;
+    const dx = event.changedTouches[0].clientX - started.x;
+    const dy = event.changedTouches[0].clientY - started.y;
     if (Math.abs(dx) < 50 || Math.abs(dx) < Math.abs(dy)) return;
+    enterImmersive({ gesture: true });
     actions[dx < 0 ? "right" : "left"]();
-  });
-  stage.addEventListener("scroll", () => {
+  }, { signal: listeners.signal });
+  // Mouse scrollbar/track drag is genuine navigation even without wheel.
+  // A touch on the image is not: touch scrolling is armed on real movement.
+  stage.addEventListener("pointerdown", (event) => {
+    if (event.pointerType !== "mouse" || event.target !== stage ||
+        stage.scrollHeight <= stage.clientHeight + 1) return;
+    const rect = stage.getBoundingClientRect();
+    const edge = Math.max(12, stage.offsetWidth - stage.clientWidth);
+    if (event.clientX >= rect.right - edge) {
+      scrollIntent?.scrollbar();
+      // Native scrollbar track clicks should scroll, not also turn a page.
+      suppressStageClickUntil = Date.now() + 350;
+    }
+  }, { passive: true, signal: listeners.signal });
+  scrollIntent = createReaderScrollIntentController(stage, { enterImmersive, onScroll: () => {
     if (mode.layout !== "vertical") return;
     const top = stage.getBoundingClientRect().top;
     const visible = [...stage.querySelectorAll(".reader__page")].find((img) => img.getBoundingClientRect().bottom > top + 40);
     const n = Number(visible?.dataset.page);
     if (Number.isInteger(n) && n !== current) { current = n; updateCount(); saveSoon(); if (n >= pages - 1) showEnd(); }
-  }, { passive: true });
+  } });
 
   function close({ keepUrl = false } = {}) {
     if (closed) return;
+    // C can cancel a successfully prepared reader before mounting it. Only a
+    // reader that both reached the live document and entered native immersive
+    // itself may release native bars; otherwise we'd exit the *old* reader's
+    // immersive mode during an atomic handover.
+    const releaseOwnedNative = root.isConnected && ownsNativeImmersive;
     closed = true;
+    chapterTransitionGeneration++;
+    unitTransition?.close();
+    scrollIntent?.disconnect();
+    observeNative?.disconnect();
+    listeners.abort();
+    document.removeEventListener("fullscreenchange", onFullscreenChange);
+    if (releaseOwnedNative) nativeImmersive(false);
     thumbObserver?.disconnect();
     for (const objectUrl of trimmed.values()) URL.revokeObjectURL(objectUrl);
     trimmed.clear();
     saveSoon(true);
-    if (document.fullscreenElement === root) document.exitFullscreen().catch(() => {});
+    if (document.fullscreenElement === root) Promise.resolve(document.exitFullscreen?.()).catch(() => {});
     root.remove();
     if (!keepUrl) onClose?.();
   }
@@ -509,8 +732,23 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     close,
     handleKey(event) {
       if (event.target?.closest?.(".reader__pop, .reader__select")) return false;
+      if (event.target === stage && event.key === "Enter") {
+        event.preventDefault();
+        actions.bars();
+        return true;
+      }
       const open = [...root.querySelectorAll(".reader__pop")].find((pop) => !pop.hidden);
       if (open && event.key === "Escape") { event.preventDefault(); open.hidden = true; return true; }
+      if (event.key === "Escape" && root.classList.contains("is-chrome-hidden")) {
+        event.preventDefault();
+        setChromeHidden(false);
+        return true;
+      }
+      if (mode.layout === "vertical" && ["ArrowDown", "ArrowUp", "PageDown", "PageUp", " "].includes(event.key)) {
+        scrollIntent?.keyboard();
+        enterImmersive();
+        return false;
+      }
       const action = keyAction(event, mode);
       if (!action) return false;
       event.preventDefault();
@@ -518,4 +756,27 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       return true;
     },
   };
+  } catch (error) {
+    // An atomic handover may have created a detached reader root and registered
+    // fullscreen/native observers and scroll/listener handlers before a renderer,
+    // page URL, chapter list or focus operation throws. C receives no handle in
+    // this case. Dispose this candidate *without* close() because normal close
+    // announces onClose, saves progress and toggles native immersive off (which
+    // would corrupt the still-mounted reader's state). Never mask the root error.
+    closed = true;
+    chapterTransitionGeneration++;
+    try { unitTransition?.close(); } catch {}
+    try { scrollIntent?.disconnect(); } catch {}
+    try { observeNative?.disconnect(); } catch {}
+    try { thumbObserver?.disconnect(); } catch {}
+    try { listeners.abort(); } catch {}
+    try { clearTimeout(saveTimer); } catch {}
+    for (const objectUrl of trimmed.values()) {
+      try { URL.revokeObjectURL(objectUrl); } catch {}
+    }
+    trimmed.clear();
+    try { if (document.fullscreenElement === root) Promise.resolve(document.exitFullscreen?.()).catch(() => {}); } catch {}
+    try { root.remove(); } catch {}
+    throw error;
+  }
 }

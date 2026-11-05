@@ -3,7 +3,15 @@
 // the original requested seek timestamp would shift embedded subtitles.
 import { spawn } from "node:child_process";
 
-const TIMEOUT_MS = 8_000;
+// LVL's Android app waits longer: a phone's torrent can take several seconds to fetch the
+// pieces at a new position, and waiting that long beats reporting a failed seek. It also reads
+// 24 video packets from the keyframe instead of everything up to 0.6 s past the target (up to
+// a whole GOP, megabytes a phone's torrent may still have to fetch): only the first packet and
+// the first decoded frame are used, and 24 packets cover B-frame reordering.
+const ON_PHONE = process.platform === "android";
+const TIMEOUT_MS = ON_PHONE ? 16_000 : 8_000;
+const READ_TIMEOUT_MICROSECONDS = ON_PHONE ? "12000000" : "5000000";
+const READ_SPAN = ON_PHONE ? "+#24" : "+0.6";
 const OUTPUT_LIMIT = 16 * 1024;
 const MAX_PREROLL_SECONDS = 15;
 
@@ -16,7 +24,7 @@ export function parseCopiedSeekOrigin(payload, requestedStartSeconds) {
   if (!Number.isFinite(requested) || requested <= 0 || requested > 24 * 60 * 60)
     throw invalid("Invalid copied-video seek timestamp", 400);
   const stream = payload?.streams?.[0];
-  if (!["h264", "hevc"].includes(String(stream?.codec_name || "").toLowerCase()))
+  if (!["h264", "hevc", "av1"].includes(String(stream?.codec_name || "").toLowerCase()))
     throw invalid("Source codec cannot be verified for a copied-video seek");
   // Edit lists, negative start times and nonzero stream origins can change how
   // FFmpeg normalizes PTS. Do not offer a guessed clock for these sources.
@@ -54,11 +62,11 @@ export async function probeCopiedSeekOrigin({ source, requestedStartSeconds, exe
   if (requested === 0) return { requestedStartSeconds: 0, effectiveStartSeconds: 0, prerollSeconds: 0, verified: true };
   const args = [
     "-v", "error",
-    ...(source.startsWith("http://127.0.0.1:") ? ["-rw_timeout", "5000000", "-seekable", "1"] : []),
+    ...(source.startsWith("http://127.0.0.1:") ? ["-rw_timeout", READ_TIMEOUT_MICROSECONDS, "-seekable", "1"] : []),
     "-probesize", "1048576", "-analyzeduration", "1000000",
     // Match FFmpeg's input -ss on the same file. Read a small amount past the
     // demuxer's preceding keyframe, enough to decode even with B-frame reorder.
-    "-read_intervals", `${requested}%+0.6`, "-select_streams", "v:0",
+    "-read_intervals", `${requested}%${READ_SPAN}`, "-select_streams", "v:0",
     "-show_packets", "-show_frames",
     "-show_entries", "stream=codec_name,start_time:format=duration,start_time:packet=pts_time,flags:frame=key_frame,best_effort_timestamp_time",
     "-of", "json", source,

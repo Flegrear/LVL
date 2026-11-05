@@ -8,9 +8,10 @@ export const DEFAULT_PLAYBACK_RECOVERY_POLICY = Object.freeze({
 // Browser MEDIA_ERR_DECODE (3) and MEDIA_ERR_SRC_NOT_SUPPORTED (4) suggest a
 // format problem. Network stalls alone should not convert a playable HDR/4K
 // stream into SDR H.264, because conversion cannot create missing torrent data.
-export function playbackRetryStrategy(mode, reason, mediaErrorCode = null) {
+// canConvert: false (LVL's Android app, for now) has no conversion to switch to.
+export function playbackRetryStrategy(mode, reason, mediaErrorCode = null, { canConvert = true } = {}) {
   if (mode === "torrent-direct") {
-    return reason === "error" && [3, 4].includes(Number(mediaErrorCode))
+    return canConvert && reason === "error" && [3, 4].includes(Number(mediaErrorCode))
       ? "compatibility" : "restart-direct";
   }
   return "restart-transcode";
@@ -83,6 +84,11 @@ export function createPlaybackRecoveryState(currentSourceKey = "", currentSource
     cancelled: false,
     exhausted: false,
   };
+}
+
+export function resetPlaybackRecovery(state, currentSourceKey = state?.sourceKey || "", options = {}) {
+  return createPlaybackRecoveryState(currentSourceKey,
+    hasGeneration(options) ? options.sourceGeneration : state?.sourceGeneration);
 }
 
 // A requested recovery switch is remembered in pendingSourceKey. Confirming that exact source

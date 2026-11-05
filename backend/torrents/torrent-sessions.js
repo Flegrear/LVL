@@ -25,6 +25,80 @@ const MAX_TORRENT_SIDECAR_BYTES = 64 * 1024 * 1024;
 const MAX_TORRENT_PATH_LENGTH = 512;
 
 const TORRENT_SLOW_METADATA_MS = 20 * 1000;
+const KEEP_DOWNLOADS = process.platform === "android";
+const RESUME_TORRENT_FILE = "lvl-resume.torrent";
+const RESUME_BITFIELD_FILE = "lvl-resume.bitfield";
+const RESUME_SAVE_MS = 15_000;
+const MAX_RESUME_TORRENT_BYTES = 8 * 1024 * 1024;
+const MAX_RESUME_BITFIELD_BYTES = 2 * 1024 * 1024;
+
+// The same torrent must use the same folder after Android terminates and
+// restarts the server. Keep this derivation stable for existing downloads.
+function downloadSessionId(infoHash) {
+  const hex = crypto.createHash("sha256").update(`lvl-download:${infoHash}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-a${hex.slice(17, 20)}-${hex.slice(20, 32)}`;
+}
+
+function downloadFolder(id) {
+  return path.join(torrentRoot, id);
+}
+
+function readDownloadResume(id) {
+  if (!KEEP_DOWNLOADS) return null;
+  const folder = downloadFolder(id);
+  try {
+    const metadataFile = path.join(folder, RESUME_TORRENT_FILE);
+    const metadataBytes = fs.statSync(metadataFile).size;
+    if (!(metadataBytes > 0 && metadataBytes <= MAX_RESUME_TORRENT_BYTES)) return null;
+    const torrentFile = fs.readFileSync(metadataFile);
+    let bitfield = null;
+    try {
+      const file = path.join(folder, RESUME_BITFIELD_FILE);
+      const bytes = fs.statSync(file).size;
+      if (bytes > 0 && bytes <= MAX_RESUME_BITFIELD_BYTES) bitfield = fs.readFileSync(file);
+    } catch {}
+    return { torrentFile, bitfield };
+  } catch { return null; }
+}
+
+function forgetDownloadResume(id) {
+  for (const name of [RESUME_TORRENT_FILE, RESUME_BITFIELD_FILE]) {
+    try { fs.rmSync(path.join(downloadFolder(id), name), { force: true }); } catch {}
+  }
+  try {
+    for (const name of fs.readdirSync(downloadFolder(id))) {
+      if (/^lvl-probe-\d+\.json$/.test(name)) fs.rmSync(path.join(downloadFolder(id), name), { force: true });
+    }
+  } catch {}
+}
+
+function writeFileReplacing(file, data) {
+  const temporary = `${file}.tmp`;
+  fs.writeFileSync(temporary, data);
+  fs.renameSync(temporary, file);
+}
+
+function saveDownloadResume(session) {
+  const torrent = session?.torrent;
+  if (!KEEP_DOWNLOADS || !torrent || torrent.destroyed || !torrent.pieces?.length || session.state !== "ready") return;
+  try {
+    const folder = downloadFolder(session.id);
+    fs.mkdirSync(folder, { recursive: true });
+    const metadataFile = path.join(folder, RESUME_TORRENT_FILE);
+    if (torrent.torrentFile?.length && !fs.existsSync(metadataFile)) {
+      writeFileReplacing(metadataFile, torrent.torrentFile);
+    }
+    // Persist the bitfield only after the store has checked the existing pieces.
+    const bytes = torrent.bitfield?.buffer;
+    const length = Math.ceil(torrent.pieces.length / 8);
+    if (session.resumeDirty && torrent.ready === true && length <= MAX_RESUME_BITFIELD_BYTES && bytes?.length >= length) {
+      writeFileReplacing(path.join(folder, RESUME_BITFIELD_FILE), Buffer.from(bytes.buffer, bytes.byteOffset, length));
+      session.resumeDirty = false;
+    }
+  } catch (error) {
+    console.warn(`Could not save download progress for ${session.id}:`, error.message);
+  }
+}
 
 const DIRECT_VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".webm", ".ogv", ".ogg"]);
 const SAFE_TORRENT_SIDECAR_EXTENSIONS = new Set([
@@ -172,9 +246,11 @@ export async function removeTorrentSession(id) {
   }
   clearTimeout(session.expiryTimer);
   clearTimeout(session.slowTimer);
+  clearInterval(session.resumeTimer);
+  saveDownloadResume(session);
   try {
     if (session.torrent && !session.torrent.destroyed) {
-      await session.torrent.destroy({ destroyStore: true });
+      await session.torrent.destroy({ destroyStore: !KEEP_DOWNLOADS });
     }
   } catch (error) {
     console.warn(`Failed to destroy torrent session ${id}:`, error.message);
@@ -334,24 +410,35 @@ export async function createTorrentSession(req, res) {
   const orphan = torrentClient.torrents.find((candidate) => candidate.infoHash?.toLowerCase() === infoHash);
   if (orphan) {
     try {
-      await orphan.destroy({ destroyStore: true });
+      await orphan.destroy({ destroyStore: !KEEP_DOWNLOADS });
     } catch {}
   }
 
-  const id = crypto.randomUUID();
+  const id = KEEP_DOWNLOADS && /^[0-9a-f]{40}$/.test(infoHash) ? downloadSessionId(infoHash) : crypto.randomUUID();
   fs.mkdirSync(torrentRoot, { recursive: true });
+  const resume = KEEP_DOWNLOADS ? readDownloadResume(id) : null;
 
   let torrent;
   try {
-    torrent = torrentClient.add(magnet, {
+    torrent = torrentClient.add(resume?.torrentFile || magnet, {
       path: path.join(torrentRoot, id),
       addUID: true,
       deselect: true,
-      destroyStoreOnDestroy: true,
+      destroyStoreOnDestroy: !KEEP_DOWNLOADS,
       announce: fallbackTrackersForMagnet(magnet),
+      ...(resume?.bitfield?.length ? { bitfield: resume.bitfield } : {}),
     });
   } catch (error) {
+    if (resume) forgetDownloadResume(id);
     json(res, 500, { error: error.message || "Unable to create torrent session" });
+    return;
+  }
+  if (resume && torrent.infoHash && String(torrent.infoHash).toLowerCase() !== infoHash) {
+    // A stale or damaged metadata file must never seed another torrent's
+    // pieces into this infohash-derived directory.
+    forgetDownloadResume(id);
+    await torrent.destroy({ destroyStore: false }).catch(() => {});
+    json(res, 409, { error: "Saved torrent details didn't match; try again" });
     return;
   }
 
@@ -389,7 +476,23 @@ export async function createTorrentSession(req, res) {
     session.state = "ready";
     session.error = null;
     selectPreferredTorrentDownload(session);
+    if (KEEP_DOWNLOADS) {
+      saveDownloadResume(session);
+      session.resumeTimer = setInterval(() => saveDownloadResume(session), RESUME_SAVE_MS);
+      session.resumeTimer.unref?.();
+    }
   };
+  if (KEEP_DOWNLOADS) {
+    session.resumeDirty = true;
+    torrent.on("verified", () => { session.resumeDirty = true; });
+    torrent.once("ready", () => saveDownloadResume(session));
+    torrent.once("done", () => { session.resumeDirty = true; saveDownloadResume(session); });
+  }
+  if (resume) torrent.once("infoHash", () => {
+    if (String(torrent.infoHash || "").toLowerCase() === infoHash) return;
+    forgetDownloadResume(id);
+    torrent.emit("error", new Error("Saved torrent details didn't match; try again"));
+  });
   torrent.once("metadata", markReady);
   torrent.once("ready", markReady);
   torrent.once("error", (error) => {

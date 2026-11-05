@@ -1,0 +1,412 @@
+/* Loaded after phone.css, opt-in only after installPhonePlayerControls().
+   Compact mode is the ordinary portrait player, NEVER fullscreen. */
+@media (hover:none) and (pointer:coarse) and (orientation:portrait) and (max-width:680px) {
+  html.phone-player-ui-ready .video-frame .compat-controls,
+  html.phone-player-ui-ready.android-fullscreen .video-frame .compat-controls {
+    box-sizing:border-box;
+    padding-inline:6px;
+    gap:6px;
+  }
+  html.phone-player-ui-ready .video-frame .player-control-row,
+  html.phone-player-ui-ready.android-fullscreen .video-frame .player-control-row {
+    display:flex;
+    flex-wrap:nowrap;
+    justify-content:space-between;
+    align-items:center;
+    gap:4px;
+    width:100%;
+    max-width:100%;
+    min-width:0;
+    padding:0;
+    overflow:visible; /* Menus float above the row, never clip their choices. */
+  }
+  /* Only six essential buttons plus speed if width allows in normal portrait.
+     The fullscreen override below brings the original full set back. */
+  html.phone-player-ui-ready .player-control-row > :not(
+    #player-seek-back,#compat-play,#player-seek-forward,
+    #player-audio-switcher,#player-toggle-subs,#player-fullscreen,.player-speed
+  ) { display:none !important; }
+  html.phone-player-ui-ready .player-control-row > :is(
+    #player-seek-back,#compat-play,#player-seek-forward,
+    #player-audio-switcher,#player-toggle-subs,#player-fullscreen
+  ), html.phone-player-ui-ready .player-control-row > .player-speed,
+  html.phone-player-ui-ready .player-control-row .player-speed-trigger {
+    box-sizing:border-box;
+    flex:0 0 44px;
+    width:44px;
+    height:44px;
+    min-width:44px;
+    min-height:44px;
+    max-width:44px;
+    max-height:44px;
+    padding:0;
+    margin:0;
+    touch-action:manipulation;
+  }
+  html.phone-player-ui-ready .player-control-row .player-speed-trigger {
+    display:grid;
+    place-items:center;
+  }
+  html.phone-player-ui-ready .player-control-row #compat-play {
+    border-radius:50%;
+  }
+}
+/* Fullscreen has a dedicated single-row override below; the prior all-visible/wrap rules were removed. */
+@media (hover:none) and (pointer:coarse) and (orientation:portrait) and (max-width:360px) {
+  html.phone-player-ui-ready .video-frame .player-control-row,
+  html.phone-player-ui-ready.android-fullscreen .video-frame .player-control-row { gap:3px; }
+  html.phone-player-ui-ready .player-control-row > :is(
+    #player-seek-back,#compat-play,#player-seek-forward,
+    #player-audio-switcher,#player-toggle-subs,#player-fullscreen
+  ),html.phone-player-ui-ready .player-control-row > .player-speed,
+  html.phone-player-ui-ready .player-control-row .player-speed-trigger {
+    flex-basis:40px;
+    width:40px;
+    min-width:40px;
+    max-width:40px;
+    height:40px;
+    min-height:40px;
+    max-height:40px;
+  }
+}
+@media (hover:none) and (pointer:coarse) and (orientation:portrait) and (max-width:340px) {
+  /* Physical 320px devices retain six >=40px targets and still have captions,
+     audio and fullscreen; speed remains available upon rotating to landscape. */
+  html.phone-player-ui-ready .player-control-row > .player-speed { display:none !important; }
+}
+@media (hover:none) and (pointer:coarse) and (max-width:680px) {
+  html.phone-player-ui-ready #player-subtitle-menu {
+    box-sizing:border-box;
+    width:min(360px,calc(100% - 12px));
+    max-height:min(58dvh,380px);
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+  }
+  html.phone-player-ui-ready #player-subtitle-menu .player-caption-customize,
+  html.phone-player-ui-ready #player-subtitle-menu .player-popover-row {
+    min-height:44px;
+  }
+  html.phone-player-ui-ready #player-subtitle-dialog {
+    box-sizing:border-box;
+    width:calc(100dvw - 12px);
+    max-width:calc(100dvw - 12px);
+    max-height:calc(100dvh - 24px);
+    overflow:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+  }
+  html.phone-player-ui-ready #player-subtitle-dialog .subtitle-dock-head {
+    padding-inline:12px 52px;
+  }
+  html.phone-player-ui-ready #player-subtitle-dialog .subtitle-dock-actions button { min-height:40px; }
+
+  /* Existing Appearance dialog owns the complete, persisted set of fields.
+     Its former auto-sized grid placed the scrollable controls *below* a tall
+     preview, outside overflow:hidden on short phone viewports. Give it a
+     bounded flex height and a genuine scrolling region for all eight fields. */
+  html.phone-player-ui-ready #subtitle-style-dialog {
+    box-sizing:border-box;
+    width:calc(100dvw - 12px);
+    max-width:calc(100dvw - 12px);
+    height:min(92dvh,740px);
+    max-height:calc(100dvh - 12px);
+    padding:0;
+    overflow:hidden;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-shell {
+    display:flex;
+    flex-direction:column;
+    min-width:0;
+    min-height:0;
+    height:100%;
+    max-height:100%;
+    overflow:hidden;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-preview-wrap {
+    flex:0 0 auto;
+    min-height:0;
+    padding:10px 14px 8px;
+    border-right:0;
+    border-bottom:1px solid #292929;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-preview {
+    min-height:66px;
+    height:66px;
+    padding:8px;
+    margin-bottom:6px;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-preview-rotate { min-height:36px; }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-controls {
+    display:grid;
+    flex:1 1 auto;
+    min-height:0;
+    min-width:0;
+    overflow-x:hidden;
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+    padding:14px 16px max(22px,env(safe-area-inset-bottom,0px));
+    gap:12px;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-grid {
+    grid-template-columns:minmax(0,1fr);
+    gap:14px;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-grid > * {
+    grid-column:auto;
+    min-width:0;
+    scroll-margin-block:16px;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-grid :is(
+    input[type=range],input[type=color],select
+  ) { min-height:42px; max-width:100%; }
+  html.phone-player-ui-ready #subtitle-style-dialog .settings-actions { padding-bottom:8px; }
+  html.phone-player-ui-ready #subtitle-style-dialog .settings-actions button { min-height:44px; }
+}
+
+@media (hover:none) and (pointer:coarse) and (orientation:landscape) and (max-height:550px) {
+  /* Wide-but-short phone fullscreen has room across, not vertically. Preserve
+     both preview and every field without making the dialog taller than the
+     visible screen; controls independently scroll while the preview stays. */
+  html.phone-player-ui-ready #subtitle-style-dialog {
+    box-sizing:border-box;
+    width:calc(100dvw - 12px);
+    max-width:calc(100dvw - 12px);
+    height:calc(100dvh - 12px);
+    max-height:calc(100dvh - 12px);
+    padding:0;
+    overflow:hidden;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-shell {
+    display:grid;
+    grid-template-columns:minmax(0,.42fr) minmax(0,.58fr);
+    min-height:0;
+    height:100%;
+    max-height:100%;
+    overflow:hidden;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-preview-wrap {
+    min-width:0;
+    min-height:0;
+    padding:10px;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-preview {
+    min-height:78px;
+    height:90px;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-controls {
+    min-width:0;
+    min-height:0;
+    overflow-x:hidden;
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+    padding:12px 14px;
+    gap:10px;
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-grid {
+    grid-template-columns:minmax(0,1fr);
+  }
+  html.phone-player-ui-ready #subtitle-style-dialog .subtitle-style-grid > * {
+    grid-column:auto;
+    min-width:0;
+  }
+}
+
+/* Round 2: a fullscreen row is exactly ONE line even on an upright 320px
+   Android screen. The initial fullscreen implementation restored fourteen
+   ~40px buttons, full title and metrics in the same flex row, then wrapped.
+   They cannot mathematically fit. The phone controller reparents the
+   ORIGINAL less-used controls into More (listeners and values preserved).
+   Caption, play/seek and fullscreen are always kept within the one row.
+   The timeline and its time readout remain the independent row above it. */
+@media (hover:none) and (pointer:coarse) {
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame .compat-controls {
+    box-sizing:border-box;
+    padding-inline:max(6px,env(safe-area-inset-left,0px)) max(6px,env(safe-area-inset-right,0px));
+    gap:6px;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame .player-control-row {
+    display:flex;
+    flex-wrap:nowrap !important;
+    align-items:center;
+    justify-content:space-between;
+    gap:var(--phone-fullscreen-control-gap,4px);
+    min-width:0;
+    max-width:100%;
+    width:100%;
+    overflow:visible;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame .player-control-row > :is(
+    #player-seek-back,#compat-play,#player-seek-forward,
+    #player-toggle-subs,#player-fullscreen,#player-audio-switcher,
+    #player-source-switcher,#player-mute,#player-next-chapter,
+    #player-prev-chapter,#player-loop-line,#player-swap-languages,
+    #player-float,#player-theater,#phone-player-more
+  ):not([hidden]) {
+    display:grid !important;
+    place-items:center;
+    flex:0 0 var(--phone-fullscreen-control-size,44px);
+    box-sizing:border-box;
+    width:var(--phone-fullscreen-control-size,44px);
+    height:var(--phone-fullscreen-control-size,44px);
+    min-width:var(--phone-fullscreen-control-size,44px);
+    min-height:var(--phone-fullscreen-control-size,44px);
+    max-width:var(--phone-fullscreen-control-size,44px);
+    max-height:var(--phone-fullscreen-control-size,44px);
+    margin:0;
+    padding:0;
+    touch-action:manipulation;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame .player-control-row > .player-speed:not([hidden]),
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame .player-control-row .player-speed-trigger {
+    flex:0 0 var(--phone-fullscreen-control-size,44px);
+    box-sizing:border-box;
+    width:var(--phone-fullscreen-control-size,44px);
+    min-width:var(--phone-fullscreen-control-size,44px);
+    max-width:var(--phone-fullscreen-control-size,44px);
+    height:var(--phone-fullscreen-control-size,44px);
+    min-height:var(--phone-fullscreen-control-size,44px);
+    max-height:var(--phone-fullscreen-control-size,44px);
+    padding:0;
+    margin:0;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame .player-timeline-row {
+    display:grid;
+    grid-template-columns:minmax(0,1fr) auto;
+    gap:7px;
+    min-width:0;
+    align-items:center;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame .player-timeline-row > #compat-time {
+    display:inline-block !important;
+    min-width:0;
+    white-space:nowrap;
+    font:600 11px/1.2 var(--font-sans);
+    font-variant-numeric:tabular-nums;
+  }
+  html.phone-player-ui-ready #phone-player-more[hidden],
+  html.phone-player-ui-ready #phone-player-more-panel[hidden] { display:none !important; }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more {
+    border:1px solid rgba(255,255,255,.4);
+    background:#181818;
+    color:#fff;
+    font:700 20px/1 var(--font-sans);
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more[aria-expanded=true] {
+    background:#f5f5f5;
+    color:#101010;
+  }
+  html.phone-player-ui-ready #phone-player-more:focus-visible,
+  html.phone-player-ui-ready #phone-player-more-panel :is(button,input):focus-visible {
+    outline:2px solid #fff;
+    outline-offset:2px;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel:not([hidden]) {
+    display:flex;
+    flex-direction:column;
+    gap:5px;
+    box-sizing:border-box;
+    position:absolute;
+    z-index:35;
+    right:max(6px,env(safe-area-inset-right,0px));
+    bottom:calc(100% - 8px);
+    width:min(320px,calc(100% - 12px));
+    min-width:0;
+    max-height:min(58dvh,430px);
+    padding:10px;
+    border:1px solid #484848;
+    border-radius:12px;
+    background:#111;
+    box-shadow:0 12px 34px rgba(0,0,0,.76);
+    color:#fff;
+    overflow-x:hidden;
+    overflow-y:auto;
+    overscroll-behavior:contain;
+    -webkit-overflow-scrolling:touch;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > :is(
+    .player-tool,.player-speed,.player-volume,.player-playback-metrics,.player-now-playing
+  ):not([hidden]) {
+    display:flex !important;
+    flex:0 0 auto;
+    box-sizing:border-box;
+    width:100%;
+    min-width:0;
+    max-width:100%;
+    min-height:44px;
+    height:auto;
+    max-height:none;
+    padding:8px 10px;
+    margin:0;
+    border-radius:7px;
+    justify-content:flex-start;
+    align-items:center;
+    gap:12px;
+    background:#202020;
+    color:#f6f6f6;
+    text-align:left;
+    touch-action:manipulation;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > .player-tool::after {
+    content:attr(aria-label);
+    display:block;
+    position:static;
+    box-sizing:border-box;
+    width:auto;
+    height:auto;
+    border:0;
+    padding:0;
+    margin:0;
+    color:inherit;
+    background:none;
+    font:500 13px/1.3 var(--font-sans);
+    opacity:1;
+    visibility:visible;
+    transform:none;
+    white-space:normal;
+    pointer-events:none;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > .player-speed {
+    display:grid !important;
+    grid-template-columns:minmax(0,1fr);
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel .player-speed-trigger {
+    width:100%;
+    min-width:0;
+    max-width:none;
+    height:44px;
+    flex:none;
+    justify-content:flex-start;
+    padding-inline:10px;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel .player-speed-trigger::before {
+    content:"Speed";
+    margin-right:auto;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel .player-speed-menu:not([hidden]) {
+    display:grid;
+    position:static;
+    width:100%;
+    max-width:100%;
+    margin-top:5px;
+    box-sizing:border-box;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > .player-volume {
+    display:block !important;
+    min-height:44px;
+    accent-color:#fff;
+  }
+  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > :is(.player-now-playing,.player-playback-metrics) {
+    white-space:normal;
+    overflow-wrap:anywhere;
+    font-size:12px;
+  }
+}
+@media (hover:none) and (pointer:coarse) and (max-width:360px) {
+  html.phone-player-ui-ready.phone-player-fullscreen {
+    --phone-fullscreen-control-size:40px;
+    --phone-fullscreen-control-gap:3px;
+  }
+}

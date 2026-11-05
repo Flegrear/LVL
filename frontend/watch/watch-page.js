@@ -59,6 +59,15 @@ let watchChaptersSourceKey = "";
 let watchChapterActions = new Map();
 export let watchEpisodeSourcesOpen = "";
 export const watchEpisodeSourceLookups = new Map();
+// Keep existing focus and event targets when startup repeats an identical
+// chapter render; source-specific action data is refreshed independently.
+const watchChapterMarkupByNode = new WeakMap();
+function setWatchChapterMarkup(node, markup) {
+  if (watchChapterMarkupByNode.get(node) === markup) return false;
+  node.innerHTML = markup;
+  watchChapterMarkupByNode.set(node, markup);
+  return true;
+}
 
 let watchSelectedSeason = null;
 let watchInfoRenderKey = "";
@@ -243,8 +252,14 @@ export function renderWatchChapters() {
   renderWatchInfo(series, entry);
   if (!series || series.type === "movie" || source?.fileIndex === undefined || source?.fileIndex === null) {
     root.hidden = true;
-    body.replaceChildren();
-    $("#watch-seasons").hidden = true;
+    if (body.childNodes.length) body.replaceChildren();
+    watchChapterMarkupByNode.delete(body);
+    const seasonsNode = $("#watch-seasons");
+    if (seasonsNode) {
+      seasonsNode.hidden = true;
+      if (seasonsNode.childNodes.length) seasonsNode.replaceChildren();
+      watchChapterMarkupByNode.delete(seasonsNode);
+    }
     watchChapterActions = new Map();
     watchChaptersSourceKey = "";
     return;
@@ -308,7 +323,7 @@ export function renderWatchChapters() {
   const seasonsNode = $("#watch-seasons");
   if (seasonsNode) {
     seasonsNode.hidden = seasons.length < 2;
-    seasonsNode.innerHTML = seasons.length < 2 ? "" : `<h3 class="watch-side-heading">Seasons</h3><div class="watch-season-tiles">${seasons.map(([season, episodes]) => {
+    const seasonsMarkup = seasons.length < 2 ? "" : `<h3 class="watch-side-heading">Seasons</h3><div class="watch-season-tiles">${seasons.map(([season, episodes]) => {
       const still = episodes.find((item) => item.thumbnail)?.thumbnail || "";
       const image = still || wideFallback;
       const backup = still ? wideFallback : posterFallback;
@@ -321,7 +336,7 @@ export function renderWatchChapters() {
         ${picture}<span>${season === 0 ? "Specials" : `Season ${season}`}</span><small>${finished}/${episodes.length}</small>
       </button>`;
     }).join("")}</div>`;
-    refreshImages(seasonsNode);
+    if (setWatchChapterMarkup(seasonsNode, seasonsMarkup)) refreshImages(seasonsNode);
   }
   const scrollTop = body.scrollTop;
   const focusedEpisode = body.contains(document.activeElement) ? document.activeElement.closest?.(".watch-episode[data-watch-episode-code]") : null;
@@ -329,7 +344,7 @@ export function renderWatchChapters() {
   const focusedControl = document.activeElement?.hasAttribute?.("data-watch-episode-sources") ? "sources"
     : document.activeElement?.hasAttribute?.("data-watch-episode") ? "play" : "card";
   watchChapterActions = new Map();
-  body.innerHTML = (unavailable ? `<div class="watch-chapter-notice"><span>Full episode information couldn't load; your saved episodes remain available.</span><button type="button" class="ui-btn ui-btn--secondary ui-btn--sm" data-watch-retry-chapters>Retry</button></div>` : "") + seasons.filter(([season]) => String(season) === String(watchSelectedSeason)).map(([, rows]) => {
+  const episodesMarkup = (unavailable ? `<div class="watch-chapter-notice"><span>Full episode information couldn't load; your saved episodes remain available.</span><button type="button" class="ui-btn ui-btn--secondary ui-btn--sm" data-watch-retry-chapters>Retry</button></div>` : "") + seasons.filter(([season]) => String(season) === String(watchSelectedSeason)).map(([, rows]) => {
     return `<ol class="watch-episode-list">${rows.map((chapter) => {
         const code = String(chapter.code || "").toUpperCase();
         const status = watchEpisodeStatus(series, chapter);
@@ -380,6 +395,7 @@ export function renderWatchChapters() {
         </li>`;
       }).join("")}</ol>`;
   }).join("") || '<p class="watch-episode-empty">No chapters have been identified for this title yet.</p>';
+  if (!setWatchChapterMarkup(body, episodesMarkup)) return;
   body.scrollTop = scrollTop;
   if (previouslyFocused) {
     const item = [...body.querySelectorAll(".watch-episode[data-watch-episode-code]")].find((node) => node.dataset.watchEpisodeCode === previouslyFocused);

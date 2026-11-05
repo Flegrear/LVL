@@ -60,8 +60,16 @@ export function chapterCandidates({ chapter, volume = null, files = [], chapterL
     if (hit) out.push({ readerId: file.id, kind: "local", name: file.name, detail: file.chapter ? "" : `Volume ${file.volume}`, lang: "", page: file.progress && !file.progress.finished ? file.progress.page : 0 });
   }
   for (const { link, chapters } of chapterLists) {
-    for (const item of chapters) {
-      if (normalizeUnitNumber(item.chapter) !== wanted || item.externalUrl) continue;
+    const matches = chapters.filter((item) => normalizeUnitNumber(item.chapter) === wanted && !item.externalUrl);
+    const requestedVolume = normalizeUnitNumber(volume);
+    const exact = requestedVolume ? matches.filter((item) => normalizeUnitNumber(item.volume) === requestedVolume) : [];
+    // When the source genuinely distinguishes two identical chapter numbers
+    // by volume, prefer the selected volume. Unlabelled candidates remain
+    // usable, and if no exact volume exists we retain the old fallback.
+    const chosen = exact.length
+      ? matches.filter((item) => !normalizeUnitNumber(item.volume) || normalizeUnitNumber(item.volume) === requestedVolume)
+      : matches;
+    for (const item of chosen) {
       out.push({ readerId: item.id, kind: link.kind, name: link.name, detail: [item.group, item.title].filter(Boolean).join(" · "), lang: item.language || link.lang || "", page: 0 });
     }
   }

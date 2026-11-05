@@ -6,6 +6,10 @@
 // leaves the launcher's own automatic mode off, and asks it to install only
 // when no video has been open for a while. It also reads the size of the file
 // the launcher is downloading, so the window can show a progress bar.
+//
+// LVL's Android app answers the same requests. It reports its own download
+// progress (download) and update size (availableSize), and autoInstall: false
+// for a new app version, which Android asks the user to confirm.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -123,6 +127,16 @@ export function createUpdatePolicy({
 
   // Remember transitions the window may poll too slowly to see.
   function observe(native) {
+    // Android may report PackageInstaller's terminal failure between two
+    // browser polls (or after the browser reconnects). It must still show as
+    // FAILED, not "ready", even if we never observed downloading=true.
+    // This only applies to Android's explicit-approval APK (not Windows).
+    if (native?.autoInstall === false && native?.error && native?.availableVersion) {
+      failed = { version: native.availableVersion, error: String(native.error) };
+      download = null;
+      launched = null;
+      return;
+    }
     if (native?.downloading) {
       if (!download) download = { version: native.availableVersion, since: now() };
       return;
@@ -150,6 +164,8 @@ export function createUpdatePolicy({
 
   function progress(native) {
     if (!native?.downloading) return null;
+    // The Android app reports its own download (its files have other names).
+    if (native.download && typeof native.download === "object") return native.download;
     const version = String(native.availableVersion || "");
     const file = findDownload(tempDirs, version, { since: (download?.since ?? now() - 60 * 60_000) - 60_000, fsImpl });
     if (!file) return { bytes: 0, total: null, kind: null };
@@ -158,6 +174,7 @@ export function createUpdatePolicy({
 
   // The size of the update that Install would download, once known.
   function readySize(native) {
+    if (native?.availableSize && typeof native.availableSize === "object") return native.availableSize;
     const version = String(native?.availableVersion || "");
     const patchSize = patchCapable() ? sizeOf(version, updateAssetName(version, true)) : null;
     if (patchSize) return { bytes: patchSize, kind: "patch" };
@@ -178,7 +195,7 @@ export function createUpdatePolicy({
         progress: current === "downloading" ? progress(native) : null,
         size: current === "ready" ? readySize(native) : null,
         error: current === "failed" ? failed.error : null,
-        installsWhenIdle: Boolean(automatic) && current === "ready",
+        installsWhenIdle: Boolean(automatic) && current === "ready" && native?.autoInstall !== false,
       },
     };
   }
@@ -244,6 +261,8 @@ export function createUpdatePolicy({
       }
       const version = String(native.availableVersion || "");
       if (!native.available || !version || idleSince === null || now() - idleSince < IDLE_BEFORE_INSTALL_MS) return;
+      // A new Android app version asks the user to confirm, so it waits for Install.
+      if (native.autoInstall === false) return;
       if (now() - (autoAttempts.get(version) || 0) < AUTO_RETRY_MS) return;
       log(`Installing LVL ${version} automatically (no video open)`);
       await install({ auto: true });

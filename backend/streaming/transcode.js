@@ -42,11 +42,28 @@ async function exactFfmpegFingerprint() {
 
 let preferredHardwareEncoderPromise = null;
 let failedHardwareEncoder = "";
+const androidVideoEncoder = process.platform === "android";
+// Android's small FFmpeg needs an actual MediaCodec frame encode to succeed
+// before the player may advertise H.264 conversion support.
+let videoConversionAvailable = !androidVideoEncoder;
 async function videoTranscodeEncoder() {
-  if (!preferredHardwareEncoderPromise) preferredHardwareEncoderPromise = detectHardwareH264Encoder(ffmpegPath);
+  if (!preferredHardwareEncoderPromise) {
+    preferredHardwareEncoderPromise = detectHardwareH264Encoder(ffmpegPath)
+      .then((encoder) => {
+        if (androidVideoEncoder) videoConversionAvailable = Boolean(encoder && encoder !== failedHardwareEncoder);
+        return encoder;
+      }).catch(() => {
+        if (androidVideoEncoder) videoConversionAvailable = false;
+        return null;
+      });
+  }
   const encoder = await preferredHardwareEncoderPromise;
-  return encoder && encoder !== failedHardwareEncoder ? encoder : "libx264";
+  return encoder && encoder !== failedHardwareEncoder ? encoder : (androidVideoEncoder ? null : "libx264");
 }
+// Health and optional background-cache admission must reflect a real device
+// capability, including a hardware encoder that later fails during playback.
+export function isVideoConversionAvailable() { return videoConversionAvailable; }
+if (androidVideoEncoder) void videoTranscodeEncoder();
 
 export async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = null) {
   const traceToken = typeof playbackTrace !== "undefined" ? playbackTrace.captureToken(session.id, fileIndex) : null;
@@ -84,14 +101,29 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
   const requestedVideoMode = requestUrl?.searchParams?.get("video") || "auto";
   // Explicit copy must never quietly turn a seeked HDR source into SDR just
   // because media metadata is not yet cached when the video is reopened.
-  if (startSeconds > 0 && requestedVideoMode === "copy" && !media) {
+  if (!media && (startSeconds > 0 && requestedVideoMode === "copy"
+    || androidVideoEncoder && (requestedVideoMode === "copy"
+      || Number.isInteger(requestedAudio) && requestedAudio > 0))) {
     try { media = await probeTorrentFile(session, fileIndex); }
     catch (error) {
-      if (!res.destroyed && !res.writableEnded) json(res, error.statusCode || 422, { error: "Cannot verify source compatibility for copied-video seeking" });
+      if (!res.destroyed && !res.writableEnded) json(res, error.statusCode || 422, {
+        error: androidVideoEncoder ? "Cannot verify media metadata for the selected video/audio stream"
+          : "Cannot verify source compatibility for copied-video seeking",
+      });
+      return;
+    }
+    if (res.destroyed || res.writableEnded || req.aborted) return;
+    if (androidVideoEncoder && torrentSessions.get(session.id) !== session) {
+      json(res, 410, { error: "Source session has expired" });
       return;
     }
   }
   const audioTracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
+  if (androidVideoEncoder && Number.isInteger(requestedAudio) && requestedAudio > 0
+    && requestedAudio >= audioTracks.length) {
+    json(res, 422, { error: "The selected audio track is unavailable for this source" });
+    return;
+  }
   const audioTrackOrder = Number.isInteger(requestedAudio) && requestedAudio >= 0 && requestedAudio < Math.max(1, audioTracks.length)
     ? requestedAudio
     : 0;
@@ -140,8 +172,18 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
   const durationOrigin = plan.video.mode === "copy" ? effectiveStartSeconds : startSeconds;
   const remainingDuration = media?.durationSeconds ? Math.max(0.25, Number(media.durationSeconds) - durationOrigin) : null;
   const videoFilter = transcodeVideoFilter(plan);
+  // The Android FFmpeg build cannot tone-map HDR. Reject a conversion that
+  // would destroy HDR picture information; compatible source-copy stays usable.
+  if (androidVideoEncoder && plan.video.toneMapToSdr) {
+    json(res, 422, { error: "HDR conversion requires tone mapping, unavailable in this Android build" });
+    return;
+  }
   const videoEncoder = plan.video.mode === "copy" ? "copy" : await videoTranscodeEncoder();
   if (res.destroyed || res.writableEnded) return;
+  if (!videoEncoder) {
+    json(res, 422, { error: "H.264 conversion is unavailable on this Android device" });
+    return;
+  }
   // Fragment caches are strictly bound to their exact validated movie clock,
   // source, audio track and FFmpeg plan. Only an EOF-verified complete fMP4 is
   // safe for a native HTMLMediaElement replay. Partial moofs stay internal.
@@ -402,8 +444,8 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
     remuxRecorder.transform.on("error", () => res.destroy());
     if (runAheadEligible) {
       // The recorder sees verified fragments beyond the browser's +45s MSE
-      // read limit. 96MiB of queued output is the HARD cap; once full, normal
-      // backpressure pauses this very same FFmpeg and its cache writer.
+      // read limit. The hard cap is 24 MiB on Android or 96 MiB on desktop;
+      // once full, normal backpressure pauses this FFmpeg and cache writer.
       const generation = remuxRecorder.producerToken;
       const current = () => torrentSessions.get(session.id) === session
         && session.torrent?.files?.[fileIndex] === file;
@@ -411,7 +453,7 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
         source:remuxRecorder.transform, response:res,sourceGeneration:generation,
         getCurrentGeneration:()=>current()?generation:null,
         isVerifiedComplete:()=>current() && file.done === true && Number(file.downloaded) === Number(file.length),
-        maxBufferedBytes:96*1024*1024,
+        maxBufferedBytes:(androidVideoEncoder ? 24 : 96)*1024*1024,
         onAbort:()=>{if(!ffmpeg.killed)ffmpeg.kill();},
       });
       if (ahead.started) {
@@ -484,7 +526,8 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
     activeTranscodes.delete(ffmpeg);
     if (code && videoEncoder !== "copy" && videoEncoder !== "libx264" && !cancelledByClient) {
       failedHardwareEncoder = videoEncoder;
-      console.warn(`Hardware encoder ${videoEncoder} failed; future streams will use software H.264`);
+      if (androidVideoEncoder) videoConversionAvailable = false;
+      console.warn(`Hardware encoder ${videoEncoder} failed; future streams will ${androidVideoEncoder ? "report conversion unavailable" : "use software H.264"}`);
     }
     req.removeListener("aborted", stop);
     // Keep the response-close listener through the final pipe drain: a client

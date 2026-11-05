@@ -37,7 +37,7 @@ const stable = (value) => (Array.isArray(value) ? `[${value.map(stable).join(","
   : JSON.stringify(value ?? null));
 const hashOf = (value) => crypto.createHash("sha256").update(stable(value)).digest("hex").slice(0, 32);
 
-export function createSyncService({ db, getMeta, setMeta, github, local, app = {}, now = Date.now, log = console, timers = { setTimeout, clearTimeout } } = {}) {
+export function createSyncService({ db, getMeta, setMeta, github, local, app = {}, repoName = SYNC_REPO, now = Date.now, log = console, timers = { setTimeout, clearTimeout } } = {}) {
   db.exec("CREATE TABLE IF NOT EXISTS sync_items (item_key TEXT PRIMARY KEY, change_json TEXT NOT NULL, local_hash TEXT)");
   const read = () => { try { return JSON.parse(getMeta(META_KEY) || "{}") || {}; } catch { return {}; } };
   let settings = read();
@@ -46,6 +46,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   save();
   let device = null; // the device sign-in in progress
   let running = null;
+  let runningOptions = null;
   let timer = null;
   let lastError = "";
   let reloadNeeded = 0;
@@ -251,37 +252,69 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
 
   // "Sync now", start and the 10-minute comparison are full; the tick's checks aren't.
   async function syncNow({ full = true, compareLocal = true } = {}) {
-    if (running) return running;
+    // A manual full send must not be swallowed by an already-running, remote-only poll.
+    if (running) {
+      if ((full && !runningOptions.full) || (compareLocal && !runningOptions.compareLocal))
+        return running.catch(() => null).then(() => syncNow({ full, compareLocal }));
+      return running;
+    }
+    runningOptions = { full, compareLocal };
     running = syncOnce({ full, compareLocal }).then((result) => { lastError = ""; retryAt = 0; return result; }, (error) => {
       lastError = String(error.message || error).slice(0, 300);
       retryAt = now() + (error.code === "rate-limited" ? RATE_LIMITED_RETRY_MS : RETRY_MS);
       if (error.code === "signed-out") { settings.token = ""; save(); }
       log.warn?.("Sync:", lastError);
       throw error;
-    }).finally(() => { running = null; });
+    }).finally(() => { running = null; runningOptions = null; });
     return running;
+  }
+
+  function scheduleDevicePoll(flow) {
+    if (device !== flow) return;
+    const remaining = flow.expiresAt - now();
+    if (remaining <= 0) {
+      lastError = "The GitHub sign-in code expired; start sign-in again";
+      device = null;
+      return;
+    }
+    flow.timer = timers.setTimeout(() => {
+      void pollDevice().catch((error) => {
+        if (device !== flow) return;
+        lastError = String(error.message || error).slice(0, 300);
+        device = null;
+      });
+    }, Math.min(flow.interval * 1000, remaining));
+    flow.timer.unref?.();
   }
 
   async function pollDevice() {
     if (!device) return;
+    const flow = device;
+    if (now() >= flow.expiresAt) { scheduleDevicePoll(flow); return; }
     let answer;
-    try { answer = await github.pollDevice({ clientId: app.clientId, deviceCode: device.deviceCode }); } catch (error) {
-      device.error = error.message;
-      device.timer = timers.setTimeout(() => void pollDevice(), device.interval * 1000);
+    try { answer = await github.pollDevice({ clientId: app.clientId, deviceCode: flow.deviceCode }); } catch (error) {
+      if (device !== flow) return;
+      lastError = String(error.message || error).slice(0, 300);
+      scheduleDevicePoll(flow);
       return;
     }
-    if (!device) return;
+    if (device !== flow) return;
     if (answer.access_token) {
+      let login = "";
+      try { login = (await github.user(answer.access_token)).login || ""; } catch {}
+      // Looking up the account is asynchronous too; cancelling/restarting must win.
+      if (device !== flow) return;
       keepToken(answer);
       settings.renew = Boolean(answer.refresh_token);
-      try { settings.login = (await github.user(settings.token)).login || ""; } catch {}
+      settings.login = login;
       device = null;
       save();
       return;
     }
-    if (answer.error === "slow_down") device.interval += 5;
+    if (answer.error === "slow_down") flow.interval += 5;
     if (answer.error === "authorization_pending" || answer.error === "slow_down") {
-      device.timer = timers.setTimeout(() => void pollDevice(), device.interval * 1000);
+      lastError = "";
+      scheduleDevicePoll(flow);
       return;
     }
     lastError = answer.error === "access_denied" ? "The sign-in was cancelled on GitHub" : answer.error === "expired_token" ? "The code expired; sign in again" : (answer.error_description || "The sign-in didn't finish");
@@ -293,11 +326,11 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       const shown = reloadNeeded;
       return {
         step: step(), appReady: Boolean(app.clientId), installUrl: app.slug ? `https://github.com/apps/${app.slug}/installations/new` : "",
-        newRepoUrl: "https://github.com/new?name=lvl-sync&visibility=private&description=LVL%20sync",
+        newRepoUrl: `https://github.com/new?name=${encodeURIComponent(repoName)}&visibility=private&description=LVL%20sync`,
         login: settings.login || "", renew: Boolean(settings.renew), mode: settings.mode || "app",
         repo: settings.repo ? `${settings.repo.owner}/${settings.repo.name}` : "", joining: Boolean(settings.joining), encrypted: Boolean(settings.encrypted),
         device: device ? { userCode: device.userCode, verificationUri: device.verificationUri, expiresAt: device.expiresAt } : null,
-        syncing: Boolean(running), lastSyncAt: Math.max(settings.lastSyncAt || 0, lastCheckAt), lastError, sent: settings.sent || 0, received: settings.received || 0,
+        syncing: Boolean(running), lastSyncAt: settings.lastSyncAt || 0, lastCheckedAt: Math.max(settings.lastSyncAt || 0, lastCheckAt), lastError, sent: settings.sent || 0, received: settings.received || 0,
         skippedFiles: settings.skippedFiles || 0, refused: settings.refused || 0, repoMissing,
         reloadNeeded: shown,
       };
@@ -311,7 +344,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
         interval: Number(answer.interval) || 5, expiresAt: now() + (Number(answer.expires_in) || 900) * 1000 };
       settings.mode = "app";
       lastError = "";
-      device.timer = timers.setTimeout(() => void pollDevice(), device.interval * 1000);
+      scheduleDevicePoll(device);
       return this.status();
     },
     cancelDevice() { if (device?.timer) timers.clearTimeout(device.timer); device = null; },
@@ -327,7 +360,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     async findRepo() {
       if (!settings.token) throw Object.assign(new Error("Sign in first"), { status: 400 });
       const repos = await github.repositories(settings.token, { app: settings.mode !== "token" });
-      const found = repos.find((repo) => repo.name.toLowerCase() === SYNC_REPO);
+      const found = repos.find((repo) => repo.name.toLowerCase() === repoName.toLowerCase());
       if (!found) { repoMissing = true; return this.status(); }
       if (!found.private) throw Object.assign(new Error(`${found.owner}/${found.name} is public. Make it private on GitHub first (Settings › Danger Zone › Change visibility)`), { status: 400 });
       repoMissing = false;

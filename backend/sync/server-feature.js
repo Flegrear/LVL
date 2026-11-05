@@ -25,7 +25,8 @@ export const syncServerFeature = {
       local: createLocalData({ appState: ctx.appState, db: ctx.db, recs: ctx.recs }),
     });
     // LVL's own refusals keep their status (400, 503); anything GitHub answered is a 502.
-    const fail = (res, error) => ctx.json(res, !error.github && Number(error.status) && error.status < 500 ? error.status : 502, { error: String(error.message || error).slice(0, 300) });
+    const fail = (res, error) => ctx.json(res, !error.github && Number.isInteger(error.status) && error.status >= 400 && error.status < 600
+      ? error.status : 502, { error: String(error.message || error).slice(0, 300) });
     return {
       start: () => service.start(),
       stop: () => service.stop(),

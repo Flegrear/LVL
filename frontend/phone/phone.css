@@ -1,0 +1,307 @@
+/* Phone layout (frontend/phone/phone-layout.js). Touch screens up to 680px wide only:
+   the main navigation becomes a bar at the bottom of the screen, which slides away while
+   the page scrolls down (html.phone-nav-hidden). Loaded after the core styles, so rules of
+   equal weight here win. Keep the media query in step with PHONE_QUERY. */
+/* Width of the fade on Home's tabs: 28px while more tabs are off to the right, 0 at the
+   end of the row or when nothing scrolls (an inactive scroll timeline leaves it at 0). */
+@property --phone-tabs-fade {
+  syntax: "<length>";
+  inherits: false;
+  initial-value: 0px;
+}
+@keyframes phone-tabs-fade {
+  0%, 85% { --phone-tabs-fade: 28px; }
+  100% { --phone-tabs-fade: 0px; }
+}
+/* Toasts at the top of a phone screen come down into place. */
+@keyframes phone-toast-in { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: none; } }
+@media (max-width: 680px) and (hover: none) and (pointer: coarse) {
+  :root {
+    --phone-nav-h: 62px;
+    --phone-nav-space: calc(var(--phone-nav-h) + env(safe-area-inset-bottom, 0px));
+  }
+
+  .app-sidebar {
+    position: fixed;
+    inset: auto 0 0 0;
+    top: auto;
+    width: 100%;
+    height: var(--phone-nav-space);
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    border-bottom: 0;
+    border-top: 1px solid #202020;
+    background: rgba(0, 0, 0, .94);
+    -webkit-backdrop-filter: blur(14px);
+    backdrop-filter: blur(14px);
+    z-index: 60;
+    transition: transform .22s ease;
+  }
+  .phone-nav-hidden .app-sidebar { transform: translateY(100%); }
+  .app-sidebar .sidebar-head { display: none; }
+
+  .app-sidebar .side-nav {
+    height: var(--phone-nav-h);
+    gap: 0;
+    padding: 3px 4px;
+    justify-content: space-between;
+    align-items: stretch;
+    overflow: visible;
+  }
+  /* Settings and the bell become items of the bar like the other buttons. */
+  .app-sidebar .nav-settings-actions { display: contents; }
+
+  .app-sidebar .side-nav .nav-btn,
+  .app-sidebar .nav-settings-actions .nav-btn[data-view="settings"],
+  .app-sidebar .nav-notification-btn,
+  .app-sidebar .phone-nav-search {
+    position: relative;
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+    height: auto;
+    min-height: 54px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 3px;
+    padding: 5px 2px 0;
+    border-radius: 12px;
+    background: transparent;
+    color: #8c8c8c;
+  }
+  .app-sidebar .side-nav .nav-btn.is-active {
+    background: transparent;
+    color: #fff;
+  }
+  .app-sidebar .side-nav .nav-icon {
+    width: 52px;
+    height: 30px;
+    border-radius: 999px;
+    transition: background-color .15s ease, color .15s ease;
+  }
+  .app-sidebar .side-nav .nav-btn.is-active .nav-icon {
+    background: #f2f2f2;
+    color: #080808;
+  }
+  .app-sidebar .side-nav .nav-label {
+    position: static;
+    display: block;
+    width: auto;
+    max-width: 100%;
+    height: auto;
+    margin: 0;
+    overflow: hidden;
+    clip: auto;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+    color: inherit;
+    font: 600 10px/1.15 var(--font-sans);
+    letter-spacing: .02em;
+  }
+  .app-sidebar .side-nav .nav-btn .count-pill {
+    top: 3px;
+    right: calc(50% - 30px);
+  }
+  .app-sidebar .nav-notification-btn svg { width: 22px; height: 22px; margin-top: 4px; }
+
+  /* The header now sticks to the top of the screen (it sat below the old top bar). */
+  .app-topbar { top: 0; }
+  .app-main { padding-bottom: calc(var(--phone-nav-space) + 20px); }
+
+  /* Home: the bar already has Library. Search is an item of the bottom bar (phone-layout.js),
+     so a closed search box takes no room in the top bar; it opens there when Search is tapped. */
+  .home-topbar #home-open-library { display: none; }
+  .app-topbar .catalog-search-host:not(:has(> .catalog-search-shell:not([hidden]))) { display: none; }
+  .app-sidebar .phone-nav-search {
+    border: 0;
+    font: inherit;
+    cursor: pointer;
+    -webkit-tap-highlight-color: transparent;
+  }
+  .app-sidebar .phone-nav-search svg {
+    width: 20px;
+    height: 20px;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.7;
+    stroke-linecap: round;
+  }
+  .app-sidebar .phone-nav-search .nav-icon { display: grid; place-items: center; }
+
+  /* The bell in the top bar, where the search icon was, drawn like the shuffle button. */
+  .app-topbar .nav-notification-btn {
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    border: 1px solid var(--ui-line-strong);
+    border-radius: 50%;
+    background: var(--ui-surface);
+    color: var(--ui-text-2);
+    -webkit-tap-highlight-color: transparent;
+  }
+  .app-topbar .nav-notification-btn[aria-expanded="true"] { background: var(--ui-surface-3); color: var(--ui-text); }
+  .app-topbar .nav-notification-btn svg { width: 18px; height: 18px; }
+  .app-topbar .nav-notification-btn .notification-count { top: -3px; right: -3px; }
+
+  /* Home's tabs scroll sideways when they don't fit (ui.css). While more tabs are off to the
+     right, the right edge fades; the fade goes away at the end and when all tabs fit. */
+  @supports (animation-timeline: scroll()) {
+    .home-topbar .ui-tabs {
+      -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - var(--phone-tabs-fade)), transparent);
+      mask-image: linear-gradient(90deg, #000 calc(100% - var(--phone-tabs-fade)), transparent);
+      animation: phone-tabs-fade linear both;
+      animation-timeline: scroll(self inline);
+    }
+  }
+  /* Text-width tabs ("All" is 18px) get an invisible touch area that reaches into the 16px
+     gaps around them, so they're easier to hit without changing how they look. */
+  .ui-tabs .ui-tab::before {
+    content: "";
+    position: absolute;
+    inset: 0 -8px;
+  }
+
+  /* The bell is in the top bar, so its list opens below it. */
+  .app-notifications-popover {
+    top: calc(var(--ui-topbar-h, 56px) + env(safe-area-inset-top, 0px)) !important;
+    right: 12px !important;
+    bottom: auto !important;
+    left: 12px !important;
+    width: auto;
+    max-height: min(420px, calc(100dvh - var(--ui-topbar-h, 56px) - var(--phone-nav-space) - 24px));
+  }
+  /* Messages (toasts) and the update card show at the top, just below the top bar, clear of
+     the bottom bar and of the player's controls. */
+  .app-update-card {
+    top: calc(var(--ui-topbar-h, 56px) + env(safe-area-inset-top, 0px) + 8px);
+    right: 12px;
+    bottom: auto;
+    left: 12px;
+    width: auto;
+  }
+  .ui-toast-region {
+    top: calc(var(--ui-topbar-h, 56px) + env(safe-area-inset-top, 0px) + 8px);
+    bottom: auto;
+  }
+  .ui-toast { animation-name: phone-toast-in; }
+  .ui-toast.is-leaving { transform: translateY(-6px); }
+}
+
+@media (max-width: 680px) and (hover: none) and (pointer: coarse) and (prefers-reduced-motion: reduce) {
+  .app-sidebar, .app-sidebar .side-nav .nav-icon { transition: none; }
+}
+
+/* The player on touch screens: the phone's own volume buttons replace the volume slider and
+   theater mode is a desktop page layout; on phone-sized screens the download figures (they
+   are in the player's Details) leave the bar too. */
+@media (hover: none) and (pointer: coarse) {
+  .player-control-row .player-volume,
+  .player-control-row #player-theater { display: none !important; }
+  /* While the controls are shown, the subtitle line sits just above them (phone-layout.js
+     measures --touch-controls-lift); a higher position from the subtitle settings still wins. */
+  .video-frame .subtitle-overlay { transition: bottom .18s ease; }
+  .video-frame.has-video:not(.controls-hidden) .subtitle-overlay {
+    bottom: max(var(--subtitle-bottom, 16%), var(--touch-controls-lift, 0px));
+  }
+  /* Buttons drawn smaller than a fingertip (20-30 px: the calendar's day numbers, month arrows,
+     refresh and filters, the "?" help icons) get an invisible touch area of at least 40 px around
+     them; how they look and where they sit don't change. */
+  .calendar-month-cell-head > button:first-child,
+  .calendar-month-open,
+  .calendar-refresh,
+  .calendar-filter-buttons button,
+  .ui-tip-text,
+  .ui-help { position: relative; }
+  .calendar-month-cell-head > button:first-child::after,
+  .calendar-month-open::after,
+  .calendar-refresh::after,
+  .calendar-filter-buttons button::after,
+  .ui-help::after { content: ""; position: absolute; inset: -10px -8px; }
+  .calendar-filter-buttons button::after { inset: -8px -1px; }
+  .ui-tip-text::after { content: ""; position: absolute; inset: -8px 0; }
+  .ui-help::after, .calendar-refresh::after { inset: -10px; }
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 1024px) {
+  .player-control-row #player-transfer-stats { display: none !important; }
+}
+
+/* The app's fullscreen: the frame fills the window, but its page containers (and with them
+   the container queries that compact the bar) are off, so the bar is laid out here for the
+   window: one line, the title shortened to fit and a smaller shade. */
+html.android-fullscreen .compat-controls {
+  gap: 6px;
+  padding: 36px max(14px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(14px, env(safe-area-inset-left));
+  background: linear-gradient(transparent, rgba(0, 0, 0, .55) 40%, rgba(0, 0, 0, .9));
+}
+html.android-fullscreen .player-control-row { flex-wrap: nowrap; gap: 6px; }
+html.android-fullscreen .player-control-row .player-now-playing { flex: 1 1 auto; min-width: 0; overflow: hidden; }
+html.android-fullscreen .player-control-row .player-now-playing * { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+html.android-fullscreen .player-control-row .player-control-spacer { flex: 0 1 6px; min-width: 0; }
+/* A tall video held upright: the buttons wrap under the title. */
+@media (orientation: portrait) {
+  html.android-fullscreen .player-control-row { flex-wrap: wrap; justify-content: center; }
+  html.android-fullscreen .player-control-row .player-now-playing { flex: 1 0 100%; order: -1; text-align: center; }
+}
+
+/* The app's fullscreen (html.android-fullscreen, set by android-bridge.js while MainActivity
+   hides the system bars): the video frame, with the player's own controls, subtitles and
+   menus, covers the window. As in picture-in-picture its ancestors drop containment, which
+   would otherwise keep the fixed frame inside them; the page underneath stays as it was. */
+html.android-fullscreen, html.android-fullscreen body { overflow: hidden !important; }
+html.android-fullscreen *:has(#video-frame) {
+  container-type: normal !important;
+  contain: none !important;
+  transform: none !important;
+  filter: none !important;
+}
+html.android-fullscreen #video-frame {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483000 !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: #000 !important;
+}
+html.android-fullscreen #video-frame > video { width: 100% !important; height: 100% !important; object-fit: contain !important; }
+html.android-fullscreen .app-sidebar, html.android-fullscreen .ui-toast-region { display: none !important; }
+
+/* Android picture-in-picture (html.android-pip, set by android-bridge.js): the video frame,
+   with LVL's own subtitles, fills the small window; Android draws the play/pause controls.
+   The player's ancestors are size containers (container-type), which would keep a fixed
+   frame inside them, and the rest of the page is wider than the tiny window, which makes the
+   WebView zoom out; so in PiP the ancestors drop containment and everything else is hidden. */
+html.android-pip, html.android-pip body { overflow: hidden !important; background: #000 !important; }
+html.android-pip *:has(#video-frame) {
+  display: block !important;
+  container-type: normal !important;
+  contain: none !important;
+  transform: none !important;
+  filter: none !important;
+  min-width: 0 !important;
+}
+html.android-pip body *:not(:has(#video-frame)):not(#video-frame):not(#video-frame *) { display: none !important; }
+html.android-pip #video-frame {
+  position: fixed !important;
+  inset: 0 !important;
+  z-index: 2147483000 !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0 !important;
+  aspect-ratio: auto !important;
+  max-width: none !important;
+  max-height: none !important;
+  margin: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: #000 !important;
+}
+html.android-pip #video-frame > video { width: 100% !important; height: 100% !important; object-fit: contain !important; }
+html.android-pip #compat-controls, html.android-pip .app-sidebar, html.android-pip .ui-toast-region { display: none !important; }

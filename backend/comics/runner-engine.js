@@ -56,7 +56,7 @@ export function runnerChapter(item, mangaTitle = "") {
   };
 }
 
-// runner: createExtRunner(); dir: where APKs are kept; findExtension(pkg) -> { pkg, version, apk };
+// runner: createExtRunner(); dir: where APKs are kept; findExtension(pkg) -> { pkg, version, apk, fingerprint? };
 // remote: LVL's site requests (downloads, and siteCookies for checks).
 export function createRunnerEngine({ runner, dir, findExtension, remote }) {
   async function apkFor(source, { fresh = false } = {}) {
@@ -79,12 +79,12 @@ export function createRunnerEngine({ runner, dir, findExtension, remote }) {
     }
     // A file downloaded again under the same version is loaded again.
     const stat = fs.statSync(file);
-    return { file, key: `${ext.pkg}@${ext.version}#${stat.size}-${Math.round(stat.mtimeMs)}` };
+    return { file, key: `${ext.pkg}@${ext.version}#${stat.size}-${Math.round(stat.mtimeMs)}`, fingerprint: String(ext.fingerprint || "") };
   }
 
   async function ready(source, options) {
-    const { file, key } = await apkFor(source, options);
-    const loaded = await runner.load(file, key);
+    const { file, key, fingerprint } = await apkFor(source, options);
+    const loaded = await runner.load(file, key, { fingerprint });
     if (!loaded.sources.some((item) => String(item.id) === String(source.id))) throw failure(`The ${source.extension || source.name} extension no longer has this source`, 404);
     return loaded;
   }

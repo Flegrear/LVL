@@ -19,7 +19,10 @@
 //                        statusLabels: { CURRENT: "Reading", REPEATING: "Rereading" },
 //                        statuses(options, ctx) { return { any: 3, CURRENT: 2 }; } }],
 //     hooks: { "title:render"(payload, ctx) {}, "storage:render"(payload, ctx) {} },
+//     start(ctx) {},
 //   }
+// start: runs once after install, for features that adjust core pages without a view of
+// their own (for example the phone layout). Errors are logged and skipped like any hook.
 // keepQuery: the view keeps its "?…" part in the URL. Sidebar clicks open the
 // bare route; the feature navigates inside itself with
 // ctx.switchView(id, { query: "?title=…" }); reload and Back keep the query.
@@ -70,6 +73,7 @@ export function clientFeatureProblems(features) {
       if (typeof href !== "string" || !href.startsWith("/") || href.includes("..") || href.startsWith("//")) problem(problems, `${owner}: invalid style ${JSON.stringify(href)}`);
     }
     if (feature.translations !== undefined && (typeof feature.translations !== "object" || !feature.translations)) problem(problems, `${owner}: translations must be an object`);
+    if (feature.start !== undefined && typeof feature.start !== "function") problem(problems, `${owner}: start must be a function`);
     for (const view of feature.views || []) {
       if (typeof view?.id !== "string" || !ID.test(view.id)) { problem(problems, `${owner}: invalid view id ${JSON.stringify(view?.id)}`); continue; }
       claim("view", view.id, owner);
@@ -274,6 +278,9 @@ export function createClientFeatureHost(features = [], { log = console } = {}) {
       button.setAttribute("data-i18n", category.label);
       button.textContent = category.label;
       homeTabs.append(button);
+    }
+    for (const feature of accepted) {
+      if (feature.start) guarded(log, `${feature.id} start`, () => feature.start(ctx));
     }
   }
 

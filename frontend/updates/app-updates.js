@@ -6,6 +6,7 @@ import { $, setToolStatus } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
 import { switchView } from "../app/navigation.js";
 import { renderSettingsTabs } from "../settings/settings-page.js";
+import { setServerVideoConversionAvailable } from "../player/video-conversion-capability.js";
 
 // An update restarts the server with the new version while this window still
 // runs the old page. Reload once the server answers with a different version;
@@ -14,6 +15,7 @@ let loadedServerVersion = null;
 export async function reloadAfterAppUpdate() {
   try {
     const health = await fetchJson("/api/health", { signal: AbortSignal.timeout(5000) });
+    setServerVideoConversionAvailable(health?.videoConversion);
     const version = String(health?.version || "");
     if (!version) return;
     if (loadedServerVersion === null) loadedServerVersion = version;

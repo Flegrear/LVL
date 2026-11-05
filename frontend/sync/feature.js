@@ -136,6 +136,8 @@ function mount(card) {
   let shown = "";
   let timer = 0;
   let finding = false;
+  let intent = 0;
+  let actionError = "";
   const render = (force = false) => {
     // Never redraw under the user's typing (a focused switch or button doesn't count).
     const typing = body.contains(document.activeElement) && document.activeElement.matches('input[type="password"], input[type="text"], input:not([type])');
@@ -150,12 +152,26 @@ function mount(card) {
     }
   };
   const refresh = async () => {
-    try { status = await call("status"); } catch (error) { status = { ...status, lastError: error.message }; }
+    const requestIntent = intent;
+    try {
+      const next = await call("status");
+      if (requestIntent !== intent) return;
+      status = { ...next, lastError: actionError || next.lastError };
+    } catch (error) {
+      if (requestIntent !== intent) return;
+      status = { ...status, lastError: actionError || error.message };
+    }
     // LVL looks for lvl-sync by itself after sign-in, and again while it isn't there.
     if (status.step === "repo" && !finding) {
       finding = true;
-      try { status = await call("github/find", {}); } catch (error) { status = { ...status, lastError: error.message }; }
-      finding = false;
+      try {
+        const found = await call("github/find", {});
+        if (requestIntent !== intent) return;
+        status = { ...found, lastError: actionError || found.lastError };
+      } catch (error) {
+        if (requestIntent !== intent) return;
+        status = { ...status, lastError: actionError || error.message };
+      } finally { finding = false; }
     }
     render();
   };
@@ -167,10 +183,20 @@ function mount(card) {
     void refresh().finally(() => { timer = window.setTimeout(loop, status.step === "device" || status.syncing ? 2000 : 5000); });
   };
   const run = async (control, task) => {
+    const actionIntent = ++intent;
     if (control) control.disabled = true;
-    try { await task(); } catch (error) { status = { ...status, lastError: error.message }; } finally {
+    try {
+      const next = await task();
+      if (actionIntent !== intent) return;
+      actionError = "";
+      if (next) status = next;
+    } catch (error) {
+      if (actionIntent !== intent) return;
+      actionError = error.message;
+      status = { ...status, lastError: actionError };
+    } finally {
       if (control?.isConnected) control.disabled = false;
-      render(true);
+      if (actionIntent === intent) render(true);
     }
   };
   body.addEventListener("change", (event) => {
@@ -186,12 +212,12 @@ function mount(card) {
     const submit = form.querySelector('[type="submit"]');
     const kind = form.dataset.syncForm;
     void run(submit, async () => {
-      if (kind === "token") status = await call("github/token", { token: form.token.value.trim() });
-      else if (kind === "pass") status = await call("passphrase", { passphrase: form.pass.value });
+      if (kind === "token") return call("github/token", { token: form.token.value.trim() });
+      else if (kind === "pass") return call("passphrase", { passphrase: form.pass.value });
       else if (kind === "begin") {
         const encrypt = form.encrypt.checked;
         if (encrypt && form.pass.value !== form.again.value) throw new Error("The two passphrases are different");
-        status = await call("start", { encrypt, passphrase: encrypt ? form.pass.value : "" });
+        return call("start", { encrypt, passphrase: encrypt ? form.pass.value : "" });
       }
     });
   });
@@ -208,16 +234,16 @@ function mount(card) {
     const name = target.dataset.sync;
     if (name === "show-token" || name === "hide-token") { ui.showToken = name === "show-token"; render(true); return; }
     void run(target, async () => {
-      if (name === "start") status = await call("github/start", { renew: body.querySelector("#sync-renew")?.checked !== false });
-      else if (name === "cancel") status = await call("github/cancel", {});
+      if (name === "start") return call("github/start", { renew: body.querySelector("#sync-renew")?.checked !== false });
+      else if (name === "cancel") return call("github/cancel", {});
       else if (name === "copy") { await navigator.clipboard?.writeText(status.device?.userCode || ""); toast("Code copied"); }
-      else if (name === "find") status = await call("github/find", {});
-      else if (name === "now") status = (await call("now", {})).status;
+      else if (name === "find") return call("github/find", {});
+      else if (name === "now") return (await call("now", {})).status;
       else if (name === "reload") { await call("reload-shown", {}); window.location.reload(); }
       else if (name === "disconnect") {
         const sure = await confirmDialog({ title: "Disconnect sync on this device?", confirmLabel: "Disconnect",
           text: "Your data on this device stays, and so does the copy in lvl-sync. You can connect again at any time." });
-        if (sure) { status = await call("disconnect", {}); ui.showToken = false; ui.encrypt = false; }
+        if (sure) { ui.showToken = false; ui.encrypt = false; return call("disconnect", {}); }
       }
     });
   });

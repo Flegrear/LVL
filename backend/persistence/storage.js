@@ -22,6 +22,18 @@ const LEFTOVER_IDLE_MS = 30 * 60 * 1000;
 const PLAYER_CACHE_INFLIGHT_MARGIN_BYTES = 32 * 1024 ** 2;
 
 /** Bytes and newest modification time of everything under a folder (missing folder: zero). */
+// Space a file takes on disk. A torrent writes a piece wherever it falls, so a file it has only
+// partly downloaded (or a deselected file that shares a piece with a wanted one) can be sparse:
+// an 8 GB movie next to the sample being played reported 8 GB while using a few MB, and player
+// storage then removed the other downloads to make room. Its allocated blocks count instead
+// (never more than its size). Where files take their full size anyway (Windows' NTFS fills the
+// gap), the count is the same as before; with no block count reported, the size is used.
+export function diskBytes(stat) {
+  const size = Number(stat?.size) || 0;
+  const blocks = Number(stat?.blocks);
+  return Number.isFinite(blocks) && blocks >= 0 ? Math.min(size, blocks * 512) : size;
+}
+
 export async function folderUsage(folder) {
   let bytes = 0;
   let files = 0;
@@ -37,7 +49,7 @@ export async function folderUsage(folder) {
     if (!entry.isFile()) continue;
     try {
       const stat = await fs.stat(path.join(entry.parentPath || entry.path || folder, entry.name));
-      bytes += stat.size;
+      bytes += diskBytes(stat);
       files += 1;
       newest = Math.max(newest, stat.mtimeMs);
     } catch {}
@@ -73,9 +85,10 @@ export async function diskSpace(folder) {
  * the drive is nearly full so a quarter of its free space at most. Saved fragments: 2 GB, or twice
  * what card clips use now so they have room to grow, at most a tenth of the free space.
  */
-export function recommendedLimits({ playerFreeBytes = null, playerUsedBytes = 0, dataFreeBytes = null, cardClipBytes = 0, clipCount = 0, clipBytes = 0 } = {}) {
+export function recommendedLimits({ playerFreeBytes = null, playerUsedBytes = 0, dataFreeBytes = null, cardClipBytes = 0, clipCount = 0, clipBytes = 0,
+  playerDefaultBytes = STORAGE_DEFAULTS.playerBytes } = {}) {
   const step = (bytes, size) => Math.floor(bytes / size) * size;
-  let player = STORAGE_DEFAULTS.playerBytes;
+  let player = clampLimit("playerBytes", playerDefaultBytes, STORAGE_DEFAULTS.playerBytes);
   if (Number.isFinite(playerFreeBytes)) player = Math.min(player, step((playerFreeBytes + playerUsedBytes) * 0.25, GB));
   player = Math.max(STORAGE_RANGES.playerBytes.min, player);
   let clip = Math.max(STORAGE_DEFAULTS.clipBytes, Math.ceil((cardClipBytes * 2) / (0.5 * GB)) * 0.5 * GB);
@@ -91,14 +104,20 @@ export function recommendedLimits({ playerFreeBytes = null, playerUsedBytes = 0,
  * session). sharedRoot: the parent temp folder, where older versions and other ports keep theirs.
  * sessions(): [{ id, lastUsedAt, busy }] for live sessions; removeSession(id) frees one.
  */
-export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, dataRoot = "", sessions, removeSession, clipStore, ankiStore }) {
+// defaults: other starting limits (LVL's Android app has less room). remuxCacheAvailable: false
+// keeps the seek cache off whatever was saved (its conversions need an H.264 encoder).
+// keepsSessionFiles: a session's torrent files stay when it ends (LVL's Android app keeps
+// downloads between launches), so evicting a live download also deletes its folder.
+export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, dataRoot = "", sessions, removeSession, clipStore, ankiStore,
+  defaults: defaultChanges = {}, remuxCacheAvailable = true, keepsSessionFiles = false }) {
+  const defaults = Object.freeze({ ...STORAGE_DEFAULTS, ...defaultChanges });
   function limits() {
     let saved = {};
     try { saved = JSON.parse(appDatabase.getMeta("storage_limits") || "{}") || {}; } catch {}
     return {
-      playerBytes: clampLimit("playerBytes", saved.playerBytes, STORAGE_DEFAULTS.playerBytes),
-      clipBytes: clampLimit("clipBytes", saved.clipBytes, STORAGE_DEFAULTS.clipBytes),
-      remuxCacheEnabled: typeof saved.remuxCacheEnabled === "boolean" ? saved.remuxCacheEnabled : STORAGE_DEFAULTS.remuxCacheEnabled,
+      playerBytes: clampLimit("playerBytes", saved.playerBytes, defaults.playerBytes),
+      clipBytes: clampLimit("clipBytes", saved.clipBytes, defaults.clipBytes),
+      remuxCacheEnabled: remuxCacheAvailable && (typeof saved.remuxCacheEnabled === "boolean" ? saved.remuxCacheEnabled : defaults.remuxCacheEnabled),
     };
   }
 
@@ -107,7 +126,7 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     const next = {
       playerBytes: changes.playerBytes === undefined ? current.playerBytes : clampLimit("playerBytes", changes.playerBytes, current.playerBytes),
       clipBytes: changes.clipBytes === undefined ? current.clipBytes : clampLimit("clipBytes", changes.clipBytes, current.clipBytes),
-      remuxCacheEnabled: typeof changes.remuxCacheEnabled === "boolean" ? changes.remuxCacheEnabled : current.remuxCacheEnabled,
+      remuxCacheEnabled: remuxCacheAvailable && (typeof changes.remuxCacheEnabled === "boolean" ? changes.remuxCacheEnabled : current.remuxCacheEnabled),
     };
     appDatabase.setMeta("storage_limits", JSON.stringify(next));
     return next;
@@ -196,6 +215,8 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
 
   // This server's own folders with no live session: left by a crash or a forced stop.
   async function clearOrphans() {
+    // Persistent download folders are deliberately not tied to active sessions.
+    if (keepsSessionFiles) return 0;
     const live = new Set(sessions().map((session) => session.id));
     let names = [];
     try { names = await fs.readdir(sessionsRoot); } catch {}
@@ -221,12 +242,14 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     if (usage.usedBytes <= limit) return { evicted, usedBytes: usage.usedBytes, limitBytes: limit };
     let usedBytes = usage.usedBytes;
     const idle = usage.sessions
-      .filter((row) => !row.busy && now - Number(row.lastUsedAt || 0) > 60_000)
+      .filter((row) => !row.busy && (!row.live || now - Number(row.lastUsedAt || 0) > 60_000))
       .sort((a, b) => Number(a.lastUsedAt || 0) - Number(b.lastUsedAt || 0));
     for (const row of idle) {
       if (usedBytes <= limit) break;
+      // Where a session keeps its files when it ends (keepsSessionFiles: LVL's Android app),
+      // its folder is removed here too.
       if (row.live) await removeSession(row.id);
-      else await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      if (!row.live || keepsSessionFiles) await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
       // An abandoned store or locked file may survive the attempted deletion.
       // Count only disk bytes actually gone; otherwise a failed eviction
       // falsely reports the cache as within its configured limit.
@@ -240,9 +263,9 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
   async function clearPlayer() {
     const usage = await playerUsage();
     for (const row of usage.sessions) {
-      if (row.busy || Date.now() - Number(row.lastUsedAt || 0) < 60_000) continue;
+      if (row.busy || (row.live && Date.now() - Number(row.lastUsedAt || 0) < 60_000)) continue;
       if (row.live) await removeSession(row.id);
-      else await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      if (!row.live || keepsSessionFiles) await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
     }
     // Report bytes actually gone, not an assumed sum when deletion fails.
     return { freedBytes: Math.max(0, usage.usedBytes - (await playerUsage()).usedBytes) };
@@ -259,9 +282,11 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     const clipBytes = (clips.card?.bytes || 0) + (clips.dictation?.bytes || 0);
     return {
       limits: limits(),
-      defaults: STORAGE_DEFAULTS,
+      defaults,
+      remuxCacheAvailable,
       ranges: STORAGE_RANGES,
       recommended: recommendedLimits({
+        playerDefaultBytes: defaults.playerBytes,
         playerFreeBytes: playerDisk?.freeBytes ?? null,
         playerUsedBytes: player.usedBytes,
         dataFreeBytes: dataDisk?.freeBytes ?? null,

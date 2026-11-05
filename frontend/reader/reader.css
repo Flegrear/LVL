@@ -39,11 +39,13 @@
 .reader__details p { margin:0 0 10px; }
 
 /* Main column: top bar, page, bottom bar */
-.reader__main { position:relative; grid-column:2; grid-row:1; display:grid; grid-template-rows:auto minmax(0, 1fr) auto; min-width:0; min-height:0; }
+.reader__main { position:relative; grid-column:2; grid-row:1; display:grid; grid-template-columns:minmax(0, 1fr); grid-template-rows:auto minmax(0, 1fr) auto; min-width:0; min-height:0; }
 .reader__bar, .reader__foot { position:relative; z-index:2; background:var(--reader-chrome); color:var(--reader-fg); transition:opacity var(--ui-fast) var(--ui-ease); }
 .reader__bar { grid-row:1; display:grid; grid-template-columns:auto minmax(0, 1fr) auto auto; align-items:center; gap:12px; padding:8px 12px; border-bottom:1px solid var(--reader-line); }
-/* Hidden bars float over the page instead of keeping their stripes. */
-.reader.is-chrome-hidden .reader__main { grid-template-rows:0 minmax(0, 1fr) 0; }
+/* The stage stays a grid item with a real height as the chrome comes and goes.
+   Collapsing both grid tracks to 0 can leave a blank reading surface in Android's WebView.
+   Let the page span the existing tracks instead; images and scroll position stay mounted. */
+.reader.is-chrome-hidden .reader__stage { grid-row:1 / 4; min-height:0; }
 .reader.is-chrome-hidden .reader__bar, .reader.is-chrome-hidden .reader__foot { position:absolute; left:0; right:0; opacity:0; pointer-events:none; }
 .reader.is-chrome-hidden .reader__bar { top:0; }
 .reader.is-chrome-hidden .reader__foot { bottom:0; }
@@ -75,7 +77,7 @@
 .reader__stage { position:relative; grid-row:2; display:flex; align-items:center; justify-content:center; min-height:0; overflow:auto; outline:none; background:var(--reader-bg); }
 .reader[data-layout="vertical"] .reader__stage { display:block; }
 .reader__spread { display:flex; justify-content:center; align-items:center; gap:2px; max-width:100%; max-height:100%; height:100%; transform:scale(var(--reader-zoom, 1)); transform-origin:top center; }
-.reader__page { user-select:none; -webkit-user-drag:none; }
+.reader__page { user-select:none; -webkit-user-drag:none; filter:var(--reader-page-filter, none); }
 .reader__spread .reader__page { max-height:100%; max-width:100%; object-fit:contain; }
 .reader[data-layout="double"] .reader__spread .reader__page { max-width:50%; }
 /* Fit height: every page fills the height, so a lower-resolution file isn't shown smaller than its neighbour. */
@@ -106,8 +108,11 @@
 .reader__progress { display:flex; align-items:center; gap:10px; }
 .reader__end-num { min-width:2ch; color:var(--reader-muted); font-size:12px; font-variant-numeric:tabular-nums; text-align:center; }
 .reader__slider { flex:1; width:100%; margin:0; direction:ltr; accent-color:var(--reader-fg); }
-.reader__footrow { display:grid; grid-template-columns:auto minmax(0, 1fr) auto auto; align-items:center; gap:10px; }
+.reader__footrow { display:grid; grid-template-columns:auto auto minmax(0, 1fr) auto auto; align-items:center; gap:10px; }
 .reader__chapter-btn { display:inline-flex; align-items:center; gap:4px; height:36px; padding:0 12px; border:1px solid var(--reader-line); border-radius:8px; background:none; color:var(--reader-fg); font:inherit; font-size:13px; font-weight:600; cursor:pointer; }
+.reader__back-footer { min-width:44px; min-height:44px; justify-content:center; padding:0 12px; white-space:nowrap; }
+.reader__transition-status { margin:0; padding:4px 0; color:var(--reader-muted); font-size:12px; line-height:1.4; overflow-wrap:anywhere; }
+.reader__transition-status[hidden] { display:none; }
 .reader__chapter-btn:hover:not(:disabled) { background:var(--reader-hover); }
 .reader__chapter-btn:disabled { opacity:.35; cursor:default; }
 .reader__strip { display:flex; align-items:center; gap:8px; min-width:0; }
@@ -129,13 +134,48 @@
 .reader__thumb[aria-current="true"] { border-color:var(--reader-fg); opacity:1; }
 
 @media (max-width:900px) {
-  .reader, .reader[data-sidebar="open"] { grid-template-columns:minmax(0, 1fr); }
+  /* Match the closed-sidebar selector's specificity: otherwise its desktop
+     0-width first track wins and moves the mobile stage off the visible page. */
+  .reader, .reader[data-sidebar="open"], .reader[data-sidebar="closed"] { grid-template-columns:minmax(0, 1fr); }
   .reader__side { position:absolute; inset:0 auto 0 0; z-index:4; width:min(300px, 86vw); box-shadow:12px 0 32px rgba(0,0,0,.5); }
   .reader[data-sidebar="closed"] .reader__side { display:none; }
   .reader__main { grid-column:1; }
+  /* The old four-track header's min-content width was 397px, expanding the
+     grid item beyond a 320/360px WebView even though the reader root fit.
+     Keep every action (including Fit and More) on a real two-row phone header. */
+  .reader__bar {
+    box-sizing:border-box; min-width:0; max-width:100%; padding:6px 8px;
+    grid-template-columns:36px minmax(0, 1fr) auto;
+    grid-template-rows:auto auto; column-gap:6px; row-gap:4px;
+  }
+  .reader__bar > [data-reader="sidebar"] { grid-column:1; grid-row:1; }
+  .reader__heading { grid-column:2; grid-row:1; }
+  .reader__tools { grid-column:3; grid-row:1; min-width:0; }
+  .reader__tools .reader__icon-btn { flex:0 0 36px; width:36px; min-height:36px; }
+  .reader__tools .reader__select {
+    box-sizing:border-box; width:86px; max-width:86px; min-width:0; flex:0 1 86px;
+  }
+  .reader__pager { grid-column:1 / -1; grid-row:2; justify-content:center; min-width:0; }
   .reader__thumbs { display:none; }
-  .reader__footrow { grid-template-columns:auto 1fr auto; }
-  .reader__icons { grid-column:1 / -1; justify-content:center; }
-  .reader__tools .reader__select { max-width:110px; }
+  /* A fixed minmax(0,1fr) inner track must not inherit footer text's
+     min-content width (373px before this fix). All three chapter actions
+     remain visible and labeled, including the new 44px bottom-left Back. */
+  .reader__foot { box-sizing:border-box; min-width:0; max-width:100%; }
+  .reader__progress, .reader__slider { min-width:0; }
+  .reader__footrow { box-sizing:border-box; min-width:0; width:100%; }
+  .reader__footrow { grid-template-columns:auto minmax(0,1fr) auto; }
+  .reader__back-footer { grid-column:1; grid-row:1; }
+  .reader__footrow > [data-reader="prevChapter"] { grid-column:2; grid-row:1; justify-self:start; min-width:0; }
+  .reader__footrow > [data-reader="nextChapter"] { grid-column:3; grid-row:1; justify-self:end; min-width:0; }
+  .reader__strip { grid-column:1 / -1; grid-row:2; }
+  .reader__icons { grid-column:1 / -1; grid-row:3; justify-content:center; }
+}
+@media (max-width:380px) {
+  /* Spanish "Anterior" + "Siguiente" is longer than English. Keep both
+     fully labeled and individually hittable beside Back at 320px, with no
+     overlapping grid item hit boxes or min-content growth. */
+  .reader__footrow { column-gap:8px; }
+  .reader__footrow > [data-reader="prevChapter"],
+  .reader__footrow > [data-reader="nextChapter"] { padding-inline:8px; }
 }
 @media (prefers-reduced-motion:reduce) { .reader__bar, .reader__foot { transition:none; } }

@@ -31,8 +31,18 @@ export function updatePercent(progress) {
   return Math.max(0, Math.min(100, Math.floor(bytes / total * 100)));
 }
 
-const installing = (version) => ({ phase: "installing", version, title: `Installing LVL ${version}`,
-  detail: "LVL restarts by itself. This window reloads when it's back.", progress: { percent: null } });
+// Android's full APK replacement is the only update that asks for an Android
+// PackageInstaller confirmation. A Windows installer is also called "installer"
+// in the size report, so kind alone is not proof of Android context.
+const androidApkInstall = (report) => report?.autoInstall === false
+  && [report?.availableSize, report?.update?.size, report?.download, report?.update?.progress]
+    .some((item) => item?.kind === "installer");
+
+const installing = (version, androidApk = false) => ({ phase: "installing", version, title: `Installing LVL ${version}`,
+  detail: androidApk
+    ? "After installation, reopen LVL if the window doesn't reload by itself."
+    : "LVL restarts by itself. This window reloads when it's back.",
+  progress: { percent: null } });
 const failed = (version, current, reason = "") => ({ phase: "failed", version, title: "The update didn't install",
   detail: `LVL is still on ${current || "the version you had"}.${reason ? ` ${reason}` : ""}`, progress: null });
 
@@ -48,12 +58,15 @@ const failed = (version, current, reason = "") => ({ phase: "failed", version, t
 export function updateView({ report = null, downSince = null, pending = null, loadedVersion = "",
   later = null, now = Date.now() } = {}) {
   const installed = String(report?.installedVersion || loadedVersion || "");
+  const apkInstall = androidApkInstall(report);
 
   if (downSince) {
     if (!pending?.active || !pending.to) return { phase: "idle" };
     if (now - downSince >= UPDATE_STUCK_AFTER_MS) return { phase: "stuck", version: pending.to,
-      title: "LVL hasn't restarted yet", detail: "If it doesn't come back, open LVL from the Start menu.", progress: null };
-    return { ...installing(pending.to), phase: "restarting" };
+      title: "LVL hasn't restarted yet",
+      detail: apkInstall ? "If it doesn't come back, reopen LVL from your apps." : "If it doesn't come back, open LVL from the Start menu.",
+      progress: null };
+    return { ...installing(pending.to, apkInstall), phase: "restarting" };
   }
 
   // This window now runs the new version.
@@ -72,7 +85,7 @@ export function updateView({ report = null, downSince = null, pending = null, lo
     return { phase: "downloading", version, title: `Downloading LVL ${version}`,
       detail: percent === null ? amount : `${percent}% · ${amount}`, progress: { percent } };
   }
-  if (update.phase === "installing" && version) return installing(version);
+  if (update.phase === "installing" && version) return installing(version, apkInstall);
   if (update.phase === "failed" && version) return failed(version, installed, update.error || "");
 
   // LVL restarted on the old version after this window saw the install start.
@@ -85,7 +98,9 @@ export function updateView({ report = null, downSince = null, pending = null, lo
     return { phase: "ready", version, snoozed, title: `LVL ${version} is ready`,
       detail: update.installsWhenIdle
         ? `It installs by itself when no video is open${size}.`
-        : `Install it now${size}. LVL restarts by itself.`,
+        : apkInstall
+          ? `Install it now${size}. Android may ask you to confirm the installation. Reopen LVL afterward.`
+          : `Install it now${size}. LVL restarts by itself.`,
       progress: null };
   }
   return { phase: "idle" };

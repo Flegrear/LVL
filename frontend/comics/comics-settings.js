@@ -102,20 +102,47 @@ async function mountImport(card, ctx) {
   poll();
 }
 
+// LVL's Android app (its bridge is window.LvlAndroid) can't read a folder of yours on the phone,
+// so there the files are picked and copied into the default folder instead of typing a path.
+const PICK_FILES = () => Boolean(globalThis.LvlAndroid);
+
 function foldersMarkup({ folders = [] }) {
   const rows = folders.map((folder) => `<li class="comics-row"><span class="comics-row__text"><strong class="comics-row__mono">${escapeHtml(folder.path)}</strong>`
     + `<small>${escapeHtml([folder.isDefault ? t("Default folder") : "", t("{count} files", { count: folder.files || 0 }), when(folder.scannedAt)].filter(Boolean).join(" · "))}`
     + `${folder.error ? ` · <span class="is-error">${escapeHtml(folder.error)}</span>` : ""}</small></span>`
     + (folder.isDefault ? "" : buttonMarkup({ label: "Remove", variant: "ghost", size: "sm", attrs: { "data-comics-folder-remove": folder.path } }))
     + "</li>").join("");
+  const add = PICK_FILES()
+    ? `<div class="comics-add">${buttonMarkup({ label: "Add files", size: "sm", attrs: { "data-comics-files-pick": "" } })}`
+      + `<input type="file" accept=".cbz,.zip,application/zip,application/vnd.comicbook+zip" multiple hidden data-comics-files /></div>`
+    : `<form class="comics-add" data-comics-folder-add><label class="settings-field"><span>${escapeHtml(t("Folder path"))}</span>`
+      + `<input name="path" autocomplete="off" spellcheck="false" maxlength="400" placeholder="C:\\Users\\…\\Comics" /></label>`
+      + buttonMarkup({ label: "Add folder", size: "sm", type: "submit" }) + "</form>";
   return `<section class="settings-card comics-card comics-settings__folders"><div class="settings-card__head"><h2>${escapeHtml(t("Folders"))}</h2>`
     + buttonMarkup({ label: "Rescan", variant: "ghost", size: "sm", attrs: { "data-comics-rescan": "" } }) + "</div>"
-    + `<p class="settings-hint">${escapeHtml(t("CBZ files and image folders here are matched to their series and added to your Library."))}</p>`
+    + `<p class="settings-hint">${escapeHtml(t(PICK_FILES() ? "CBZ and ZIP files you add are copied here, matched to their series and added to your Library." : "CBZ files and image folders here are matched to their series and added to your Library."))}</p>`
     + `<ul class="comics-rows">${rows}</ul>`
-    + `<form class="comics-add" data-comics-folder-add><label class="settings-field"><span>${escapeHtml(t("Folder path"))}</span>`
-    + `<input name="path" autocomplete="off" spellcheck="false" maxlength="400" placeholder="C:\\Users\\…\\Comics" /></label>`
-    + buttonMarkup({ label: "Add folder", size: "sm", type: "submit" }) + "</form>"
+    + add
     + `<p class="tool-status settings-status comics-settings__status" role="status" aria-live="polite"></p></section>`;
+}
+
+// Copies the picked files one at a time, reporting progress in the card's status line.
+async function addPickedFiles(input, panel, rerender) {
+  const files = [...(input.files || [])];
+  input.value = "";
+  if (!files.length) return;
+  const status = panel.querySelector(".comics-settings__status");
+  const say = (text) => { if (status) status.textContent = text; };
+  let added = 0;
+  const failed = [];
+  for (const [index, file] of files.entries()) {
+    say(t("Adding {name} ({index} of {count})…", { name: file.name, index: index + 1, count: files.length }));
+    try { await comicsApi.addFile(file); added += 1; }
+    catch (error) { failed.push(`${file.name}: ${error.message}`); }
+  }
+  await rerender();
+  if (added) toast(t(added === 1 ? "1 file added. Scanning it now." : "{count} files added. Scanning them now.", { count: added }));
+  if (failed.length) toast(failed.slice(0, 3).join("\n"), { tone: "error" });
 }
 
 // extraSections: [async (panel) => void], used by the sources step.
@@ -124,6 +151,12 @@ export async function renderComicsSettings(panel, ctx, { extraSections = [] } = 
   if (!panel.dataset.comicsBound) {
     panel.dataset.comicsBound = "1";
     panel.addEventListener("change", async (event) => {
+      const picker = event.target.closest("[data-comics-files]");
+      if (picker) {
+        await addPickedFiles(picker, panel, () => renderComicsSettings(panel, ctx, { extraSections }));
+        ctx.refreshLibrary?.();
+        return;
+      }
       const box = event.target.closest("[data-comics-enabled]");
       if (!box) return;
       box.disabled = true;
@@ -151,6 +184,11 @@ export async function renderComicsSettings(panel, ctx, { extraSections = [] } = 
       } catch (error) { toast(error.message); }
     });
     panel.addEventListener("click", async (event) => {
+      if (event.target.closest("[data-comics-files-pick]")) {
+        event.preventDefault();
+        panel.querySelector("[data-comics-files]")?.click();
+        return undefined;
+      }
       const remove = event.target.closest("[data-comics-folder-remove]");
       if (remove) {
         await comicsApi.removeFolder(remove.dataset.comicsFolderRemove).catch((error) => toast(error.message));

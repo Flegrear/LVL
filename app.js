@@ -23,7 +23,7 @@ import { $, $$, setToolStatus } from "./frontend/app/dom.js";
 import { fetchJson, postJson } from "./frontend/app/http.js";
 import {
   activeSidebarLauncher, navigateWatchToLibrary, restoreLastWatchOnVisit, setSidebarExpanded,
-  switchView, viewActive, viewFromLocation,
+  registerPhonePlayerNavigationHook, switchView, viewActive, viewFromLocation,
 } from "./frontend/app/navigation.js";
 import { closePopupMenu, openMenuState, openPopupMenu, wirePopupMenu } from "./frontend/ui/popup-menu.js";
 import { renderLocaleOptions, renderSettings, renderSettingsTabs } from "./frontend/settings/settings-page.js";
@@ -78,6 +78,9 @@ import {
   startPopupPlayback, updateFloatingControls, warmPopupPlayer, wireFloatingFrame, wireFloatingPlayer,
 } from "./frontend/player/floating-player.js";
 import { openMagnetDialog, resolveMagnet, wireLocalVideoInput } from "./frontend/player/torrent-playback.js";
+import { createTimelineScrubController } from "./frontend/player/phone-seek-input.js";
+import { registerPhonePlayerLifecycle } from "./frontend/player/phone-seek-lifecycle.js";
+import { installPhonePlayerControls } from "./frontend/phone/player-controls.js";
 import {
   openTitleEpisodeContextMenu, openWatchEpisodeContextMenu, scrollWatchEpisodesOnWheel,
   setWatchTheaterMode, syncWatchEpisodeHeight, updateChapterButtons, wireWatchChapters,
@@ -737,10 +740,15 @@ $("#anilist-import-form")?.addEventListener("submit", async (event) => {
     setToolStatus("#library-import-status", `Reading ${username}'s list on AniList…`);
     await postJson("/api/recs/anilist/link", { username });
     localStorage.removeItem(ANILIST_LIBRARY_KEY);
-    await syncAniListLibrary({ status: "#library-import-status" });
+    await syncAniListLibrary({ status: "#library-import-status", skipAuthPull: true, skipScoreSync: true });
     void recsUi.load({ force: true }).catch(() => {});
   } catch (error) {
-    setToolStatus("#library-import-status", error.message || "AniList import failed", true);
+    const message = String(error?.message || "AniList import failed");
+    const privateList = Number(error?.status ?? error?.httpStatus) === 404
+      || /\bHTTP\s*404\b|(?:list is private|private (?:list|user))/i.test(message);
+    setToolStatus("#library-import-status", privateList
+      ? "That AniList username's list isn't publicly available. Check the username; to import your own private list, connect AniList under Settings → Tracking and choose Import my connected AniList."
+      : message, true);
   } finally {
     if (button) { button.disabled = false; button.textContent = oldText; }
   }
@@ -1342,24 +1350,40 @@ $("#compat-play").addEventListener("click", () => {
   togglePlayback();
 });
 export const compatProgress = $("#compat-progress");
-compatProgress.addEventListener("pointerdown", () => { state.scrubbing = true; });
-compatProgress.addEventListener("pointermove", (event) => showScrubTime(state.scrubbing ? Number(compatProgress.value) : progressTimeAt(event.clientX)));
-compatProgress.addEventListener("pointerleave", () => { if (!state.scrubbing) $("#player-scrub-time").hidden = true; });
-compatProgress.addEventListener("input", () => {
-  state.scrubbing = true;
-  showScrubTime(Number(compatProgress.value));
-  updateCompatControls();
-});
-compatProgress.addEventListener("change", (event) => {
-  const target = Number(event.target.value) || 0;
-  state.scrubbing = false;
-  $("#player-scrub-time").hidden = true;
-  seekPlayerTo(target);
-});
-// A press without a move fires no change event; release the thumb anyway.
-window.addEventListener("pointerup", () => window.setTimeout(endScrub, 60));
-window.addEventListener("pointercancel", endScrub);
-compatProgress.addEventListener("blur", endScrub);
+let phoneTimelineScrub = null;
+if (window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches) {
+  // Touch ranges can send multiple pointer/input/change events for one drag.
+  // Coalesce preview work and commit one seek; do not change desktop hovering.
+  phoneTimelineScrub = createTimelineScrubController({
+    range: compatProgress, frame: window,
+    onPreview: (seconds) => { showScrubTime(seconds); updateCompatControls(); },
+    onScrubbingChange: (scrubbing) => { state.scrubbing = scrubbing; },
+    onHidePreview: () => {
+      $("#player-scrub-time").hidden = true;
+      updateCompatControls();
+    },
+    onCommit: (target) => seekPlayerTo(target),
+  });
+} else {
+  compatProgress.addEventListener("pointerdown", () => { state.scrubbing = true; });
+  compatProgress.addEventListener("pointermove", (event) => showScrubTime(state.scrubbing ? Number(compatProgress.value) : progressTimeAt(event.clientX)));
+  compatProgress.addEventListener("pointerleave", () => { if (!state.scrubbing) $("#player-scrub-time").hidden = true; });
+  compatProgress.addEventListener("input", () => {
+    state.scrubbing = true;
+    showScrubTime(Number(compatProgress.value));
+    updateCompatControls();
+  });
+  compatProgress.addEventListener("change", (event) => {
+    const target = Number(event.target.value) || 0;
+    state.scrubbing = false;
+    $("#player-scrub-time").hidden = true;
+    seekPlayerTo(target);
+  });
+  // A press without a move fires no change event; release the thumb anyway.
+  window.addEventListener("pointerup", () => window.setTimeout(endScrub, 60));
+  window.addEventListener("pointercancel", endScrub);
+  compatProgress.addEventListener("blur", endScrub);
+}
 $("#player-seek-back").addEventListener("click", () => seekPlayerBy(-10));
 $("#player-seek-forward").addEventListener("click", () => seekPlayerBy(10));
 $("#player-prev-chapter").addEventListener("click", () => { void playAdjacentChapter(-1); });
@@ -1406,6 +1430,20 @@ $("#player-volume").addEventListener("input", (event) => {
 });
 $("#player-toggle-subs").addEventListener("click", togglePlayerSubtitleMenu);
 $("#floating-player-captions")?.addEventListener("click", togglePlayerSubtitleMenu);
+// Keep the original player menus as the only action owners. Phone controls
+// manage touch dismissal and geometry without installing duplicate handlers.
+const phonePlayerUi = installPhonePlayerControls({
+  win: window,
+  closePopovers: () => closePlayerPopovers(),
+});
+registerPhonePlayerLifecycle({
+  cancelScrub: () => phoneTimelineScrub?.cancel?.(),
+  onControlsHidden: () => phonePlayerUi?.onControlsHidden?.(),
+});
+registerPhonePlayerNavigationHook(() => {
+  phoneTimelineScrub?.cancel?.();
+  phonePlayerUi?.onNavigation?.();
+});
 $("#player-subtitle-menu")?.addEventListener("click", (event) => {
   const button = event.target.closest("button");
   if (!button) return;
@@ -1502,6 +1540,8 @@ $("#player-speed-menu").addEventListener("click", (event) => {
   const option = event.target.closest("[data-speed]");
   if (!option) return;
   video.playbackRate = Number(option.dataset.speed);
+  // Stream replacement must not reset the user's selected playback speed.
+  video.defaultPlaybackRate = video.playbackRate;
   syncPlayerSpeed();
   closePlayerPopovers();
   $("#speed-select").focus();
@@ -1578,6 +1618,11 @@ window.addEventListener("pagehide", () => {
   recordWatchProgress({ force: true });
   saveLearningExposure({ immediate: true });
   if (voiceUsageActiveSince) stopVoiceUsageClock();
+});
+// Android can suspend the WebView when the user leaves for Home, another app
+// or the screen turns off, without delivering pagehide first.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && window.LvlAndroid) recordWatchProgress({ force: true });
 });
 if ("speechSynthesis" in window) {
   window.speechSynthesis.addEventListener?.("voiceschanged", () => {

@@ -141,11 +141,15 @@ export async function fetchRepository(url, { fetchImpl = globalThis.fetch } = {}
   };
 }
 
-export function filterExtensions(extensions, { q = "", lang = "", adult = false, limit = 100, offset = 0 } = {}) {
+export function filterExtensions(extensions, { q = "", lang = "", source = "", adult = false, limit = 100, offset = 0 } = {}) {
   const needle = String(q).trim().toLowerCase();
   const list = extensions.filter((ext) => (adult || !ext.nsfw)
-    && (!lang || ext.lang === lang || ext.lang === "all" || ext.sources.some((source) => source.lang === lang))
-    && (!needle || ext.name.toLowerCase().includes(needle) || ext.sources.some((source) => source.baseUrl.toLowerCase().includes(needle))));
+    && (!source || ext.sources.some((item) => String(item.id) === String(source)))
+    && (!lang || (source
+      ? ext.sources.some((item) => String(item.id) === String(source) && (item.lang === lang || item.lang === "all"))
+      : ext.lang === lang || ext.lang === "all" || ext.sources.some((item) => item.lang === lang)))
+    && (!needle || ext.name.toLowerCase().includes(needle) || ext.sources.some((item) =>
+      (!source || String(item.id) === String(source)) && item.baseUrl.toLowerCase().includes(needle))));
   return { total: list.length, items: list.slice(offset, offset + limit) };
 }
 
