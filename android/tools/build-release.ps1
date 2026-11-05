@@ -52,10 +52,12 @@ try {
   if ($metadata.applicationId -cne 'io.github.flegrear.lvl' -or $metadata.variantName -cne 'release' -or $metadata.elements.Count -ne 2) { throw 'Invalid Android release split metadata' }
   $hashes = @{}
   $foundAbis = @()
+  $verifiedApks = @()
   foreach ($element in $metadata.elements) {
     if ($element.filters.Count -ne 1 -or $element.filters[0].filterType -cne 'ABI') { throw 'Unexpected Android APK split' }
     $abi = [string] $element.filters[0].value
     if ($abi -notin @('arm64-v8a', 'x86_64') -or $abi -in $foundAbis -or $element.versionName -cne $version -or $element.versionCode -ne $versionCode) { throw "Unexpected APK ABI/version: $abi" }
+    if ($element.outputFile -cnotmatch '^app-[A-Za-z0-9_-]+-release\.apk$') { throw 'Unexpected release APK filename' }
     $foundAbis += $abi
     $apk = Join-Path $apkDir $element.outputFile
     if (-not (Test-Path -LiteralPath $apk -PathType Leaf)) { throw "Missing Android APK: $apk" }
@@ -73,13 +75,26 @@ try {
     if (-not $match.Success -or $match.Groups[1].Value.Replace(':','').ToLowerInvariant() -cne $cert) { throw "Unexpected signing certificate for $abi" }
     if ($signature -notmatch '(?im)^Verified using v[23] scheme.*:\s*true\s*$') { throw "APK signature scheme v2/v3 was not verified for $abi" }
     $hashes[$abi] = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
+    $verifiedApks += $apk
   }
   $evidenceDir = Join-Path $root 'tmp\android-batch\release'
   New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
   $evidence = Join-Path $evidenceDir 'signature-evidence.json'
   [ordered]@{version=$version;signerSha256=$cert;apks=$hashes} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $evidence -Encoding utf8
+  # Gradle also writes optional baselineProfiles/*.dm build metadata. Give the
+  # strict asset packager only the APKs whose identity and signature we checked.
+  $verifiedApkDir = Join-Path $evidenceDir 'verified-apks'
+  if (Test-Path -LiteralPath $verifiedApkDir) {
+    $inputItem = Get-Item -LiteralPath $verifiedApkDir -Force
+    if (-not $inputItem.PSIsContainer -or ($inputItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        @(Get-ChildItem -LiteralPath $verifiedApkDir -Force).Count -ne 0) { throw 'Verified APK input directory must be ordinary and empty' }
+  } else { New-Item -ItemType Directory -Path $verifiedApkDir | Out-Null }
+  Copy-Item -LiteralPath (Join-Path $apkDir 'output-metadata.json') -Destination (Join-Path $verifiedApkDir 'output-metadata.json')
+  foreach ($verifiedApk in $verifiedApks) {
+    Copy-Item -LiteralPath $verifiedApk -Destination (Join-Path $verifiedApkDir (Split-Path -Leaf $verifiedApk))
+  }
   $out = if ([IO.Path]::IsPathRooted($OutDir)) { $OutDir } else { Join-Path $root $OutDir }
-  $assetsArgs = @('android/tools/release-assets.mjs','--apk-dir',$apkDir,'--out-dir',$out,'--version',$version,'--evidence',$evidence)
+  $assetsArgs = @('android/tools/release-assets.mjs','--apk-dir',$verifiedApkDir,'--out-dir',$out,'--version',$version,'--evidence',$evidence)
   & node @assetsArgs
   if ($LASTEXITCODE -ne 0) { throw 'Android release asset packaging failed' }
   Write-Host "Android release assets created in $out"
