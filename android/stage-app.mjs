@@ -44,12 +44,26 @@ const NATIVE_SOURCES = [
 const SOURCE_RECIPES = ["Dockerfile", "build-node.sh", "build-ffmpeg.sh", "docker-build.ps1"];
 const nativeSha256 = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
 
+export function writeAndroidReleaseNotes(appDir, { version, releaseNotes, date = new Date().toISOString().slice(0, 10) }) {
+  if (releaseNotes === undefined) return;
+  if (!/^\d+\.\d+\.\d+$/.test(version) || !/^\d{4}-\d{2}-\d{2}$/.test(date) ||
+      !Array.isArray(releaseNotes) || releaseNotes.length < 3 || releaseNotes.length > 7 ||
+      releaseNotes.some(note => typeof note !== "string" || !/^[A-Z][^\r\n]{1,239}$/.test(note))) {
+    throw new Error("Invalid Android release notes");
+  }
+  fs.writeFileSync(path.join(appDir, "CHANGELOG.md"), ["# LVL for Android", "", `## ${version} — ${date}`, "",
+    ...releaseNotes.map(note => `- ${note}`), ""].join("\n"));
+}
+
 // Generated from the same original license texts embedded with the executables.
 // The distribution notice is a build output, never a checked-in release file.
-export function createAndroidReleaseNotice({ version, ffmpegLicense, webpLicense }) {
+export function createAndroidReleaseNotice({ version, ffmpegLicense, webpLicense, sourceRef = null }) {
   if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(version || "")) {
     throw new Error("Invalid Android release notice version");
   }
+  const source = sourceRef ?? `android-v${version}`;
+  if (source !== `android-v${version}` && !/^(?:[a-f0-9]{40}|[a-f0-9]{64}|release-\d{4}-\d{2}-\d{2}\.[1-9]\d*)$/.test(source))
+    throw new Error("Invalid Android release source reference");
   if (!Buffer.isBuffer(ffmpegLicense) || !Buffer.isBuffer(webpLicense) ||
       !ffmpegLicense.toString("utf8").includes("GNU LESSER GENERAL PUBLIC LICENSE") ||
       !ffmpegLicense.toString("utf8").includes("END OF TERMS AND CONDITIONS") ||
@@ -62,7 +76,7 @@ export function createAndroidReleaseNotice({ version, ffmpegLicense, webpLicense
     "Full terms and scope are included inside assets/lvl-app.zip under",
     "assets/licenses/LVL-LICENSE.txt and assets/licenses/LVL-NOTICE.txt.",
     "Application source: https://github.com/Flegrear/LVL",
-    `Release source: https://github.com/Flegrear/LVL/tree/android-v${version}`,
+    `Release source: https://github.com/Flegrear/LVL/tree/${source}`,
     "Third-party components retain their own licenses and notices.", "",
     "The arm64-v8a and x86_64 LVL APKs each include separate Node.js,",
     "FFmpeg and ffprobe executables. LVL runs these tools as separate programs.", "",
@@ -84,7 +98,7 @@ export function createAndroidReleaseNotice({ version, ffmpegLicense, webpLicense
     `Bundled archive: ${NATIVE_SOURCES[1].name}.source`,
     `Source SHA-256: ${NATIVE_SOURCES[1].sha256}`, "",
     "The exact Android cross-build recipes and Node.js V8 source adjustment:",
-    `https://github.com/Flegrear/LVL/tree/android-v${version}/android/native`,
+    `https://github.com/Flegrear/LVL/tree/${source}/android/native`,
     "Recipes: Dockerfile, build-node.sh, build-ffmpeg.sh and docker-build.ps1.", "",
     "Each APK includes the complete original FFmpeg and libwebp source archives,",
     "build recipes and per-architecture build records in assets/lvl-native-source/.",
@@ -164,7 +178,7 @@ async function downloadPinnedSource(source, destination) {
 // Exported for narrow release tests; importing the module must not execute the
 // ordinary CLI staging (npm, extension fetch, native copy). No extra helper file.
 export async function stageNativeReleaseAssets({ projectRoot = ROOT, assetsDir = ASSETS,
-  nativeDir = NATIVE, cacheDir = path.join(projectRoot, "build", "android-source-cache") } = {}) {
+  nativeDir = NATIVE, cacheDir = path.join(projectRoot, "build", "android-source-cache"), sourceRef = null } = {}) {
   const sourceDir = path.join(assetsDir, "lvl-native-source");
   const licenseDir = path.join(assetsDir, "lvl-native-licenses");
   if (fs.existsSync(sourceDir) || fs.existsSync(licenseDir)) {
@@ -193,7 +207,7 @@ export async function stageNativeReleaseAssets({ projectRoot = ROOT, assetsDir =
     throw new Error("Invalid original native license notice");
   }
   const version = readAndroidVersion(path.join(projectRoot, "android", "app-version.json")).version;
-  const notice = createAndroidReleaseNotice({ version,
+  const notice = createAndroidReleaseNotice({ version, sourceRef,
     ffmpegLicense: licenses.get("LICENSE.ffmpeg.txt"), webpLicense: licenses.get("LICENSE.libwebp.txt") });
   const recipes = new Map(SOURCE_RECIPES.map(name => [name,
     readNativeFile(path.join(projectRoot, "android", "native", name), 128 * 1024, `build recipe ${name}`)]));
@@ -398,6 +412,7 @@ const testVersion = argv.flatMap((arg, i) => (arg === "--version" && argv[i + 1]
 if (testVersion && !/^\d{1,4}\.\d{1,4}\.\d{1,4}$/.test(testVersion)) throw new Error(`--version must be x.y.z, not ${testVersion}`);
 const version = testVersion || androidVersion.version;
 stampAndroidRuntime(APP, { version, runtimeGeneration: androidVersion.runtimeGeneration });
+writeAndroidReleaseNotes(APP, { ...androidVersion, version });
 if (testVersion) log(`TEST BUILD: staged as version ${testVersion}`);
 else log(`ANDROID BUILD: ${version} (APK versionCode ${androidVersion.versionCode}; desktop sources ${desktopVersion})`);
 fs.mkdirSync(ASSETS, { recursive: true });
@@ -439,7 +454,8 @@ removeInStage(path.join(ASSETS, "lvl-native-source"));
 removeInStage(path.join(ASSETS, "lvl-native-licenses"));
 if (release) {
   checkNativeSources(NATIVE);
-  const nativeDistribution = await stageNativeReleaseAssets();
+  const sourceRef = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: ROOT, encoding: "utf8", windowsHide: true }).trim();
+  const nativeDistribution = await stageNativeReleaseAssets({ sourceRef });
   log(`native source/licenses embedded in APK assets: ${nativeDistribution.bytes} bytes`);
 }
 }

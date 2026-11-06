@@ -59,6 +59,8 @@ namespace LanguageVideoLearner
             public string SetupUrl;
             public string ChecksumUrl;
             public bool IsPatch;
+            public string PayloadHash, ChecksumHash;
+            public long PayloadSize, ChecksumSize;
         }
 
         public static bool IsInstalled(string appRoot)
@@ -373,14 +375,18 @@ namespace LanguageVideoLearner
             try
             {
                 Directory.CreateDirectory(folder);
-                string checksums = Encoding.UTF8.GetString(ReadBounded(release.ChecksumUrl, 65536));
+                byte[] checksumBytes = ReadBounded(release.ChecksumUrl, 65536);
+                VerifyPinnedBytes(checksumBytes, release.ChecksumSize, release.ChecksumHash);
+                string checksums = Encoding.UTF8.GetString(checksumBytes);
                 string expected = ParseSha256(checksums, release.SetupName);
+                if (release.PayloadHash != null && !release.PayloadHash.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidDataException("Release checksum disagrees with manifest");
                 if (expected == null) throw new InvalidDataException("Release has no matching SHA-256 checksum");
                 DownloadInstaller(release.SetupUrl, setupPath, release.IsPatch);
                 string actual;
                 using (SHA256 digest = SHA256.Create())
                 using (FileStream file = File.OpenRead(setupPath)) actual = BitConverter.ToString(digest.ComputeHash(file)).Replace("-", "");
-                if (!actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
+                if ((release.PayloadHash != null && (new FileInfo(setupPath).Length != release.PayloadSize || !actual.Equals(release.PayloadHash, StringComparison.OrdinalIgnoreCase))) || !actual.Equals(expected, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("Downloaded setup failed SHA-256 verification");
                 OnUi(delegate
                 {
@@ -471,8 +477,8 @@ namespace LanguageVideoLearner
 
         private Release FindRelease()
         {
-            return FindRelease(installedVersion, File.Exists(Path.Combine(root, "runtime", "update-apply.mjs")),
-                delegate(int page) { return ReadBounded(ReleasePageUrl(page), MaxJsonBytes); }, Thread.Sleep);
+            return FindReleaseWithManifest(installedVersion, File.Exists(Path.Combine(root, "runtime", "update-apply.mjs")),
+                delegate(int page) { return ReadBounded(ReleasePageUrl(page), MaxJsonBytes); }, delegate(string url) { return ReadBounded(url, 65536); }, Thread.Sleep);
         }
 
         private static string ReleasePageUrl(int page)
@@ -494,6 +500,13 @@ namespace LanguageVideoLearner
         // Supplied readers allow isolated native tests without network access.
         private static Release FindRelease(string installed, bool patchSupported,
             Func<int, byte[]> readPage, Action<int> pause)
+        {
+            return FindReleaseWithManifest(installed, patchSupported, readPage,
+                delegate(string url) { return ReadBounded(url, 65536); }, pause);
+        }
+
+        private static Release FindReleaseWithManifest(string installed, bool patchSupported,
+            Func<int, byte[]> readPage, Func<string, byte[]> readManifest, Action<int> pause)
         {
             Release next = null;
             JavaScriptSerializer serializer = new JavaScriptSerializer();
@@ -520,6 +533,13 @@ namespace LanguageVideoLearner
                     if ((bool)draft || (bool)prerelease) continue;
                     string tag = Value(release, "tag_name");
                     if (tag == null) throw new InvalidDataException("Invalid LVL release feed");
+                    if (CombinedTag(tag))
+                    {
+                        Release combined = ReadCombinedRelease(release, tag, readManifest, pause);
+                        if (combined != null && CompareVersions(combined.Version, installed) > 0 && (!combined.IsPatch || patchSupported)
+                            && (next == null || CompareVersions(combined.Version, next.Version) < 0)) next = combined;
+                        continue;
+                    }
                     // Only canonical Windows tags: Android/native/rc tags are not updates.
                     if (!Regex.IsMatch(tag, @"\Av\d+\.\d+\.\d+\z")) continue;
                     string version = tag.Substring(1);
@@ -579,6 +599,146 @@ namespace LanguageVideoLearner
                 if (releases.Length < ReleasesPerPage) return next;
             }
             throw new InvalidDataException("LVL release search incomplete: the first 200 releases fill the page limit. Try again later.");
+        }
+
+        private static bool CombinedTag(string tag)
+        {
+            return Regex.IsMatch(tag ?? "", @"\Arelease-\d{4}-\d{2}-\d{2}\.[1-9]\d*\z");
+        }
+
+        private static Dictionary<string, object> ObjectField(Dictionary<string, object> obj, string key)
+        {
+            object value;
+            if (!obj.TryGetValue(key, out value) || !(value is Dictionary<string, object>))
+                throw new InvalidDataException("Invalid LVL combined release: " + key);
+            return (Dictionary<string, object>)value;
+        }
+
+        private static long PositiveSize(Dictionary<string, object> obj, string key, long maximum)
+        {
+            object value;
+            if (!obj.TryGetValue(key, out value) || (!(value is int) && !(value is long)) || Convert.ToInt64(value) <= 0 || Convert.ToInt64(value) > maximum)
+                throw new InvalidDataException("Invalid LVL combined release: " + key);
+            return Convert.ToInt64(value);
+        }
+
+        private static void VerifyPinnedBytes(byte[] bytes, long size, string hash)
+        {
+            if (hash == null) return;
+            string actual;
+            using (SHA256 digest = SHA256.Create()) actual = BitConverter.ToString(digest.ComputeHash(bytes)).Replace("-", "").ToLowerInvariant();
+            if (bytes.LongLength != size || actual != hash) throw new InvalidDataException("LVL manifest download integrity check failed");
+        }
+
+        private static string ValidateRecord(Dictionary<string, object> record, string version, bool windows,
+            string tag, Dictionary<string, Dictionary<string, object>> attached, HashSet<string> expected)
+        {
+            string name = Value(record, "name"), url = Value(record, "url"), hash = Value(record, "sha256");
+            long size = PositiveSize(record, "size", 2L * 1024 * 1024 * 1024);
+            if (name == null || !Regex.IsMatch(name, @"\A[A-Za-z0-9][A-Za-z0-9._-]*\z") || !Regex.IsMatch(hash ?? "", @"\A[a-f0-9]{64}\z"))
+                throw new InvalidDataException("Invalid LVL combined asset");
+            string prefix = ReleaseAssetsPrefix;
+            if (url == null || !url.StartsWith(prefix, StringComparison.Ordinal)) throw new InvalidDataException("Invalid LVL combined asset URL");
+            string suffix = url.Substring(prefix.Length);
+            int slash = suffix.IndexOf('/');
+            string source = slash < 0 ? "" : suffix.Substring(0, slash);
+            if ((!CombinedTag(source) && source != (windows ? "v" : "android-v") + version) || !ValidReleaseAssetUrl(url, source, name))
+                throw new InvalidDataException("Invalid LVL combined source tag");
+            if (source == tag)
+            {
+                Dictionary<string, object> asset;
+                if (!expected.Add(name) || !attached.TryGetValue(name, out asset) || Value(asset, "browser_download_url") != url || PositiveSize(asset, "size", 2L * 1024 * 1024 * 1024) != size)
+                    throw new InvalidDataException("LVL combined asset metadata mismatch");
+                string digest = Value(asset, "digest");
+                if (digest != null && digest != "sha256:" + hash) throw new InvalidDataException("LVL combined asset digest mismatch");
+            }
+            return source;
+        }
+
+        private static Release ReadCombinedRelease(Dictionary<string, object> release, string tag,
+            Func<string, byte[]> readManifest, Action<int> pause)
+        {
+            object entries;
+            if (!release.TryGetValue("assets", out entries) || !(entries is object[])) throw new InvalidDataException("Invalid LVL combined assets");
+            Dictionary<string, Dictionary<string, object>> attached = new Dictionary<string, Dictionary<string, object>>(StringComparer.Ordinal);
+            foreach (object entry in (object[])entries)
+            {
+                Dictionary<string, object> asset = entry as Dictionary<string, object>;
+                string name = asset == null ? null : Value(asset, "name");
+                if (name == null || attached.ContainsKey(name)) throw new InvalidDataException("Invalid LVL combined assets");
+                attached.Add(name, asset);
+            }
+            Dictionary<string, object> manifestAsset;
+            if (!attached.TryGetValue("LVL-release.json", out manifestAsset) || !ValidReleaseAssetUrl(Value(manifestAsset, "browser_download_url"), tag, "LVL-release.json"))
+                throw new InvalidDataException("LVL combined release manifest missing");
+            long manifestSize = PositiveSize(manifestAsset, "size", 65536);
+            byte[] bytes = ReadReleaseFeed(delegate { return readManifest(Value(manifestAsset, "browser_download_url")); }, pause);
+            if (bytes.LongLength != manifestSize) throw new InvalidDataException("Invalid LVL combined manifest size");
+            string manifestDigest = Value(manifestAsset, "digest");
+            if (manifestDigest != null)
+            {
+                if (!Regex.IsMatch(manifestDigest, @"\Asha256:[a-f0-9]{64}\z")) throw new InvalidDataException("Invalid LVL manifest digest");
+                VerifyPinnedBytes(bytes, manifestSize, manifestDigest.Substring(7));
+            }
+            Dictionary<string, object> manifest;
+            try { manifest = new JavaScriptSerializer().DeserializeObject(Encoding.UTF8.GetString(bytes)) as Dictionary<string, object>; }
+            catch (Exception issue) { throw new InvalidDataException("Invalid LVL combined manifest", issue); }
+            object schema;
+            if (manifest == null || !manifest.TryGetValue("schemaVersion", out schema) || !(schema is int) || (int)schema != 1 || Value(manifest, "tag") != tag)
+                throw new InvalidDataException("Invalid LVL combined manifest schema");
+            Dictionary<string, object> platforms = ObjectField(manifest, "platforms");
+            HashSet<string> expected = new HashSet<string>(StringComparer.Ordinal); expected.Add("LVL-release.json");
+            Release result = null;
+            foreach (string platform in new[] { "windows", "android" })
+            {
+                if (!platforms.ContainsKey(platform)) continue;
+                Dictionary<string, object> info = ObjectField(platforms, platform);
+                bool windows = platform == "windows";
+                string version = Value(info, "version");
+                if (!Regex.IsMatch(version ?? "", @"\A(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\z") || CompareVersions(version, version) != 0)
+                    throw new InvalidDataException("Invalid LVL platform version");
+                if (!windows) foreach (string part in version.Split('.')) if (int.Parse(part) > 9999) throw new InvalidDataException("Invalid Android version");
+                List<Dictionary<string, object>> records = new List<Dictionary<string, object>>();
+                Dictionary<string, object> checksum = ObjectField(info, "checksums");
+                PositiveSize(checksum, "size", 65536);
+                records.Add(checksum);
+                if (windows)
+                {
+                    string kind = Value(info, "kind");
+                    Dictionary<string, object> payload = ObjectField(info, "asset");
+                    string name = Value(payload, "name");
+                    if ((kind != "patch" && kind != "installer") || name != (kind == "patch" ? "LVL-update-v" + version + ".zip" : "LVL-Setup.exe") || (Value(checksum, "name") != name + ".sha256" && Value(checksum, "name") != "SHA256SUMS"))
+                        throw new InvalidDataException("Invalid Windows release assets");
+                    records.Add(payload);
+                    result = new Release { Version = version, IsPatch = kind == "patch", SetupName = name, SetupUrl = Value(payload, "url"), ChecksumUrl = Value(checksum, "url"), PayloadHash = Value(payload, "sha256"), ChecksumHash = Value(checksum, "sha256"), PayloadSize = PositiveSize(payload, "size", 2L * 1024 * 1024 * 1024), ChecksumSize = PositiveSize(checksum, "size", 65536) };
+                }
+                else
+                {
+                    if (PositiveSize(info, "versionCode", int.MaxValue) < 205) throw new InvalidDataException("Invalid Android version code");
+                    Dictionary<string, object> apks = ObjectField(info, "apks");
+                    if (apks.Count != 2 || Value(checksum, "name") != "SHA256SUMS") throw new InvalidDataException("Invalid Android assets");
+                    foreach (string abi in new[] { "arm64", "x86_64" })
+                    {
+                        Dictionary<string, object> apk = ObjectField(apks, abi);
+                        if (Value(apk, "name") != "LVL-" + version + "-" + abi + ".apk") throw new InvalidDataException("Invalid Android APK name");
+                        PositiveSize(apk, "size", 400L * 1024 * 1024);
+                        records.Add(apk);
+                    }
+                    Dictionary<string, object> notice = ObjectField(info, "notice");
+                    if (Value(notice, "name") != "LVL-Android-RELEASE-NOTICE.txt") throw new InvalidDataException("Invalid Android notice");
+                    PositiveSize(notice, "size", 65536);
+                    records.Add(notice);
+                }
+                string source = null;
+                foreach (Dictionary<string, object> record in records)
+                {
+                    string found = ValidateRecord(record, version, windows, tag, attached, expected);
+                    if (source != null && source != found) throw new InvalidDataException("Mixed LVL platform source tags");
+                    source = found;
+                }
+            }
+            if (expected.Count != attached.Count) throw new InvalidDataException("Unexpected LVL combined release assets");
+            return result;
         }
 
         private static bool ValidReleaseAssetUrl(string url, string tag, string name)
@@ -707,7 +867,7 @@ namespace LanguageVideoLearner
                 while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
                 {
                     total += read;
-                    if (total > (isPatch ? 128L : 1024L) * 1024 * 1024)
+                    if (total > 2L * 1024 * 1024 * 1024)
                         throw new InvalidDataException("LVL update download is unexpectedly large");
                     output.Write(buffer, 0, read);
                 }

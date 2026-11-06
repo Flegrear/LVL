@@ -18,9 +18,9 @@ function fileCheck(file) {
 }
 
 // Android's first public channel deliberately has no incremental patch assets.
-// Every published release must contain EXACTLY the two signed ABI-specific APKs,
-// their distribution notice, and one matching SHA256SUMS. A build/CI fixture may
-// never silently expand this list.
+// Each Android review bundle or legacy Android release contains exactly two
+// signed ABI-specific APKs, their distribution notice and matching SHA256SUMS.
+// Combined publishing consumes this verified bundle alongside Windows assets.
 export function assetNames(version) {
   if (!VERSION.test(version)) fail("version must be X.Y.Z");
   return [`LVL-${version}-arm64.apk`, `LVL-${version}-x86_64.apk`,

@@ -4,14 +4,17 @@ on:
   push:
     tags:
       - 'v[0-9]*.[0-9]*.[0-9]*'
+  workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   package:
     runs-on: windows-2022
     timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -23,26 +26,34 @@ jobs:
           cache: npm
       - name: Install release build dependencies
         run: npm ci --no-audit --no-fund
-      - name: Validate release tag
+      - name: Validate trusted release source
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = '${{ github.ref_name }}'
-          if ($tag -cnotmatch '^v\d+\.\d+\.\d+$') { throw 'Expected vMAJOR.MINOR.PATCH tag' }
+          $tag = $env:GITHUB_REF_NAME
           $version = (Get-Content package.json -Raw | ConvertFrom-Json).version
-          if ($tag -cne "v$version") { throw "Tag $tag must match committed package.json version $version" }
+          if ($env:GITHUB_REPOSITORY -cne 'Flegrear/LVL') { throw 'Official repository required' }
+          if ($env:GITHUB_EVENT_NAME -ceq 'workflow_dispatch') {
+            if ($env:GITHUB_REF -cne 'refs/heads/main') { throw 'Build-only dispatch requires main' }
+          } elseif ($env:GITHUB_EVENT_NAME -ceq 'push') {
+            if ($tag -cnotmatch '^v\d+\.\d+\.\d+$' -or $tag -cne "v$version") { throw 'Windows tag must match source version' }
+          } else { throw 'Unsupported Windows build event' }
+          git merge-base --is-ancestor HEAD origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Build source must be reviewed on main' }
+          "LVL_WINDOWS_VERSION=$version" >> $env:GITHUB_ENV
           node --version
       - name: Build source patch or select full bootstrap
         id: update
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = '${{ github.ref_name }}'
-          $version = $tag.Substring(1)
-          $prior = @(git tag --list 'v*' --sort=-v:refname | Where-Object { $_ -match '^v\d+\.\d+\.\d+$' -and [version]$_.Substring(1) -lt [version]$version } | Select-Object -First 1)
+          $version = $env:LVL_WINDOWS_VERSION
+          $tag = "v$version"
+          $prior = node scripts/combined-release.mjs windows-base --version $version | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not resolve published Windows update baseline' }
           $mode = 'full'
-          if ($version -ne '0.1.1' -and $prior.Count -eq 1) {
-            node scripts/build-update.mjs --from $prior[0] --to $version --out-dir dist
+          if ($version -ne '0.1.1' -and $null -ne $prior) {
+            node scripts/build-update.mjs --from $prior.version --from-ref $prior.ref --to $version --out-dir dist
             if ($LASTEXITCODE -eq 0) { $mode = 'patch' }
             else { Write-Host 'This change is incompatible with source-only patches; building the full installer fallback.' }
           }
@@ -75,19 +86,74 @@ jobs:
           if (-not (Test-Path dist/LVL-Setup.exe) -or -not (Test-Path dist/LVL-Setup.exe.sha256)) {
             throw 'Canonical LVL-Setup.exe release artifacts are missing'
           }
+      - name: Record exact Windows review artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payloadName = if ('${{ steps.update.outputs.mode }}' -eq 'full') { 'LVL-Setup.exe' } else { "LVL-update-v$env:LVL_WINDOWS_VERSION.zip" }
+          $names = @($payloadName, "$payloadName.sha256")
+          $files = @(Get-ChildItem -LiteralPath dist -Force)
+          if ($files.Count -ne 2 -or @($files | Where-Object { $_.PSIsContainer -or $_.Name -cnotin $names }).Count -ne 0) { throw 'Unexpected Windows build inventory' }
+          New-Item -ItemType Directory -Path build/windows-review/assets -Force | Out-Null
+          $hashes = [ordered]@{}
+          foreach ($name in $names) {
+            Copy-Item -LiteralPath (Join-Path dist $name) -Destination build/windows-review/assets
+            $hashes[$name] = (Get-FileHash -LiteralPath (Join-Path dist $name) -Algorithm SHA256).Hash.ToLowerInvariant()
+          }
+          [ordered]@{
+            format = 'lvl-windows-review-v1'
+            repository = $env:GITHUB_REPOSITORY
+            sourceCommit = $env:GITHUB_SHA
+            eventName = $env:GITHUB_EVENT_NAME
+            gitRef = $env:GITHUB_REF
+            workflowRunId = [string]$env:GITHUB_RUN_ID
+            workflowAttempt = [int]$env:GITHUB_RUN_ATTEMPT
+            version = $env:LVL_WINDOWS_VERSION
+            mode = '${{ steps.update.outputs.mode }}'
+            assetHashes = $hashes
+            releaseNotes = (Get-Content -LiteralPath CHANGELOG.md -Raw)
+          } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath build/windows-review/build-evidence.json -Encoding utf8
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lvl-windows-release-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/windows-review/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          overwrite: false
+
+  publish-windows:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: windows-2022
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: lvl-windows-release-review-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/windows-review
       - name: Publish tagged Windows update to GitHub Releases
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          $tag = '${{ github.ref_name }}'
+          $tag = $env:GITHUB_REF_NAME
+          $record = Get-Content -LiteralPath build/windows-review/build-evidence.json -Raw | ConvertFrom-Json
+          if ($env:GITHUB_REPOSITORY -cne 'Flegrear/LVL' -or $record.sourceCommit -cne $env:GITHUB_SHA -or
+              $record.eventName -cne 'push' -or $record.gitRef -cne $env:GITHUB_REF -or $record.version -cne $tag.Substring(1) -or
+              $record.workflowRunId -cne $env:GITHUB_RUN_ID -or $record.workflowAttempt -ne [int]$env:GITHUB_RUN_ATTEMPT) { throw 'Windows artifact identity mismatch' }
           $releaseTitle = if ($tag -eq 'v0.1.1') { 'LVL Alpha 0.1.1 — Updater test' } else { "LVL Alpha $tag" }
-          $assetName = if ('${{ steps.update.outputs.mode }}' -eq 'full') { 'LVL-Setup.exe' } else { "LVL-update-$tag.zip" }
+          $assetName = if ($record.mode -eq 'full') { 'LVL-Setup.exe' } else { "LVL-update-$tag.zip" }
           $expected = @($assetName, "$assetName.sha256")
-          $assets = @(Get-ChildItem dist -File | ForEach-Object { $_.FullName })
+          $assets = @(Get-ChildItem build/windows-review/assets -File | ForEach-Object { $_.FullName })
           if ($assets.Count -ne 2 -or @($assets | Where-Object { [IO.Path]::GetFileName($_) -cnotin $expected }).Count -ne 0) {
             throw "Expected only $assetName and its checksum in dist"
+          }
+          foreach ($file in $assets) {
+            $name = [IO.Path]::GetFileName($file)
+            if ($record.assetHashes.PSObject.Properties[$name].Value -cne (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Windows review artifact bytes changed' }
           }
           if ($assets | Where-Object { $_ -match '[\\/]LVL\.exe(?:\.sha256)?$' }) { throw 'LVL.exe is the installed app, not a GitHub release installer' }
           gh release create $tag @assets --repo '${{ github.repository }}' --verify-tag --title $releaseTitle --generate-notes --latest

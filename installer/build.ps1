@@ -67,10 +67,6 @@ function Find-InnoSetup([string]$Requested) {
   $programFilesX86 = [Environment]::GetFolderPath('ProgramFilesX86')
   if ($programFilesX86) { $candidates.Add((Join-Path $programFilesX86 'Inno Setup 6\ISCC.exe')) }
   if ($env:ProgramFiles) { $candidates.Add((Join-Path $env:ProgramFiles 'Inno Setup 6\ISCC.exe')) }
-  # Shared developer compiler is only a build tool. Never bundle it.
-  if ($env:USERPROFILE) {
-    $candidates.Add((Join-Path $env:USERPROFILE 'Code\Language-video-learner\build\tools\inno-6.7.3\ISCC.exe'))
-  }
   foreach ($item in $candidates) {
     if ($item -and (Test-Path -LiteralPath $item -PathType Leaf)) { return [IO.Path]::GetFullPath($item) }
   }

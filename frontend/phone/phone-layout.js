@@ -30,6 +30,64 @@ export function isTextField(element) {
   return Boolean(element?.matches?.(TEXT_FIELD));
 }
 
+// WebView has no browser refresh gesture. Only engage a deliberate downward
+// pull at the top of a browsing page; playback and reading keep their gestures.
+export function startPullToRefresh(win = globalThis.window) {
+  const doc = win?.document;
+  if (!/\bLVL-Android\//.test(win?.navigator?.userAgent || "") || !doc?.body) return null;
+  const notice = doc.createElement("div");
+  notice.className = "phone-pull-refresh";
+  notice.setAttribute("role", "status");
+  notice.hidden = true;
+  doc.body.append(notice);
+  let start = null, distance = 0, refreshing = false;
+  const reset = () => { start = null; distance = 0; notice.hidden = true; };
+  const atTop = (target) => {
+    if ((win.scrollY || 0) > 1 || (doc.scrollingElement?.scrollTop || 0) > 1) return false;
+    for (let node = target; node && node !== doc; node = node.parentElement)
+      if ((node.scrollTop || 0) > 1 || (node.scrollWidth || 0) > (node.clientWidth || 0) + 2) return false;
+    return true;
+  };
+  const blocked = () => doc.querySelector("dialog[open], #view-watch.is-active, #view-comic.is-active");
+  const begin = (event) => {
+    reset();
+    if (refreshing || event.touches.length !== 1 || blocked() || !atTop(event.target) ||
+        event.target?.closest?.("input, textarea, select, button, a, [contenteditable], [role=slider], [role=tablist]")) return;
+    const point = event.touches[0];
+    start = { x: point.clientX, y: point.clientY, target: event.target };
+  };
+  const move = (event) => {
+    if (!start) return;
+    if (event.touches.length !== 1 || blocked() || !atTop(start.target)) { reset(); return; }
+    const point = event.touches[0];
+    const dy = point.clientY - start.y, dx = Math.abs(point.clientX - start.x);
+    if (dx > 12 && dx >= Math.abs(dy)) { reset(); return; }
+    if (dy <= 0) { reset(); return; }
+    if (dy < 14) return;
+    distance = dy;
+    if (event.cancelable) event.preventDefault();
+    notice.textContent = dy >= 96 ? "Release to refresh" : "Pull to refresh";
+    notice.style.transform = `translate(-50%, ${Math.min(48, dy * 0.35)}px)`;
+    notice.hidden = false;
+  };
+  const finish = () => {
+    const ready = start && distance >= 96 && !blocked() && atTop(start.target);
+    reset();
+    if (ready && !refreshing) { refreshing = true; win.location.reload(); }
+  };
+  doc.addEventListener("touchstart", begin, { passive: true });
+  doc.addEventListener("touchmove", move, { passive: false });
+  doc.addEventListener("touchend", finish);
+  doc.addEventListener("touchcancel", reset);
+  return { dispose() {
+    doc.removeEventListener("touchstart", begin);
+    doc.removeEventListener("touchmove", move);
+    doc.removeEventListener("touchend", finish);
+    doc.removeEventListener("touchcancel", reset);
+    reset(); notice.remove();
+  } };
+}
+
 export function startPhoneLayout(win = globalThis.window) {
   const doc = win?.document;
   if (!doc?.documentElement || typeof win.matchMedia !== "function") return null;
@@ -67,6 +125,7 @@ export const phoneLayoutFeature = Object.freeze({
   styles: ["/frontend/phone/phone.css"],
   start: () => {
     startPhoneLayout();
+    startPullToRefresh();
     // Phone stylesheet order is intentional: base phone -> shell/player ->
     // catalog presentation. The discovery controls reuse production forms and
     // the topbar's existing search; they do not register another search input.

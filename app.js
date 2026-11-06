@@ -330,6 +330,9 @@ if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncWatchEpisodeHe
 window.addEventListener("resize", syncWatchEpisodeHeight);
 export const uiLanguage = installUiI18n({ interfaceLanguage: state.interfaceLanguage, baseLanguage: state.baseLanguage });
 export let homeBrowseCategory = (() => {
+  // A new Android session starts with the full Library of discovery rows.
+  // Desktop keeps its saved category, and in-session tab changes still persist.
+  if (/\bLVL-Android\//.test(window.navigator?.userAgent || "")) return "all";
   const saved = localStorage.getItem("blackline-home-filter");
   return clientFeatures.homeCategoryIds.includes(saved) ? saved : normalizeHomeCategory(saved);
 })();

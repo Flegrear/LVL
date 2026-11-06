@@ -253,6 +253,8 @@ class AppUpdater(private val context: Context, private val server: Server) {
         if (info.packageName != context.packageName) throw IOException("The download is another app (${info.packageName})")
         val installedCode = manager.getPackageInfo(context.packageName, 0).longVersionCode
         if (info.longVersionCode <= installedCode) throw IOException("The download isn't newer than this app")
+        if (release.versionCode != null && (info.longVersionCode != release.versionCode || info.versionName != release.version))
+            throw IOException("The Android app version differs from the release manifest")
         val ours = manager.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES).signingInfo
         val theirs = info.signingInfo
         val signers = { signing: android.content.pm.SigningInfo? ->

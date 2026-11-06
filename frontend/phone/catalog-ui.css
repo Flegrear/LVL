@@ -130,10 +130,16 @@
   #view-home .anime-browser-filters[data-phone-catalog-enhanced="true"] > [data-comic-browser-reset] {
     display: none !important; /* the disclosure owns Reset on phones */
   }
-  #view-library .lib-page > .phone-library-disclosure { grid-column: 1 / -1; }
-  #view-library .lib-page.phone-library-filters-collapsed > .lib-status-sidebar,
-  #view-library .lib-page.phone-library-filters-collapsed .lib-toolbar__tools .lib-sort {
-    display: none !important;
+  #view-library .lib-page > .lib-status-sidebar { display: block !important; }
+  #view-library .lib-status-sidebar__heading[hidden] { display: none !important; }
+  #view-library .lib-status-list { display: flex; flex-wrap: wrap; gap: 6px; }
+  #view-library .lib-status-option { width: auto; flex: 0 1 auto; }
+  #view-library[data-feature-filter="comics"] #library-list,
+  #view-library .lib-category[data-feature="comics"] > .lib-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
+    gap: 19px 9px;
+    min-width: 0;
   }
   /* Keep library type tabs, Add magnet and More visible and fully operable. */
   #view-library .lib-toolbar { min-width: 0; }

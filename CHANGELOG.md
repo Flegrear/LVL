@@ -1,8 +1,8 @@
 # LVL Changelog
 
-## 0.2.4 — 2026-11-05
+## 0.2.4 — 2026-11-06
 
-- Fix Windows update checks when Android releases appear between Windows versions.
+- Improve update checks so Windows and Android can update independently from shared releases.
 - Improve Watch playback when seeking, pausing and returning to a video.
 - Make phone browsing more comfortable with smaller posters and easier filters.
 - Refine the comic reader and chapter navigation on smaller screens.

@@ -3,4 +3,6 @@
     <string name="app_name">LVL</string>
     <string name="starting">Starting LVL…</string>
     <string name="start_timeout">LVL didn\'t start in time.</string>
+    <string name="start_failed">LVL couldn\'t start its local server. Tap Retry to reconnect. If this keeps happening, close and reopen the app. Your library and settings are kept.</string>
+    <string name="retry_start">Retry</string>
 </resources>

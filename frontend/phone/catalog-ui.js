@@ -160,88 +160,20 @@ export function enhanceDiscoveryForm(form, kind, { doc = form?.ownerDocument, ph
 export function enhanceLibraryFilters(doc, { phone = () => true } = {}) {
   const page = doc?.querySelector?.("#view-library .lib-page");
   const status = page?.querySelector?.(".lib-status-sidebar");
-  const sort = page?.querySelector?.("#library-sort");
-  if (!status || !sort || page.dataset.phoneCatalogLibrary === "true") return null;
+  if (!status || page.dataset.phoneCatalogLibrary === "true") return null;
   page.dataset.phoneCatalogLibrary = "true";
-  const bar = doc.createElement("div");
-  bar.className = "phone-catalog-disclosure phone-library-disclosure";
-  const toggle = addControl(doc, "phone-catalog-disclosure__toggle", "Filters", {
-    "aria-controls": "library-status-filter library-sort", "aria-expanded": "false", "aria-label": "Library filters",
-  });
-  const summary = doc.createElement("span");
-  summary.className = "phone-catalog-disclosure__summary";
-  summary.id = "phone-library-filter-summary";
-  toggle.setAttribute("aria-describedby", summary.id);
-  const reset = addControl(doc, "phone-catalog-disclosure__reset", "Reset", { "aria-label": "Reset Library filters" });
-  bar.append(toggle, summary, reset);
-  status.before(bar);
-  let expanded = false;
-  let destroyed = false;
-  const read = () => {
-    const selected = status.querySelector('[data-library-status][aria-pressed="true"]');
-    const key = selected?.getAttribute("data-library-status") || "any";
-    const statusLabel = selected?.querySelector("span")?.textContent?.trim() || "All statuses";
-    const sortKey = sort.value || "recent";
-    const searchValue = doc.getElementById("library-search")?.value?.trim() || "";
-    return { key, sortKey, searchValue, statusLabel, sortLabel: selectedLabel(sort) };
-  };
+  const heading = status.querySelector?.(".lib-status-sidebar__heading");
+  const originalHeadingHidden = heading?.hidden;
   const render = () => {
-    if (destroyed) return;
-    const small = phone();
-    page.classList.toggle("phone-library-filters-collapsed", small && !expanded);
-    bar.hidden = !small;
-    toggle.setAttribute("aria-expanded", String(small && expanded));
-    const { key, sortKey, searchValue, statusLabel, sortLabel } = read();
-    const words = [key === "any" ? "All statuses" : statusLabel];
-    if (sortKey !== "recent") words.push(sortLabel);
-    if (searchValue) words.push(`Title: ${searchValue}`);
-    const message = words.join(" · ");
-    if (summary.textContent !== message) summary.textContent = message;
-    reset.hidden = key === "any" && sortKey === "recent" && !searchValue;
-    reset.disabled = reset.hidden;
+    page.classList.remove("phone-library-filters-collapsed");
+    if (heading) heading.hidden = phone() || Boolean(originalHeadingHidden);
   };
-  const onToggle = () => { expanded = !expanded; render(); if (!expanded && status.contains(doc.activeElement)) toggle.focus(); };
-  const onReset = () => {
-    if (read().key !== "any") status.querySelector('[data-library-status="any"]')?.click();
-    if (sort.value !== "recent") {
-      sort.value = "recent";
-      sort.dispatchEvent(new doc.defaultView.Event("change", { bubbles: true }));
-    }
-    const search = doc.getElementById("library-search");
-    if (search?.value) {
-      search.value = "";
-      search.dispatchEvent(new doc.defaultView.Event("input", { bubbles: true }));
-    }
-    if (doc.defaultView?.queueMicrotask) doc.defaultView.queueMicrotask(render);
-    else render();
-  };
-  const onFilter = () => {
-    if (doc.defaultView?.queueMicrotask) doc.defaultView.queueMicrotask(render);
-    else render();
-  };
-  const onKey = (event) => {
-    if (event.key !== "Escape" || !phone() || !expanded) return;
-    event.preventDefault(); expanded = false; render(); toggle.focus();
-  };
-  toggle.addEventListener("click", onToggle);
-  reset.addEventListener("click", onReset);
-  status.addEventListener("click", onFilter);
-  sort.addEventListener("change", onFilter);
-  page.addEventListener("keydown", onKey);
   render();
-  return { bar, toggle, summary, reset, render,
-    destroy() {
-      destroyed = true;
-      toggle.removeEventListener("click", onToggle);
-      reset.removeEventListener("click", onReset);
-      status.removeEventListener("click", onFilter);
-      sort.removeEventListener("change", onFilter);
-      page.removeEventListener("keydown", onKey);
-      page.classList.remove("phone-library-filters-collapsed");
-      delete page.dataset.phoneCatalogLibrary;
-      bar.remove();
-    },
-  };
+  return { render, destroy() {
+    if (heading) heading.hidden = originalHeadingHidden;
+    page.classList.remove("phone-library-filters-collapsed");
+    delete page.dataset.phoneCatalogLibrary;
+  } };
 }
 
 // One startup hook, required by F in frontend/phone/phone-layout.js.

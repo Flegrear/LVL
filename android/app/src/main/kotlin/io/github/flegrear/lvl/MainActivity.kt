@@ -35,9 +35,12 @@ import android.webkit.URLUtil
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceError
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
+import android.widget.Button
+import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
@@ -65,6 +68,7 @@ class MainActivity : Activity() {
     private lateinit var web: WebView
     private lateinit var statusBox: ScrollView
     private lateinit var status: TextView
+    private lateinit var retryStartupButton: Button
     private lateinit var controls: PlaybackControls
     private var customView: View? = null
     private var customViewCallback: WebChromeClient.CustomViewCallback? = null
@@ -73,6 +77,8 @@ class MainActivity : Activity() {
     private var pictureInPictureEndedAt = 0L
     private var stopped = false
     @Volatile private var waiting = false
+    @Volatile private var waitGeneration = 0
+    private var ignoredFailureRevision: Long? = null
     private var cookieReady = false
     private var cookieFailed = false
     private var serverReady = false
@@ -128,9 +134,20 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
             text = getString(R.string.starting)
         }
+        retryStartupButton = Button(this).apply {
+            text = getString(R.string.retry_start)
+            visibility = View.GONE
+            setOnClickListener { retryStartup() }
+        }
+        val startupPanel = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            addView(status, LinearLayout.LayoutParams(MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+            addView(retryStartupButton, LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
+        }
         statusBox = ScrollView(this).apply {
             isFillViewport = true
-            addView(status, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
+            addView(startupPanel, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         }
         root.addView(web, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
         root.addView(statusBox, FrameLayout.LayoutParams(MATCH_PARENT, MATCH_PARENT))
@@ -208,6 +225,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         waiting = false
+        waitGeneration += 1
         try { unregisterReceiver(mediaReceiver) } catch (_: IllegalArgumentException) {}
         controls.release()
         web.destroy()
@@ -404,17 +422,47 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun showStartupFailure() {
+        waiting = false
+        waitGeneration += 1
+        serverReady = false
+        navigationStarted = false
+        web.stopLoading()
+        web.visibility = View.INVISIBLE
+        statusBox.visibility = View.VISIBLE
+        status.text = getString(R.string.start_failed)
+        retryStartupButton.visibility = if (cookieFailed) View.GONE else View.VISIBLE
+    }
+
+    private fun retryStartup() {
+        if (isDestroyed || isFinishing || cookieFailed) return
+        retryStartupButton.visibility = View.GONE
+        status.text = getString(R.string.starting)
+        serverReady = false
+        navigationStarted = false
+        // The old terminal state may remain until Android delivers the start
+        // command. Only a newer service revision can fail this retry.
+        ignoredFailureRevision = ServerService.readinessRevision()
+        ServerService.start(this)
+        waitForServer()
+    }
+
     private fun waitForServer() {
+        val generation = ++waitGeneration
+        val previousFailure = ignoredFailureRevision
+        ignoredFailureRevision = null
         waiting = true
         thread(name = "lvl-wait") {
             val deadline = SystemClock.elapsedRealtime() + 180_000
-            while (waiting) {
+            while (waiting && generation == waitGeneration) {
                 // Observe the revision before checking health so a concurrent Node-ready
                 // notification cannot be lost between the check and the subsequent wait.
                 val revision = ServerService.readinessRevision()
                 if (healthy()) {
                     main.post {
                         if (!isDestroyed && !isFinishing) {
+                            if (generation != waitGeneration || cookieFailed) return@post
+                            waiting = false
                             serverReady = true
                             startup("http_health_ok")
                             maybeNavigate()
@@ -422,12 +470,13 @@ class MainActivity : Activity() {
                     }
                     return@thread
                 }
-                val serverStopped = !ServerService.running && ServerService.state.startsWith("The server")
-                val text = if (serverStopped) ServerService.state + "\n\n" + ServerService.logTail() else ServerService.state
+                val serverStopped = !ServerService.running && ServerService.state.startsWith("The server") &&
+                    (previousFailure == null || revision != previousFailure)
                 val late = SystemClock.elapsedRealtime() > deadline
                 main.post {
-                    if (!isDestroyed && !isFinishing && !cookieFailed) {
-                        status.text = if (late) getString(R.string.start_timeout) + "\n\n" + ServerService.logTail() else text
+                    if (!isDestroyed && !isFinishing && !cookieFailed && generation == waitGeneration) {
+                        if (late || serverStopped) showStartupFailure()
+                        else status.text = getString(R.string.starting)
                     }
                 }
                 if (late || serverStopped) return@thread
@@ -457,6 +506,14 @@ class MainActivity : Activity() {
     }
 
     private inner class LvlWebViewClient : WebViewClient() {
+        override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
+            val uri = request.url
+            if (request.isForMainFrame && uri.scheme == "http" && uri.host == "127.0.0.1" && uri.port == ServerService.PORT) {
+                Log.w("LVL", "Local page unavailable: ${error.errorCode}")
+                showStartupFailure()
+            }
+        }
+
         override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
             if (readerImmersive && Uri.parse(url).path != "/comic") setReaderImmersive(false)
             if (url.startsWith(base)) startup("webview_page_started")
@@ -485,7 +542,7 @@ class MainActivity : Activity() {
         }
 
         override fun onPageFinished(view: WebView, url: String) {
-            if (url.startsWith(base)) {
+            if (url.startsWith(base) && navigationStarted) {
                 startup("webview_page_finished")
                 web.visibility = View.VISIBLE
                 statusBox.visibility = View.GONE

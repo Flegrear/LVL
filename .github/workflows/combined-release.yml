@@ -1,0 +1,149 @@
+name: Combined LVL release
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Reviewed existing release-YYYY-MM-DD.N tag'
+        required: true
+        type: string
+      windows_run:
+        description: 'Successful Windows build-only run on this source commit, or leave empty to retain a release'
+        type: string
+      windows_release:
+        description: 'Existing Windows/combined release to retain; empty when using a build run'
+        type: string
+      android_run:
+        description: 'Successful signed Android build-only run on this source commit, or leave empty to retain a release'
+        type: string
+      android_release:
+        description: 'Existing Android/combined release to retain; empty when using a build run'
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: combined-release
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    env:
+      GH_TOKEN: ${{ github.token }}
+      LVL_COMBINED_RELEASES_ENABLED: ${{ vars.LVL_COMBINED_RELEASES_ENABLED }}
+      LVL_ANDROID_CERT_SHA256: ${{ secrets.LVL_ANDROID_CERT_SHA256 }}
+      LVL_ANDROID_NATIVE_ARTIFACT_ID: ${{ vars.LVL_ANDROID_NATIVE_ARTIFACT_ID }}
+      LVL_ANDROID_NATIVE_SHA256: ${{ vars.LVL_ANDROID_NATIVE_SHA256 }}
+      LVL_ANDROID_RELEASE_ENABLED: ${{ vars.LVL_ANDROID_RELEASE_ENABLED }}
+      LVL_ANDROID_PROVENANCE_APPROVED: ${{ vars.LVL_ANDROID_PROVENANCE_APPROVED }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      WINDOWS_RUN: ${{ inputs.windows_run }}
+      WINDOWS_RELEASE: ${{ inputs.windows_release }}
+      ANDROID_RUN: ${{ inputs.android_run }}
+      ANDROID_RELEASE: ${{ inputs.android_release }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Require reviewed main and completed updater transition
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'Flegrear/LVL' -or $env:GITHUB_REF -cne 'refs/heads/main' -or
+              $env:LVL_COMBINED_RELEASES_ENABLED -cne 'true' -or $env:RELEASE_TAG -cnotmatch '^release-\d{4}-\d{2}-\d{2}\.[1-9]\d*$') { throw 'Combined releases require reviewed main and completed updater transition approval' }
+          if ($env:ANDROID_RUN -and ($env:LVL_ANDROID_RELEASE_ENABLED -cne 'true' -or $env:LVL_ANDROID_PROVENANCE_APPROVED -cne 'true')) { throw 'Android build publication or provenance approval was revoked' }
+          $commit = git rev-parse --verify "refs/tags/$env:RELEASE_TAG^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $commit -cne $env:GITHUB_SHA) { throw 'Combined tag must point at this exact reviewed main commit' }
+          git merge-base --is-ancestor $commit origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'Combined source is not on main' }
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - name: Assemble independent platform versions from verified build outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $arguments = @('scripts/combined-release.mjs','prepare','--tag',$env:RELEASE_TAG,'--commit',$env:GITHUB_SHA,'--out','build/combined/assets')
+          foreach ($platform in @('windows','android')) {
+            $run = [Environment]::GetEnvironmentVariable("$($platform.ToUpperInvariant())_RUN")
+            $retained = [Environment]::GetEnvironmentVariable("$($platform.ToUpperInvariant())_RELEASE")
+            if ([bool]$run -eq [bool]$retained) { throw "Choose one $platform build run or retained release" }
+            if ($run) { $arguments += @("--$platform-run",$run) } else { $arguments += @("--$platform-release",$retained) }
+          }
+          node @arguments
+          if ($LASTEXITCODE -ne 0) { throw 'Combined asset validation failed' }
+          node scripts/combined-release.mjs verify --dir build/combined/assets
+          if ($LASTEXITCODE -ne 0) { throw 'Combined directory verification failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lvl-combined-reviewed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/combined/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+          overwrite: false
+
+  publish:
+    needs: prepare
+    runs-on: windows-2022
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ inputs.release_tag }}
+      LVL_COMBINED_RELEASES_ENABLED: ${{ vars.LVL_COMBINED_RELEASES_ENABLED }}
+      LVL_ANDROID_RELEASE_ENABLED: ${{ vars.LVL_ANDROID_RELEASE_ENABLED }}
+      LVL_ANDROID_PROVENANCE_APPROVED: ${{ vars.LVL_ANDROID_PROVENANCE_APPROVED }}
+      ANDROID_RUN: ${{ inputs.android_run }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
+      - uses: actions/download-artifact@v4
+        with:
+          name: lvl-combined-reviewed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: build/combined
+      - name: Publish only a complete verified combined draft
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_REPOSITORY -cne 'Flegrear/LVL' -or $env:GITHUB_REF -cne 'refs/heads/main' -or
+              $env:LVL_COMBINED_RELEASES_ENABLED -cne 'true' -or $env:RELEASE_TAG -cnotmatch '^release-\d{4}-\d{2}-\d{2}\.[1-9]\d*$') { throw 'Combined publication approval or source identity changed' }
+          if ($env:ANDROID_RUN -and ($env:LVL_ANDROID_RELEASE_ENABLED -cne 'true' -or $env:LVL_ANDROID_PROVENANCE_APPROVED -cne 'true')) { throw 'Android build publication or provenance approval was revoked' }
+          $commit = git rev-parse --verify "refs/tags/$env:RELEASE_TAG^{commit}"
+          if ($LASTEXITCODE -ne 0 -or $commit -cne $env:GITHUB_SHA) { throw 'Combined tag changed' }
+          node scripts/combined-release.mjs verify --dir build/combined/assets
+          if ($LASTEXITCODE -ne 0) { throw 'Reviewed combined assets changed' }
+          $manifest = Get-Content -LiteralPath build/combined/assets/LVL-release.json -Raw | ConvertFrom-Json
+          if ($manifest.tag -cne $env:RELEASE_TAG) { throw 'Combined manifest tag mismatch' }
+          $files = @(Get-ChildItem -LiteralPath build/combined/assets -File | ForEach-Object { $_.FullName })
+          $title = (Get-Content -LiteralPath build/combined/release-title.txt -Raw).Trim()
+          gh release create $env:RELEASE_TAG @files --repo $env:GITHUB_REPOSITORY --verify-tag --title $title --notes-file build/combined/release-notes.txt --draft --latest=false
+          if ($LASTEXITCODE -ne 0) { throw 'Could not create combined draft' }
+          gh release download $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --pattern '*' --dir build/remote-verify
+          if ($LASTEXITCODE -ne 0) { throw 'Could not download draft assets' }
+          node scripts/combined-release.mjs verify --dir build/remote-verify
+          if ($LASTEXITCODE -ne 0) { throw 'Remote combined inventory verification failed' }
+          foreach ($file in $files) {
+            $downloaded = Join-Path build/remote-verify ([IO.Path]::GetFileName($file))
+            if ((Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $downloaded -Algorithm SHA256).Hash) { throw 'Remote draft bytes differ' }
+          }
+          $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease,assets | ConvertFrom-Json
+          if (!$release.isDraft -or $release.isPrerelease -or $release.assets.Count -ne $files.Count) { throw 'Combined draft state differs' }
+          gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Could not publish verified combined release' }

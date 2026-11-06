@@ -28,6 +28,8 @@ Your library and settings are stored on your device. Online catalogs, subtitle s
 
 **Android (12 or newer):** download the [ARM64 APK for phones and tablets](https://github.com/Flegrear/LVL/releases/download/android-v0.1.0/LVL-0.1.0-arm64.apk). For emulators and x86_64 devices, use the [x86_64 APK](https://github.com/Flegrear/LVL/releases/download/android-v0.1.0/LVL-0.1.0-x86_64.apk). Each APK contains everything needed to run.
 
+Windows and Android have independent version numbers. Find downloads and release notes on the [Releases page](https://github.com/Flegrear/LVL/releases), or open Settings → Updates in the app to check for updates for your device.
+
 LVL plays and reads media from the sources you choose. It does not include movies, shows, or comic chapters. Use sources you have permission to access.
 
 ## License

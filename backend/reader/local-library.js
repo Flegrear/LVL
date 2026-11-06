@@ -164,7 +164,6 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     for (const [key, row] of groups) {
       let workId = q.override.get(key)?.work_id || null;
       let reason = workId ? "manual" : "";
-      if (!workId && row.anilist_hint) { workId = `anilist-${row.anilist_hint}`; reason = "comicinfo"; }
       // Once an unmatched series has a local Library title, newly scanned
       // chapters belong to that same title. Later provider recovery must not
       // silently rematch it or discard its status; Match is an explicit action.
@@ -173,6 +172,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         const existing = q.localTitle.get(localId);
         if (existing?.series_key === key) { workId = localId; reason = "unmatched"; }
       }
+      if (!workId && row.anilist_hint) { workId = `anilist-${row.anilist_hint}`; reason = "comicinfo"; }
       if (!workId && search) {
         try {
           const wanted = normalizeSeriesName(row.series);
@@ -186,9 +186,20 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         }
       }
       if (workId?.startsWith("anilist-")) {
-        q.setMatch.run(workId, reason === "manual" ? "manual" : "auto", reason, key);
-        await ensureLibrary?.(Number(workId.slice(8)));
-      } else {
+        try {
+          // Do not assign files to a catalog entry that failed to load: they
+          // would stop being pending without gaining a readable Library card.
+          await ensureLibrary?.(Number(workId.slice(8)));
+        } catch (problem) {
+          log.warn?.("Comic metadata unavailable:", problem?.message);
+          // Explicit ownership is retained and retried on the next scan.
+          if (reason === "manual") continue;
+          workId = null;
+          reason = "unmatched";
+        }
+        if (workId) q.setMatch.run(workId, reason === "manual" ? "manual" : "auto", reason, key);
+      }
+      if (!workId?.startsWith("anilist-")) {
         const localId = workId?.startsWith("local-") ? workId : localIdFor(key);
         q.addLocal.run(localId, row.series, key, now(), now());
         q.setMatch.run(localId, "local", "unmatched", key);

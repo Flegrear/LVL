@@ -2,7 +2,7 @@
 // publishes a release; every archive byte comes from an audited HEAD Git blob.
 // Added and changed installed sources are packed; deleted ones (and the old path of a
 // moved one) go in the manifest's deletes, which the installed updater removes.
-// Usage: node scripts/build-update.mjs --from v0.1.0 [--out-dir dist]
+// Usage: node scripts/build-update.mjs --from v0.1.0 [--from-ref release-YYYY-MM-DD.N] [--out-dir dist]
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
@@ -174,10 +174,13 @@ function inspectChangedPath(relative, change) {
  * No Git writes, no worktree bytes, and no overwrite of existing release assets.
  * @returns {{archivePath:string, checksumPath:string, checksum:string, manifest:object}}
  */
-export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, toVersion = null,
+export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, fromRef = null, toVersion = null,
   outputDir = null } = {}) {
   if (!fromVersion) throw new Error("A prior release tag is mandatory: --from v0.1.0");
   const from = versionParts(fromVersion).value;
+  const sourceTag = fromRef === null ? `v${from}` : fromRef;
+  if (typeof sourceTag !== "string" || (sourceTag !== `v${from}` && !/^release-\d{4}-\d{2}-\d{2}\.[1-9]\d*$/.test(sourceTag)))
+    throw new Error("Patch source tag must be the matching Windows version tag or a canonical combined release tag");
   const root = fs.realpathSync(path.resolve(repoRoot));
   // Do not compare Git's --show-toplevel spelling to Node's realpath. On
   // hosted Windows runners, Git may return an MSYS-style or differently
@@ -186,20 +189,20 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, toVersion = 
   if (gitText(root, ["rev-parse", "--is-inside-work-tree"]) !== "true"
       || gitText(root, ["rev-parse", "--show-prefix"]) !== "")
     throw new Error("Build root must be the exact Git repository root");
-  const tag = `refs/tags/v${from}`;
+  const tag = `refs/tags/${sourceTag}`;
   const oldCommit = gitText(root, ["rev-parse", "--verify", `${tag}^{commit}`]);
   const headCommit = gitText(root, ["rev-parse", "--verify", "HEAD^{commit}"]);
   if (oldCommit === headCommit) throw new Error("No new commit since the prior release tag");
   try {
     git(root, ["merge-base", "--is-ancestor", oldCommit, headCommit], 64 * 1024);
   } catch {
-    throw new Error(`Old release tag v${from} is not an ancestor of HEAD; cannot form a safe patch`);
+    throw new Error(`Old release tag ${sourceTag} is not an ancestor of HEAD; cannot form a safe patch`);
   }
 
   const oldPackage = parsedJson(readGitBlob(root, oldCommit, "package.json", 1024 * 1024), "tagged package.json");
   const newPackageBytes = readGitBlob(root, headCommit, "package.json", 1024 * 1024);
   const newPackage = parsedJson(newPackageBytes, "HEAD package.json");
-  if (oldPackage.version !== from) throw new Error(`Old version mismatch: tag v${from} contains package.json ${oldPackage.version}`);
+  if (oldPackage.version !== from) throw new Error(`Old version mismatch: tag ${sourceTag} contains package.json ${oldPackage.version}`);
   const to = versionParts(newPackage.version).value;
   if (newPackage.version !== to || compareVersions(to, from) <= 0)
     throw new Error(`Candidate HEAD package version ${newPackage.version} must be newer than ${from}`);
@@ -311,10 +314,10 @@ function cli() {
   const options = {};
   for (let i = 0; i < args.length; i++) {
     const key = args[i];
-    const name = ({ "--from": "fromVersion", "--to": "toVersion", "--out": "outputDir",
+    const name = ({ "--from": "fromVersion", "--from-ref": "fromRef", "--to": "toVersion", "--out": "outputDir",
       "--out-dir": "outputDir", "--root": "repoRoot" })[key];
     if (!name || !args[i + 1] || args[i + 1].startsWith("--") || options[name] !== undefined)
-      throw new Error("Usage: node scripts/build-update.mjs --from v0.1.0 [--to 0.1.1] [--out-dir dist] [--root repo]");
+      throw new Error("Usage: node scripts/build-update.mjs --from v0.1.0 [--from-ref release-YYYY-MM-DD.N] [--to 0.1.1] [--out-dir dist] [--root repo]");
     options[name] = args[++i];
   }
   const result = buildUpdate(options);

@@ -34,20 +34,16 @@ export function portraitPlayerControlGeometry(width, { gutter = 10 } = {}) {
   });
 }
 
-// The real index.html has 14 discrete player buttons, speed, metrics, volume,
-// title and a spacer. Even 14 * 40px is 560px before gaps; exposing every
-// button inline at 320px cannot be a single row with usable touch targets.
-// Fullscreen therefore keeps the transport/captions/exit essentials visible
-// and moves the ORIGINAL other controls (and their bound listeners) into a
-// reachable More panel. It never clones buttons or changes seeking callbacks.
+// Keep a single fullscreen transport row. Secondary controls remain in the
+// original DOM for ordinary playback; fullscreen does not expose an overflow
+// drawer or download metrics.
 export const FULLSCREEN_ESSENTIAL_CONTROLS = Object.freeze([
   "player-seek-back", "compat-play", "player-seek-forward",
-  "player-toggle-subs", "player-fullscreen",
+  "player-audio-switcher", "player-toggle-subs", "player-fullscreen",
 ]);
 export const FULLSCREEN_PRIORITY_CONTROLS = Object.freeze([
-  "player-audio-switcher", "player-source-switcher", "player-mute",
-  "player-next-chapter", "player-prev-chapter", "player-loop-line",
-  "player-swap-languages", "player-float", "player-theater",
+  "player-source-switcher", "player-mute", "player-next-chapter",
+  "player-prev-chapter", "player-float",
 ]);
 
 // rowWidth is ACTUAL available DOM width, after fullscreen insets. The
@@ -111,27 +107,6 @@ export function installPhonePlayerControls({
     "player-audio-menu", "player-speed-menu"].map((id) => doc.getElementById(id)).filter(Boolean);
   let disposed = false;
   const root = doc.documentElement;
-  const moreButton = row && doc.createElement?.("button");
-  const morePanel = row && doc.createElement?.("div");
-  if (moreButton && morePanel) {
-    moreButton.id = "phone-player-more";
-    moreButton.type = "button";
-    moreButton.className = "player-tool phone-player-more-trigger";
-    moreButton.textContent = "···";
-    moreButton.hidden = true;
-    moreButton.setAttribute("aria-label", "More playback controls");
-    moreButton.setAttribute("aria-haspopup", "true");
-    moreButton.setAttribute("aria-expanded", "false");
-    moreButton.setAttribute("aria-controls", "phone-player-more-panel");
-    morePanel.id = "phone-player-more-panel";
-    morePanel.className = "phone-player-more-panel";
-    morePanel.setAttribute("role", "group");
-    morePanel.setAttribute("aria-label", "Additional playback controls");
-    morePanel.hidden = true;
-    controls.append(morePanel);
-    row.append(moreButton);
-    popovers.push(morePanel);
-  }
 
   const expanded = (value) => {
     for (const button of triggers) button?.setAttribute?.("aria-expanded", String(value));
@@ -139,10 +114,6 @@ export function installPhonePlayerControls({
   const hasPopover = () => popovers.some((node) => !node.hidden);
   const hasDialog = () => Boolean(manager?.open || appearance?.open);
   const isOpen = () => hasPopover() || hasDialog();
-  const closeMore = () => {
-    if (morePanel) morePanel.hidden = true;
-    moreButton?.setAttribute?.("aria-expanded", "false");
-  };
   const dismiss = ({ includeDialogs = true, reason = "outside" } = {}) => {
     if (disposed) return false;
     const menusOpen = hasPopover();
@@ -154,7 +125,6 @@ export function installPhonePlayerControls({
     if (menusOpen) {
       closePopovers?.();
       for (const node of popovers) node.hidden = true;
-      closeMore();
       expanded(false);
     }
     if (dialogsOpen) {
@@ -178,7 +148,7 @@ export function installPhonePlayerControls({
       }
       return;
     }
-    if (nodeInside(event.target, [...popovers, ...triggers, manager, appearance, moreButton])) return;
+    if (nodeInside(event.target, [...popovers, ...triggers, manager, appearance])) return;
     // Do not intercept player taps or B's double tap/drag gestures. A
     // pointerdown on the video closes the menu immediately and still reaches
     // the existing video gesture controller.
@@ -194,6 +164,14 @@ export function installPhonePlayerControls({
   };
   const onNavigate = () => { if (touch()) dismiss({ reason: "navigation" }); };
   const onControlsHidden = () => {
+    // Choosing a track must not race the ordinary three-second chrome timer.
+    // Keep the original audio menu and its parent controls interactive until
+    // an explicit outside tap, Back or navigation closes it.
+    if (touch() && frame.classList.contains("controls-hidden") &&
+        doc.getElementById("player-audio-menu")?.hidden === false) {
+      frame.classList.remove("controls-hidden");
+      return;
+    }
     if (touch() && frame.classList.contains("controls-hidden"))
       // The ordinary three-second player chrome timer is NOT a request to
       // close a modal. It may fire while a person is reading/editing the
@@ -202,59 +180,36 @@ export function installPhonePlayerControls({
       // dismissal still closes both dialogs and menus.
       dismiss({ reason: "controls-hidden", includeDialogs: false });
   };
-  // Reparenting original nodes preserves all of app.js's existing click,
-  // change and input listeners and their current disabled/value/ARIA state.
-  // In particular the only play/seek actions remain the original controls.
+  // Keep original controls and their listeners/state. Only the timestamp moves
+  // beside the fullscreen timeline; leaving fullscreen restores its parent.
   const restoreRow = () => {
     if (!row) return;
-    closeMore();
-    for (const node of originalRowChildren) row.append(node);
+    for (const node of originalRowChildren) node.classList?.remove("phone-fullscreen-extra");
     if (time && timeParent) timeParent.append(time);
-    if (moreButton) {
-      moreButton.hidden = true;
-      row.append(moreButton);
-    }
     delete row.dataset.fullscreenSingleRow;
   };
   const syncFullscreenRow = () => {
-    if (!row || !morePanel || !moreButton || !touch()) return;
+    if (!row || !touch()) return;
     if (!root.classList.contains("phone-player-fullscreen")) {
       restoreRow();
       return;
     }
-    // Restore DOM order first (including after resize), then move only
-    // nonessential nodes into the overflowing panel; all original nodes
-    // remain in the same video controls tree.
-    restoreRow();
     const rectWidth = Number(row.getBoundingClientRect?.().width) || Number(row.clientWidth)
       || Number(frame.clientWidth) || Math.max(0, Number(win.innerWidth) - 28);
-    // Match CSS's VIEWPORT breakpoint, not the already inset row width.
-    // A 375px phone might have a 350px row: using row width alone would
-    // erroneously budget 40px while CSS renders 44px touch targets.
     const target = Number(win.innerWidth) <= 360 ? 40 : 44;
     const budget = fullscreenPlayerRowBudget(rectWidth, { target });
     const byId = new Map(originalRowChildren.filter((node) => node.id).map((node) => [node.id, node]));
-    const byClass = (name) => originalRowChildren.find((node) => node.classList?.contains?.(name));
     const essential = FULLSCREEN_ESSENTIAL_CONTROLS.map((id) => byId.get(id)).filter(Boolean);
-    const originalExtras = originalRowChildren.filter((node) => !essential.includes(node));
     const inline = new Set(essential);
-    const priority = [...FULLSCREEN_PRIORITY_CONTROLS.map((id) => byId.get(id)), byClass("player-speed")].filter(Boolean);
-    const extrasAvailable = originalExtras.some((node) => !inline.has(node));
-    const reserveMore = extrasAvailable ? 1 : 0;
-    const slots = Math.max(essential.length, budget.capacity - reserveMore);
+    const speed = originalRowChildren.find((node) => node.classList?.contains("player-speed"));
+    const priority = [...FULLSCREEN_PRIORITY_CONTROLS.map((id) => byId.get(id)), speed].filter(Boolean);
     for (const node of priority) {
-      if (inline.size >= slots) break;
+      if (inline.size >= Math.max(essential.length, budget.capacity)) break;
       if (!node.hidden) inline.add(node);
     }
-    // Original title, volume and download metrics are available in More.
-    // Time is also visible next to the independent timeline/seekbar, never
-    // consuming a button slot or forcing another control row.
     if (time && timeline) timeline.append(time);
-    for (const node of originalRowChildren) {
-      if (!inline.has(node)) morePanel.append(node);
-    }
-    moreButton.hidden = morePanel.children.length === 0;
-    row.append(moreButton);
+    for (const node of originalRowChildren)
+      node.classList?.toggle("phone-fullscreen-extra", !inline.has(node));
     row.dataset.fullscreenSingleRow = "true";
   };
   const syncFullscreen = () => {
@@ -299,25 +254,6 @@ export function installPhonePlayerControls({
   win.addEventListener("resize", onResize);
   const resizeObserver = row && win.ResizeObserver ? new win.ResizeObserver(onResize) : null;
   resizeObserver?.observe?.(frame);
-  const onMoreClick = (event) => {
-    event.stopPropagation?.(); // Do not invoke the video's play/pause handler.
-    if (!moreButton || !morePanel) return;
-    if (morePanel.hidden) {
-      // Closing existing player popovers must not affect subtitle selection.
-      dismiss({ includeDialogs: false, reason: "open-more" });
-      morePanel.hidden = false;
-      moreButton.setAttribute("aria-expanded", "true");
-    } else closeMore();
-  };
-  const onMorePanelClick = (event) => {
-    // Let existing controls handle their own click first (bubble on parent).
-    // A speed submenu is inside More and must remain reachable until a rate
-    // is chosen; source/audio menus open outside More, so release the panel.
-    if (!event.target?.closest?.(".player-speed") ||
-        event.target?.closest?.("[data-speed]")) closeMore();
-  };
-  moreButton?.addEventListener?.("click", onMoreClick);
-  morePanel?.addEventListener?.("click", onMorePanelClick);
   win.addEventListener("keydown", onKeyDown, true);
   for (const type of ["popstate", "hashchange", "pagehide"]) win.addEventListener(type, onNavigate);
   // CSS is opt-in: imported stylesheet does not affect desktop unless this
@@ -343,14 +279,10 @@ export function installPhonePlayerControls({
       doc.removeEventListener?.("webkitfullscreenchange", syncFullscreen);
       win.removeEventListener("resize", onResize);
       resizeObserver?.disconnect?.();
-      moreButton?.removeEventListener?.("click", onMoreClick);
-      morePanel?.removeEventListener?.("click", onMorePanelClick);
       win.removeEventListener("keydown", onKeyDown, true);
       for (const type of ["popstate", "hashchange", "pagehide"]) win.removeEventListener(type, onNavigate);
       observer?.disconnect();
       restoreRow();
-      moreButton?.remove?.();
-      morePanel?.remove?.();
       root?.classList.remove("phone-player-ui-ready");
       root?.classList.remove("phone-player-fullscreen");
       disposed = true;

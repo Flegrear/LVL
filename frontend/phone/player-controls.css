@@ -242,8 +242,7 @@
     #player-seek-back,#compat-play,#player-seek-forward,
     #player-toggle-subs,#player-fullscreen,#player-audio-switcher,
     #player-source-switcher,#player-mute,#player-next-chapter,
-    #player-prev-chapter,#player-loop-line,#player-swap-languages,
-    #player-float,#player-theater,#phone-player-more
+    #player-prev-chapter,#player-float
   ):not([hidden]) {
     display:grid !important;
     place-items:center;
@@ -286,123 +285,10 @@
     font:600 11px/1.2 var(--font-sans);
     font-variant-numeric:tabular-nums;
   }
-  html.phone-player-ui-ready #phone-player-more[hidden],
-  html.phone-player-ui-ready #phone-player-more-panel[hidden] { display:none !important; }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more {
-    border:1px solid rgba(255,255,255,.4);
-    background:#181818;
-    color:#fff;
-    font:700 20px/1 var(--font-sans);
+  html.phone-player-ui-ready.phone-player-fullscreen #video-frame #compat-controls .player-control-row > .phone-fullscreen-extra {
+    display:none !important;
   }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more[aria-expanded=true] {
-    background:#f5f5f5;
-    color:#101010;
-  }
-  html.phone-player-ui-ready #phone-player-more:focus-visible,
-  html.phone-player-ui-ready #phone-player-more-panel :is(button,input):focus-visible {
-    outline:2px solid #fff;
-    outline-offset:2px;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel:not([hidden]) {
-    display:flex;
-    flex-direction:column;
-    gap:5px;
-    box-sizing:border-box;
-    position:absolute;
-    z-index:35;
-    right:max(6px,env(safe-area-inset-right,0px));
-    bottom:calc(100% - 8px);
-    width:min(320px,calc(100% - 12px));
-    min-width:0;
-    max-height:min(58dvh,430px);
-    padding:10px;
-    border:1px solid #484848;
-    border-radius:12px;
-    background:#111;
-    box-shadow:0 12px 34px rgba(0,0,0,.76);
-    color:#fff;
-    overflow-x:hidden;
-    overflow-y:auto;
-    overscroll-behavior:contain;
-    -webkit-overflow-scrolling:touch;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > :is(
-    .player-tool,.player-speed,.player-volume,.player-playback-metrics,.player-now-playing
-  ):not([hidden]) {
-    display:flex !important;
-    flex:0 0 auto;
-    box-sizing:border-box;
-    width:100%;
-    min-width:0;
-    max-width:100%;
-    min-height:44px;
-    height:auto;
-    max-height:none;
-    padding:8px 10px;
-    margin:0;
-    border-radius:7px;
-    justify-content:flex-start;
-    align-items:center;
-    gap:12px;
-    background:#202020;
-    color:#f6f6f6;
-    text-align:left;
-    touch-action:manipulation;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > .player-tool::after {
-    content:attr(aria-label);
-    display:block;
-    position:static;
-    box-sizing:border-box;
-    width:auto;
-    height:auto;
-    border:0;
-    padding:0;
-    margin:0;
-    color:inherit;
-    background:none;
-    font:500 13px/1.3 var(--font-sans);
-    opacity:1;
-    visibility:visible;
-    transform:none;
-    white-space:normal;
-    pointer-events:none;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > .player-speed {
-    display:grid !important;
-    grid-template-columns:minmax(0,1fr);
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel .player-speed-trigger {
-    width:100%;
-    min-width:0;
-    max-width:none;
-    height:44px;
-    flex:none;
-    justify-content:flex-start;
-    padding-inline:10px;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel .player-speed-trigger::before {
-    content:"Speed";
-    margin-right:auto;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel .player-speed-menu:not([hidden]) {
-    display:grid;
-    position:static;
-    width:100%;
-    max-width:100%;
-    margin-top:5px;
-    box-sizing:border-box;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > .player-volume {
-    display:block !important;
-    min-height:44px;
-    accent-color:#fff;
-  }
-  html.phone-player-ui-ready.phone-player-fullscreen #phone-player-more-panel > :is(.player-now-playing,.player-playback-metrics) {
-    white-space:normal;
-    overflow-wrap:anywhere;
-    font-size:12px;
-  }
+
 }
 @media (hover:none) and (pointer:coarse) and (max-width:360px) {
   html.phone-player-ui-ready.phone-player-fullscreen {
