@@ -1,5 +1,5 @@
 // The player: sources (direct, progressive, indexed, remux, transcode), loading, controls, recovery and transfer status.
-import { formatTime } from "../../learning/browser/core.js";
+import { formatTime } from "../../shared/subtitles/subtitle-text.js";
 import { toast } from "../ui/ui.js";
 import { logoUrl } from "../catalog/home-feed.js";
 import { torrentSeekPieceStatus } from "./torrent-piece-wait.js";
@@ -16,7 +16,7 @@ import { addRecoveryEvent, recoveryEpisodeCode } from "./playback-diagnostics.js
 import { classifyPlaybackStreamStatus } from "./stream-status.js";
 import {
   audioSync, compatProgress, createProgressiveSeekController, createStandaloneProgressiveMseLoader,
-  findProgressiveReadySegment, frame, learningEnabled, normalizeProgressiveSeekStatus,
+  findProgressiveReadySegment, frame, normalizeProgressiveSeekStatus,
   playbackMetrics, popupPlayer, progressiveReadyRanges, progressiveSeekAvailable,
   renderSubtitleWorkspace, state, titleSeedMeta, video,
 } from "../../app.js";
@@ -40,7 +40,6 @@ import {
   buildLibrarySeries, currentChapterSources, libraryEntryById, librarySeriesKey,
 } from "../library/library-data.js";
 import { homeTitleIndex } from "../home/home-page.js";
-import { linePreview, scheduleClipStep } from "../learning/index.js";
 
 let playerControlsHideTimer = null;
 
@@ -585,7 +584,6 @@ let quietSwitchLoading = null;
 function beginQuietSourceSwitch() {
   quietSwitchUntil = Date.now() + QUIET_SWITCH_MS;
 }
-
 
 function updateLoadingTransferDetail(payload) {
   const peers = Number(payload?.numPeers) || 0;
@@ -2661,7 +2659,6 @@ function resyncTranscodeAfterLongPause() {
 export function resumePlayback() {
   // The pop-up player has the video; LVL's window takes it back first.
   if (typeof popupPlayer !== "undefined" && popupPlayer.open) return;
-  if (!linePreview.pending || linePreview.active) linePreview.preventBackgroundPlayback = false;
   if (state.pendingSeek) {
     state.pendingSeek.wasPlaying = true;
     updateCompatControls();
@@ -2882,7 +2879,6 @@ export function wirePlayerVideoEvents() {
       refreshSubtitleClockForInteraction();
       renderSubtitles();
     }
-    if (linePreview.active || linePreview.pending || linePreview.preventBackgroundPlayback) { video.pause(); if (state.pendingSeek) state.pendingSeek.wasPlaying = false; return; }
     if (autoNextInterval !== null) clearAutoNext();
     if (currentRecoveryKey() && recoveryWatchTimer === null) beginRecoveryWatch();
     clearBufferingTimer();
@@ -2897,7 +2893,6 @@ export function wirePlayerVideoEvents() {
     else if (video.dataset.mode === "torrent-direct") $("#media-status").textContent = "TORRENT - PLAYING";
     updateCompatControls();
     scheduleAudioSync(1500);
-    if (learningEnabled) scheduleClipStep(5000);
   });
   video.addEventListener("play", () => {
     if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
@@ -2925,7 +2920,7 @@ export function wirePlayerVideoEvents() {
       renderSubtitles();
     }
     if (state.pendingSeek?.priming && transcodeStartAttempt?.mutedForPreroll
-      && !video.error && !linePreview.active && !linePreview.pending) {
+      && !video.error) {
       // Browser/media-key Pause during silent preroll changes desired playback
       // intent. Continue only the hidden/muted preroll, then remain paused at
       // the requested frame instead of stranding the seek.

@@ -85,22 +85,7 @@
             <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><rect x="3.5" y="5.5" width="17" height="15" rx="2"/><path d="M7.5 3.5v4M16.5 3.5v4M3.5 10h17M8 14h3M8 17.5h5"/></svg></span>
             <span class="nav-label">CALENDAR</span>
           </button>
-          <button class="nav-btn" data-view="study" title="Study" aria-label="Study" data-i18n-title="Study" data-i18n-aria-label="Study">
-            <span class="nav-key">04</span>
-            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M5 5.5h5.5A2.5 2.5 0 0 1 13 8v11a2.5 2.5 0 0 0-2.5-2.5H5z"/><path d="M19 5.5h-3.5A2.5 2.5 0 0 0 13 8v11a2.5 2.5 0 0 1 2.5-2.5H19z"/></svg></span>
-            <span class="nav-label" data-i18n="STUDY">STUDY</span>
-            <span id="due-count" class="count-pill">0</span>
-          </button>
-          <button class="nav-btn" data-view="review" title="Review" aria-label="Review" data-i18n-title="Review" data-i18n-aria-label="Review">
-            <span class="nav-key">05</span>
-            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M6.5 7H17a3 3 0 0 1 3 3v5"/><path d="m17 12 3 3 3-3"/><path d="M17.5 17H7a3 3 0 0 1-3-3V9"/><path d="m7 12-3-3-3 3"/></svg></span>
-            <span class="nav-label" data-i18n="REVIEW">REVIEW</span>
-          </button>
-          <button class="nav-btn" data-view="test" title="Tests" aria-label="Tests" data-i18n-title="Tests" data-i18n-aria-label="Tests">
-            <span class="nav-key">06</span>
-            <span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><path d="M7 4h10v3H7z"/><path d="M6 7h12v13H6z"/><path d="m9 13 2 2 4-5"/></svg></span>
-            <span class="nav-label" data-i18n="TESTS">TESTS</span>
-          </button>
+
           <div class="nav-settings-actions">
             <button class="nav-btn" data-view="settings" title="Settings" aria-label="Settings" data-i18n-title="Settings" data-i18n-aria-label="Settings">
               <span class="nav-key">07</span>
@@ -385,9 +370,7 @@
                     </details>
                   </div>
                   <footer class="subtitle-dock-foot">
-                    <span data-learning-only data-i18n="lines"><b id="cue-stat">0</b> lines</span>
-                    <span data-learning-only data-i18n="words"><b id="word-stat">—</b> words</span>
-                    <span data-learning-only data-i18n="cards"><b id="card-stat">0</b> cards</span>
+
                     <span class="subtitle-dock-hint"><span data-i18n="Drop .srt or .vtt here.">Drop .srt or .vtt here.</span> <kbd class="ui-kbd">G</kbd> <kbd class="ui-kbd">H</kbd> <span data-i18n="shift timing">shift timing</span></span>
                   </footer>
                 </section>
@@ -488,168 +471,11 @@
           </div>
         </section>
 
-        <section id="view-study" class="view">
-          <div class="learn-page">
-            <header class="learn-head">
-              <div class="learn-head__copy">
-                <h1 data-i18n="Study">Study</h1>
-                <p id="study-summary" class="learn-head__sub"></p>
-              </div>
-              <div class="learn-head__actions">
-                <label class="learn-select"><span class="ui-visually-hidden" data-i18n="Target language">Target language</span><select id="study-target-language" aria-label="Target language" data-i18n-aria-label="Target language"></select></label>
-              </div>
-            </header>
-            <div id="study-tabs" class="ui-tabs learn-tabs" role="tablist" aria-label="Study" data-i18n-aria-label="Study">
-              <button id="study-tab-decks" class="ui-tab" type="button" role="tab" data-value="decks" aria-selected="true" aria-controls="study-panel-decks" tabindex="0" data-i18n="Decks">Decks</button>
-              <button id="study-tab-dictation" class="ui-tab" type="button" role="tab" data-value="dictation" aria-selected="false" aria-controls="study-panel-dictation" tabindex="-1" data-i18n="Dictation">Dictation</button>
-              <button id="study-tab-words" class="ui-tab" type="button" role="tab" data-value="words" aria-selected="false" aria-controls="study-panel-words" tabindex="-1" data-i18n="Video vocabulary">Video vocabulary</button>
-            </div>
-
-            <div id="study-panel-decks" class="learn-panel" role="tabpanel" aria-labelledby="study-tab-decks">
-              <div class="learn-toolbar">
-                <div class="learn-toolbar__group">
-                  <button id="study-add-top" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Top words">Top words</button>
-                  <button id="study-add-ankiweb" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="AnkiWeb decks">AnkiWeb decks</button>
-                  <button id="review-import-anki" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Import file">Import file</button>
-                  <input id="review-import-file" type="file" accept=".apkg,.colpkg,.txt,.tsv,.csv" hidden />
-                </div>
-                <div class="learn-toolbar__group">
-                  <button id="review-export-anki" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Export .apkg">Export .apkg</button>
-                  <button id="review-export-text" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="Export text">Export text</button>
-                </div>
-              </div>
-              <div id="study-deck-list" class="deck-list" aria-live="polite"></div>
-              <p id="review-deck-summary" class="learn-footnote"></p>
-            </div>
-
-            <div id="study-panel-dictation" class="learn-panel" role="tabpanel" aria-labelledby="study-tab-dictation" hidden>
-              <div id="dictation-stage" class="dictation-stage"></div>
-            </div>
-
-            <div id="study-panel-words" class="learn-panel" role="tabpanel" aria-labelledby="study-tab-words" hidden>
-              <div class="study-shell">
-                <div class="study-controls">
-                  <div class="ui-segmented study-source-tabs" role="group" aria-label="Word source" data-i18n-aria-label="Word source" hidden>
-                    <button class="ui-segmented__item study-source-tab" type="button" data-study-category="preset" data-i18n="Most frequent">Most frequent</button>
-                    <button class="ui-segmented__item study-source-tab" type="button" data-study-category="chapter" data-i18n="From chapters">From chapters</button>
-                  </div>
-                  <div id="study-source-presets" class="study-source-panel" hidden>
-                    <div class="study-tier-row">
-                      <span data-i18n="Words">Words</span>
-                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="word" data-study-tier="100">100</button>
-                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="word" data-study-tier="1000">1K</button>
-                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="word" data-study-tier="5000">5K</button>
-                    </div>
-                    <div class="study-tier-row">
-                      <span data-i18n="Phrases">Phrases</span>
-                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="phrase" data-study-tier="100">100</button>
-                      <button class="ui-chip study-tier" type="button" data-study-source="preset" data-study-type="phrase" data-study-tier="1000">1K</button>
-                    </div>
-                  </div>
-                  <div id="study-source-chapters" class="study-source-panel">
-                    <div class="study-chapter-row">
-                      <label class="learn-select">
-                        <span class="ui-visually-hidden" data-i18n="Chapter">Chapter</span>
-                        <select id="study-chapter-select"><option value="" data-i18n="No Library chapters">No Library chapters</option></select>
-                      </label>
-                      <div class="study-chapter-type-actions">
-                        <button class="ui-chip study-tier" type="button" data-study-source="chapter" data-study-type="word" data-i18n="Words">Words</button>
-                        <button class="ui-chip study-tier" type="button" data-study-source="chapter" data-study-type="phrase" data-i18n="Phrases">Phrases</button>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="study-filter-row">
-                    <label class="learn-select"><span data-i18n="Show">Show</span><select id="study-filter"><option value="all" data-i18n="All">All</option><option value="unknown" data-i18n="New">New</option><option value="review" data-i18n="Learning">Learning</option><option value="known" data-i18n="Mastered">Mastered</option></select></label>
-                    <label class="ui-check study-color-toggle" data-i18n="Color subtitles"><input id="study-color-subs" type="checkbox" /><span class="ui-check__box" aria-hidden="true"></span>Color subtitles</label>
-                    <div class="study-legend" aria-label="Subtitle learning colors" data-i18n-aria-label="Subtitle learning colors"><span class="learning-known" data-i18n="Mastered">Mastered</span><span class="learning-review" data-i18n="Learning">Learning</span><span class="learning-common-100" data-i18n="Top 100">Top 100</span><span class="learning-common-1000">1K</span><span class="learning-common-5000">5K</span></div>
-                  </div>
-                </div>
-                <div class="ui-stat-group study-progress-strip">
-                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="Mastered">Mastered</span><strong id="study-stat-known" class="ui-stat__value">0</strong></div>
-                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="In review">In review</span><strong id="study-stat-review" class="ui-stat__value">0</strong></div>
-                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="Due">Due</span><strong id="study-stat-due" class="ui-stat__value">0</strong></div>
-                  <div class="ui-stat"><span class="ui-stat__label" data-i18n="Seen in videos">Seen in videos</span><strong id="study-stat-seen" class="ui-stat__value">0</strong></div>
-                </div>
-                <section class="study-list-panel">
-                  <div class="study-list-head">
-                    <h2 id="study-list-title">Words</h2>
-                    <div class="study-page-actions"><button id="study-page-prev" class="ui-icon-btn ui-icon-btn--sm" type="button" aria-label="Previous page" data-i18n-aria-label="Previous page">‹</button><span id="study-page-range" class="ui-count ui-count--quiet">0</span><button id="study-page-next" class="ui-icon-btn ui-icon-btn--sm" type="button" aria-label="Next page" data-i18n-aria-label="Next page">›</button></div>
-                  </div>
-                  <div id="study-items"></div>
-                </section>
-                <div id="study-preset-status" class="learn-footnote study-preset-status" aria-live="polite"></div>
-              </div>
-            </div>
-
-            <section id="study-session" class="study-session" aria-label="Study session" hidden data-i18n-aria-label="Study session">
-              <header class="study-session__head">
-                <button id="study-session-back" class="ui-btn ui-btn--ghost ui-btn--sm" type="button" data-i18n="‹ Decks">‹ Decks</button>
-                <strong id="study-session-title" class="study-session__title"></strong>
-                <div class="study-counts" aria-label="Cards today" data-i18n-aria-label="Cards today">
-                  <span data-count="new" data-i18n="New"><b id="review-count-new">0</b> New</span>
-                  <span data-count="learning" data-i18n="Learning"><b id="review-count-learning">0</b> Learning</span>
-                  <span data-count="review" data-i18n="Due"><b id="review-count-review">0</b> Due</span>
-                </div>
-              </header>
-              <div id="study-stage" class="study-stage"></div>
-              <p class="review-shortcuts learn-footnote"><span data-i18n="show"><kbd class="ui-kbd" data-i18n="Space">Space</kbd> show</span> <span><kbd class="ui-kbd">1</kbd>–<kbd class="ui-kbd">4</kbd> <span data-i18n="rate">rate</span></span> <span data-i18n="replay"><kbd class="ui-kbd">R</kbd> replay</span> <span data-i18n="undo"><kbd class="ui-kbd">U</kbd> undo</span> <span data-i18n="decks"><kbd class="ui-kbd">Esc</kbd> decks</span></p>
-            </section>
-          </div>
-        </section>
-
-        <section id="view-review" class="view">
-          <div class="learn-page review-page">
-            <header class="learn-head">
-              <div class="learn-head__copy">
-                <h1 data-i18n="Review">Review</h1>
-                <p id="review-summary" class="learn-head__sub"></p>
-              </div>
-              <div class="learn-head__actions">
-                <label class="learn-select"><span class="ui-visually-hidden" data-i18n="Target language">Target language</span><select id="review-target-language" aria-label="Target language" data-i18n-aria-label="Target language"></select></label>
-              </div>
-            </header>
-            <div class="ui-tabs learn-tabs review-primary-tabs" role="tablist" aria-label="Review mode" data-i18n-aria-label="Review mode">
-              <button class="ui-tab" type="button" role="tab" data-review-tab="cards" data-value="cards" data-i18n="Quiz">Quiz</button>
-              <button class="ui-tab" type="button" role="tab" data-review-tab="practice" data-value="practice" data-i18n="Pronunciation">Pronunciation</button>
-              <button class="ui-tab" type="button" role="tab" data-review-tab="live" data-value="live" data-i18n="Conversation">Conversation</button>
-            </div>
-            <div class="review-layout">
-              <div id="quiz-panel" class="quiz-panel"></div>
-              <section id="review-stage" class="review-stage"></section>
-            </div>
-          </div>
-        </section>
-
-        <section id="view-test" class="view">
-          <div class="learn-page test-page">
-            <header class="learn-head">
-              <div class="learn-head__copy">
-                <h1 data-i18n="Tests">Tests</h1>
-                <p class="learn-head__sub" data-i18n="Multiple choice, typing and listening. Answers are shown at the end.">Multiple choice, typing and listening. Answers are shown at the end.</p>
-              </div>
-            </header>
-            <div class="ui-stat-group test-stats" aria-label="Test score summary" data-i18n-aria-label="Test score summary">
-              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Last">Last</span><strong id="test-stat-last" class="ui-stat__value">—</strong></div>
-              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Average">Average</span><strong id="test-stat-average" class="ui-stat__value">—</strong></div>
-              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Best">Best</span><strong id="test-stat-best" class="ui-stat__value">—</strong></div>
-              <div class="ui-stat"><span class="ui-stat__label" data-i18n="Tests taken">Tests taken</span><strong id="test-stat-sessions" class="ui-stat__value">0</strong></div>
-            </div>
-            <div class="test-grid">
-              <section id="test-stage" class="test-stage"></section>
-              <aside class="test-history-panel">
-                <div class="test-history-head"><span data-i18n="Scores">Scores</span><strong id="test-history-mode">Last 20</strong></div>
-                <div id="test-history-chart" class="test-history-chart"></div>
-                <div id="test-history-list" class="test-history-list"></div>
-              </aside>
-            </div>
-          </div>
-        </section>
-
         <section id="view-settings" class="view">
           <div class="learn-page settings-page">
             <div id="settings-tabs" class="ui-tabs learn-tabs" role="tablist" aria-label="Settings" data-i18n-aria-label="Settings">
               <button id="settings-tab-general" class="ui-tab" type="button" role="tab" data-value="general" aria-selected="true" aria-controls="settings-panel-general" tabindex="0" data-i18n="General">General</button>
-              <button id="settings-tab-coach" class="ui-tab" type="button" role="tab" data-value="coach" aria-selected="false" aria-controls="settings-panel-coach" tabindex="-1" data-i18n="Coach">Coach</button>
+
               <button id="settings-tab-library" class="ui-tab" type="button" role="tab" data-value="library" aria-selected="false" aria-controls="settings-panel-library" tabindex="-1" data-i18n="Library">Library</button>
               <button id="settings-tab-storage" class="ui-tab" type="button" role="tab" data-value="storage" aria-selected="false" aria-controls="settings-panel-storage" tabindex="-1" data-i18n="Storage">Storage</button>
               <button id="settings-tab-updates" class="ui-tab" type="button" role="tab" data-value="updates" aria-selected="false" aria-controls="settings-panel-updates" tabindex="-1">Updates</button>
@@ -674,9 +500,7 @@
                 </select>
               </div>
             </section>
-            <section class="settings-card" aria-labelledby="settings-learning-heading">
-              <div class="settings-card__head"><h2 id="settings-learning-heading">Learning features</h2><span class="ui-badge ui-badge--outline">Coming soon</span></div>
-            </section>
+
             <section class="settings-card settings-floating-player" aria-labelledby="settings-floating-heading">
               <div class="settings-card__head"><h2 id="settings-floating-heading">Floating player</h2></div>
               <label class="ui-switch settings-switch-row" for="settings-float-auto">
@@ -738,32 +562,6 @@
                 <p id="settings-subdl-message" class="tool-status settings-status" aria-live="polite"></p>
               </div>
             </form>
-            </div>
-
-            <div id="settings-panel-coach" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-coach" hidden>
-            <section class="settings-card settings-browser-coach-panel" aria-labelledby="settings-coach-title">
-              <div class="settings-card__head"><h2 id="settings-coach-title" data-i18n="Conversation coach">Conversation coach</h2><span id="settings-browser-coach-state" class="ui-badge ui-badge--outline">Check</span></div>
-              <div class="settings-grid two">
-                <label class="settings-field"><span data-i18n="Provider">Provider</span><select id="settings-ai-provider"><option value="chatgpt-browser" data-i18n="ChatGPT in your browser">ChatGPT in your browser</option></select></label>
-                <div class="settings-field"><span data-i18n="Helper folder">Helper folder</span><div id="settings-browser-coach-path" class="settings-path">browser-extension</div></div>
-              </div>
-              <div class="settings-actions">
-                <button id="settings-browser-coach-check" class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-i18n="Connect">Connect</button>
-                <button id="settings-browser-coach-open" class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-i18n="Install helper">Install helper</button>
-              </div>
-              <p id="settings-browser-coach-message" class="tool-status settings-status" aria-live="polite"></p>
-              <p id="settings-browser-coach-action" class="settings-browser-coach-action" aria-live="polite"></p>
-              <details class="settings-guide">
-                <summary data-i18n="Setup">Setup</summary>
-                <ol>
-                  <li><span data-i18n="Stay signed in to">Stay signed in to</span> <code>chatgpt.com</code> <span data-i18n="in this browser.">in this browser.</span></li>
-                  <li><span data-i18n="Press">Press</span> <em data-i18n="Install helper">Install helper</em>.</li>
-                  <li><span data-i18n="In Extensions, turn on Developer mode, choose">In Extensions, turn on Developer mode, choose</span> <em data-i18n="Load unpacked">Load unpacked</em> <span data-i18n="and pick the">and pick the</span> <code>browser-extension</code> <span data-i18n="folder.">folder.</span></li>
-                  <li><span data-i18n="Press">Press</span> <em data-i18n="Connect">Connect</em>.</li>
-                  <li><span data-i18n="After an app update, press">After an app update, press</span> <em data-i18n="Reload">Reload</em> <span data-i18n="on the helper in Extensions.">on the helper in Extensions.</span></li>
-                </ol>
-              </details>
-            </section>
             </div>
 
             <div id="settings-panel-library" class="learn-panel" role="tabpanel" aria-labelledby="settings-tab-library" hidden>
@@ -940,29 +738,6 @@
                 </label>
               </div>
 
-              <div class="storage-row" data-learning-only>
-                <div class="storage-row__head">
-                  <label class="storage-row__label" for="storage-clip-gb" data-i18n="Saved video fragments">Saved video fragments</label>
-                  <button class="ui-help" type="button" data-ui-tip="tip-storage-clips" aria-label="What saved video fragments are" aria-describedby="tip-storage-clips" data-i18n-aria-label="What saved video fragments are">?</button>
-                  <span id="tip-storage-clips" class="ui-tip-content" hidden><strong data-i18n="Saved video fragments">Saved video fragments</strong><p data-i18n="Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.">Short clips of subtitle lines, the audio and a still frame, cut while you watch from the part that already played. Cards use them to replay their line after the video is gone; Dictation uses the rest.</p><ul><li data-i18n="A card&#x27;s clip is kept as long as the card exists.">A card's clip is kept as long as the card exists.</li><li data-i18n="When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.">When this space is full, clips only used for dictation go first, least recently used; then the oldest card clips. A card keeps its text, and its line is saved again the next time you watch that episode.</li></ul><p><strong><span data-i18n="Recommended:">Recommended:</span> <span data-storage-rec="clip">2 GB</span>.</strong> <span data-i18n="That holds about">That holds about</span> <span data-storage-rec="clip-lines">20,000</span> <span data-i18n="lines. The recommendation grows to twice what your cards&#x27; clips use, so they always have room.">lines. The recommendation grows to twice what your cards' clips use, so they always have room.</span></p></span>
-                  <span id="storage-clip-usage" class="storage-row__usage">Checking…</span>
-                </div>
-                <div class="storage-row__control">
-                  <label class="storage-input"><input id="storage-clip-gb" type="number" min="0.25" max="200" step="0.25" inputmode="decimal" aria-describedby="storage-clip-usage storage-clip-rec" /><span aria-hidden="true">GB</span></label>
-                  <div id="storage-clip-meter" class="ui-progress storage-meter" role="progressbar" aria-label="Saved video fragments used" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" data-i18n-aria-label="Saved video fragments used"><span></span></div>
-                </div>
-                <p class="storage-row__rec"><span id="storage-clip-rec">Recommended: 2 GB</span><button class="ui-btn ui-btn--secondary ui-btn--sm" type="button" data-storage-use="clip" hidden>Use 2 GB</button></p>
-              </div>
-
-              <div class="storage-row storage-row--info" data-learning-only>
-                <div class="storage-row__head">
-                  <span class="storage-row__label" data-i18n="Anki deck media">Anki deck media</span>
-                  <button class="ui-help" type="button" data-ui-tip="tip-storage-decks" aria-label="What Anki deck media is" aria-describedby="tip-storage-decks" data-i18n-aria-label="What Anki deck media is">?</button>
-                  <span id="tip-storage-decks" class="ui-tip-content" hidden><strong data-i18n="Anki deck media">Anki deck media</strong><p data-i18n="Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app&#x27;s data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.">Images, audio and fonts of the decks you added from AnkiWeb or imported, kept in the app's data folder so cards look and sound like in Anki. Deleting a deck in Study removes its media.</p></span>
-                  <span id="storage-deck-usage" class="storage-row__usage">Checking…</span>
-                </div>
-              </div>
-
               <div id="storage-leftovers" class="storage-leftovers" hidden>
                 <div>
                   <strong id="storage-leftovers-title">Leftover downloads</strong>
@@ -1046,20 +821,6 @@
         </form>
         <p id="magnet-status" class="tool-status app-status" role="status" aria-live="polite"></p>
         <div id="magnet-files" class="magnet-files"></div>
-      </div>
-    </dialog>
-
-    <dialog id="line-preview-dialog" class="detail-dialog line-preview-dialog" aria-labelledby="line-preview-title">
-      <button class="dialog-close" data-close-dialog="line-preview-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
-      <div class="line-preview-body">
-        <div class="line-preview-heading">
-          <h2 id="line-preview-title" data-i18n="Replay line">Replay line</h2>
-          <button id="line-preview-replay" class="ui-btn ui-btn--sm" type="button" disabled data-i18n="Replay clip"><svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 8h11a4 4 0 0 1 4 4v1M8 5 5 8l3 3"/></svg>Replay clip</button>
-        </div>
-        <div id="line-preview-media" class="line-preview-media"></div>
-        <p id="line-preview-target" class="line-preview-target" data-card-content></p>
-        <p id="line-preview-base" class="line-preview-base" data-card-content></p>
-        <p id="line-preview-status" class="learn-status" role="status"></p>
       </div>
     </dialog>
 
@@ -1184,39 +945,6 @@
           </form>
         </div>
         <p id="library-import-status" class="tool-status app-status" role="status" aria-live="polite"></p>
-      </div>
-    </dialog>
-
-    <dialog id="library-words-dialog" class="detail-dialog app-dialog library-words-dialog" aria-labelledby="library-words-title">
-      <button class="dialog-close" data-close-dialog="library-words-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
-      <div class="app-dialog__body">
-        <h2 id="library-words-title" class="app-dialog__title" data-i18n="Words">Words</h2>
-        <p id="library-words-source" class="app-dialog__sub"></p>
-        <div id="library-words-content" class="library-words-content"></div>
-      </div>
-    </dialog>
-
-    <dialog id="top-words-dialog" class="detail-dialog learn-dialog" aria-labelledby="top-words-title">
-      <button class="dialog-close" data-close-dialog="top-words-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
-      <div class="learn-dialog__body">
-        <h2 id="top-words-title" data-i18n="Top words">Top words</h2>
-        <p id="top-words-language" class="learn-dialog__sub"></p>
-        <div id="top-words-options" class="top-words-options"></div>
-        <p id="top-words-status" class="learn-status" role="status" aria-live="polite"></p>
-      </div>
-    </dialog>
-
-    <dialog id="ankiweb-dialog" class="detail-dialog learn-dialog ankiweb-dialog" aria-labelledby="ankiweb-title">
-      <button class="dialog-close" data-close-dialog="ankiweb-dialog" aria-label="Close" data-i18n-aria-label="Close">×</button>
-      <div class="learn-dialog__body">
-        <h2 id="ankiweb-title" data-i18n="AnkiWeb decks">AnkiWeb decks</h2>
-        <form id="ankiweb-search-form" class="ankiweb-search" role="search">
-          <label class="ui-visually-hidden" for="ankiweb-query" data-i18n="Search shared decks">Search shared decks</label>
-          <input id="ankiweb-query" type="search" autocomplete="off" placeholder="Search shared decks" data-i18n-placeholder="Search shared decks" />
-          <button class="ui-btn ui-btn--primary ui-btn--sm" type="submit" data-i18n="Search">Search</button>
-        </form>
-        <div id="ankiweb-results" class="ankiweb-results" aria-live="polite"></div>
-        <p class="learn-footnote" data-i18n="Decks are shared by the Anki community on ankiweb.net. Downloaded decks are saved in this app&#x27;s data folder.">Decks are shared by the Anki community on ankiweb.net. Downloaded decks are saved in this app's data folder.</p>
       </div>
     </dialog>
 

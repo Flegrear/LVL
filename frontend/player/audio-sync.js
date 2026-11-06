@@ -1,15 +1,13 @@
 // Lines subtitles up with the audio, and the sync status chip.
 import { syncTrackToSpeech } from "../../shared/subtitles/subtitle-sync.js";
-import { audioSync, learningEnabled, pairedCueMemo, state, video } from "../../app.js";
+import { audioSync, pairedCueMemo, state, video } from "../../app.js";
 import { saveLibrary } from "../app/saved-state.js";
 import { $ } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { currentSourceTracks, normalizeTrackLanguage } from "./player-tracks.js";
 import { renderSubtitles, renderTracks, subtitleRenderMemo } from "./subtitle-display.js";
 import { subtitleFingerprint, syncTrackToBestReference } from "./subtitle-timing.js";
-import { refreshEpisodeCardPairs } from "./subtitle-pairing.js";
 import { currentLibraryEpisode } from "../watch/watched-status.js";
-import { saveCurrentEpisodeAnalysis } from "../learning/index.js";
 
 /* ---------------------------------------------------------------- Subtitle sync to the audio */
 
@@ -325,10 +323,9 @@ function applyAudioSync() {
   pairedCueMemo.clear();
   subtitleRenderMemo.key = "";
   renderSubtitles();
-  const repaired = learningEnabled ? refreshEpisodeCardPairs() : 0;
-  if (learningEnabled) saveCurrentEpisodeAnalysis();
+
   const synced = audioSyncTracks().filter((track) => track.syncSource === "audio").length;
-  $("#media-status").textContent = `Subtitles synced to audio${synced > 1 ? ` (${synced} tracks)` : ""}${repaired ? `; ${repaired} card${repaired === 1 ? "" : "s"} re-paired` : ""}`;
+  $("#media-status").textContent = `Subtitles synced to audio${synced > 1 ? ` (${synced} tracks)` : ""}`;
 }
 
 // Called from timeupdate: a playhead away from every analysed window gets its own window.

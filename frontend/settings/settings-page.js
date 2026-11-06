@@ -7,10 +7,6 @@ import { $ } from "../app/dom.js";
 import { renderSettingsStorage } from "./storage-settings.js";
 import { refreshAppUpdateSettings } from "../updates/app-updates.js";
 import { renderAniListAutoSettings } from "../anilist/anilist-sync.js";
-import {
-  browserCoachStatus, coachProviders, coachProviderShortLabel, renderBrowserCoachStatus,
-  selectedCoachProvider,
-} from "../learning/index.js";
 
 export function renderSettingsTabs() {
   if (!learningEnabled && settingsView.tab === "coach") settingsView.tab = "general";
@@ -54,22 +50,6 @@ export function renderSettings() {
     stateNode.textContent = t("{count} active", { count: 1 + keyed });
   }
   renderSettingsTabs();
-  const pathNode = $("#settings-browser-coach-path");
-  if (pathNode) pathNode.textContent = browserCoachStatus?.extensionPath || "browser-extension";
-  const providerInput = $("#settings-ai-provider");
-  const providerNote = $("#settings-ai-provider-note");
-  const provider = selectedCoachProvider();
-  if (providerInput) {
-    const options = coachProviders.length ? coachProviders : [provider];
-    providerInput.innerHTML = options.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml(item.label)}</option>`).join("");
-    providerInput.value = provider.id;
-  }
-  if (providerNote) {
-    providerNote.textContent = provider.kind === "browser-subscription"
-      ? "Uses the ChatGPT account you're signed in to in this browser, through the helper extension."
-      : provider.kind === "local" ? "Runs on this computer." : `Uses ${coachProviderShortLabel(provider.label) || "the provider"} with your API key.`;
-  }
-  renderBrowserCoachStatus();
 }
 
 export function renderLocaleOptions(selector, language, selected) {

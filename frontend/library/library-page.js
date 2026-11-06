@@ -1,5 +1,5 @@
 // The Library page: cards, continue watching, menus and removal.
-import { normalizeText } from "../../learning/browser/core.js";
+import { normalizeText } from "../../shared/subtitles/subtitle-text.js";
 import {
   artworkFallback, bindShelves, buttonMarkup, cardMarkup, emptyMarkup, escapeHtml, icon,
   iconButtonMarkup, metaMarkup, refreshImages, setActiveTab, shelfMarkup, toast,
@@ -97,12 +97,6 @@ export function libraryDialogChapterMarkup(series, chapter, thumbs, { movie = fa
   const art = catalog?.thumbnail
     ? `<img src="${escapeHtml(catalog.thumbnail)}" alt="" loading="lazy" decoding="async" data-fallback="wide" data-fallback-title="${escapeHtml(series.title)}" />`
     : `<img src="${escapeHtml(artworkFallback(series.title, { ratio: "wide", label: movie ? "Movie" : number }))}" alt="" />`;
-  const analysis = best.episode.analysis || {};
-  const stats = [
-    analysis.words?.length ? `<button class="lib-chapter-link library-vocab" type="button" data-kind="words" data-library-id="${escapeHtml(best.entry.id)}" data-file-index="${best.episode.fileIndex}">${analysis.words.length} words</button>` : "",
-    analysis.phrases?.length ? `<button class="lib-chapter-link library-vocab" type="button" data-kind="phrases" data-library-id="${escapeHtml(best.entry.id)}" data-file-index="${best.episode.fileIndex}">${analysis.phrases.length} phrases</button>` : "",
-    Number(analysis.autoCardCount) ? `<span>${Number(analysis.autoCardCount)} cards</span>` : "",
-  ].filter(Boolean).join("");
   const key = `${series.key}|${chapter.key}`;
   const open = libraryDialogView.open.has(key);
   const others = sources.slice(1);
@@ -116,7 +110,6 @@ export function libraryDialogChapterMarkup(series, chapter, thumbs, { movie = fa
         <span class="lib-chapter-facts">${metaMarkup([number, details.quality !== "UNKNOWN" ? details.quality : "", libraryCodecLabel(details.codec), watched ? "Watched" : ratio ? `${Math.max(1, Math.round((progress.durationMs - progress.positionMs) / 60_000))} min left` : ""])}</span>
         <strong>${escapeHtml(title)}</strong>
         <small class="lib-chapter-origin" title="${escapeHtml(details.releaseName)}">${origin.pack ? '<span class="lib-origin-kind">From a pack</span>' : ""}<span class="lib-origin-release">${escapeHtml(origin.release)}</span><span class="lib-origin-provider">${escapeHtml(details.providers)}</span></small>
-        ${stats ? `<span class="lib-chapter-stats">${stats}</span>` : ""}
       </div>
       <div class="lib-chapter-actions">
         <button class="ui-btn ui-btn--primary ui-btn--sm library-play" type="button" data-library-id="${escapeHtml(best.entry.id)}" data-file-index="${best.episode.fileIndex}" data-resume-ms="${resumeAt}" aria-label="${escapeHtml(`${playLabel} ${movie ? series.title : `${number}: ${title}`}`)}">${icon("play")}<span>${playLabel}</span></button>

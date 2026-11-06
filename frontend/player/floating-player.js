@@ -1,5 +1,5 @@
 // The player outside the Watch page: the floating player, the desktop window and the borderless pop-up.
-import { formatTime } from "../../learning/browser/core.js";
+import { formatTime } from "../../shared/subtitles/subtitle-text.js";
 import { toast } from "../ui/ui.js";
 import { floatingPrefs, frame, POPUP_HANDOFF, popupPlayer, state, video } from "../../app.js";
 import { APP_DB_MIGRATION_KEY } from "../app/saved-state.js";
@@ -15,7 +15,6 @@ import { closePlayerPopovers } from "./player-menus.js";
 import { seekTo } from "./subtitle-display.js";
 import { playLibraryEpisode } from "./torrent-playback.js";
 import { recordWatchProgress } from "../watch/watched-status.js";
-import { linePreview } from "../learning/index.js";
 
 // A single live video/subtitle DOM is shared by the normal, site-floating and
 // browser-managed always-on-top Document PiP surfaces. No playback recreation.
@@ -62,7 +61,7 @@ function revealFloatingControls() {
 }
 
 function floatMayDisplay() {
-  return frame.classList.contains("has-video") && !video.ended && !linePreview.active && !linePreview.pending;
+  return frame.classList.contains("has-video") && !video.ended;
 }
 
 export function updateFloatingControls() {

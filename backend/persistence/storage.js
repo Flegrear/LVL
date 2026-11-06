@@ -108,7 +108,7 @@ export function recommendedLimits({ playerFreeBytes = null, playerUsedBytes = 0,
 // keeps the seek cache off whatever was saved (its conversions need an H.264 encoder).
 // keepsSessionFiles: a session's torrent files stay when it ends (LVL's Android app keeps
 // downloads between launches), so evicting a live download also deletes its folder.
-export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, dataRoot = "", sessions, removeSession, clipStore, ankiStore,
+export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, dataRoot = "", sessions, removeSession, clipStore, ankiStore, legacyMediaUsage,
   defaults: defaultChanges = {}, remuxCacheAvailable = true, keepsSessionFiles = false }) {
   const defaults = Object.freeze({ ...STORAGE_DEFAULTS, ...defaultChanges });
   function limits() {
@@ -272,13 +272,15 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
   }
 
   function enforceClips(referencedIds) {
-    return clipStore.collectGarbage(referencedIds, { maxBytes: limits().clipBytes });
+    return clipStore?.collectGarbage(referencedIds, { maxBytes: limits().clipBytes })
+      ?? { demoted: 0, removed: 0 };
   }
 
   async function report() {
     const [player, leftover, playerDisk, dataDisk] = await Promise.all([playerUsage(), leftovers(), diskSpace(sharedRoot), dataRoot ? diskSpace(dataRoot) : null]);
-    const clips = clipStore.stats();
-    const decks = ankiStore.listDecks();
+    const legacy = legacyMediaUsage?.();
+    const clips = clipStore?.stats() || legacy?.clips || {};
+    const decks = ankiStore?.listDecks() || [];
     const clipBytes = (clips.card?.bytes || 0) + (clips.dictation?.bytes || 0);
     return {
       limits: limits(),
@@ -308,7 +310,7 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
         dictationBytes: clips.dictation?.bytes || 0,
         usedBytes: (clips.card?.bytes || 0) + (clips.dictation?.bytes || 0),
       },
-      decks: { count: decks.length, mediaBytes: decks.reduce((sum, deck) => sum + (Number(deck.mediaBytes) || 0), 0) },
+      decks: legacy?.decks || { count: decks.length, mediaBytes: decks.reduce((sum, deck) => sum + (Number(deck.mediaBytes) || 0), 0) },
     };
   }
 

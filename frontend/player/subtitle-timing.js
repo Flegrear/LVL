@@ -5,7 +5,6 @@ import { $ } from "../app/dom.js";
 import { postJson } from "../app/http.js";
 import { activeTrack, currentSourceTracks, normalizeTrackLanguage } from "./player-tracks.js";
 import { renderSubtitles, renderTracks, subtitleRenderMemo } from "./subtitle-display.js";
-import { currentExposureMediaKey, saveCurrentEpisodeAnalysis } from "../learning/index.js";
 
 export function allPrimaryCues() {
   return activeTrack()?.cues || [];
@@ -186,7 +185,7 @@ export async function alignCurrentSubtitleSet() {
     || tracks.find((track) => track.id === state.selectedTrackId)
     || tracks[0];
   try {
-    const data = await postJson("/api/learning/subtitles/align", {
+    const data = await postJson("/api/subtitles/align", {
       referenceTrackId: reference.id,
       tracks: tracks.map((track) => ({
         id: track.id,
@@ -251,8 +250,8 @@ export async function alignCurrentSubtitleSet() {
       }
     });
     state.alignedSubtitleTimeline = Array.isArray(data?.timeline) ? data.timeline : [];
-    state.alignedSubtitleSourceKey = currentExposureMediaKey();
-    saveCurrentEpisodeAnalysis();
+    state.alignedSubtitleSourceKey = [state.currentSource.libraryId || state.currentSource.sourceTag || state.currentSource.title || state.currentSource.kind || "source", state.currentSource.fileIndex ?? state.currentSource.fileName ?? "file"].join("|");
+
     return { reference, offsets, backend: true };
   } catch {
     state.alignedSubtitleTimeline = [];
@@ -263,7 +262,7 @@ export async function alignCurrentSubtitleSet() {
       const offset = syncTrackToBestReference(track, { initial: true });
       offsets.push(`${offset >= 0 ? "+" : ""}${offset}ms`);
     });
-    saveCurrentEpisodeAnalysis();
+
     return { reference, offsets, backend: false };
   }
 }

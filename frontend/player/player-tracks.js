@@ -5,7 +5,6 @@ import { renderSubtitleWorkspace, state, video } from "../../app.js";
 import { $ } from "../app/dom.js";
 import { audioOutputMode, preferredAudioLanguage } from "./player-menus.js";
 import { libraryChapterName } from "../library/library-page.js";
-import { saveCurrentEpisodeAnalysis } from "../learning/index.js";
 import { browserCanPlay } from "./browser-media.js";
 import { serverCanConvertVideo } from "./video-conversion-capability.js";
 
@@ -267,7 +266,7 @@ export function selectSubtitleTrackForCards(track) {
   // Reject stale UI cards left behind by an asynchronous source transition.
   if (!track || !currentSourceTracks().some((item) => item.id === track.id)) return false;
   state.selectedTrackId = track.id;
-  saveCurrentEpisodeAnalysis();
+
   renderSubtitleWorkspace();
   return true;
 }

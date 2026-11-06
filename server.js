@@ -7,9 +7,8 @@ import { fileURLToPath } from "node:url";
 import WebTorrent from "webtorrent";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
-import { createAnkiStore } from "./learning/anki/anki-store.js";
-import { createClipStore } from "./learning/clips.js";
 import { createStorageManager } from "./backend/persistence/storage.js";
+import { readLegacyMediaUsage } from "./backend/persistence/legacy-media.js";
 import { createRecsStore } from "./backend/recommendations/recs-store.js";
 import { createRecsService } from "./backend/recommendations/recs-service.js";
 import { createAniListClient } from "./backend/integrations/anilist.js";
@@ -29,7 +28,6 @@ import { createIndexedVideoCache } from "./backend/media/indexed-video-cache.js"
 import { createPopupRoutes, createPopupWindow } from "./backend/media/popup-window.js";
 import { createPopupProgram } from "./backend/media/popup-program.js";
 import { createUpdatePolicy } from "./backend/app-updates/update-policy.js";
-import { coachLiveSessionKey } from "./learning/coach-core.js";
 import { json, localRequestRejected, methodNotAllowed, readJsonBody } from "./backend/app/http-helpers.js";
 import { addBuiltInAssets, PUBLIC_ASSETS, serveStatic } from "./backend/app/static-files.js";
 import { handleApi } from "./backend/app/api-routes.js";
@@ -39,8 +37,6 @@ import { isVideoConversionAvailable } from "./backend/streaming/transcode.js";
 import { catalogSearchResults } from "./backend/catalog/catalog-api.js";
 import { requestNativeUpdate } from "./backend/app-updates/updates-api.js";
 import { enforcePlayerStorage } from "./backend/persistence/storage-api.js";
-import { cleanVoiceCoachSessions, persistVoiceCoachSessions } from "./backend/learning/voice-coach.js";
-import { collectClipGarbage } from "./backend/learning/learning-store.js";
 
 export const root = path.dirname(fileURLToPath(import.meta.url));
 export const port = Number(process.env.PORT || 4173);
@@ -79,7 +75,6 @@ const popupWindow = createPopupWindow({
 });
 export const handlePopupApi = createPopupRoutes({ popup: popupWindow, program: popupProgram, port, json, readJsonBody, methodNotAllowed });
 setTimeout(() => { void popupProgram.ensure(); }, 5000).unref();
-export const ankiStore = createAnkiStore({ db: appDatabase.sqlite, mediaRoot: path.join(appDataRoot, "anki-media") });
 export const recsStore = createRecsStore({ db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta });
 export const releaseCalendar = createReleaseCalendarService({
   getTmdbKey: () => recsStore.settings().tmdbKey,
@@ -96,14 +91,9 @@ export const recs = createRecsService({
   anilist: anilistClient,
   searchCatalog: (query) => catalogSearchResults(query),
 });
-export const clipStore = createClipStore({
-  db: appDatabase.sqlite,
-  root: path.join(appDataRoot, "clips"),
-  ffmpegPath,
-  sourceUrl: (sessionId, fileIndex) => `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(sessionId)}/files/${fileIndex}/stream`,
-});
 export const storage = createStorageManager({
   appDatabase,
+  legacyMediaUsage: () => readLegacyMediaUsage(appDatabase.sqlite),
   sessionsRoot: torrentRoot,
   sharedRoot: torrentShareRoot,
   dataRoot: appDataRoot,
@@ -119,8 +109,6 @@ export const storage = createStorageManager({
     busy: (Number(session.openStreams) || 0) > 0,
   })),
   removeSession: (id) => removeTorrentSession(id),
-  clipStore,
-  ankiStore,
 });
 // Progressive remux outputs live beside (and are counted with) WebTorrent's
 // per-session source bytes, never in a second unlimited storage pool.
@@ -161,28 +149,6 @@ export const MAX_SUBTITLE_TEXT_BYTES = 2 * 1024 * 1024;
 // Tests point this at a local stub; normally Cinemeta.
 export const CINEMETA_ORIGIN = process.env.LANGUAGE_VIDEO_LEARNER_CINEMETA_URL || "https://v3-cinemeta.strem.io";
 export const IMDB_SUGGEST_ORIGIN = process.env.LANGUAGE_VIDEO_LEARNER_IMDB_SUGGEST_URL || "https://v3.sg.media-imdb.com/suggestion";
-export const BROWSER_COACH_EXTENSION_DIR = path.resolve(root, "browser-extension");
-export const DEFAULT_COACH_PROVIDER_ID = "chatgpt-browser";
-export const COACH_PROVIDERS = new Map([
-  [DEFAULT_COACH_PROVIDER_ID, {
-    id: DEFAULT_COACH_PROVIDER_ID,
-    label: "ChatGPT in your browser",
-    kind: "browser-subscription",
-    model: "account-selected",
-    transport: "signed-in-chatgpt-browser",
-    enabled: true,
-    supports: {
-      conversation: true,
-      liveVoice: true,
-      liveTranscriptSync: true,
-      structuredOutput: true,
-      textInput: true,
-      imageInput: false,
-      audioInput: false,
-      audioOutput: false,
-    },
-  }],
-]);
 export const VIDEO_EXTENSIONS = new Set([".mp4", ".m4v", ".webm", ".ogv", ".ogg", ".mkv", ".avi", ".mov"]);
 export const FALLBACK_TRACKERS = [
   "udp://tracker.opentrackr.org:1337/announce",
@@ -226,14 +192,6 @@ export const activeForegroundTranscodeCount = () => Math.max(0,activeTranscodes.
   - indexedActiveProcesses.size - progressiveActiveProcesses.size);
 export const mediaProbeCache = new Map();
 export const remoteSubtitleDownloads = new Map();
-export const voiceCoachSessions = new Map(
-  (appDatabase.readSection("coachSessions") || []).map((session) => [
-    coachLiveSessionKey(session.chatId, session.nativeVoice),
-    session,
-  ]),
-);
-if (cleanVoiceCoachSessions()) persistVoiceCoachSessions();
-export const browserCoachToken = crypto.randomBytes(24).toString("base64url");
 export const ffprobePath = ffprobeStatic?.path || null;
 // Full-file browser-range cache is strictly optional. Background conversions
 // consume one of the same two FFmpeg slots as foreground playback, and never
@@ -333,8 +291,6 @@ export const updatePolicy = UPDATE_BRIDGE ? createUpdatePolicy({
   patchCapable: () => fs.existsSync(path.join(root, "runtime", "update-apply.mjs")),
   log: (message) => console.log(`Updates: ${message}`),
 }) : null;
-setTimeout(collectClipGarbage, 30_000).unref?.();
-setInterval(collectClipGarbage, 6 * 60 * 60 * 1000).unref?.();
 setInterval(() => { void enforcePlayerStorage(); }, 30_000).unref?.();
 
 // Optional features (reader, franchises, reading sources) plug in through

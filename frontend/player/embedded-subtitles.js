@@ -1,5 +1,5 @@
 // Subtitles inside the video file: listing, importing and loading more.
-import { parseSubtitle } from "../../learning/browser/core.js";
+import { parseSubtitle } from "../../shared/subtitles/subtitle-text.js";
 import { escapeHtml } from "../ui/ui.js";
 import {
   completedWebVttText, EMBEDDED_WINDOW_SECONDS, embeddedExtractionError, embeddedSubtitleCoverageEnd,
@@ -17,7 +17,6 @@ import { renderSubtitles, subtitleRenderMemo, trackLanguageName } from "./subtit
 import { subtitleFingerprint } from "./subtitle-timing.js";
 import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import { addSubtitleText } from "./subtitle-search.js";
-import { saveCurrentEpisodeAnalysis } from "../learning/index.js";
 
 export function embeddedSubtitleLabel(track, index) {
   const title = String(track?.title || "").trim();
@@ -258,7 +257,7 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
       }
       imported.embeddedImportPartial = false;
       markWindowComplete();
-      saveCurrentEpisodeAnalysis();
+
       if (!automatic) $("#media-status").textContent = imported.cues?.length
         ? "No new embedded subtitle lines near this playback position"
         : "This track has no lines in this part of the episode. They appear as it plays.";
@@ -270,7 +269,7 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
       : "No subtitle lines were found near this playback position. Try another point in the episode.");
     imported.embeddedImportPartial = partial;
     if (!partial) markWindowComplete();
-    saveCurrentEpisodeAnalysis();
+
     renderSubtitleWorkspace();
     if (!automatic) $("#media-status").textContent = partial
       ? `${imported.cues.length} subtitle lines available. Extraction paused${extractionError ? `: ${extractionError}` : ""}. More can load as you watch.`
@@ -284,7 +283,7 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
       if (automatic && error?.httpStatus === 429) embeddedSubtitleAttempts.set(attemptKey, Date.now() - 57_000);
       if (imported) {
         imported.embeddedImportPartial = true;
-        saveCurrentEpisodeAnalysis();
+
       }
       const failed = controller.signal.aborted
         ? "Subtitle extraction stopped. " + (imported?.cues?.length ? `${imported.cues.length} lines are available.` : "Try Find subtitles or Add file.")

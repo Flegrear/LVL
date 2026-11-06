@@ -124,16 +124,6 @@ import {
   completeAniListAuthorization, maybeSyncAniListLibrary, saveUserAniListScore,
   scheduleAniListAutoSync, showAniListAutoStatus, syncAniListLibrary, wireAniListAutoSettings,
 } from "./frontend/anilist/anilist-sync.js";
-import {
-  browserCoachChecking, changeReviewTargetLanguage, closeLinePreview, connectBrowserCoach,
-  currentAnalysis, ensureLearningPreset, exportCardsToAnki, handleQuizKey, handleStudyKey,
-  handleTestKey, importAnkiFile, migrateLearningState, openBrowserCoachExtensionFolder,
-  playNextStudySound, playStudySounds, refreshBrowserCoachStatus, refreshCoachProviders,
-  refreshVoiceUsageStatus, renderReview, renderStudy, renderTest, renderVoiceChatStage,
-  replayLinePreview, revealStudyAnswer, reviewMode, saveLearningExposure, selectedCoachProvider,
-  setCoachProvider, setReviewTab, stopVoiceUsageClock, studyAudio, voiceUsageActiveSince,
-  wireBrowserCoachMessages, wireLearningViews,
-} from "./frontend/learning/index.js";
 
 // An older server that is still running may lack the static route for
 // /frontend/player/progressive-seek.js. A mandatory ESM import of an unserved
@@ -210,13 +200,9 @@ clientFeatures.install(document, {
   anilistSync: () => ({ progress: readAniListPreference(localStorage).enabled, scores: anilistScoreSyncEnabled() }),
 });
 
-// Core releases park Learning without changing existing data or preferences.
-// Only turn this on in a Learning development checkout; there is no user-facing
-// enable switch in the core app. The original preference remains untouched.
-const LEARNING_DEV_ENABLED = false;
-const LEARNING_ENABLED_KEY = "blackline-learning-enabled";
-export let learningEnabled = LEARNING_DEV_ENABLED && localStorage.getItem(LEARNING_ENABLED_KEY) !== "0";
-document.documentElement.dataset.learningMode = learningEnabled ? "on" : "off";
+// Reserved compatibility state for older saved views and styles.
+export const learningEnabled = false;
+document.documentElement.dataset.learningMode = "off";
 
 // OAuth's implicit token arrives in the URL fragment, which must be removed
 // from browser history before the SPA router or any navigation can expose it.
@@ -280,15 +266,6 @@ export const state = {
   loadingProgress: 0,
   subtitleStyle: initialSubtitleStyle,
   pendingMagnetSeriesKey: null,
-  studySource: "chapter",
-  studyChapterId: localStorage.getItem("blackline-study-chapter-id") || "",
-  studyType: localStorage.getItem("blackline-study-type") === "phrase" ? "phrase" : "word",
-  studyWordTier: [100, 1000, 5000].includes(Number(localStorage.getItem("blackline-study-word-tier"))) ? Number(localStorage.getItem("blackline-study-word-tier")) : 100,
-  studyPhraseTier: [100, 1000].includes(Number(localStorage.getItem("blackline-study-phrase-tier"))) ? Number(localStorage.getItem("blackline-study-phrase-tier")) : 100,
-  studyFilter: ["all", "unknown", "known", "review"].includes(localStorage.getItem("blackline-study-filter")) ? localStorage.getItem("blackline-study-filter") : "all",
-  studyPage: 0,
-  wordColoring: localStorage.getItem("blackline-word-coloring") !== "0",
-  learningPreset: { language: "", words: [], phrases: [], status: "idle", error: "" },
   learningExposure: readStorageObject("blackline-learning-exposure"),
   testResults: readStorageArray("blackline-test-results"),
   coachTranscripts: readStorageArray("blackline-coach-transcripts"),
@@ -357,13 +334,7 @@ export let homeBrowseCategory = (() => {
   return clientFeatures.homeCategoryIds.includes(saved) ? saved : normalizeHomeCategory(saved);
 })();
 
-export const SPEECH_LOCALES = {
-  EN: "en-US", ES: "es-ES", FR: "fr-FR", DE: "de-DE", IT: "it-IT", PT: "pt-BR",
-  JA: "ja-JP", KO: "ko-KR", ZH: "zh-CN", RU: "ru-RU", NL: "nl-NL", PL: "pl-PL", TR: "tr-TR",
-};
-
-wireBrowserCoachMessages();
-export const SETTINGS_TABS = ["general", "coach", "library", "storage", "updates", "notifications", ...clientFeatures.settingsTabIds];
+export const SETTINGS_TABS = ["general", "library", "storage", "updates", "notifications", ...clientFeatures.settingsTabIds];
 // Tracking (ratings, AniList, Letterboxd, recommendations) is part of Library;
 // a tab saved as "recs" before that opens Library.
 const savedSettingsTab = localStorage.getItem("blackline-settings-tab") === "recs" ? "library" : localStorage.getItem("blackline-settings-tab");
@@ -424,65 +395,15 @@ export const audioSync = { key: "", generation: 0, windows: [], caches: new Map(
 
 // Lines of the base-language track that belong with a cue of another track, in video time.
 export const pairedCueMemo = new Map();
-export const studyView = { tab: "decks", deckKey: null, cardId: null, revealed: false, rendered: null, typed: "", undo: null, reviewed: 0, menuKey: null };
-studyAudio.addEventListener("ended", playNextStudySound);
-
-window.addEventListener("message", (event) => {
-  const frameNode = $("#study-card-frame");
-  const data = event.data;
-  if (!frameNode || event.source !== frameNode.contentWindow || !data || data.lvlCard !== 1) return;
-  if (data.type === "size") frameNode.style.height = `${Math.min(4000, Math.max(140, Number(data.height) || 0))}px`;
-  else if (data.type === "sound") playStudySounds([String(data.url || "")]);
-  else if (data.type === "typed") {
-    studyView.typed = String(data.value || "").slice(0, 500);
-    if (data.submit) revealStudyAnswer();
-  } else if (data.type === "key") handleStudyKey({ key: String(data.key || ""), code: String(data.code || ""), preventDefault() {} });
-});
-
-/* ---------------------------------------------------------------- Review: quick quiz */
-
-// Four options per question; the answer shows right away. Studied cards come first, weakest first.
-export const quiz = { deckKey: "all", direction: "forward", question: null, picked: null, correct: 0, total: 0, streak: 0, recent: [] };
-
-/* ---------------------------------------------------------------- Tests: scored mixed tests */
-
-// Multiple choice, typing (meaning or word) and listening (saved lines): answers are only shown
-// at the end, with the score, a breakdown and the questions that were missed.
-export const testSetup = { deckKey: "all", size: 10, types: { choice: true, typing: true, listening: true } };
-
-export function renderStats() {
-  const cues = allPrimaryCues();
-  const analysis = currentAnalysis();
-  $("#cue-stat").textContent = cues.length;
-  $("#word-stat").textContent = analysis.words.length;
-  $("#card-stat").textContent = state.cards.length;
-}
-
-export function renderSubtitleWorkspace({ includeLearning = true } = {}) {
-  if (!learningEnabled) {
-    renderTracks();
-    renderSubtitles();
-    updatePlayerPreferenceButtons();
-    return;
-  }
+export function renderSubtitleWorkspace() {
   renderTracks();
   renderSubtitles();
-  if (includeLearning) {
-    renderStats();
-    if ($("#view-study")?.classList.contains("is-active")) renderStudy();
-  }
   updatePlayerPreferenceButtons();
 }
 
 export function renderAll() {
   renderTracks();
   renderSubtitles();
-  if (learningEnabled) {
-    renderStudy();
-    renderReview();
-    renderTest();
-    renderStats();
-  }
   renderLibrary();
   if (state.homeLoaded) renderHome();
   renderSettings();
@@ -503,7 +424,7 @@ export const calendarUi = createCalendarView({
 });
 $("#calendar-root")?.addEventListener("calendar-open-request", () => switchView("calendar"));
 
-export const VIEW_ROUTES = Object.freeze({ home: "/home", watch: "/watch", library: "/library", calendar: "/calendar", study: "/study", review: "/review", test: "/test", settings: "/settings", title: "/title", ...clientFeatures.viewRoutes });
+export const VIEW_ROUTES = Object.freeze({ home: "/home", watch: "/watch", library: "/library", calendar: "/calendar", settings: "/settings", title: "/title", ...clientFeatures.viewRoutes });
 export const ROUTE_VIEWS = Object.freeze(Object.fromEntries(Object.entries(VIEW_ROUTES).map(([view, route]) => [route, view])));
 export let watchRestoreReady = false;
 export const floatingPrefs = {
@@ -598,7 +519,6 @@ export const CHAPTER_PAGE = 60;
 export function empty(title, copy) {
   return `<div class="empty-state"><strong>${escapeHtml(title)}</strong>${escapeHtml(copy)}</div>`;
 }
-
 
 wireLocalVideoInput();
 
@@ -757,10 +677,7 @@ $("#catalog-results")?.addEventListener("click", (event) => {
   const holder = event.target.closest(".catalog-search-result[data-title-id]");
   if (holder) openCatalogResult(holder.dataset.titleId);
 });
-$("#review-import-anki")?.addEventListener("click", () => $("#review-import-file")?.click());
-$("#review-import-file")?.addEventListener("change", (event) => { void importAnkiFile(event.target.files?.[0]); });
-$("#review-export-anki")?.addEventListener("click", () => { void exportCardsToAnki("apkg"); });
-$("#review-export-text")?.addEventListener("click", () => { void exportCardsToAnki("txt"); });
+
 $("#view-title")?.addEventListener("click", handleTitleAction);
 $("#view-title")?.addEventListener("click", (event) => {
   const trailer = event.target.closest("a.title-trailer[data-trailer-id]");
@@ -890,70 +807,7 @@ $("#watch-chapters-body")?.addEventListener("contextmenu", (event) => {
   if (item) openWatchEpisodeContextMenu(event, item, { keyboard: event.button !== 2 && event.detail === 0 });
 });
 wireWatchChapters();
-$$("[data-study-category]").forEach((button) => button.addEventListener("click", () => {
-  state.studySource = button.dataset.studyCategory === "preset" ? "preset" : "chapter";
-  state.studyPage = 0;
-  localStorage.setItem("blackline-study-source", state.studySource);
-  persistPreferences();
-  if (state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
-  renderStudy();
-}));
-$$('[data-study-source]').forEach((button) => button.addEventListener("click", () => {
-  state.studySource = button.dataset.studySource === "preset" ? "preset" : "chapter";
-  state.studyType = button.dataset.studyType === "phrase" ? "phrase" : "word";
-  const tier = Number(button.dataset.studyTier || 0);
-  if (state.studySource === "preset" && tier) {
-    if (state.studyType === "phrase") state.studyPhraseTier = [100, 1000].includes(tier) ? tier : state.studyPhraseTier;
-    else state.studyWordTier = [100, 1000, 5000].includes(tier) ? tier : state.studyWordTier;
-  }
-  state.studyPage = 0;
-  localStorage.setItem("blackline-study-source", state.studySource);
-  localStorage.setItem("blackline-study-type", state.studyType);
-  localStorage.setItem("blackline-study-word-tier", String(state.studyWordTier));
-  localStorage.setItem("blackline-study-phrase-tier", String(state.studyPhraseTier));
-  persistPreferences();
-  if (state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
-  renderStudy();
-}));
-$("#study-chapter-select")?.addEventListener("change", (event) => {
-  state.studySource = "chapter";
-  state.studyChapterId = String(event.target.value || "");
-  state.studyPage = 0;
-  localStorage.setItem("blackline-study-source", state.studySource);
-  localStorage.setItem("blackline-study-chapter-id", state.studyChapterId);
-  persistPreferences();
-  renderStudy();
-});
-$("#study-filter")?.addEventListener("change", (event) => {
-  state.studyFilter = ["all", "unknown", "known", "review"].includes(event.target.value) ? event.target.value : "all";
-  state.studyPage = 0;
-  localStorage.setItem("blackline-study-filter", state.studyFilter);
-  persistPreferences();
-  renderStudy();
-});
-$("#study-color-subs")?.addEventListener("change", (event) => {
-  state.wordColoring = Boolean(event.target.checked);
-  localStorage.setItem("blackline-word-coloring", state.wordColoring ? "1" : "0");
-  persistPreferences();
-  subtitleRenderMemo.key = "";
-  if (state.wordColoring) void ensureLearningPreset(state.targetLanguage);
-  renderSubtitles();
-});
-$("#study-page-prev")?.addEventListener("click", () => {
-  state.studyPage = Math.max(0, state.studyPage - 1);
-  renderStudy();
-});
-$("#study-page-next")?.addEventListener("click", () => {
-  state.studyPage += 1;
-  renderStudy();
-});
-$$('[data-review-tab]').forEach((button) => button.addEventListener("click", () => {
-  setReviewTab(button.dataset.reviewTab);
-}));
-$("#review-target-language")?.addEventListener("change", (event) => {
-  changeReviewTargetLanguage(event.target.value);
-});
-wireLearningViews();
+
 wireStorageSettings();
 [
   "#subtitle-style-font",
@@ -1036,9 +890,7 @@ $("#subtitle-preview-rotate")?.addEventListener("click", () => {
   });
   $("#library-open-file")?.addEventListener("click", () => $("#video-input")?.click());
 })();
-$("#settings-browser-coach-check")?.addEventListener("click", connectBrowserCoach);
-$("#settings-browser-coach-open")?.addEventListener("click", () => { void openBrowserCoachExtensionFolder(); });
-$("#settings-ai-provider")?.addEventListener("change", (event) => setCoachProvider(event.target.value));
+
 $("#settings-subdl-form").addEventListener("submit", (event) => {
   event.preventDefault();
   const key = $("#settings-subdl-key").value.trim();
@@ -1280,17 +1132,6 @@ video.addEventListener("timeupdate", () => {
   // Embedded caption windows must keep loading in ordinary playback mode too.
   loadMoreEmbeddedSubtitles();
   renderSubtitles();
-  if (learningEnabled && state.loopLine && !video.paused) {
-    const track = activeTrack();
-    const cues = allPrimaryCues();
-    const index = currentCueIndex();
-    const cue = cues[index];
-    const cueEnd = cue ? cuePlaybackBounds(cue, track).endMs : 0;
-    if (cue && state.currentMs >= cueEnd - 80 && state.currentMs <= cueEnd + 1200) {
-      seekPlayerTo(cuePlaybackMs(cue, track) / 1000);
-      resumePlayback();
-    }
-  }
   updateCompatControls();
   checkAudioSyncCoverage();
   recordWatchProgress();
@@ -1572,10 +1413,7 @@ $$('.nav-btn').forEach((button) => button.addEventListener("click", () => {
 if ("scrollRestoration" in window.history) window.history.scrollRestoration = "manual";
 window.addEventListener("popstate", () => switchView(viewFromLocation(), { historyMode: "none", restoreScroll: true }));
 $("#dialog-close").addEventListener("click", () => $("#detail-dialog").close());
-$("#line-preview-dialog").addEventListener("close", () => { if (!$("#line-preview-dialog").open) closeLinePreview(); });
-$("#line-preview-dialog").addEventListener("cancel", closeLinePreview);
-$("#line-preview-replay").addEventListener("click", replayLinePreview);
-$("[data-close-dialog='line-preview-dialog']").addEventListener("click", closeLinePreview);
+
 $("#settings-base-language").addEventListener("change", (event) => renderLocaleOptions("#settings-base-locale", event.target.value, ""));
 $("#settings-target-language").addEventListener("change", (event) => renderLocaleOptions("#settings-learning-locale", event.target.value, ""));
 
@@ -1584,9 +1422,6 @@ document.addEventListener("keydown", (event) => {
   const tag = event.target?.tagName?.toLowerCase();
   const typing = ["input", "textarea", "select"].includes(tag) || event.target?.isContentEditable;
   if (!typing && clientFeatures.handleKey(event)) return;
-  if (learningEnabled && !typing && handleStudyKey(event)) return;
-  if (learningEnabled && !typing && handleQuizKey(event)) return;
-  if (learningEnabled && handleTestKey(event, typing)) return;
   if (playerArrowSeek(event, tag)) return;
   if (["input", "textarea", "select", "button"].includes(tag) || event.target?.isContentEditable) return;
 
@@ -1602,42 +1437,28 @@ document.addEventListener("keydown", (event) => {
     if (key === "m") { event.preventDefault(); setPlayerMutePreference(!playerWantsMuted()); updateCompatControls(); return; }
     if (key === "t" && !event.ctrlKey && !event.metaKey && !event.altKey) { event.preventDefault(); $("#player-theater").click(); return; }
     if (key === "f") { event.preventDefault(); $("#player-fullscreen").click(); return; }
-    if (learningEnabled && key === "r") { event.preventDefault(); $("#repeat-cue").click(); return; }
-    if (learningEnabled && key === "[") { event.preventDefault(); $("#prev-cue").click(); return; }
-    if (learningEnabled && key === "]") { event.preventDefault(); $("#next-cue").click(); return; }
     if (key === "n") { event.preventDefault(); $("#player-next-chapter").click(); return; }
     if (key === "b") { event.preventDefault(); $("#player-prev-chapter").click(); return; }
-    if (learningEnabled && key === "g") { event.preventDefault(); nudgeSubtitleTracks(-100); return; }
-    if (learningEnabled && key === "h") { event.preventDefault(); nudgeSubtitleTracks(100); return; }
   }
 
-  if ($("#view-review").classList.contains("is-active")) return;
 });
 
 window.addEventListener("pagehide", () => {
   recordWatchProgress({ force: true });
-  saveLearningExposure({ immediate: true });
-  if (voiceUsageActiveSince) stopVoiceUsageClock();
 });
 // Android can suspend the WebView when the user leaves for Home, another app
 // or the screen turns off, without delivering pagehide first.
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && window.LvlAndroid) recordWatchProgress({ force: true });
 });
-if ("speechSynthesis" in window) {
-  window.speechSynthesis.addEventListener?.("voiceschanged", () => {
-    if (reviewMode === "voice") renderVoiceChatStage();
-  });
-}
 
-migrateLearningState();
 applyLanguagePreferencesToTracks();
 $("#subtitle-language").value = subtitleFinderLanguages();
 syncSubtitleFinderLanguageChips();
 setSidebarExpanded(false);
 applySubtitleStyle();
 renderAll();
-void refreshCoachProviders();
+
 void hydratePersistentAppState().then(() => {
   watchRestoreReady = true;
   if (POPUP_HANDOFF) {
@@ -1673,7 +1494,7 @@ setInterval(() => {
   if (anilistScoreSyncEnabled() && Date.now() - (Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) || 0) >= 60 * 60_000)
     void syncAniListLibrary({ quiet: true }).catch(() => {});
 }, 10 * 60_000);
-if (learningEnabled && (state.wordColoring || state.studySource === "preset")) void ensureLearningPreset(state.targetLanguage);
+
 setInterval(() => {
   if ($("#view-home")?.classList.contains("is-active")
       && state.homeLoaded
@@ -1681,10 +1502,3 @@ setInterval(() => {
     void loadHomeCatalog({ force: true });
   }
 }, 60 * 1000);
-setInterval(() => {
-  const settingsOpen = Boolean($("#view-settings")?.classList.contains("is-active"));
-  const voiceOpen = reviewMode === "voice" && Boolean($("#view-review")?.classList.contains("is-active"));
-  const needsBrowserBridge = selectedCoachProvider().id === "chatgpt-browser";
-  if (learningEnabled && (settingsOpen || (voiceOpen && needsBrowserBridge)) && !browserCoachChecking) void refreshBrowserCoachStatus();
-  if (learningEnabled && voiceOpen) void refreshVoiceUsageStatus();
-}, 3000);

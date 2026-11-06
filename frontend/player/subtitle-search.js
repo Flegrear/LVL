@@ -1,8 +1,8 @@
 // Finding subtitles: languages, web search, files and imports.
-import { parseSubtitle } from "../../learning/browser/core.js";
+import { parseSubtitle } from "../../shared/subtitles/subtitle-text.js";
 import { escapeHtml } from "../ui/ui.js";
 import { normalizeLearningLocale } from "../../shared/settings/language-settings.js";
-import { empty, quiz, renderSubtitleWorkspace, state, uiLanguage } from "../../app.js";
+import { empty, renderSubtitleWorkspace, state, uiLanguage } from "../../app.js";
 import { persistPreferences } from "../app/saved-state.js";
 import { $, $$, setToolStatus } from "../app/dom.js";
 import { postJson } from "../app/http.js";
@@ -16,10 +16,6 @@ import {
   alignCurrentSubtitleSet, subtitleFingerprint, subtitleTimelineFit, syncTrackToBestReference,
 } from "./subtitle-timing.js";
 import { applySavedSubtitleSync, scheduleAudioSync } from "./audio-sync.js";
-import {
-  closeLiveCoachSession, ensureLearningPreset, learningPresetCache, saveCurrentEpisodeAnalysis,
-  stopStudySounds, stopVoiceSpeech, touchLearningState, voiceChat, voiceRecognition,
-} from "../learning/index.js";
 
 function subtitleSearchLanguages() {
   return preferredLanguagePair().join(",");
@@ -73,23 +69,6 @@ export function saveSubtitlePreferences(apiKey, baseLanguage = state.baseLanguag
   localStorage.setItem("blackline-target-language", state.targetLanguage);
   localStorage.setItem("blackline-subdl-languages", subtitleSearchLanguages());
   persistPreferences();
-  if (previousTargetLanguage !== state.targetLanguage || previousBaseLanguage !== state.baseLanguage) {
-    quiz.question = null;
-    quiz.picked = null;
-    quiz.recent = [];
-    stopStudySounds();
-  }
-  if (previousTargetLanguage !== state.targetLanguage || previousBaseLanguage !== state.baseLanguage || previousLocales !== `${state.targetLocale}|${state.baseLocale}`) {
-    if (voiceChat.providerConversationId || voiceChat.providerLive) void closeLiveCoachSession();
-    try { voiceRecognition?.abort?.(); } catch {}
-    stopVoiceSpeech({ render: false });
-  }
-  if (previousTargetLanguage !== state.targetLanguage) {
-    state.studyPage = 0;
-    state.learningPreset = learningPresetCache.get(state.targetLanguage) || { language: state.targetLanguage, words: [], phrases: [], status: "idle", error: "" };
-    touchLearningState();
-    if (state.wordColoring || state.studySource === "preset") void ensureLearningPreset(state.targetLanguage);
-  }
   applyLanguagePreferencesToTracks();
   renderSettings();
 }
@@ -161,7 +140,7 @@ export function addSubtitleText(text, label, language = "", options = {}) {
   if (timelineFit.severeMismatch) {
     $("#media-status").textContent = `These subtitles may be for a different cut: they cover ${Math.round((timelineFit.ratio || 0) * 100)}% of the video`;
   }
-  saveCurrentEpisodeAnalysis();
+
   return { id, added: true, duplicate: false, track: addedTrack };
 }
 

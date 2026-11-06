@@ -20,10 +20,6 @@ import { renderTitlePage } from "../title/title-page.js";
 import { loadHomeCatalog, saveHomePlace } from "../home/home-page.js";
 import { refreshRandomPickIndicator } from "../home/random-pick.js";
 import { catalogSearchIsOpen, closeCatalogSearch } from "../catalog/catalog-search.js";
-import {
-  browserCoachChecking, browserCoachStatus, coachProviders, linePreview, refreshBrowserCoachStatus,
-  refreshCoachProviders, renderReview, renderStudyPage, renderTest, reviewMode,
-} from "../learning/index.js";
 
 export function viewActive(name) {
   return Boolean($(`#view-${name}`)?.classList.contains("is-active"));
@@ -80,9 +76,7 @@ export function viewFromLocation() {
 
 export function switchView(view, { historyMode = "push", restoreScroll = false, query } = {}) {
   if (!learningEnabled && ["study", "review", "test"].includes(view)) view = "home";
-  if (view === "watch" && (linePreview.active || linePreview.pending)) return;
   if (catalogSearchIsOpen()) closeCatalogSearch();
-  if (view === "watch") linePreview.preventBackgroundPlayback = false;
   if (view === "watch") clearManualFloating();
   if (!VIEW_ROUTES[view]) view = "home";
   updateFloatingPlayback(view);
@@ -133,9 +127,6 @@ export function switchView(view, { historyMode = "push", restoreScroll = false, 
   } else if (previousKey && previousKey !== lastViewKey) {
     window.scrollTo({ top: 0, behavior: "instant" });
   }
-  if (view === "study") renderStudyPage();
-  if (view === "review") renderReview();
-  if (view === "test") renderTest();
   if (view === "library") {
     renderLibrary();
     void loadHomeCatalog();
@@ -145,12 +136,7 @@ export function switchView(view, { historyMode = "push", restoreScroll = false, 
   clientFeatures.showView(view);
   if (view === "settings") {
     renderSettings();
-    if (learningEnabled) {
-      if (!coachProviders.length) void refreshCoachProviders();
-      if (!browserCoachStatus && !browserCoachChecking) void refreshBrowserCoachStatus();
-    }
   }
-  if (view === "review" && reviewMode === "voice" && !coachProviders.length) void refreshCoachProviders();
   if (view === "home") void loadHomeCatalog();
   if (view === "watch") restoreLastWatchOnVisit();
 }

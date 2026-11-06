@@ -5,7 +5,6 @@ import {
 } from "../../server.js";
 import { json, methodNotAllowed, readJsonBody } from "../app/http-helpers.js";
 import { closeProgressiveReadyListeners } from "../streaming/torrent-stream.js";
-import { collectClipGarbage } from "../learning/learning-store.js";
 
 // Player storage: downloads you aren't watching go first when the limit is reached.
 let enforcingPlayerStorage = false;
@@ -72,7 +71,7 @@ export async function handleStorageApi(req, res, url) {
       await progressiveIndexCache.purgeAll();
     }
     await enforcePlayerStorage();
-    collectClipGarbage();
+
     json(res, 200, await storage.report());
     return true;
   }

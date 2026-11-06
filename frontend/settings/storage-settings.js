@@ -91,9 +91,11 @@ function paintStorageReport(report) {
   setStorageMeter($("#storage-player-meter"), report.player.usedBytes, report.limits.playerBytes);
   const clips = report.clips;
   const lines = [clips.cardCount ? `${clips.cardCount.toLocaleString()} for cards` : "", clips.dictationCount ? `${clips.dictationCount.toLocaleString()} for dictation` : ""].filter(Boolean).join(" and ");
-  $("#storage-clip-usage").textContent = `${formatStorage(clips.usedBytes)} of ${formatStorage(report.limits.clipBytes)} used${lines ? `, ${lines}` : ""}`;
+  const clipUsage = $("#storage-clip-usage");
+  if (clipUsage) clipUsage.textContent = `${formatStorage(clips.usedBytes)} of ${formatStorage(report.limits.clipBytes)} used${lines ? `, ${lines}` : ""}`;
   setStorageMeter($("#storage-clip-meter"), clips.usedBytes, report.limits.clipBytes);
-  $("#storage-deck-usage").textContent = report.decks.count
+  const deckUsage = $("#storage-deck-usage");
+  if (deckUsage) deckUsage.textContent = report.decks.count
     ? `${formatStorage(report.decks.mediaBytes)} in ${report.decks.count} deck${report.decks.count === 1 ? "" : "s"}`
     : "No decks with media";
   const leftovers = $("#storage-leftovers");

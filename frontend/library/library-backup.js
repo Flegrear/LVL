@@ -1,15 +1,11 @@
 // Library export and import.
+import { discardedCardKeys, mergeDiscardedCardKeys } from "../app/legacy-preferences.js";
 import { toast } from "../ui/ui.js";
-import { renderStats, state } from "../../app.js";
-import { persistentAppStateReady, saveLibrary, saveState, saveTestResults } from "../app/saved-state.js";
+import { state } from "../../app.js";
+import { persistentAppStateReady, persistAppSection, persistPreferences, saveLibrary, saveState, saveTestResults, storeLocalCopy } from "../app/saved-state.js";
 import { $ } from "../app/dom.js";
 import { renderLibrary, updateLibrarySummary } from "./library-page.js";
 import { renderHome } from "../home/home-page.js";
-import {
-  addDiscardedAutoCardKeys, backfillPersistedChapterAutoCards, discardedAutoCardKeys,
-  migrateLearningState, persistDiscardedAutoCardKeys, renderReview, renderStudy, renderTest,
-  saveLearningExposure,
-} from "../learning/index.js";
 
 export function exportLibraryDatabase() {
   if (!persistentAppStateReady) {
@@ -23,7 +19,7 @@ export function exportLibraryDatabase() {
     library: state.library,
     cards: state.cards,
     known: [...state.known],
-    discardedAutoCardKeys: [...discardedAutoCardKeys].slice(-20_000),
+    discardedAutoCardKeys: discardedCardKeys().slice(-20_000),
     learningExposure: state.learningExposure,
     testResults: state.testResults,
     preferences: { baseLanguage: state.baseLanguage, targetLanguage: state.targetLanguage },
@@ -79,8 +75,8 @@ export function mergeImportedLibrary(payload) {
       ? payload.preferences.discardedAutoCardKeys
       : [];
   if (importedDiscarded.length) {
-    addDiscardedAutoCardKeys(importedDiscarded);
-    persistDiscardedAutoCardKeys({ immediate: true });
+    mergeDiscardedCardKeys(importedDiscarded);
+    persistPreferences();
   }
   if (payload?.learningExposure && typeof payload.learningExposure === "object" && !Array.isArray(payload.learningExposure)) {
     const importedExposure = Object.fromEntries(Object.entries(payload.learningExposure).slice(0, 10000).map(([key, value]) => [String(key).slice(0, 500), {
@@ -90,7 +86,8 @@ export function mergeImportedLibrary(payload) {
       lastSeenAt: Math.max(0, Number(value?.lastSeenAt) || 0),
     }]));
     state.learningExposure = { ...importedExposure, ...state.learningExposure };
-    saveLearningExposure({ immediate: true });
+    storeLocalCopy("blackline-learning-exposure", state.learningExposure);
+    persistAppSection("learningExposure", state.learningExposure, { immediate: true });
   }
   if (Array.isArray(payload?.testResults)) {
     const importedResults = payload.testResults.slice(-500).map((result) => ({
@@ -108,16 +105,10 @@ export function mergeImportedLibrary(payload) {
     state.testResults = [...results.values()].slice(-500);
     saveTestResults();
   }
-  migrateLearningState();
-  backfillPersistedChapterAutoCards();
   saveLibrary();
   saveState();
   if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
   else updateLibrarySummary();
-  renderStats();
-  if ($("#view-study")?.classList.contains("is-active")) renderStudy();
-  if ($("#view-review")?.classList.contains("is-active")) renderReview();
-  if ($("#view-test")?.classList.contains("is-active")) renderTest();
   if (state.homeLoaded && $("#view-home")?.classList.contains("is-active")) renderHome();
   return added;
 }

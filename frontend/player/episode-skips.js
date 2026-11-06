@@ -1,5 +1,5 @@
 // Intro and outro skips, and the episode timeline.
-import { formatTime } from "../../learning/browser/core.js";
+import { formatTime } from "../../shared/subtitles/subtitle-text.js";
 import { episodeAutoSkip, state, video } from "../../app.js";
 import { $ } from "../app/dom.js";
 import { viewActive } from "../app/navigation.js";

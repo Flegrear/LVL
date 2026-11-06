@@ -1,5 +1,13 @@
 LVL for Android 0.1.0 — native software and source notices
 
+LVL's original application code is licensed under GPL-3.0-or-later.
+Full terms and scope are included inside assets/lvl-app.zip under
+assets/licenses/LVL-LICENSE.txt and assets/licenses/LVL-NOTICE.txt.
+Application source: https://github.com/Flegrear/LVL
+Release source is identified by the matching android-vX.Y.Z tag.
+Third-party components retain their own licenses and notices, including
+the native components described below.
+
 The arm64-v8a and x86_64 LVL APKs each include separate Node.js,
 FFmpeg and ffprobe executables. LVL runs these tools as separate programs.
 

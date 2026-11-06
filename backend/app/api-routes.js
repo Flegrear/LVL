@@ -24,28 +24,13 @@ import { searchLibraryArtwork, serveOptimizedPoster } from "../catalog/artwork.j
 import { catalogMeta, homeCatalog, searchCatalog } from "../catalog/catalog-api.js";
 import { searchStreams } from "../catalog/streams.js";
 import { appUpdatesEndpoint } from "../app-updates/updates-api.js";
+import { alignSubtitleTracks, processSubtitleTrack } from "../subtitles/subtitle-alignment.js";
 import { handleStorageApi } from "../persistence/storage-api.js";
 import { handleRecsApi } from "../recommendations/recs-api.js";
-import {
-  browserCoachDecisionEndpoint, browserCoachLiveControl, browserCoachLiveTranscript,
-  browserCoachPair, browserCoachPoll, browserCoachResult, browserCoachStatus,
-  openBrowserCoachExtensionFolder,
-} from "../learning/browser-coach.js";
-import {
-  browserVoiceCorrection, coachLiveSessionCloseEndpoint, coachLiveSessionStartEndpoint,
-  coachLiveSessionTouchEndpoint, coachLiveTranscriptEnrichEndpoint, coachProvidersEndpoint,
-  coachUsageEndpoint, coachVoiceTurnEndpoint,
-} from "../learning/voice-coach.js";
-import {
-  alignLearningSubtitles, exportAnkiDeck, handleLearningStoreApi, importAnkiDeck,
-  learningPresetByPath, learningPresets, processLearningSubtitle,
-} from "../learning/learning-store.js";
 
 // Requests only LVL's own page may send. Requests sent by other sites (a page you visit can
 // post to 127.0.0.1) and under other host names (DNS rebinding) are refused, so no other
-// site can send prompts through your ChatGPT, change your saved data or start a torrent.
-// The helper extension's own routes (pair, poll, result, live-control, live-transcript)
-// stay outside this check: they carry the helper's token instead.
+// site can change your saved data or start a torrent.
 const LOCAL_ONLY_PATHS = new Set([
   "/api/app-state", "/api/diagnostics/playback", "/api/browser-coach/status", "/api/browser-coach/decision",
   "/api/browser-coach/voice-correction", "/api/browser-coach/open-extension-folder", "/api/images/poster",
@@ -54,6 +39,7 @@ const LOCAL_ONLY_PATHS = new Set([
 const LOCAL_ONLY_PREFIXES = [
   "/api/app-state/", "/api/app-updates/", "/api/popup/", "/api/coach/", "/api/torrents/", "/api/recs/",
   "/api/anki/", "/api/ankiweb/", "/api/clips/", "/api/storage/",
+  "/api/subtitles/", "/api/learning/subtitles/",
 ];
 const localOnly = (pathname) => LOCAL_ONLY_PATHS.has(pathname) || LOCAL_ONLY_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 
@@ -243,37 +229,16 @@ const API_ROUTES = [
   { path: "/api/calendar/releases", handle: calendarReleasesEndpoint },
   { path: "/api/app-state/bootstrap", handle: appStateBootstrapEndpoint },
   { path: (p) => p === "/api/app-state" || p.startsWith("/api/app-state/"), handle: appStateEndpoint },
-  { path: "/api/coach/providers", handle: coachProvidersEndpoint },
-  { path: "/api/coach/usage", handle: coachUsageEndpoint },
-  { path: "/api/coach/voice-turn", handle: coachVoiceTurnEndpoint },
-  { path: "/api/coach/live-session/start", handle: coachLiveSessionStartEndpoint },
-  { path: "/api/coach/live-session/close", handle: coachLiveSessionCloseEndpoint },
-  { path: "/api/coach/live-session/touch", handle: coachLiveSessionTouchEndpoint },
-  { path: "/api/coach/live-transcript/enrich", handle: coachLiveTranscriptEnrichEndpoint },
-  { path: "/api/browser-coach/status", handle: browserCoachStatus },
-  { path: "/api/browser-coach/decision", handle: browserCoachDecisionEndpoint },
-  { path: "/api/browser-coach/pair", handle: browserCoachPair },
-  { path: "/api/browser-coach/poll", handle: browserCoachPoll },
-  { path: "/api/browser-coach/result", handle: browserCoachResult },
-  { path: "/api/browser-coach/live-control", handle: browserCoachLiveControl },
-  { path: "/api/browser-coach/live-transcript", handle: browserCoachLiveTranscript },
-  { path: "/api/browser-coach/open-extension-folder", handle: openBrowserCoachExtensionFolder },
-  { path: "/api/browser-coach/voice-correction", handle: postOnly(browserVoiceCorrection) },
-  { path: "/api/learning/presets", handle: learningPresets },
-  { path: /^\/api\/learning\/presets\/([a-z_-]{2,8})\/(words|phrases)\/(\d{1,5})$/i,
-    handle: (req, res, url, match) => learningPresetByPath(req, res, url, match[1], match[2], match[3]) },
-  { path: "/api/learning/subtitles/process", handle: postOnly(processLearningSubtitle) },
-  { path: "/api/learning/subtitles/align", handle: postOnly(alignLearningSubtitles) },
   { path: (p) => p === "/api/storage" || p.startsWith("/api/storage/"),
     handle: async (req, res, url) => (await handleStorageApi(req, res, url)) || false },
-  { path: "/api/anki/import", handle: postOnly(importAnkiDeck) },
-  // Deck and clip routes. A path the store doesn't know goes on to the routes below.
-  { path: (p) => p.startsWith("/api/anki/") || p.startsWith("/api/ankiweb/") || p === "/api/clips" || p.startsWith("/api/clips/"),
-    next: true, handle: async (req, res, url) => url.pathname !== "/api/anki/export" && await handleLearningStoreApi(req, res, url) },
-  { path: "/api/anki/export", handle: postOnly(exportAnkiDeck) },
   { path: "/api/torrents", handle: postOnly(createTorrentSession) },
   { path: /^\/api\/torrents\/([0-9a-f-]+)(?:\/files(?:\/(\d+)\/(stream|transcode|transcode-start|metadata|subtitle|speech|indexed|indexed\/status|progressive\/status|progressive\/events|progressive\/window\/[a-f0-9]{64}|remux-cache\/window))?)?$/,
     handle: torrentEndpoint },
+  { path: "/api/subtitles/process", handle: postOnly(processSubtitleTrack) },
+  { path: "/api/subtitles/align", handle: postOnly(alignSubtitleTracks) },
+  // Older open player windows may still use these subtitle URLs after an update.
+  { path: "/api/learning/subtitles/process", handle: postOnly(processSubtitleTrack) },
+  { path: "/api/learning/subtitles/align", handle: postOnly(alignSubtitleTracks) },
   { path: "/api/subtitles/search", handle: postOnly(searchSubtitles) },
   { path: "/api/subtitles/download", handle: postOnly(downloadSubtitle) },
   { path: "/api/subtitles/romanize", handle: postOnly(romanizeSubtitles) },

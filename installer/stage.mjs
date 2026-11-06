@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { isSetupSourceFile } from '../scripts/release-inputs.mjs';
 
 const sourceRoot = path.resolve(fileURLToPath(new URL('..', import.meta.url)));
-const roots = Object.freeze(['assets', 'backend', 'frontend', 'learning', 'shared']);
+const roots = Object.freeze(['assets', 'backend', 'frontend', 'shared']);
 const entries = Object.freeze(['app.js', 'index.html', 'server.js', 'package.json', 'CHANGELOG.md']);
 
 function readChildren(root, relative, files) {

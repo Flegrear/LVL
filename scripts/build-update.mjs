@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
-import { isSetupSourceFile } from "./release-inputs.mjs";
+import { isRetiredSetupSourceFile, isSetupSourceFile } from "./release-inputs.mjs";
 
 const DEFAULT_ROOT = path.resolve(fileURLToPath(new URL("../", import.meta.url)));
 const VERSION = /^(?:v)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -165,7 +165,7 @@ function inspectChangedPath(relative, change) {
     throw new Error(`Full installer required: ${relative} changed (${change}). Launcher, runtime, packaging and dependencies cannot be patched.`);
   if (developerFile.test(relative)) return "ignore";
   if (unsafeFile.test(relative)) throw new Error(`Full installer required: binary/runtime file changed: ${relative}`);
-  if (!isSetupSourceFile(relative))
+  if (!isSetupSourceFile(relative) && !(change === "D" && isRetiredSetupSourceFile(relative)))
     throw new Error(`Full installer or source review required: unapproved change ${relative} (${change})`);
   return "include";
 }

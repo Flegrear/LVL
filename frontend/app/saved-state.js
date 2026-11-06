@@ -1,18 +1,13 @@
 // LVL's saved state: the server's copy of the app state (sections, revisions, conflicts) and the local copies it falls back on.
 import { normalizeLearningLocale } from "../../shared/settings/language-settings.js";
-import { learningEnabled, localCopyUnloaded, POPUP_HANDOFF, renderAll, state, uiLanguage } from "../../app.js";
+import { localCopyUnloaded, POPUP_HANDOFF, renderAll, state, uiLanguage } from "../../app.js";
+import { legacyPreferencesSnapshot, preserveLegacyPreferences } from "./legacy-preferences.js";
 import { fetchJson, postJson } from "./http.js";
 import { viewActive } from "./navigation.js";
 import { applySubtitleStyle, subtitleStyleDefaults } from "../player/subtitle-style.js";
 import { renderLibrary } from "../library/library-page.js";
 import { refreshTitlePage } from "../title/title-page.js";
 import { scheduleAniListAutoSync } from "../anilist/anilist-sync.js";
-import {
-  applyVoicePreferences, backfillPersistedChapterAutoCards, coachProviderId, discardedAutoCardKeys,
-  ensureLearningPreset, migrateLearningState, refreshVoiceUsageStatus, restoreDiscardedAutoCardKeys,
-  restoreVoiceSession, reviewMode, touchLearningState, voiceAudio, voiceChat, voiceLiveAssistance,
-  voiceLivePresetId, voiceUsageSegments,
-} from "../learning/index.js";
 
 export function readStorageArray(key) {
   try {
@@ -331,6 +326,7 @@ export function saveTestResults() {
 
 function persistentPreferencesSnapshot() {
   return {
+    ...legacyPreferencesSnapshot(),
     subdlKey: String(state.subdlKey || ""),
     wyzieKey: String(state.wyzieKey || ""),
     subsourceKey: String(state.subsourceKey || ""),
@@ -340,21 +336,6 @@ function persistentPreferencesSnapshot() {
     targetLocale: state.targetLocale,
     interfaceLanguage: state.interfaceLanguage,
     subtitleStyle: { ...state.subtitleStyle },
-    studySource: state.studySource === "preset" ? "preset" : "chapter",
-    studyChapterId: String(state.studyChapterId || ""),
-    studyType: state.studyType === "phrase" ? "phrase" : "word",
-    studyWordTier: Number(state.studyWordTier) || 100,
-    studyPhraseTier: Number(state.studyPhraseTier) || 100,
-    studyFilter: String(state.studyFilter || "all"),
-    wordColoring: Boolean(state.wordColoring),
-    reviewMode: reviewMode === "voice" ? "voice" : "cards",
-    coachProviderId: String(coachProviderId || "chatgpt-browser"),
-    voiceMode: voiceChat.mode === "practice" ? "practice" : "live",
-    voiceLivePresetId: String(voiceLivePresetId || "top-100"),
-    voiceLiveAssistance,
-    discardedAutoCardKeys: [...discardedAutoCardKeys].slice(-20_000),
-    voiceAudio: { ...voiceAudio },
-    voiceUsageSegments: voiceUsageSegments.slice(-256),
   };
 }
 
@@ -587,25 +568,6 @@ function mirrorPersistentPreferencesToLocalStorage(preferences) {
   localStorage.setItem("blackline-interface-language", ["en", "es"].includes(prefs.interfaceLanguage) ? prefs.interfaceLanguage : "auto");
   localStorage.setItem("blackline-subdl-languages", [prefs.targetLanguage || "ES", prefs.baseLanguage || "EN"].join(","));
   localStorage.setItem("blackline-subtitle-style", JSON.stringify(prefs.subtitleStyle || subtitleStyleDefaults));
-  localStorage.setItem("blackline-study-source", prefs.studySource === "preset" ? "preset" : "chapter");
-  localStorage.setItem("blackline-study-chapter-id", String(prefs.studyChapterId || ""));
-  localStorage.setItem("blackline-study-type", prefs.studyType === "phrase" ? "phrase" : "word");
-  localStorage.setItem("blackline-study-word-tier", String(Number(prefs.studyWordTier) || 100));
-  localStorage.setItem("blackline-study-phrase-tier", String(Number(prefs.studyPhraseTier) || 100));
-  localStorage.setItem("blackline-study-filter", String(prefs.studyFilter || "all"));
-  localStorage.setItem("blackline-word-coloring", prefs.wordColoring === false ? "0" : "1");
-  localStorage.setItem("blackline-review-mode", prefs.reviewMode === "voice" ? "voice" : "cards");
-  localStorage.setItem("blackline-coach-provider", String(prefs.coachProviderId || "chatgpt-browser"));
-  localStorage.setItem("blackline-voice-mode", prefs.voiceMode === "practice" ? "practice" : "live");
-  localStorage.setItem("blackline-live-preset", String(prefs.voiceLivePresetId || "top-100"));
-  localStorage.setItem("blackline-live-assistance", prefs.voiceLiveAssistance === "unassisted" ? "unassisted" : "assisted");
-  localStorage.setItem("blackline-discarded-auto-cards", JSON.stringify(Array.isArray(prefs.discardedAutoCardKeys) ? prefs.discardedAutoCardKeys.slice(-20_000) : [...discardedAutoCardKeys].slice(-20_000)));
-  localStorage.setItem("blackline-voice-speak-replies", prefs.voiceAudio?.speakReplies === false ? "0" : "1");
-  localStorage.setItem("blackline-voice-auto-continue", prefs.voiceAudio?.autoContinue === false ? "0" : "1");
-  localStorage.setItem("blackline-voice-tts-uri", String(prefs.voiceAudio?.voiceURI || ""));
-  localStorage.setItem("blackline-voice-tts-rate", String(Number(prefs.voiceAudio?.rate) || 0.96));
-  localStorage.setItem("blackline-voice-input-language", String(prefs.voiceAudio?.inputLanguage || "auto"));
-  localStorage.setItem("blackline-voice-usage", JSON.stringify(Array.isArray(prefs.voiceUsageSegments) ? prefs.voiceUsageSegments.slice(-256) : voiceUsageSegments.slice(-256)));
 }
 
 function applyPersistentAppState(snapshot = {}) {
@@ -619,6 +581,7 @@ function applyPersistentAppState(snapshot = {}) {
   if (Array.isArray(snapshot.coachTranscripts)) state.coachTranscripts = snapshot.coachTranscripts.slice(-100);
   const prefs = snapshot.preferences && typeof snapshot.preferences === "object" && !Array.isArray(snapshot.preferences) ? snapshot.preferences : null;
   if (prefs) {
+    preserveLegacyPreferences(prefs);
     state.subdlKey = String(prefs.subdlKey || "");
     state.wyzieKey = String(prefs.wyzieKey || "");
     state.subsourceKey = String(prefs.subsourceKey || "");
@@ -629,25 +592,14 @@ function applyPersistentAppState(snapshot = {}) {
     state.interfaceLanguage = ["en", "es"].includes(prefs.interfaceLanguage) ? prefs.interfaceLanguage : "auto";
     uiLanguage.setLanguage(state.interfaceLanguage, state.baseLanguage);
     state.subtitleStyle = { ...subtitleStyleDefaults, ...(prefs.subtitleStyle || {}) };
-    state.studySource = "chapter";
-    state.studyChapterId = String(prefs.studyChapterId || "");
-    state.studyType = prefs.studyType === "phrase" ? "phrase" : "word";
-    state.studyWordTier = [100, 1000, 5000].includes(Number(prefs.studyWordTier)) ? Number(prefs.studyWordTier) : 100;
-    state.studyPhraseTier = [100, 1000].includes(Number(prefs.studyPhraseTier)) ? Number(prefs.studyPhraseTier) : 100;
-    state.studyFilter = ["all", "unknown", "known", "review"].includes(prefs.studyFilter) ? prefs.studyFilter : "all";
-    state.wordColoring = prefs.wordColoring !== false;
-    applyVoicePreferences(prefs);
-    restoreDiscardedAutoCardKeys(prefs.discardedAutoCardKeys);
     mirrorPersistentPreferencesToLocalStorage(prefs);
   }
-  restoreVoiceSession(snapshot);
   storeLocalCopy("blackline-cards", state.cards);
   storeLocalCopy("blackline-known", [...state.known]);
   storeLocalCopy("blackline-library", state.library);
   storeLocalCopy("blackline-learning-exposure", state.learningExposure);
   storeLocalCopy("blackline-test-results", state.testResults);
   storeLocalCopy("blackline-coach-transcripts", state.coachTranscripts);
-  touchLearningState();
 }
 
 export async function hydratePersistentAppState() {
@@ -840,16 +792,10 @@ export async function hydratePersistentAppState() {
       storeLocalCopy("blackline-library", state.library);
     }
     localStorage.setItem(APP_DB_MIGRATION_KEY, "1");
-    migrateLearningState();
-    backfillPersistedChapterAutoCards();
     renderAll();
     applySubtitleStyle();
-    if (learningEnabled && (state.wordColoring || state.studySource === "preset")) void ensureLearningPreset(state.targetLanguage);
-    if (learningEnabled) void refreshVoiceUsageStatus({ render: reviewMode === "voice" && voiceChat.mode === "live" });
   } catch (error) {
     console.warn("On-disk app database is unavailable; using the browser cache for this session:", error);
-    migrateLearningState();
-    backfillPersistedChapterAutoCards();
     renderAll();
   }
 }

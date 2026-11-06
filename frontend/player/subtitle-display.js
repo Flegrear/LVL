@@ -1,7 +1,6 @@
 // Subtitles on screen: cues, romanized text, word marks and the track list.
-import { normalizeText, segmentText } from "../../learning/browser/core.js";
 import { emptyMarkup, escapeHtml, icon } from "../ui/ui.js";
-import { frame, learningEnabled, playbackMetrics, state, video } from "../../app.js";
+import { frame, playbackMetrics, state, video } from "../../app.js";
 import { $ } from "../app/dom.js";
 import { postJson } from "../app/http.js";
 import {
@@ -17,11 +16,6 @@ import {
 } from "./subtitle-timing.js";
 import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import { noteSubtitleVisibilityIntent } from "./embedded-subtitles.js";
-import {
-  cardKeySet, learningItemKey, learningRevision, masteredCardKeySet, recordCueExposure,
-} from "../learning/index.js";
-
-const cueTokenCache = new WeakMap();
 
 export let subtitleRenderMemo = { key: "" };
 
@@ -83,82 +77,6 @@ export function ensureCurrentRomanization() {
   });
 }
 
-async function ensureProcessedTrackTokens(track) {
-  if (!track?.cues?.length || normalizeTrackLanguage(track.language) !== state.targetLanguage) return;
-  if (["loading", "ready", "fallback"].includes(track.learningProcessState)) return;
-  track.learningProcessState = "loading";
-  try {
-    const data = await postJson("/api/learning/subtitles/process", {
-      track: {
-        id: track.id,
-        language: normalizeTrackLanguage(track.language),
-        exactMedia: Boolean(track.exactMedia),
-        cues: track.cues.map((cue) => ({ id: cue.id, text: cue.text, startMs: cue.startMs, endMs: cue.endMs })),
-      },
-    });
-    const tokenMap = new Map();
-    (Array.isArray(data?.artifact?.cues) ? data.artifact.cues : []).forEach((processedCue) => {
-      const processedTokens = Array.isArray(processedCue?.tokens) ? processedCue.tokens : Array.isArray(processedCue?.segments) ? processedCue.segments : [];
-      if (!processedCue?.id || !processedTokens.length) return;
-      tokenMap.set(String(processedCue.id), processedTokens.map((token) => ({
-        text: String(token?.text ?? ""),
-        normalized: token?.isWord === false ? "" : normalizeText(token?.normalized || token?.text || ""),
-        isWord: token?.isWord !== false && Boolean(normalizeText(token?.normalized || token?.text || "")),
-      })));
-    });
-    track.processedLearningArtifact = data?.artifact || null;
-    track.processedCueTokens = tokenMap;
-    track.learningProcessState = data?.artifact ? "ready" : "fallback";
-  } catch {
-    track.learningProcessState = "fallback";
-  }
-  subtitleRenderMemo.key = "";
-  renderSubtitles();
-}
-
-export function cueSegments(cue, track) {
-  const processed = track?.processedCueTokens?.get(String(cue?.id));
-  if (processed?.length) return processed;
-  const language = normalizeTrackLanguage(track?.language || state.targetLanguage);
-  const cached = cueTokenCache.get(cue);
-  if (cached?.language === language && cached?.text === cue?.text) return cached.segments;
-  const segments = segmentText(cue?.text || "", language);
-  cueTokenCache.set(cue, { language, text: cue?.text || "", segments });
-  return segments;
-}
-
-function learningClassForWord(normalized) {
-  if (!normalized) return "";
-  const key = learningItemKey(state.targetLanguage, "word", normalized);
-  if (state.known.has(key) || masteredCardKeySet().has(key)) return "learning-known";
-  if (cardKeySet().has(key)) return "learning-review";
-  const rank = state.learningPreset?.language === state.targetLanguage && state.learningPreset?.status === "ready"
-    ? state.learningPreset.wordRank?.get(normalized)
-    : null;
-  if (rank && rank <= 100) return "learning-common-100";
-  if (rank && rank <= 1000) return "learning-common-1000";
-  if (rank && rank <= 5000) return "learning-common-5000";
-  return "";
-}
-
-function appendLearningCue(line, cue, track) {
-  if (!state.wordColoring) {
-    line.textContent = cue.text;
-    return;
-  }
-  cueSegments(cue, track).forEach((segment) => {
-    if (!segment.isWord) {
-      line.append(document.createTextNode(segment.text));
-      return;
-    }
-    const span = document.createElement("span");
-    const learningClass = learningClassForWord(segment.normalized);
-    if (learningClass) span.className = `subtitle-word ${learningClass}`;
-    span.textContent = segment.text;
-    line.append(span);
-  });
-}
-
 export function cuePlaybackMs(cue, track = activeTrack()) {
   return cuePlaybackBounds(cue, track).startMs;
 }
@@ -207,12 +125,7 @@ export function renderSubtitles() {
   const selectedCue = selectedTrack ? activeCues.get(selectedTrack.id) || getActiveCue(selectedTrack) : null;
   if (state.pauseAfterCue && state.lastCueId && selectedCue && selectedCue.id !== state.lastCueId && !video.paused) video.pause();
   state.lastCueId = selectedCue?.id || state.lastCueId;
-  const targetPair = rendered.find(({ track, cue }) => cue && normalizeTrackLanguage(track.language) === state.targetLanguage);
-  if (targetPair && learningEnabled) {
-    recordCueExposure(targetPair.track, targetPair.cue);
-    if (state.wordColoring && !["loading", "ready", "fallback"].includes(targetPair.track.learningProcessState)) void ensureProcessedTrackTokens(targetPair.track);
-  }
-  const renderKey = `${state.subtitlesVisible}|${state.targetLanguage}|${state.subtitleStyle.romanization}|${state.wordColoring}|${learningRevision}|${rendered.map(({ track, cue }) => `${track.id}:${cue?.id || "-"}:${cue?.romanizedText || ""}`).join("|")}`;
+  const renderKey = `${state.subtitlesVisible}|${state.targetLanguage}|${state.subtitleStyle.romanization}|${rendered.map(({ track, cue }) => `${track.id}:${cue?.id || "-"}:${cue?.romanizedText || ""}`).join("|")}`;
   if (subtitleRenderMemo.key === renderKey) return;
   if (typeof playbackMetrics !== "undefined" && playbackMetrics) playbackMetrics.record("subtitle-cue-change", {
     playbackSeconds: absolutePlaybackSeconds(),
@@ -226,14 +139,9 @@ export function renderSubtitles() {
   rendered.forEach(({ track, cue }) => {
     if (!cue) return;
     const line = document.createElement("div");
-    // Learning shows the target-language line as the one being studied (full
-    // size, word tools, romanized) and other languages smaller. Without
-    // Learning, every shown line uses the size and settings from Appearance,
-    // so switching or adding a track never changes how subtitles look.
-    const isTarget = normalizeTrackLanguage(track.language) === state.targetLanguage;
-    const isMain = !learningEnabled || isTarget;
-    line.className = `subtitle-line${isMain ? "" : " secondary"}`;
-    if (isTarget && learningEnabled) appendLearningCue(line, cue, track); else line.textContent = cue.text;
+    const isMain = true;
+    line.className = "subtitle-line";
+    line.textContent = cue.text;
     overlay.append(line);
     if (isMain && state.subtitleStyle.romanization !== false && isRomanizableLanguage(track.language)) {
       if (!cue.romanizedText && track.romanizationState !== "loading") void ensureTrackRomanization(track);

@@ -211,14 +211,6 @@ function catalogChapterMarkup(view, season, episode, saved) {
     watched ? "Watched" : ratio ? `${Math.max(1, Math.round((progress.durationMs - progress.positionMs) / 60_000))} min left` : "",
   ], { rating: episode.rating || "" });
   const badges = [upcoming ? badgeMarkup("Upcoming") : "", group ? badgeMarkup("Source saved", { variant: "solid" }) : ""].join("");
-  const analysis = (group?.resume || group?.best)?.episode.analysis || {};
-  const ref = group?.resume || group?.best;
-  const vocab = (kind, count) => `<button class="lib-chapter-link library-vocab" type="button" data-kind="${kind}" data-library-id="${escapeHtml(ref.entry.id)}" data-file-index="${ref.episode.fileIndex}">${count.toLocaleString()} ${kind}</button>`;
-  const stats = group ? [
-    analysis.words?.length ? vocab("words", analysis.words.length) : "",
-    analysis.phrases?.length ? vocab("phrases", analysis.phrases.length) : "",
-    Number(analysis.autoCardCount) ? `<span>${Number(analysis.autoCardCount).toLocaleString()} cards</span>` : "",
-  ].filter(Boolean).join("") : "";
   const action = ratio ? "Resume" : "Play";
   const playLabel = `${action} chapter ${episode.episode}: ${episode.name}${group ? "" : " (finds the best source first)"}`;
   return `<li class="catalog-chapter${group ? " is-saved" : ""}${open ? " is-open" : ""}${watched ? " is-watched" : ""}" data-video-id="${escapeHtml(episode.id)}" data-season="${season}" data-episode="${episode.episode}"${inLibrary ? ` data-chapter-code="${escapeHtml(code)}" tabindex="0" aria-keyshortcuts="Shift+F10"` : ""}>
@@ -228,7 +220,6 @@ function catalogChapterMarkup(view, season, episode, saved) {
         <span class="catalog-chapter-code">${facts}${badges}</span>
         <strong>${escapeHtml(episode.name)}</strong>
         ${episode.overview ? `<p>${escapeHtml(episode.overview)}</p>` : ""}
-        ${stats ? `<span class="lib-chapter-stats">${stats}</span>` : ""}
       </div>
       <div class="catalog-chapter-actions">
         <button class="ui-btn ui-btn--primary ui-btn--sm catalog-chapter-play" type="button" aria-label="${escapeHtml(playLabel)}"${upcoming && !group ? " disabled" : ""}>${icon("play")}<span>${action}</span></button>

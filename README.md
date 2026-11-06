@@ -4,6 +4,8 @@
 
 LVL runs on your computer. Your library and app settings are stored locally, while online catalog, subtitle, comic-source, and torrent services are contacted when you use them.
 
+If you are comparing free Stremio alternatives for Windows, LVL brings torrent video playback, a local watch library, customizable subtitles and a manga/comic reader together. It supports magnet links and local videos; it does not claim compatibility with all Stremio add-ons.
+
 ## What you can do
 
 - **Stream torrents:** Open torrent-based video sources and start watching while the file downloads, with playback and seeking controls.
@@ -22,7 +24,13 @@ The installed app uses **127.0.0.1:4273** for its desktop window and browser tab
 
 ## About the project
 
-LVL combines torrent video playback and a manga/comic reader with a local-first media library. The source code is available in this repository. Licensing terms for reuse and redistribution have not yet been published.
+LVL combines torrent video playback and a manga/comic reader with a local-first media library. This repository contains the application source and the files used to build its Windows and Android releases. Repository access remains private while release preparation continues.
+
+## License
+
+LVL's original application code is licensed under the **GNU General Public License, version 3 or later** (`GPL-3.0-or-later`). You may use, study, modify and redistribute it under those terms. When distributing GPL-covered derivatives, provide the corresponding source and preserve the applicable licensing obligations. See [LICENSE.txt](LICENSE.txt) for the full terms.
+
+Third-party code, dependencies, runtimes, fonts and extension components retain their own licenses and notices. The installed app includes LVL's license and scope notice under `assets/licenses/`; platform distribution notices describe the bundled third-party components.
 
 ## Release channels
 

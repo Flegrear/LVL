@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 const mustExist = [
   'LVL.exe', 'installed-app.json', 'server.js', 'app.js', 'index.html',
   'package.json', 'CHANGELOG.md', 'assets/platform/favicon.ico',
-  'assets/brand/dark/lvl_app_icon_dark.svg', 'learning/data/manifest.json',
+  'assets/brand/dark/lvl_app_icon_dark.svg', 'shared/subtitles/subtitle-text.js',
   'runtime/node.exe', 'runtime/LICENSE.txt', 'runtime/update-apply.mjs',
   'runtime/FFMPEG_LICENSE.txt', 'runtime/FFPROBE_LICENSE.txt',
   'node_modules/ffmpeg-static/ffmpeg.exe',
@@ -21,7 +21,7 @@ const mustExist = [
 
 const forbiddenTop = new Set([
   '.git', 'docs', 'devtools', 'tests', 'scripts', 'installer', 'data', '.cos-subagent',
-  'package-lock.json', 'node_modules-source',
+  'package-lock.json', 'node_modules-source', 'learning', 'frontend/learning', 'backend/learning',
 ]);
 const privateFile = /(?:\.sqlite(?:3)?(?:-(?:shm|wal))?|\.db(?:-(?:shm|wal))?|\.log|\.pem|\.p12|\.pfx)$/i;
 const dependencyTestFile = /^(?:test(?:[-_.].*)?|.*\.(?:test|spec)\.(?:[cm]?js|tsx?|jsx)|vitest\.config\.[cm]?js)$/i;

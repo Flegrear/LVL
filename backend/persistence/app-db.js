@@ -497,17 +497,6 @@ export function createAppDatabase(databasePath) {
     });
   }
 
-  // Schema v3 moved native Voice usage out of browser/preferences-only storage. Existing
-  // initialized databases will not run the browser bootstrap migration again, so seed the
-  // durable usage section directly from the last persisted preference snapshot on open.
-  if (readSection("coachUsage") === undefined) {
-    const preferences = safeObject(readSection("preferences"));
-    writeSection("coachUsage", {
-      segments: safeArray(preferences.voiceUsageSegments, 512),
-      active: null,
-    });
-  }
-
   return {
     path: databasePath,
     sqlite: db,
