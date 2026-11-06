@@ -34,4 +34,4 @@ LVL plays and reads media from the sources you choose. It does not include movie
 
 ## License
 
-LVL's original code is licensed under [GNU GPL version 3 or later](LICENSE.txt). Third-party components retain their own licenses and notices, included with the app.
+LVL's original code is licensed under the [MIT License](LICENSE.txt). You can use, modify, redistribute, and sell it, including in closed-source projects, while keeping the copyright and license notice. Third-party components retain their own licenses and notices, included with the app.

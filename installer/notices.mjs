@@ -101,7 +101,7 @@ export function makeNotices(payload) {
   if (packages.length < 5) throw new Error('Production dependencies were not installed before license generation.');
   const content = [
     'LVL — third-party dependency notices',
-    'LVL original application code: GPL-3.0-or-later; full terms and scope in assets/licenses/.',
+    'LVL original application code: MIT; full terms and scope in assets/licenses/.',
     'This file records the packages bundled with the installed application.',
     'Package-local LICENSE/NOTICE/COPYING files are kept alongside each dependency.',
     'Node runtime, FFmpeg and FFprobe have separate license texts under runtime/.',

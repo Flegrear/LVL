@@ -1,20 +1,19 @@
 LVL — original application code
-SPDX-License-Identifier: GPL-3.0-or-later
+SPDX-License-Identifier: MIT
 
-LVL's original application code is free software: you can redistribute it
-and/or modify it under the terms of the GNU General Public License as
-published by the Free Software Foundation, either version 3 of the License,
-or (at your option) any later version.
+Copyright (c) 2026 Flegrear
 
-LVL is distributed in the hope that it will be useful, but WITHOUT ANY
-WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS
-FOR A PARTICULAR PURPOSE. See the GNU General Public License for details.
+LVL's original application code is licensed under the MIT License. You may
+use, modify, redistribute and sell it, including in closed-source projects,
+provided the copyright and permission notice are retained.
+
+The software is provided "AS IS", without warranty of any kind, as described
+in the complete MIT License.
 
 The complete license is included alongside this notice as LVL-LICENSE.txt
 and in the source repository as LICENSE.txt.
 Application source: https://github.com/Flegrear/LVL
-The source matching a distributed release is identified by its version tag:
-vX.Y.Z for Windows and android-vX.Y.Z for Android.
+The source matching a distributed release is identified by its release tag.
 
 Third-party code, dependencies, runtimes, fonts and extension components
 retain their own licenses and notices. This license declaration does not
