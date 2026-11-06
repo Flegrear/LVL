@@ -2,7 +2,7 @@
 
 **LVL** brings movies, TV series, anime, manga, and comics into one app. Stream video, open local media, and return to what you were watching or reading from your library.
 
-LVL is free and local-first, with a Windows app and an Android app in testing.
+LVL is a free, local-first app for Windows and Android.
 
 ## Watch your way
 
@@ -26,7 +26,7 @@ Your library and settings are stored on your device. Online catalogs, subtitle s
 
 **Windows:** download [LVL-Setup.exe](https://github.com/Flegrear/LVL/releases/download/v0.2.0/LVL-Setup.exe). This installs the base version; open **Settings → Updates** in LVL to get the latest Windows update.
 
-**Android:** production APKs are still being prepared. They will appear separately from Windows updates in [GitHub Releases](https://github.com/Flegrear/LVL/releases).
+**Android (12 or newer):** download the [ARM64 APK for phones and tablets](https://github.com/Flegrear/LVL/releases/download/android-v0.1.0/LVL-0.1.0-arm64.apk). For emulators and x86_64 devices, use the [x86_64 APK](https://github.com/Flegrear/LVL/releases/download/android-v0.1.0/LVL-0.1.0-x86_64.apk). Each APK contains everything needed to run.
 
 LVL plays and reads media from the sources you choose. It does not include movies, shows, or comic chapters. Use sources you have permission to access.
 
