@@ -63,7 +63,8 @@ export function verifyReleaseDirectory({ dir, version, evidence }) {
   return { version, signerSha256: proof.signerSha256, files: names, sha256: Object.fromEntries(expectedHashes) };
 }
 
-export function releaseAssets({ apkDir, outDir, version, evidence, patch = null, notice = path.join(ROOT, "android/RELEASE-NOTICE.txt") }) {
+export function releaseAssets({ apkDir, outDir, version, evidence, patch = null,
+  notice = path.join(ROOT, "build/android-stage/assets/lvl-native-licenses/LVL-Android-RELEASE-NOTICE.txt") }) {
   if (patch != null) fail("Android incremental patches are not part of the initial signed APK-only release channel");
   if (!VERSION.test(version)) fail("version must be X.Y.Z");
   const configured = readAndroidVersion();

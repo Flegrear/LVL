@@ -1,53 +1,35 @@
-# LVL — Torrent streaming, video playback, and comic reading
+# LVL — Watch, read, and keep your place
 
-**LVL** is a free, local-first Windows media player and library for **movies, TV series, anime, manga, and comics**. Stream video from torrents, manage your watch library, and read digital comics in one desktop app.
+**LVL** brings movies, TV series, anime, manga, and comics into one app. Stream video, open local media, and return to what you were watching or reading from your library.
 
-LVL runs on your computer. Your library and app settings are stored locally, while online catalog, subtitle, comic-source, and torrent services are contacted when you use them.
+LVL is free and local-first, with a Windows app and an Android app in testing.
 
-If you are comparing free Stremio alternatives for Windows, LVL brings torrent video playback, a local watch library, customizable subtitles and a manga/comic reader together. It supports magnet links and local videos; it does not claim compatibility with all Stremio add-ons.
+## Watch your way
 
-## What you can do
+- **Start watching while a torrent downloads.** Open magnet links and torrent-based video sources, or play videos already on your device.
+- **Choose your audio and subtitles.** Switch tracks, find subtitles, adjust their appearance and timing, and optionally show romanized text for supported languages.
+- **Pick up where you left off.** Resume playback, move between episodes, and keep track of watched chapters.
 
-- **Stream torrents:** Open torrent-based video sources and start watching while the file downloads, with playback and seeking controls.
-- **Watch your media:** Browse films, series, and anime in one library, with subtitles, audio-track selection, and playback preferences.
-- **Read manga and comics:** Browse manga and use the built-in comic reader, including local CBZ/ZIP archives and supported online sources.
-- **Customize subtitles:** Adjust subtitle appearance and optionally display romanized text for supported languages.
-- **Keep your place:** Manage your library and track media within the app, with optional catalog integrations.
+## Read manga and comics
 
-LVL is a media player and reader. It does not include movies, shows, or comic chapters. Use sources you have permission to access.
+- Browse supported online sources or open local **CBZ and ZIP** comic archives.
+- Choose a reading layout and adjust the reader's appearance.
+- Save reading progress and continue from your library.
 
-## Download for Windows
+## Make the library yours
 
-Download **[LVL-Setup.exe](https://github.com/Flegrear/LVL/releases/download/v0.2.0/LVL-Setup.exe)** to install the base version. Then open **Settings → Updates** in LVL to get the latest version. See [GitHub Releases](https://github.com/Flegrear/LVL/releases) for release history.
+Keep movies, series, anime, and comics together. Organize entries by status, add ratings, and see what to continue next. Optional AniList integration and imports from Letterboxd and supported manga-reader backups help bring existing lists into LVL.
 
-The installed app uses **127.0.0.1:4273** for its desktop window and browser tabs, sharing one local library.
+Your library and settings are stored on your device. Online catalogs, subtitle services, comic sources, and torrent peers are contacted when you use those features.
 
-## About the project
+## Get LVL
 
-LVL combines torrent video playback and a manga/comic reader with a local-first media library. This repository contains the application source and the files used to build its Windows and Android releases. Repository access remains private while release preparation continues.
+**Windows:** download [LVL-Setup.exe](https://github.com/Flegrear/LVL/releases/download/v0.2.0/LVL-Setup.exe). This installs the base version; open **Settings → Updates** in LVL to get the latest Windows update.
+
+**Android:** production APKs are still being prepared. They will appear separately from Windows updates in [GitHub Releases](https://github.com/Flegrear/LVL/releases).
+
+LVL plays and reads media from the sources you choose. It does not include movies, shows, or comic chapters. Use sources you have permission to access.
 
 ## License
 
-LVL's original application code is licensed under the **GNU General Public License, version 3 or later** (`GPL-3.0-or-later`). You may use, study, modify and redistribute it under those terms. When distributing GPL-covered derivatives, provide the corresponding source and preserve the applicable licensing obligations. See [LICENSE.txt](LICENSE.txt) for the full terms.
-
-Third-party code, dependencies, runtimes, fonts and extension components retain their own licenses and notices. The installed app includes LVL's license and scope notice under `assets/licenses/`; platform distribution notices describe the bundled third-party components.
-
-## Release channels
-
-Windows updates use `vX.Y.Z` releases and the Windows app checks for them
-independently of Android releases. The next planned Windows version is **0.2.4**,
-which will require a full installer because its updater is changing. Until that
-installer is actually published, the link above remains the last released full
-installer (`v0.2.0`); the app can then check for newer Windows versions in
-Settings → Updates. The pop-up player's verified package is downloaded separately
-when needed, not republished with every Windows version.
-
-Android is being prepared as a **separate release channel** in the same repository.
-The planned first version is **0.1.0**, under `android-v0.1.0`. After production
-signing and publication approval, it will provide self-contained APKs for
-arm64 and x86_64 devices, a distribution notice and checksums. Each APK includes
-the components it needs to run; there is no separate native-build download for
-users. Android releases will not replace the latest Windows release. **No Android
-production release is available yet.** Existing Android debug builds are not
-public installation or update packages. Android installation uses the platform's
-package confirmation and signing protections.
+LVL's original code is licensed under [GNU GPL version 3 or later](LICENSE.txt). Third-party components retain their own licenses and notices, included with the app.

@@ -44,6 +44,61 @@ const NATIVE_SOURCES = [
 const SOURCE_RECIPES = ["Dockerfile", "build-node.sh", "build-ffmpeg.sh", "docker-build.ps1"];
 const nativeSha256 = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
 
+// Generated from the same original license texts embedded with the executables.
+// The distribution notice is a build output, never a checked-in release file.
+export function createAndroidReleaseNotice({ version, ffmpegLicense, webpLicense }) {
+  if (!/^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(version || "")) {
+    throw new Error("Invalid Android release notice version");
+  }
+  if (!Buffer.isBuffer(ffmpegLicense) || !Buffer.isBuffer(webpLicense) ||
+      !ffmpegLicense.toString("utf8").includes("GNU LESSER GENERAL PUBLIC LICENSE") ||
+      !ffmpegLicense.toString("utf8").includes("END OF TERMS AND CONDITIONS") ||
+      !webpLicense.toString("utf8").startsWith("Copyright (c) 2010, Google Inc.")) {
+    throw new Error("Incomplete Android native license inputs");
+  }
+  const header = [
+    `LVL for Android ${version} — native software and source notices`, "",
+    "LVL's original application code is licensed under GPL-3.0-or-later.",
+    "Full terms and scope are included inside assets/lvl-app.zip under",
+    "assets/licenses/LVL-LICENSE.txt and assets/licenses/LVL-NOTICE.txt.",
+    "Application source: https://github.com/Flegrear/LVL",
+    `Release source: https://github.com/Flegrear/LVL/tree/android-v${version}`,
+    "Third-party components retain their own licenses and notices.", "",
+    "The arm64-v8a and x86_64 LVL APKs each include separate Node.js,",
+    "FFmpeg and ffprobe executables. LVL runs these tools as separate programs.", "",
+    "Node.js 24.22.2 — Node.js contributors, MIT license and the additional",
+    "third-party licenses reproduced in the upstream Node.js LICENSE file:",
+    "https://raw.githubusercontent.com/nodejs/node/v24.22.2/LICENSE",
+    "Source archive: https://nodejs.org/dist/v24.22.2/node-v24.22.2.tar.xz",
+    "Source SHA-256: 8fe2ec1723bb9f8d0b683907c82708debbeda64af21cb2aa214c4241eed0a061", "",
+    "FFmpeg and ffprobe 7.1.5 — FFmpeg contributors, GNU Lesser General Public",
+    "License (LGPL), version 2.1 or later, for this configured build.",
+    `Source archive: ${NATIVE_SOURCES[0].url}`,
+    `Bundled archive: ${NATIVE_SOURCES[0].name}`,
+    `Source SHA-256: ${NATIVE_SOURCES[0].sha256}`, "",
+    "libwebp 1.6.0 — WebM Project / Google contributors, BSD-style license,",
+    "with the additional patent grant provided by the WebM Project. libwebp",
+    "is statically incorporated into the FFmpeg tools for WebP encoding; its",
+    "license is NOT the FFmpeg LGPL.",
+    `Source archive: ${NATIVE_SOURCES[1].url}`,
+    `Bundled archive: ${NATIVE_SOURCES[1].name}.source`,
+    `Source SHA-256: ${NATIVE_SOURCES[1].sha256}`, "",
+    "The exact Android cross-build recipes and Node.js V8 source adjustment:",
+    `https://github.com/Flegrear/LVL/tree/android-v${version}/android/native`,
+    "Recipes: Dockerfile, build-node.sh, build-ffmpeg.sh and docker-build.ps1.", "",
+    "Each APK includes the complete original FFmpeg and libwebp source archives,",
+    "build recipes and per-architecture build records in assets/lvl-native-source/.",
+    "Open the APK as a ZIP archive and read assets/lvl-native-source/README.txt",
+    "for build instructions and verified source checksums. Original native license",
+    "texts, the libwebp patent grant and this notice are in assets/lvl-native-licenses/.", "",
+    "----- libwebp 1.6.0: BSD-style license (COPYING) -----", "",
+  ].join("\n");
+  const notice = Buffer.concat([Buffer.from(header), webpLicense,
+    Buffer.from("\n\n----- FFmpeg and ffprobe: GNU LGPL version 2.1 -----\n\n"), ffmpegLicense]);
+  if (notice.length > 64 * 1024) throw new Error("Android release notice is unexpectedly large");
+  return notice;
+}
+
 function readNativeFile(file, maxBytes, description) {
   const stat = fs.lstatSync(file, { throwIfNoEntry: false });
   if (!stat?.isFile() || stat.isSymbolicLink() || !stat.size || stat.size > maxBytes) {
@@ -137,8 +192,9 @@ export async function stageNativeReleaseAssets({ projectRoot = ROOT, assetsDir =
       !licenses.get("LICENSE.libwebp.txt").toString("utf8").startsWith("Copyright (c) 2010, Google Inc.")) {
     throw new Error("Invalid original native license notice");
   }
-  const notice = readNativeFile(path.join(projectRoot, "android", "RELEASE-NOTICE.txt"),
-    64 * 1024, "Android release notice");
+  const version = readAndroidVersion(path.join(projectRoot, "android", "app-version.json")).version;
+  const notice = createAndroidReleaseNotice({ version,
+    ffmpegLicense: licenses.get("LICENSE.ffmpeg.txt"), webpLicense: licenses.get("LICENSE.libwebp.txt") });
   const recipes = new Map(SOURCE_RECIPES.map(name => [name,
     readNativeFile(path.join(projectRoot, "android", "native", name), 128 * 1024, `build recipe ${name}`)]));
   fs.mkdirSync(cacheDir, { recursive: true });
@@ -170,7 +226,7 @@ export async function stageNativeReleaseAssets({ projectRoot = ROOT, assetsDir =
   }
   const patents = extract("libwebp-1.6.0.tar.gz", "libwebp-1.6.0/PATENTS", 64 * 1024);
   const readme = [
-    "LVL for Android 0.1.0: corresponding source and native build instructions",
+    `LVL for Android ${version}: corresponding source and native build instructions`,
     "",
     "Each Android APK is a ZIP archive. Open it and locate assets/lvl-native-source/",
     "for the complete original ffmpeg-7.1.5.tar.xz and libwebp-1.6.0.tar.gz.source",
