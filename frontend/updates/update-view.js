@@ -69,13 +69,13 @@ export function updateView({ report = null, downSince = null, pending = null, lo
     return { ...installing(pending.to, apkInstall), phase: "restarting" };
   }
 
-  // This window now runs the new version.
-  if (pending?.to && installed === pending.to)
-    return { phase: "updated", version: pending.to, title: `LVL updated to ${pending.to}`, detail: "", progress: null };
-
   if (!report?.installed) return { phase: "idle" };
   const update = report.update || {};
   const version = String(update.version || report.availableVersion || "");
+
+  // A later update takes precedence over the previous completion notice.
+  if (pending?.to && installed === pending.to && (!version || version === installed))
+    return { phase: "updated", version: pending.to, title: `LVL updated to ${pending.to}`, detail: "", progress: null };
 
   if (update.phase === "downloading" && version) {
     const percent = updatePercent(update.progress);

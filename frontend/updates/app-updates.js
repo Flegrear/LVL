@@ -12,6 +12,11 @@ import { setServerVideoConversionAvailable } from "../player/video-conversion-ca
 // runs the old page. Reload once the server answers with a different version;
 // a server that is only restarting (no answer) is left alone.
 let loadedServerVersion = null;
+function appVersionAdvances(from, to) {
+  return typeof from === "string" && typeof to === "string"
+    && /^\d+\.\d+\.\d+$/.test(from) && /^\d+\.\d+\.\d+$/.test(to)
+    && to.localeCompare(from, "en", { numeric: true }) > 0;
+}
 export async function reloadAfterAppUpdate() {
   try {
     const health = await fetchJson("/api/health", { signal: AbortSignal.timeout(5000) });
@@ -19,7 +24,16 @@ export async function reloadAfterAppUpdate() {
     const version = String(health?.version || "");
     if (!version) return;
     if (loadedServerVersion === null) loadedServerVersion = version;
-    else if (version !== loadedServerVersion) window.location.reload();
+    else if (version !== loadedServerVersion) {
+      const pending = readUpdatePending();
+      const acknowledged = readStoredJson(UPDATE_ACKNOWLEDGED_KEY)?.version;
+      if (appUpdateSettingsSnapshot?.installed && appVersionAdvances(loadedServerVersion, version)
+          && !appVersionAdvances(version, pending?.to)
+          && acknowledged !== version && !appVersionAdvances(version, acknowledged))
+        writeStoredJson(UPDATE_PENDING_KEY, { from: loadedServerVersion, to: version,
+          at: Date.now(), active: false, completed: true });
+      window.location.reload();
+    }
   } catch {}
 }
 
@@ -37,11 +51,11 @@ let manualAppUpdateCheck = false;
 // Update progress in this window; see frontend/updates/update-view.js.
 export const UPDATE_PENDING_KEY = "lvl-update-in-progress-v1";
 export const UPDATE_LATER_KEY = "lvl-update-later-v1";
+const UPDATE_ACKNOWLEDGED_KEY = "lvl-update-acknowledged-v1";
 const UPDATE_PENDING_MAX_AGE_MS = 2 * 24 * 60 * 60_000;
 export let appUpdateView = { phase: "idle" };
 let appUpdateDownSince = null;
 let appUpdatePollTimer = null;
-let appUpdateUpdatedTimer = null;
 export const appUpdateCardClosed = new Set();
 function readStoredJson(key) {
   try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; }
@@ -52,8 +66,28 @@ export function writeStoredJson(key, value) {
 function readUpdatePending() {
   const pending = readStoredJson(UPDATE_PENDING_KEY);
   if (!pending || typeof pending.to !== "string") return null;
-  if (Date.now() - (Number(pending.at) || 0) > UPDATE_PENDING_MAX_AGE_MS) { writeStoredJson(UPDATE_PENDING_KEY, null); return null; }
+  const acknowledged = readStoredJson(UPDATE_ACKNOWLEDGED_KEY)?.version;
+  if (pending.completed && (acknowledged === pending.to || appVersionAdvances(pending.to, acknowledged))) return null;
+  if (pending.completed !== true && Date.now() - (Number(pending.at) || 0) > UPDATE_PENDING_MAX_AGE_MS) {
+    writeStoredJson(UPDATE_PENDING_KEY, null); return null;
+  }
   return pending;
+}
+function acknowledgeUpdateCompletion(version) {
+  const pending = readUpdatePending();
+  if (pending?.to === version) writeStoredJson(UPDATE_PENDING_KEY, null);
+  const acknowledged = readStoredJson(UPDATE_ACKNOWLEDGED_KEY)?.version;
+  if (!acknowledged || appVersionAdvances(acknowledged, version))
+    writeStoredJson(UPDATE_ACKNOWLEDGED_KEY, { version, at: Date.now() });
+  appUpdateCardClosed.add(`updated:${version}`);
+}
+export function dismissAppUpdateCard() {
+  const { phase, version } = appUpdateView;
+  appUpdateCardClosed.add(`${phase}:${version}`);
+  if (phase === "updated") acknowledgeUpdateCompletion(version);
+  else if (phase === "failed" && readUpdatePending()?.to === version) writeStoredJson(UPDATE_PENDING_KEY, null);
+  paintAppUpdateCard();
+  paintUpdateNotifications();
 }
 // The server is expected to stop answering while an update installs.
 function appUpdateExpectsRestart() {
@@ -87,13 +121,8 @@ export function paintAppUpdateCard() {
   else if (view.phase === "ready" && report?.update?.installsWhenIdle && report?.installedVersion && pending?.to !== view.version)
     writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version, at: Date.now(), active: false });
   else if (view.phase === "failed" && pending?.active) writeStoredJson(UPDATE_PENDING_KEY, null);
-  if (view.phase === "updated" && !appUpdateUpdatedTimer) {
-    appUpdateUpdatedTimer = setTimeout(() => {
-      writeStoredJson(UPDATE_PENDING_KEY, null);
-      appUpdateCardClosed.add(`updated:${view.version}`);
-      paintAppUpdateCard();
-    }, 12_000);
-  }
+  if (view.phase === "updated" && pending && !pending.completed)
+    writeStoredJson(UPDATE_PENDING_KEY, { ...pending, active: false, completed: true });
   const card = $("#app-update-card");
   if (!card) return view;
   const watching = Boolean($("#view-watch")?.classList.contains("is-active"));
@@ -159,6 +188,7 @@ function paintAppUpdateSettings(report) {
     if (view.phase === "downloading") message = `Downloading LVL ${view.version}.`;
     else if (updating) message = "Installing the update. LVL restarts on its own when it's done.";
     else if (view.phase === "failed") { message = view.detail; failure = true; }
+    else if (view.phase === "updated") message = `LVL updated to ${view.version}.`;
     else if (report.checking) message = "Checking the update feed…";
     else if (report.available) message = automatic
       ? `LVL ${report.availableVersion} is available. It installs by itself when no video is open, or select Install now.`
@@ -247,8 +277,8 @@ export function wireAppUpdateSettings() {
   }, 2500);
 }
 
-// Update notifications are deliberately scoped to *verified available app
-// versions*. No generic alerts, speculative remote releases or demo messages.
+// Update notifications use verified availability and observed installation
+// completion. A completion stays until the user acknowledges it.
 // This preference affects a browser profile's presentation; every window
 // checks the same installed LVL launcher for the actual available version.
 export const UPDATE_ALERTS_PREF = "lvl-available-update-notifications-v1";
@@ -264,12 +294,16 @@ const activeUpdateNotice = (report) => updateNotificationsEnabled() && report?.i
 
 export function paintUpdateNotifications(report = appUpdateSettingsSnapshot) {
   const notice = activeUpdateNotice(report);
+  const pending = readUpdatePending();
+  const completed = updateNotificationsEnabled() && report?.installed && pending?.completed
+    && String(report.installedVersion || "") === pending.to ? pending.to : null;
+  const count = Number(Boolean(notice)) + Number(Boolean(completed));
   const toggle = $("#settings-notification-update-alerts");
   if (toggle) toggle.checked = updateNotificationsEnabled();
   const badge = $("#sidebar-notification-count");
-  if (badge) { badge.hidden = !notice; badge.textContent = notice ? "1" : ""; }
+  if (badge) { badge.hidden = !count; badge.textContent = count ? String(count) : ""; }
   const bell = $("#sidebar-notifications");
-  if (bell) bell.setAttribute("aria-label", notice ? "Notifications: 1 app update available" : "Notifications");
+  if (bell) bell.setAttribute("aria-label", count ? `Notifications: ${count} app update${count === 1 ? "" : "s"}` : "Notifications");
   const list = $("#app-notifications-list");
   if (!list) return;
   list.replaceChildren();
@@ -284,7 +318,25 @@ export function paintUpdateNotifications(report = appUpdateSettingsSnapshot) {
     button.append(heading, detail);
     button.addEventListener("click", () => { closeUpdateNotificationPopover(); openUpdateSettings(); });
     list.append(button);
-  } else {
+  }
+  if (completed) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "app-notification-entry";
+    const heading = document.createElement("strong");
+    heading.textContent = `LVL updated to ${completed}`;
+    const detail = document.createElement("span");
+    detail.textContent = "Open Settings › Updates";
+    button.append(heading, detail);
+    button.addEventListener("click", () => {
+      acknowledgeUpdateCompletion(completed);
+      paintAppUpdateCard();
+      paintUpdateNotifications();
+      openUpdateSettings();
+    });
+    list.append(button);
+  }
+  if (!count) {
     const empty = document.createElement("p");
     empty.textContent = updateNotificationsEnabled() ? "No notifications" : "Notifications disabled";
     list.append(empty);
