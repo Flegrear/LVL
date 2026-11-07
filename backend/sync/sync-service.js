@@ -45,7 +45,7 @@ const legacyItemHash = (type, value) => {
   if (type === "video.progress") return hashOf({ positionMs: value.positionMs, durationMs: value.durationMs, finished: value.finished });
   if (type === "video.watched") return hashOf({ watched: value.watched });
   if (type === "video.title") {
-    const { libraryId, catalogOnly, externalSource, externalId, ...content } = value;
+    const { libraryId, catalogOnly, externalSource, externalId, anilistSync, ...content } = value;
     return hashOf(content);
   }
   return hashOf(value);
@@ -187,8 +187,16 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     const dirty = new Set();
     if (remoteChanged) for (const [itemKey, hash] of hashes) {
-      if (!local.types.includes(before.get(itemKey)?.type)) continue;
-      if (itemHash(before.get(itemKey).type, pending.has(itemKey) ? pending.get(itemKey) : null) !== hash) dirty.add(itemKey);
+      const previous = before.get(itemKey);
+      if (!local.types.includes(previous?.type)) continue;
+      const value = pending.has(itemKey) ? pending.get(itemKey) : null;
+      if (itemHash(previous.type, value) === hash) continue;
+      // Adding provenance to an accepted value must not protect a stale copy
+      // from a newer remote edit. Existing provenance remains part of identity.
+      const prior = value && { ...value };
+      if (prior && !Object.hasOwn(previous.value || {}, "anilistSync")) delete prior.anilistSync;
+      if (prior && !Object.hasOwn(previous.value || {}, "provenance")) delete prior.provenance;
+      if (itemHash(previous.type, prior) !== hash) dirty.add(itemKey);
     }
     const arrived = records.merge(state, pulled.changes);
     const touched = new Set(arrived.map((change) => `${change.type} ${change.id}`));

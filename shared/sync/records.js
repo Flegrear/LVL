@@ -60,13 +60,17 @@ export const RECORD_TYPES = Object.freeze({
     catalogId: "string", catalogType: "string", mediaKind: "string", aliases: "list", sourceMeta: "object", addedAt: time,
     trackingStatus: "string", artworkIndex: count, artworkSource: "string", artworkPinned: "boolean",
     chapterFileIndexes: "list", chapterLabels: "object", episodes: "list", libraryId: "string",
-    catalogOnly: "boolean", externalSource: "string", externalId: "string" } },
+    catalogOnly: "boolean", externalSource: "string", externalId: "string", anilistSync: "object" } },
   // Where you are in one file of a title: resume at positionMs; progress is positionMs / durationMs.
   // id: "<infohash>/<file index>".
   "video.progress": { schema: 1, id: /^[0-9a-f]{40}\/\d{1,6}$/, required: ["positionMs", "durationMs", "finished"], fields: {
     positionMs: count, durationMs: count, finished: "boolean", updatedAt: time, updatedBy: "string", context: "object" } },
   // An episode marked watched or unwatched by hand. id: joinId(<infohash>, <code, like S01E02>).
-  "video.watched": { schema: 1, id: anyId, required: ["watched"], fields: { watched: "boolean", updatedAt: time, updatedBy: "string", context: "object" } },
+  "video.watched": { schema: 1, id: anyId, required: ["watched"], fields: { watched: "boolean", updatedAt: time, updatedBy: "string", context: "object", provenance: "object" } },
+  // Imported completion remains display state for its originating account.
+  // A separate type keeps older apps from treating it as a local watched action.
+  "video.imported-watched": { schema: 1, id: anyId, required: ["watched", "provenance"], fields: {
+    watched: "boolean", updatedAt: time, updatedBy: "string", context: "object", provenance: "object" } },
   // A comic in Library › Comics. An AniList comic carries its card (work); a comic read from
   // its sources carries its series key (seriesKey: "video:<IMDb id>#<n>" or "mihon:<source>:<path>"),
   // its cover and the video page it was added on.
@@ -89,7 +93,11 @@ export const RECORD_TYPES = Object.freeze({
   // An LVL rating of a title or season. id: the ratings key.
   "rating.lvl": { schema: 1, id: anyId, fields: {
     score, title: "string", kind: "string", year: "number",
-    catalogId: "string", seriesKey: "string", season: "number", status: "string" } },
+    catalogId: "string", seriesKey: "string", season: "number", status: "string", provenance: "object" } },
+  // An AniList score deliberately copied into LVL retains its account origin.
+  "rating.imported": { schema: 1, id: anyId, required: ["provenance"], fields: {
+    score, title: "string", kind: "string", year: "number", catalogId: "string", seriesKey: "string",
+    season: "number", status: "string", provenance: "object" } },
   // A setting that makes sense on every device. id: the setting ("languages.interface",
   // "subtitles.style"…); value: its value. Never secrets (API keys stay on each device).
   "settings.shared": { schema: 1, id: /^[a-z][a-z0-9.-]{1,60}$/, required: ["value"], fields: { value: "json" } },

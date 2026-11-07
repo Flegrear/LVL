@@ -367,6 +367,10 @@ export function setLibrarySeasonWatched(series, season, watched) {
   }
   anchor.watchedChapters = { ...anchor.watchedChapters,
     ...Object.fromEntries([...codes].map((code) => [code, watched ? now : false])) };
+  anchor.watchedChapterUpdatedAt = { ...(anchor.watchedChapterUpdatedAt || {}),
+    ...Object.fromEntries([...codes].map(code => [code, now])) };
+  anchor.watchedChapterOrigins = { ...(anchor.watchedChapterOrigins || {}),
+    ...Object.fromEntries([...codes].map(code => [code, { source: "local", updatedAt: now }])) };
   savePendingAniListUnwatches(pendingAniListUnwatches().filter((row) =>
     row.seriesKey !== series.key || !codes.has(row.code)));
   if (!watched) persistAniListQueue(anilistStoredQueue().filter((row) =>

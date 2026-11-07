@@ -30,10 +30,19 @@ const editedMs = (change) => {
   const value = Number(change.value?.updatedAt);
   return change.value?.updatedBy === stamp?.device && value > 0 && value <= stamp.ms ? value : stamp?.ms || 0;
 };
+const importedSnapshot = (entry) => {
+  const local = entry.anilist;
+  const synced = entry.anilistSync;
+  const info = !local || synced?.accountUserId === local.accountUserId
+    && Number(synced.updatedAt || 0) > Number(local.updatedAt || 0) ? synced || local : local;
+  if (!info?.showId) return null;
+  return { ...pick(info, ["showId", "accountUserId", "anilistId", "averageScore", "url", "status", "cover", "updatedAt"]),
+    seasons: (info.seasons || []).map(part => pick(part, ["anilistId", "season", "title", "format", "episodes", "status", "progress", "score"])) };
+};
 
 export function createLocalData({ appState, db, recs, log = console }) {
   const comics = createComicsData({ db });
-  const types = ["video.title", "video.progress", "video.watched", "rating.lvl", ...COMIC_TYPES];
+  const types = ["video.title", "video.progress", "video.watched", "video.imported-watched", "rating.lvl", "rating.imported", ...COMIC_TYPES];
   const tableExists = (name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
   function exportLibrary(out) {
@@ -44,6 +53,7 @@ export function createLocalData({ appState, db, recs, log = console }) {
       const context = (code) => ({ title: String(entry.displayTitle || entry.title || "").slice(0, 2000),
         ...(entry.catalogId ? { catalogId: entry.catalogId } : {}), ...(code ? { episode: code } : {}) });
       out.push({ type: "video.title", id, value: { ...pick(entry, TITLE_FIELDS),
+        ...(importedSnapshot(entry) ? { anilistSync: importedSnapshot(entry) } : {}),
         ...(!HASH_ID.test(libraryId) ? { libraryId } : {}), episodes: (entry.episodes || []).map(episodeMeta) } });
       for (const episode of entry.episodes || []) {
         const index = Number(episode?.fileIndex);
@@ -58,7 +68,10 @@ export function createLocalData({ appState, db, recs, log = console }) {
       for (const [code, watched] of Object.entries(entry.watchedChapters || {})) {
         if (typeof watched !== "boolean" && !(typeof watched === "number" && Number.isFinite(watched) && watched > 0)) continue;
         const updatedAt = typeof watched === "number" ? watched : Number(entry.watchedChapterUpdatedAt?.[code]) || 0;
-        out.push({ type: "video.watched", id: joinId(id, code), value: { watched: Boolean(watched),
+        const origin = entry.watchedChapterOrigins?.[code] || (watched && entry.anilist?.showId
+          ? { source: "anilist", accountUserId: entry.anilist.accountUserId || null, updatedAt } : null);
+        out.push({ type: origin?.source === "anilist" && watched ? "video.imported-watched" : "video.watched", id: joinId(id, code), value: { watched: Boolean(watched),
+          ...(origin ? { provenance: origin } : {}),
           ...(updatedAt > 0 ? { updatedAt } : {}), context: context(code) } });
       }
     }
@@ -67,15 +80,17 @@ export function createLocalData({ appState, db, recs, log = console }) {
   function exportRatings(out) {
     if (!tableExists("rec_ratings")) return;
     for (const row of db.prepare("SELECT * FROM rec_ratings WHERE source = 'app'").all()) {
-      out.push({ type: "rating.lvl", id: row.rating_key, value: pick({
+      const provenance = row.provenance_json ? JSON.parse(row.provenance_json) : null;
+      out.push({ type: provenance?.source === "anilist" ? "rating.imported" : "rating.lvl", id: row.rating_key, value: pick({
         catalogId: row.catalog_id, seriesKey: row.series_key, season: row.season, title: row.title, kind: row.kind,
-        year: row.year, score: row.score, status: row.status }, ["catalogId", "seriesKey", "season", "title", "kind", "year", "score", "status"]) });
+        year: row.year, score: row.score, status: row.status, provenance },
+        ["catalogId", "seriesKey", "season", "title", "kind", "year", "score", "status", "provenance"]) });
     }
   }
 
   // Library changes in one revision-checked write (tried again if a window saved meanwhile).
   function applyLibrary(changes, done) {
-    const order = { "video.title": 0, "video.progress": 1, "video.watched": 2 };
+    const order = { "video.title": 0, "video.progress": 1, "video.watched": 2, "video.imported-watched": 3 };
     const sorted = [...changes].sort((a, b) => order[a.type] - order[b.type]);
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const expected = appState.sectionUpdatedAt("library");
@@ -113,6 +128,9 @@ export function createLocalData({ appState, db, recs, log = console }) {
               });
             }
           }
+          const target = byId.get(change.id);
+          // Synced list metadata is presentation, never local account authorization.
+          if (Object.hasOwn(change.value, "anilistSync")) target.anilistSync = change.value.anilistSync;
           appliedNow.push(change);
         } else if (change.type === "video.progress") {
           const [id, index] = change.id.split("/");
@@ -129,13 +147,24 @@ export function createLocalData({ appState, db, recs, log = console }) {
             if (playedAt >= Number(entry.lastPlayedAt || 0)) { entry.lastPlayedAt = playedAt; entry.lastPlayedFileIndex = Number(index); }
           }
           appliedNow.push(change);
-        } else if (change.type === "video.watched") {
+        } else if (change.type === "video.watched" || change.type === "video.imported-watched") {
           const [id, code] = splitId(change.id);
           const entry = byId.get(id);
           if (!entry || !code) continue;
+          const imported = change.type === "video.imported-watched";
+          const origin = entry.watchedChapterOrigins?.[code];
+          // Moving between local and imported record types emits a tombstone
+          // for the old type. It must not erase the replacement value.
+          if (change.value === null && (imported ? origin?.source !== "anilist" : origin?.source === "anilist")) {
+            appliedNow.push(change); continue;
+          }
+          if (imported && change.value !== null && change.value.provenance?.source !== "anilist") continue;
+          if (imported && change.value?.watched && (entry.watchedChapters?.[code] === false || origin?.source === "local")) {
+            appliedNow.push(change); continue;
+          }
           const localAt = typeof entry.watchedChapters?.[code] === "number" ? entry.watchedChapters[code] : Number(entry.watchedChapterUpdatedAt?.[code]) || 0;
           const watchedAt = editedMs(change);
-          if (localAt > watchedAt) continue;
+          if (localAt > watchedAt && !(!imported && origin?.source === "anilist")) continue;
           const marks = { ...(entry.watchedChapters || {}) };
           if (change.value === null) delete marks[code];
           else marks[code] = Boolean(change.value.watched);
@@ -143,6 +172,9 @@ export function createLocalData({ appState, db, recs, log = console }) {
           entry.watchedChapterUpdatedAt = { ...(entry.watchedChapterUpdatedAt || {}) };
           if (change.value === null || !change.value.updatedAt) delete entry.watchedChapterUpdatedAt[code];
           else entry.watchedChapterUpdatedAt[code] = watchedAt;
+          entry.watchedChapterOrigins = { ...(entry.watchedChapterOrigins || {}) };
+          if (change.value?.provenance) entry.watchedChapterOrigins[code] = change.value.provenance;
+          else delete entry.watchedChapterOrigins[code];
           appliedNow.push(change);
         }
       }
@@ -156,15 +188,18 @@ export function createLocalData({ appState, db, recs, log = console }) {
   function applyRating(change, previous, done) {
     if (!tableExists("rec_ratings")) return;
     const value = change.value || previous?.value || {};
-    const existing = db.prepare("SELECT updated_at FROM rec_ratings WHERE rating_key = ?").get(change.id);
+    const existing = db.prepare("SELECT * FROM rec_ratings WHERE rating_key = ?").get(change.id);
     if (existing && Number(existing.updated_at || 0) > stampMs(change)) return;
     const identity = { catalogId: value.catalogId || "", seriesKey: value.seriesKey || "", season: value.season ?? null };
     if (change.value === null) {
+      const imported = existing?.provenance_json && JSON.parse(existing.provenance_json)?.source === "anilist";
+      if (Boolean(imported) !== (change.type === "rating.imported")) { done.add(change); return; }
       if (identity.catalogId || identity.seriesKey) recs.setAppRating({ ...identity, score: null, status: null });
       else db.prepare("DELETE FROM rec_ratings WHERE rating_key = ? AND source = 'app'").run(change.id);
     } else {
       if (!identity.catalogId && !identity.seriesKey) return;
-      recs.setAppRating({ ...identity, title: value.title || "", kind: value.kind || null, year: value.year ?? null, score: value.score ?? null, status: value.status || null });
+      recs.setAppRating({ ...identity, title: value.title || "", kind: value.kind || null, year: value.year ?? null, score: value.score ?? null, status: value.status || null,
+        provenance: value.provenance || null });
     }
     done.add(change);
   }
@@ -184,11 +219,12 @@ export function createLocalData({ appState, db, recs, log = console }) {
       const done = new Set();
       const library = changes.filter((change) => change.type.startsWith("video."));
       if (library.length) applyLibrary(library, done);
-      const order = (change) => (change.type === "rating.lvl" ? -1 : COMIC_TYPES.indexOf(change.type));
-      for (const change of changes.filter((item) => order(item) !== -1 || item.type === "rating.lvl").sort((a, b) => order(a) - order(b))) {
+      const isRating = (change) => change.type === "rating.lvl" || change.type === "rating.imported";
+      const order = (change) => (isRating(change) ? -1 : COMIC_TYPES.indexOf(change.type));
+      for (const change of changes.filter((item) => order(item) !== -1 || isRating(item)).sort((a, b) => order(a) - order(b))) {
         // A change LVL's own stores refuse stays pending instead of failing the whole sync.
         try {
-          if (change.type === "rating.lvl") applyRating(change, previous.get(`${change.type} ${change.id}`), done);
+          if (isRating(change)) applyRating(change, previous.get(`${change.type} ${change.id}`), done);
           else comics.apply(change, done);
         } catch (error) {
           log.warn?.(`Sync: ${change.type} ${String(change.id).slice(0, 80)} not applied: ${error.message}`);

@@ -7,6 +7,7 @@
 - Fix synced playback history choosing the wrong current episode.
 - Refresh your Library automatically after receiving synced changes and send progress more promptly.
 - Make saved video tracking records easier to identify while preserving encrypted sync.
+- Preserve imported AniList status and scores across devices without treating them as another account's edits.
 
 ## 0.2.4 — 2026-11-06
 

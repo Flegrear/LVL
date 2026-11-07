@@ -69,7 +69,8 @@ CREATE TABLE IF NOT EXISTS rec_ratings (
   progress INTEGER,
   rated_at INTEGER,
   updated_at INTEGER NOT NULL,
-  mapped_at INTEGER
+  mapped_at INTEGER,
+  provenance_json TEXT
 );
 CREATE INDEX IF NOT EXISTS rec_ratings_item ON rec_ratings(item_id);
 CREATE INDEX IF NOT EXISTS rec_ratings_catalog ON rec_ratings(catalog_id);
@@ -170,6 +171,7 @@ function ratingFromRow(row) {
     ratedAt: row.rated_at ?? null,
     updatedAt: row.updated_at,
     mappedAt: row.mapped_at ?? null,
+    ...(row.provenance_json ? { provenance: parse(row.provenance_json, null) } : {}),
   };
 }
 
@@ -181,6 +183,8 @@ export function appRatingKey({ catalogId = "", seriesKey = "", season = null } =
 
 export function createRecsStore({ db, getMeta, setMeta, now = Date.now } = {}) {
   db.exec(SCHEMA);
+  if (!db.prepare("PRAGMA table_info(rec_ratings)").all().some(column => column.name === "provenance_json"))
+    db.exec("ALTER TABLE rec_ratings ADD COLUMN provenance_json TEXT");
   const statements = new Map();
   const statement = (sql) => {
     if (!statements.has(sql)) statements.set(sql, db.prepare(sql));
@@ -310,7 +314,7 @@ export function createRecsStore({ db, getMeta, setMeta, now = Date.now } = {}) {
   }
 
   /** Your rating of a title (or one season) in the app; no score and no status removes it. */
-  function setAppRating({ catalogId = "", seriesKey = "", season = null, title = "", kind = null, year = null, score = null, status = null, itemId = null } = {}) {
+  function setAppRating({ catalogId = "", seriesKey = "", season = null, title = "", kind = null, year = null, score = null, status = null, itemId = null, provenance = null } = {}) {
     const key = appRatingKey({ catalogId, seriesKey, season });
     if (!key) throw Object.assign(new Error("A title is required"), { statusCode: 400 });
     if (score === null && !status) {
@@ -327,10 +331,13 @@ export function createRecsStore({ db, getMeta, setMeta, now = Date.now } = {}) {
     // can keep the same name while referring to an entirely different item.
     const sameTarget = Boolean(existing) && (existing.kind || null) === nextKind
       && existing.title === nextTitle && (existing.year ?? null) === nextYear;
-    statement(`INSERT OR REPLACE INTO rec_ratings (rating_key, source, item_id, catalog_id, series_key, season, title, kind, year, score, status, progress, rated_at, updated_at, mapped_at)
-      VALUES (?, 'app', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?)`)
+    const origin = provenance?.source === "anilist" && Number.isSafeInteger(provenance.accountUserId) && provenance.accountUserId > 0
+      && Number.isSafeInteger(provenance.mediaId) && provenance.mediaId > 0 && provenance.score === score
+      ? { source: "anilist", accountUserId: provenance.accountUserId, mediaId: provenance.mediaId, score } : null;
+    statement(`INSERT OR REPLACE INTO rec_ratings (rating_key, source, item_id, catalog_id, series_key, season, title, kind, year, score, status, progress, rated_at, updated_at, mapped_at, provenance_json)
+      VALUES (?, 'app', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)`)
       .run(key, itemId || (sameTarget ? existing.item_id : null) || null, text(catalogId, 40), text(seriesKey, 300), int(season), nextTitle,
-        nextKind, nextYear, real(score), text(status, 20), at, at, sameTarget ? existing.mapped_at ?? null : null);
+        nextKind, nextYear, real(score), text(status, 20), at, at, sameTarget ? existing.mapped_at ?? null : null, origin ? JSON.stringify(origin) : null);
     markRatingsChanged();
     return ratingFromRow(statement("SELECT * FROM rec_ratings WHERE rating_key = ?").get(key));
   }

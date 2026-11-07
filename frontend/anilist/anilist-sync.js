@@ -346,7 +346,14 @@ function gatherAniListWatchedQueue() {
       continue;
     }
     mappedSeries.add(series.key);
-    const watchedChapters = Object.assign({}, ...series.sources.map((item) => item.watchedChapters || {}));
+    const foreign = new Set();
+    const watchedChapters = {};
+    for (const item of series.sources) for (const [code, watched] of Object.entries(item.watchedChapters || {})) {
+      const origin = item.watchedChapterOrigins?.[code]
+        || (item.anilist?.showId ? { source: "anilist", accountUserId: item.anilist.accountUserId || null } : null);
+      if (watched && origin?.source === "anilist" && origin.accountUserId !== accountId) { foreign.add(code); continue; }
+      watchedChapters[code] = watched;
+    }
     const unwatched = new Set(Object.entries(watchedChapters)
       .filter(([, value]) => value === false).map(([code]) => code));
     for (const entry of series.sources) {
@@ -365,7 +372,7 @@ function gatherAniListWatchedQueue() {
     const plan = planAniListWatchSync({
       seasons: info.seasons, type: series.type, seriesKey: series.key,
       ranges: info.ranges || [],
-      episodes, watchedChapters, queue: stored.filter((row) => row.seriesKey === series.key && !unwatched.has(row.code)),
+      episodes, watchedChapters, queue: stored.filter((row) => row.seriesKey === series.key && !unwatched.has(row.code) && !foreign.has(row.code)),
     });
     const rejects = new Set(plan.blockedQueue);
     found.push(...plan.queue.filter((row) => !rejects.has(row)));
@@ -457,6 +464,8 @@ function applyAniListRemoteWatchHistory(remote, accountId = readAniListAccount(l
         if (!mapped || mapped.mediaId !== Number(part.anilistId) || Object.hasOwn(watched, code)
           || explicitlyUnwatchedChapter(series, code)) continue;
         watched[code] = Date.now();
+        anchor.watchedChapterOrigins = { ...(anchor.watchedChapterOrigins || {}), [code]: {
+          source: "anilist", accountUserId: accountId, mediaId: mapped.mediaId, updatedAt: watched[code] } };
         changed = true;
       }
     }
@@ -864,6 +873,7 @@ async function syncMissingLocalAniListScores(account) {
     try { ({ ratings } = await fetchJson(`/api/ratings?${params}`)); }
     catch (error) { console.warn("Local score reconciliation deferred:", error?.message); skipped++; continue; }
     for (const rating of (ratings || []).filter((row) => row.source === "app" && Number.isFinite(row.score) && row.score >= 1 && row.score <= 10)) {
+      if (rating.provenance?.source === "anilist" && rating.provenance.accountUserId !== account.userId) { skipped++; continue; }
       const season = Number.isInteger(rating.season) ? rating.season : null;
       const part = resolveAniListScorePart(info, season);
       candidates.push({ seriesKey: series.key, season, score: rating.score, part });
@@ -942,7 +952,8 @@ function copyAniListScoresIntoLvl(account, { snapshotAt = 0 } = {}) {
       if (readAniListAccount(localStorage)?.token !== account.token) break;
       try {
         await postJson("/api/ratings", { catalogId: update.catalogId, seriesKey: update.seriesKey, season: update.season,
-          title: update.title, kind: update.kind, year: update.year, score: update.score, status: update.status });
+          title: update.title, kind: update.kind, year: update.year, score: update.score, status: update.status,
+          provenance: { source: "anilist", accountUserId: account.userId, mediaId: update.mediaId, score: update.score } });
         result.copied++;
         result.changes.push({ title: update.title, season: update.season, from: update.previous, to: update.score });
       } catch (error) {
@@ -1051,6 +1062,15 @@ export function maybeSyncAniListLibrary(overview) {
 }
 
 function applyAniListLibrary(shows, { accountUserId = null } = {}) {
+  const preserveOrigins = (entry) => {
+    if (!entry.anilist?.showId) return;
+    for (const [code, watched] of Object.entries(entry.watchedChapters || {})) {
+      if (!watched || entry.watchedChapterOrigins?.[code]) continue;
+      entry.watchedChapterOrigins = { ...(entry.watchedChapterOrigins || {}), [code]: {
+        source: "anilist", accountUserId: entry.anilist.accountUserId || null,
+        updatedAt: typeof watched === "number" ? watched : Number(entry.watchedChapterUpdatedAt?.[code]) || 0 } };
+    }
+  };
   const plan = planAniListLibrary({ series: buildLibrarySeries(), shows, keyOf: librarySeriesKey });
   const ownerId = Number.isSafeInteger(accountUserId) && accountUserId > 0 ? accountUserId : null;
   const showsById = new Map(shows.map((show) => [show.showId, show]));
@@ -1058,6 +1078,8 @@ function applyAniListLibrary(shows, { accountUserId = null } = {}) {
     info.accountUserId = ownerId && verifiedAniListLibraryIdentity(series, showsById.get(info.showId))
       ? ownerId : null;
     series.sources.forEach((entry) => {
+      // Preserve the origin of legacy imported flags before changing accounts.
+      preserveOrigins(entry);
       entry.anilist = info;
       if (!entry.anilistId) entry.anilistId = info.anilistId;
     });
@@ -1079,6 +1101,7 @@ function applyAniListLibrary(shows, { accountUserId = null } = {}) {
     if (!entry) continue;
     // Imported titles sort by when you last changed them on AniList, so your own stay on top.
     const at = Number(show.updatedAt) || entry.addedAt;
+    preserveOrigins(entry);
     Object.assign(entry, { anilistImported: true, anilistId: show.anilistId, anilist: info, updatedAt: at });
     // Previous imports preferred a catalog proxy that can return broken art.
     // Upgrade their automatic artwork to the AniList cover, preserving pins.

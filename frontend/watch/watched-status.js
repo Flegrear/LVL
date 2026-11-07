@@ -125,6 +125,7 @@ function markWatchEpisodeUnwatched(series, code) {
   // re-watching this episode before the remote correction has completed.
   anchor.watchedChapters = { ...anchor.watchedChapters, [normalized]: false };
   anchor.watchedChapterUpdatedAt = { ...(anchor.watchedChapterUpdatedAt || {}), [normalized]: Date.now() };
+  anchor.watchedChapterOrigins = { ...(anchor.watchedChapterOrigins || {}), [normalized]: { source: "local", updatedAt: Date.now() } };
   persistAniListQueue(anilistStoredQueue().filter((row) =>
     !(row.seriesKey === series.key && row.code === normalized)));
   saveLibrary();
@@ -293,6 +294,7 @@ function markWatchEpisodeWatched(series, code, saved = null) {
     }
   }
   anchor.watchedChapters = { ...(anchor.watchedChapters || {}), [normalized]: now };
+  anchor.watchedChapterOrigins = { ...(anchor.watchedChapterOrigins || {}), [normalized]: { source: "local", updatedAt: now } };
   for (const { episode } of saved?.sources || []) {
     if (!episode) continue;
     const durationMs = Math.max(1, Number(episode.progress?.durationMs) || 0, Number(episode.progress?.positionMs) || 0);

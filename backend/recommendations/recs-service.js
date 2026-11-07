@@ -285,7 +285,7 @@ export function createRecsService({ store, searchCatalog = async () => [], anili
   }
 
   /** Your rating of a title in the app (1.00–10.00), or none to remove it. */
-  function rate({ catalogId = "", seriesKey = "", season = null, title = "", kind = "", year = null, score = null, status = null } = {}) {
+  function rate({ catalogId = "", seriesKey = "", season = null, title = "", kind = "", year = null, score = null, status = null, provenance = null } = {}) {
     if (catalogId && !/^tt\d{5,12}$/.test(String(catalogId))) throw fail("Unknown title");
     if (!catalogId && !seriesKey) throw fail("A title is required");
     const value = score === null || score === "" ? null : roundScore(score);
@@ -294,6 +294,7 @@ export function createRecsService({ store, searchCatalog = async () => [], anili
       catalogId: catalogId || "", seriesKey: String(seriesKey || "").slice(0, 300), season: Number.isInteger(season) ? season : null,
       title: String(title || "").slice(0, 300), kind: KINDS.has(kind) ? kind : null, year: Number(year) || null, score: value,
       status: ["COMPLETED", "CURRENT", "DROPPED", "PAUSED", "PLANNING"].includes(status) ? status : null,
+      provenance,
     });
     checkScheduledRefresh();
     return { rating: saved, ...titleRatings({ catalogId, seriesKey, title, year }) };

@@ -144,7 +144,12 @@ export function planAniListLibrary({ series = [], shows = [], keyOf = (name) => 
 export function seriesAniList(series, userId = null) {
   const sources = series?.sources || [];
   const imported = sources.map((entry) => entry.anilist).find((info) => info?.showId) || null;
-  if (!Number.isSafeInteger(userId) || userId <= 0) return imported;
+  if (!Number.isSafeInteger(userId) || userId <= 0) {
+    const synced = sources.map((entry) => entry.anilistSync).filter((info) => info?.showId)
+      .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))[0];
+    return !imported || synced?.accountUserId === imported.accountUserId
+      && Number(synced.updatedAt || 0) > Number(imported.updatedAt || 0) ? synced || imported : imported;
+  }
   const ownedImported = imported?.accountUserId === userId ? imported : null;
   const manual = sources.flatMap((entry) => Array.isArray(entry.anilistManualLinks) ? entry.anilistManualLinks : [])
     .filter((part) => part?.userId === userId && Number.isInteger(part.season) && part.season > 0
