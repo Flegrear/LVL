@@ -88,7 +88,7 @@ export function verifyCombinedDirectory(dir) {
 }
 export function releaseTitle(manifest) {
   validateManifest(manifest);
-  return `LVL — Windows ${manifest.platforms.windows.version} · Android ${manifest.platforms.android.version}`;
+  return `LVL Windows ${manifest.platforms.windows.version} - Android ${manifest.platforms.android.version}`;
 }
 export function releaseNotes(manifest, installerUrl = `${PREFIX}v0.2.0/LVL-Setup.exe`, changes = {}) {
   validateManifest(manifest);

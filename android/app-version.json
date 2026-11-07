@@ -1,15 +1,14 @@
 {
-  "version": "0.1.1",
-  "versionCode": 206,
+  "version": "0.1.2",
+  "versionCode": 207,
   "desktopSourceVersion": "0.2.5",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Simplify fullscreen playback controls and keep audio choices open.",
-    "Show Library statuses directly and fit three comic covers per row.",
-    "Open Home on All when the Android app starts.",
-    "Add pull-to-refresh on browsing screens.",
-    "Add a Retry button when the local server cannot start.",
-    "Keep local comics readable when catalog information is unavailable.",
-    "Improve update checks so each device receives its own app updates."
+    "Fix watched episodes and titles added without a playback source syncing between devices.",
+    "Preserve pending local watched and unwatched changes when another device updates.",
+    "Fix synced playback history choosing the wrong current episode.",
+    "Refresh your Library automatically after receiving synced changes.",
+    "Preserve imported AniList status and scores without treating them as another account's edits.",
+    "Make saved tracking records easier to identify while preserving encrypted sync."
   ]
 }
