@@ -4,8 +4,7 @@
 // -> "options" (a new sync: plain files, or encrypted with a passphrase) or "passphrase"
 // (joining a sync another device encrypted; joining a plain one needs no step) -> "ready".
 // While LVL runs (every 5 s, cheap): this device's own changes are looked for through a
-// mark (section times and row counts) and sent 15 s after the last one, or within 5 minutes
-// while they keep coming (watching a video saves its position all the time). Every 30 s LVL
+// mark (section times and row counts) and sent on the next check. Every 10 s LVL
 // asks GitHub whether lvl-sync changed: one small request, answered "not changed" (304) for
 // free. Everything is compared at start, every 10 minutes and on "Sync now".
 // One sync: read the files that are new in the repo, apply what changed elsewhere, compare
@@ -23,9 +22,7 @@ import { SETTINGS_FILE, createSyncLog, newSettingsFile, readSettingsFile } from 
 const META_KEY = "sync";
 const SYNC_REPO = "lvl-sync";
 const CHECK_EVERY_MS = 5_000;
-const QUIET_MS = 15_000;
-const MAX_WAIT_MS = 5 * 60_000;
-const REMOTE_EVERY_MS = 30_000;
+const REMOTE_EVERY_MS = 10_000;
 const FULL_EVERY_MS = 10 * 60_000;
 const RETRY_MS = 30_000;
 const RATE_LIMITED_RETRY_MS = 5 * 60_000;
@@ -36,6 +33,23 @@ const stable = (value) => (Array.isArray(value) ? `[${value.map(stable).join(","
   : value && typeof value === "object" ? `{${Object.keys(value).filter((key) => value[key] !== undefined).sort().map((key) => `${JSON.stringify(key)}:${stable(value[key])}`).join(",")}}`
   : JSON.stringify(value ?? null));
 const hashOf = (value) => crypto.createHash("sha256").update(stable(value)).digest("hex").slice(0, 32);
+// A paused player's save can update its time without moving. Keep the original
+// playback time on real changes without uploading timestamp-only duplicates.
+const itemHash = (type, value) => {
+  if (type !== "video.progress" || !value) return hashOf(value);
+  const { updatedAt, updatedBy, ...content } = value;
+  return hashOf(content);
+};
+const legacyItemHash = (type, value) => {
+  if (!value) return hashOf(value);
+  if (type === "video.progress") return hashOf({ positionMs: value.positionMs, durationMs: value.durationMs, finished: value.finished });
+  if (type === "video.watched") return hashOf({ watched: value.watched });
+  if (type === "video.title") {
+    const { libraryId, catalogOnly, externalSource, externalId, ...content } = value;
+    return hashOf(content);
+  }
+  return hashOf(value);
+};
 
 export function createSyncService({ db, getMeta, setMeta, github, local, app = {}, repoName = SYNC_REPO, now = Date.now, log = console, timers = { setTimeout, clearTimeout } } = {}) {
   db.exec("CREATE TABLE IF NOT EXISTS sync_items (item_key TEXT PRIMARY KEY, change_json TEXT NOT NULL, local_hash TEXT)");
@@ -52,11 +66,8 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   let reloadNeeded = 0;
   let repoMissing = false;
   let stopped = false;
-  // The checks (tick): the local mark last compared, a change seen since, and when each check last ran.
+  // The local mark last compared, and when each check last ran.
   let comparedMark = null;
-  let pendingMark = null;
-  let dirtySince = 0;
-  let lastChangeAt = 0;
   let lastRemoteAt = 0;
   let lastFullAt = 0;
   let lastCheckAt = 0;
@@ -133,8 +144,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     ON CONFLICT(item_key) DO UPDATE SET change_json = excluded.change_json, local_hash = excluded.local_hash`);
 
   // full: read the repository's file list and compare all local data, whatever the marks say.
-  // compareLocal: send this device's changes (false for the 30-second check for news, so a
-  // video playing doesn't send its position every 30 s).
+  // compareLocal: send this device's changes (false for an incoming-only check).
   async function syncOnce({ full = true, compareLocal = true } = {}) {
     if (step() !== "ready") return { skipped: true };
     await ensureToken();
@@ -152,17 +162,41 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     const key = settings.key ? await importKeyBytes(fromBase64(settings.key)) : null;
     const syncLog = createSyncLog({ storage, device: settings.device, key });
-    const clock = createClock({ device: settings.device, last: settings.clock });
+    const clock = createClock({ device: settings.device, last: settings.clock, now });
     const pulled = remoteChanged ? await syncLog.pull(settings.seen || {})
       : { changes: [], seen: settings.seen || {}, skipped: [], nextSeq: settings.nextSeq || 1 };
     if (pulled.paths) await recoverStorage(storage, pulled);
     for (const change of pulled.changes) clock.observe(change.at);
     const { state, hashes } = loadItems();
     const before = new Map(state);
+    // Capture pending local edits before a pull can replace them. An unchanged
+    // cached value is not an edit; only a difference from the last accepted hash
+    // protects a record. The next send stamps that genuine edit after the pull.
+    const pending = new Map((remoteChanged || settings.hashVersion !== 2 ? local.export() : []).map(item =>
+      [`${item.type} ${item.id}`, records.clean(item.type, item.value)]));
+    // Enriching the format is not a user edit. Upgrade confirmed, unchanged
+    // hashes before deciding whether this older installation has pending edits.
+    const rehashed = new Set();
+    if (settings.hashVersion !== 2) for (const [itemKey, hash] of hashes) {
+      const type = before.get(itemKey)?.type;
+      if (!local.types.includes(type)) continue;
+      const value = pending.has(itemKey) ? pending.get(itemKey) : null;
+      if (legacyItemHash(type, value) !== hash) continue;
+      hashes.set(itemKey, itemHash(type, value));
+      rehashed.add(itemKey);
+    }
+    const dirty = new Set();
+    if (remoteChanged) for (const [itemKey, hash] of hashes) {
+      if (!local.types.includes(before.get(itemKey)?.type)) continue;
+      if (itemHash(before.get(itemKey).type, pending.has(itemKey) ? pending.get(itemKey) : null) !== hash) dirty.add(itemKey);
+    }
     const arrived = records.merge(state, pulled.changes);
     const touched = new Set(arrived.map((change) => `${change.type} ${change.id}`));
     // Changes for LVL's data that couldn't be applied before (an episode before its title) are tried again.
     const toApply = [...state.entries()].filter(([itemKey, change]) => local.types.includes(change.type)
+      && !dirty.has(itemKey)
+      && !(change.type.startsWith("video.") && dirty.has(`video.title ${change.id.split("/")[0]}`)
+        && !pending.has(`video.title ${change.id.split("/")[0]}`))
       && (touched.has(itemKey) || !hashes.has(itemKey))).map(([, change]) => change);
     const applied = toApply.length ? local.apply(toApply, before) : new Set();
     // What LVL has now, after applying. A received item counts as in sync with its local form
@@ -171,7 +205,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     const byKey = new Map(current.map((item) => [item.key, item]));
     for (const change of applied) {
       const itemKey = `${change.type} ${change.id}`;
-      hashes.set(itemKey, hashOf(byKey.has(itemKey) ? byKey.get(itemKey).value : null));
+      hashes.set(itemKey, itemHash(change.type, byKey.has(itemKey) ? byKey.get(itemKey).value : null));
       if (change.type.startsWith("video.")) reloadNeeded += 1;
     }
     // This device's changes: what differs from the last synced value, and what was removed.
@@ -181,16 +215,17 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       const itemKey = item.key;
       exported.add(itemKey);
       const value = item.value;
-      if (hashes.get(itemKey) === hashOf(value)) continue;
+      if (hashes.get(itemKey) === itemHash(item.type, value)) continue;
+      const authored = value.updatedAt ? { ...value, updatedBy: settings.device } : value;
       let change;
-      try { change = records.make({ type: item.type, id: item.id, value, at: clock.tick(), previous: state.get(itemKey) }); } catch (error) {
+      try { change = records.make({ type: item.type, id: item.id, value: authored, at: clock.tick(), previous: state.get(itemKey) }); } catch (error) {
         if (!/too large/.test(error.message) || !("episodes" in value)) throw error;
         const { episodes, ...smaller } = value;
         change = records.make({ type: item.type, id: item.id, value: smaller, at: clock.tick(), previous: state.get(itemKey) });
       }
       outgoing.push(change);
       state.set(itemKey, change);
-      hashes.set(itemKey, hashOf(value));
+      hashes.set(itemKey, itemHash(item.type, value));
       touched.add(itemKey);
     }
     for (const [itemKey, change] of sendLocal ? state : []) {
@@ -210,10 +245,10 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       if (seq % SNAPSHOT_EVERY === 0) settings.snapshotVersion = await syncLog.snapshot([...state.values()], seq, settings.snapshotVersion);
       seq += 1;
     }
-    for (const itemKey of new Set([...touched, ...[...state.keys()].filter((k) => state.get(k) !== before.get(k))]))
+    for (const itemKey of new Set([...touched, ...rehashed, ...[...state.keys()].filter((k) => state.get(k) !== before.get(k))]))
       putItem.run(itemKey, JSON.stringify(state.get(itemKey)), hashes.get(itemKey) || null);
     for (const change of applied) putItem.run(`${change.type} ${change.id}`, JSON.stringify(state.get(`${change.type} ${change.id}`)), hashes.get(`${change.type} ${change.id}`));
-    Object.assign(settings, { seen, nextSeq: seq, clock: clock.last(), lastSyncAt: now(), sent: (settings.sent || 0) + outgoing.length,
+    Object.assign(settings, { seen, nextSeq: seq, clock: clock.last(), hashVersion: 2, lastSyncAt: now(), sent: (settings.sent || 0) + outgoing.length,
       received: (settings.received || 0) + applied.size,
       skippedFiles: (settings.skippedFiles || 0) + pulled.skipped.length,
       refused: (settings.refused || 0) + pulled.changes.filter((change) => records.read(change).status === "invalid").length,
@@ -221,24 +256,20 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       ...(remoteChanged && head ? { remoteHead: head.version } : {}) });
     save();
     lastCheckAt = now();
-    if (sendLocal) { comparedMark = mark; pendingMark = null; dirtySince = 0; }
+    if (sendLocal) comparedMark = mark;
     if (full) lastFullAt = startedAt;
     return { sent: outgoing.length, received: applied.size, skippedFiles: pulled.skipped, refused: settings.refused };
   }
 
-  // Every 5 s: has this device changed (sent after a quiet moment, or within 5 minutes while
-  // changes keep coming), is it time to ask GitHub for news, or for the full comparison?
+  // Every 5 s: send local edits, or ask GitHub for news when the remote check is due.
   async function tick() {
     if (step() !== "ready" || running) return null;
     const t = now();
     if (t < retryAt) return null;
     let mark = null;
     try { mark = local.mark?.() ?? null; } catch { mark = null; }
-    if (mark !== null && mark !== comparedMark) {
-      if (mark !== pendingMark) { pendingMark = mark; lastChangeAt = t; if (!dirtySince) dirtySince = t; }
-    } else { pendingMark = null; dirtySince = 0; }
     if (t - lastFullAt >= FULL_EVERY_MS) return syncNow({ full: true }).catch(() => null);
-    if (dirtySince && (t - lastChangeAt >= QUIET_MS || t - dirtySince >= MAX_WAIT_MS)) return syncNow({ full: false, compareLocal: true }).catch(() => null);
+    if (mark !== null && mark !== comparedMark) return syncNow({ full: false, compareLocal: true }).catch(() => null);
     if (t - lastRemoteAt >= REMOTE_EVERY_MS) return syncNow({ full: false, compareLocal: false }).catch(() => null);
     return null;
   }

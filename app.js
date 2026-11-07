@@ -16,7 +16,7 @@ import { installUiI18n, registerUiTranslations, t } from "./frontend/ui/ui-i18n.
 import { createClientFeatureHost } from "./frontend/features/feature-host.js";
 import { CLIENT_FEATURES } from "./frontend/features/registry.js";
 import {
-  hydratePersistentAppState, localCopyMissing, persistentAppStateReady, persistPreferences,
+  hydratePersistentAppState, localCopyMissing, persistentAppStateReady, persistPreferences, refreshPersistentLibrary,
   readStorageArray, readStorageObject,
 } from "./frontend/app/saved-state.js";
 import { $, $$, setToolStatus } from "./frontend/app/dom.js";
@@ -162,6 +162,7 @@ clientFeatures.install(document, {
     interfaceLanguage: state.interfaceLanguage, baseLanguage: state.baseLanguage, targetLanguage: state.targetLanguage,
   }),
   refreshLibrary: () => { if (viewActive("library")) renderLibrary(); },
+  refreshSyncedLibrary: (revision) => refreshPersistentLibrary({ revision }),
   // Feature chips changed (a section became available): series redraw their chapter area;
   // movie pages redraw the main part (unchanged markup isn't touched).
   refreshTitle: () => {

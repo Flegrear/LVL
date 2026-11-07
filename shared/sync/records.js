@@ -51,20 +51,22 @@ const score = ["number", { min: 0, max: 10 }];
 // required: fields a change must have (with the right kind) to be applied.
 export const RECORD_TYPES = Object.freeze({
   // A video title in the Library (a series, season pack or movie) and where it plays from.
-  // id: the Library entry id (the torrent's infohash). trackingStatus: Reading, Completed…
+  // id: the torrent's infohash, or a deterministic alias for a catalog card.
+  // libraryId retains a catalog card's local identity. trackingStatus: Watching, Completed…
   // (the same for every entry of a series). episodes: each file's metadata, without the
   // position (video.progress) and without this device's file analysis.
   "video.title": { schema: 1, id: /^[0-9a-f]{40}$/, fields: {
     title: "string", displayTitle: "string", rawName: "string", seriesKey: "string", magnet: "text", coverUrl: "string",
     catalogId: "string", catalogType: "string", mediaKind: "string", aliases: "list", sourceMeta: "object", addedAt: time,
     trackingStatus: "string", artworkIndex: count, artworkSource: "string", artworkPinned: "boolean",
-    chapterFileIndexes: "list", chapterLabels: "object", episodes: "list" } },
+    chapterFileIndexes: "list", chapterLabels: "object", episodes: "list", libraryId: "string",
+    catalogOnly: "boolean", externalSource: "string", externalId: "string" } },
   // Where you are in one file of a title: resume at positionMs; progress is positionMs / durationMs.
   // id: "<infohash>/<file index>".
   "video.progress": { schema: 1, id: /^[0-9a-f]{40}\/\d{1,6}$/, required: ["positionMs", "durationMs", "finished"], fields: {
-    positionMs: count, durationMs: count, finished: "boolean" } },
+    positionMs: count, durationMs: count, finished: "boolean", updatedAt: time, updatedBy: "string", context: "object" } },
   // An episode marked watched or unwatched by hand. id: joinId(<infohash>, <code, like S01E02>).
-  "video.watched": { schema: 1, id: anyId, required: ["watched"], fields: { watched: "boolean" } },
+  "video.watched": { schema: 1, id: anyId, required: ["watched"], fields: { watched: "boolean", updatedAt: time, updatedBy: "string", context: "object" } },
   // A comic in Library › Comics. An AniList comic carries its card (work); a comic read from
   // its sources carries its series key (seriesKey: "video:<IMDb id>#<n>" or "mihon:<source>:<path>"),
   // its cover and the video page it was added on.

@@ -34,7 +34,7 @@ export const syncServerFeature = {
         const route = url.pathname.slice("/api/sync/".length);
         if (route === "status") {
           if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]);
-          ctx.json(res, 200, service.status());
+          ctx.json(res, 200, { ...service.status(), libraryRevision: ctx.appState.sectionUpdatedAt("library") });
           return true;
         }
         if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]);

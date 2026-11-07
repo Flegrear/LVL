@@ -97,9 +97,9 @@ function githubPanel(status, ui) {
     status.refused ? `${status.refused} invalid change${status.refused === 1 ? "" : "s"} ignored` : ""].filter(Boolean).join(" · ");
   return account(status)
     + `<div class="ui-stat-group sync-stats">${stat("Last synced", status.syncing ? "Syncing…" : ago(status.lastSyncAt))}${stat("Sent", String(status.sent))}${stat("Received", String(status.received))}</div>`
-    + `<p class="settings-hint">${repoLink(status)} · ${status.encrypted ? "Encrypted with your passphrase" : "Plain files"} · Checked every 30 s while LVL is open</p>`
+    + `<p class="settings-hint">${repoLink(status)} · ${status.encrypted ? "Encrypted with your passphrase" : "Plain files"} · Checked every 10 s while LVL is open</p>`
     + (problems ? line(problems) : "")
-    + (status.reloadNeeded ? `<div class="sync-banner"><span>Changes from your other devices reached your Library.</span>${action("Reload LVL", "reload", "primary")}</div>` : "")
+    + (status.reloadNeeded ? `<p class="settings-hint">Changes from your other devices are saved. Your Library refreshes when pending local edits have finished saving.</p>` : "")
     + `<div class="settings-actions">${action("Sync now", "now", "primary")}</div>` + errorLine(status);
 }
 
@@ -254,6 +254,29 @@ function mount(card) {
 export const syncFeature = {
   id: "sync",
   styles: ["/frontend/sync/sync.css"],
+  start(ctx) {
+    let timer = null;
+    let busy = false;
+    const refresh = async () => {
+      if (busy) return;
+      busy = true;
+      window.clearTimeout(timer);
+      try {
+        if (!document.hidden) {
+          const status = await call("status");
+          if (status.step === "ready" && await ctx.refreshSyncedLibrary?.(status.libraryRevision) && status.reloadNeeded)
+            await call("reload-shown", {});
+        }
+      } catch { /* Offline: the next check retries without disturbing the open view. */ }
+      finally {
+        busy = false;
+        timer = window.setTimeout(refresh, 5000);
+      }
+    };
+    document.addEventListener("visibilitychange", refresh);
+    window.addEventListener("focus", refresh);
+    timer = window.setTimeout(refresh, 500);
+  },
   hooks: {
     // Settings › Library was shown: the Sync card at its top.
     "settings:library"({ panel }) {

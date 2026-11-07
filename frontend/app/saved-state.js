@@ -8,6 +8,7 @@ import { applySubtitleStyle, subtitleStyleDefaults } from "../player/subtitle-st
 import { renderLibrary } from "../library/library-page.js";
 import { refreshTitlePage } from "../title/title-page.js";
 import { scheduleAniListAutoSync } from "../anilist/anilist-sync.js";
+import { renderWatchChapters } from "../watch/watch-page.js";
 
 export function readStorageArray(key) {
   try {
@@ -283,11 +284,39 @@ function sameLibraryContent(a, b) {
     && JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 }
 
+function rebasePersistentPlayback(base, local, remote) {
+  if (!base || !local || !remote || ![base.episodes, local.episodes, remote.episodes].every(Array.isArray)) return null;
+  const equal = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const expected = copyPersistentLibrary([base])[0];
+  const next = copyPersistentLibrary([remote])[0];
+  for (const episode of local.episodes) {
+    const was = expected.episodes.find(item => item.fileIndex === episode.fileIndex);
+    const incoming = next.episodes.find(item => item.fileIndex === episode.fileIndex);
+    if (!was || !incoming) return null;
+    if (!equal(was.progress, episode.progress)) {
+      if (!equal(was.progress, incoming.progress) && !equal(episode.progress, incoming.progress)) return null;
+      if (Object.hasOwn(episode, "progress")) incoming.progress = episode.progress;
+      else delete incoming.progress;
+    }
+    if (Object.hasOwn(episode, "progress")) was.progress = episode.progress;
+    else delete was.progress;
+  }
+  for (const key of ["lastPlayedAt", "lastPlayedFileIndex"]) {
+    if (Object.hasOwn(local, key)) expected[key] = local[key];
+    else delete expected[key];
+  }
+  // Only playback moved locally. Metadata, episode identity, manual flags and
+  // deletions retain the strict conflict rule; no removed title is recreated.
+  if (!equal(expected, local)) return null;
+  if (Number(local.lastPlayedAt || 0) >= Number(remote.lastPlayedAt || 0))
+    for (const key of ["lastPlayedAt", "lastPlayedFileIndex"])
+      if (Object.hasOwn(local, key)) next[key] = local[key];
+  return next;
+}
+
 function rebasePersistentLibrary(base, local, remote) {
-  // Whole-record comparisons deliberately reject simultaneous edits to the
-  // same entry, including a remote deletion. That may defer compatible field
-  // edits, but can never resurrect a removed title or replace another tab's
-  // metadata. Unrelated additions/updates/deletions are safe to replay.
+  // A proven playback-only delta can cross incoming tracking/metadata changes.
+  // Other simultaneous same-entry edits, including deletions, remain conflicts.
   if (![base, local, remote].every(Array.isArray)) return null;
   const index = items => new Map(items.filter(item => item && item.id != null)
     .map(item => [String(item.id), item]));
@@ -299,8 +328,11 @@ function rebasePersistentLibrary(base, local, remote) {
   for (const id of new Set([...before.keys(), ...current.keys()])) {
     const was = before.get(id), mine = current.get(id), theirs = disk.get(id);
     if (equal(was, mine)) continue;
-    if (!equal(was, theirs) && !equal(mine, theirs)) return null;
-    changes.set(id, mine);
+    if (!equal(was, theirs) && !equal(mine, theirs)) {
+      const playback = rebasePersistentPlayback(was, mine, theirs);
+      if (!playback) return null;
+      changes.set(id, playback);
+    } else changes.set(id, mine);
   }
   const updated = new Map(disk);
   for (const [id, item] of changes) {
@@ -798,6 +830,60 @@ export async function hydratePersistentAppState() {
     console.warn("On-disk app database is unavailable; using the browser cache for this session:", error);
     renderAll();
   }
+}
+
+// Refresh a confirmed server revision without reloading the app or saving a stale
+// browser snapshot back over it. Pending edits keep their existing CAS workflow.
+export async function refreshPersistentLibrary({ revision } = {}) {
+  const blocked = () => !persistentAppStateReady || POPUP_HANDOFF
+    || persistentDirtySections().has("library") || persistentAppWriteTimers.has("library")
+    || persistentAppWriteChains.has("library") || persistentAppUnresolvedConflicts.has("library");
+  if (blocked() || !Number.isSafeInteger(revision)) return false;
+  if (revision <= (persistentAppSectionRevisions.get("library") || 0)) return true;
+  const generation = persistentAppWriteGenerations.get("library") || 0;
+  const visible = copyPersistentLibrary(state.library);
+  const disk = await fetchJson("/api/app-state/library");
+  if (blocked() || generation !== (persistentAppWriteGenerations.get("library") || 0)
+    || !sameLibraryContent(visible, state.library) || !Array.isArray(disk?.value)
+    || !Number.isSafeInteger(disk.updatedAt) || disk.updatedAt < revision
+    || disk.updatedAt <= (persistentAppSectionRevisions.get("library") || 0)) return false;
+  const baseline = persistentAppLibraryViewBaseline;
+  const next = copyPersistentLibrary(disk.value);
+  if (!sameLibraryContent(visible, baseline)) {
+    // Playback updates its in-memory position between database saves. Preserve
+    // that one episode while accepting flags/metadata for the rest of Library.
+    // Any other unconfirmed edit defers the refresh instead of guessing intent.
+    const source = state.currentSource;
+    const mine = visible.find(item => item.id === source?.libraryId);
+    const old = baseline?.find(item => item.id === source?.libraryId);
+    const incoming = next.find(item => item.id === source?.libraryId);
+    const current = mine?.episodes?.find(item => Number(item.fileIndex) === Number(source?.fileIndex));
+    const received = incoming?.episodes?.find(item => Number(item.fileIndex) === Number(source?.fileIndex));
+    if (!current || !old || !received) return false;
+    const expected = copyPersistentLibrary(baseline);
+    const entry = expected.find(item => item.id === mine.id);
+    const episode = entry.episodes.find(item => Number(item.fileIndex) === Number(source.fileIndex));
+    if (!episode) return false;
+    episode.progress = current.progress;
+    for (const key of ["lastPlayedAt", "lastPlayedFileIndex"]) {
+      if (Object.hasOwn(mine, key)) entry[key] = mine[key];
+      else delete entry[key];
+    }
+    if (!sameLibraryContent(expected, visible)) return false;
+    received.progress = current.progress;
+    for (const key of ["lastPlayedAt", "lastPlayedFileIndex"])
+      if (Object.hasOwn(mine, key)) incoming[key] = mine[key];
+  }
+  persistentAppSectionRevisions.set("library", disk.updatedAt);
+  persistentAppAcceptedSnapshots.set("library", copyPersistentLibrary(disk.value));
+  persistentAppLibraryViewBaseline = copyPersistentLibrary(disk.value);
+  persistentAppUnreflectedLibraryWrites.clear();
+  state.library = next;
+  storeLocalCopy("blackline-library", state.library);
+  if (viewActive("library")) renderLibrary();
+  refreshTitlePage();
+  if (viewActive("watch")) renderWatchChapters();
+  return true;
 }
 
 export function saveLibrary() {

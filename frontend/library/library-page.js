@@ -226,10 +226,11 @@ function seriesResumePoint(series) {
     for (const episode of entry.episodes || []) {
       const progress = episode.progress;
       if (!progress?.updatedAt || !(progress.durationMs > 0)) continue;
-      const item = { entry, episode, progress };
-      if (!best || progress.updatedAt > best.progress.updatedAt) best = item;
       const unwatched = explicitlyUnwatchedChapter(series, String(episode.code || "").toUpperCase());
-      if ((!progress.finished || unwatched) && (!unfinished || progress.updatedAt > unfinished.progress.updatedAt)) unfinished = item;
+      const finished = !unwatched && (progress.finished || manuallyWatchedChapter(series, String(episode.code || "").toUpperCase()));
+      const item = { entry, episode, progress: { ...progress, finished } };
+      if (!best || progress.updatedAt > best.progress.updatedAt) best = item;
+      if (!finished && (!unfinished || progress.updatedAt > unfinished.progress.updatedAt)) unfinished = item;
     }
   }
   // A more recently *finished* episode must not hide an older paused episode
@@ -258,6 +259,8 @@ export function libraryChapterName(episode) {
 export function seriesNextUp(series) {
   const point = seriesResumePoint(series);
   const chapters = series.type === "movie" ? [] : libraryOrderedChapters(series);
+  const watched = chapter => !explicitlyUnwatchedChapter(series, chapter.code)
+    && (manuallyWatchedChapter(series, chapter.code) || chapter.sources.some(ref => ref.episode.progress?.finished));
   const wasExplicitlyUnwatched = point && explicitlyUnwatchedChapter(series, String(point.episode.code || "").toUpperCase());
   if (point && (!point.progress.finished || wasExplicitlyUnwatched)) {
     const name = libraryChapterName(point.episode);
@@ -272,14 +275,14 @@ export function seriesNextUp(series) {
   }
   if (point && point.progress.finished && chapters.length) {
     const index = chapters.findIndex((chapter) => chapter.sources.some((ref) => ref.episode === point.episode));
-    const next = index >= 0 ? chapters[index + 1] : null;
+    const next = index >= 0 ? chapters.slice(index + 1).find(chapter => !watched(chapter)) : null;
     if (next) return { label: `Play ${libraryChapterName(next.ref.episode) || "next"}`, entry: next.ref.entry, episode: next.ref.episode, atMs: 0 };
   }
   if (series.type === "movie") {
     const ref = [...[...series.seasons.values()].flat(), ...series.extras].sort(compareLibrarySourceRefsByPeers)[0];
     return ref ? { label: "Play", entry: ref.entry, episode: ref.episode, atMs: 0 } : null;
   }
-  const first = chapters[0];
+  const first = chapters.find(chapter => !watched(chapter)) || chapters[0];
   return first ? { label: `Play ${libraryChapterName(first.ref.episode) || ""}`.trim(), entry: first.ref.entry, episode: first.ref.episode, atMs: 0 } : null;
 }
 
@@ -395,6 +398,15 @@ export function setLibraryTitleWatched(series, watched) {
 
 function libraryProgressRatio(series) {
   if (isLibraryTitleMarkedWatched(series)) return 1;
+  const chapters = series.type === "series" ? libraryOrderedChapters(series) : [];
+  if (chapters.length) return chapters.reduce((total, chapter) => {
+    if (explicitlyUnwatchedChapter(series, chapter.code)) return total;
+    if (manuallyWatchedChapter(series, chapter.code)) return total + 1;
+    return total + Math.max(0, ...chapter.sources.map(ref => {
+      const progress = ref.episode.progress;
+      return progress?.finished ? 1 : progress?.durationMs > 0 ? Math.max(0, Math.min(1, progress.positionMs / progress.durationMs)) : 0;
+    }));
+  }, 0) / chapters.length;
   const progress = [...(series.sources || []).flatMap((entry) => entry.episodes || [])
     .map((episode) => episode.progress).filter((item) => item?.durationMs > 0)];
   if (!progress.length) return 0;

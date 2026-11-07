@@ -8,17 +8,28 @@
 // An incoming change older than the same item here (by the item's own time) isn't applied:
 // the next export sends the newer local value instead. This keeps the newest data the first
 // time two devices with their own data meet.
+import crypto from "node:crypto";
 import { joinId, splitId } from "../../shared/sync/records.js";
 import { parseStamp } from "../../shared/sync/clock.js";
 import { COMIC_TYPES, createComicsData, present } from "./comics-data.js";
 
 const TITLE_FIELDS = ["title", "displayTitle", "rawName", "seriesKey", "magnet", "coverUrl", "catalogId", "catalogType", "mediaKind", "aliases", "sourceMeta",
-  "addedAt", "trackingStatus", "artworkIndex", "artworkSource", "artworkPinned", "chapterFileIndexes", "chapterLabels"];
-const HASH_ID = /^[0-9a-f]{40}$/;
+  "addedAt", "trackingStatus", "artworkIndex", "artworkSource", "artworkPinned", "chapterFileIndexes", "chapterLabels", "catalogOnly", "externalSource", "externalId"];
+const HASH_ID = /^[0-9a-f]{40}$/i;
+// Catalog cards have no torrent hash. A deterministic alias keeps their wire identity
+// compatible with older devices; libraryId preserves the original local identity.
+const wireId = (id) => HASH_ID.test(id) ? id.toLowerCase() : crypto.createHash("sha1").update(`lvl-library:${id}`).digest("hex");
 const pick = (object, keys) => Object.fromEntries(keys.filter((key) => present(object?.[key])).map((key) => [key, object[key]]));
 // An episode's metadata as synced: not its position (video.progress) and not this device's analysis of the file.
 const episodeMeta = ({ progress, analysis, ...rest } = {}) => rest;
 const stampMs = (change) => parseStamp(change.at)?.ms || 0;
+// Older clients preserve optional fields when rewriting a record. Only the
+// writer that supplied a timestamp can vouch for it; otherwise use its stamp.
+const editedMs = (change) => {
+  const stamp = parseStamp(change.at);
+  const value = Number(change.value?.updatedAt);
+  return change.value?.updatedBy === stamp?.device && value > 0 && value <= stamp.ms ? value : stamp?.ms || 0;
+};
 
 export function createLocalData({ appState, db, recs, log = console }) {
   const comics = createComicsData({ db });
@@ -27,19 +38,29 @@ export function createLocalData({ appState, db, recs, log = console }) {
 
   function exportLibrary(out) {
     for (const entry of appState.readSection("library") || []) {
-      const id = String(entry?.id || "").toLowerCase();
-      if (!HASH_ID.test(id)) continue;
-      out.push({ type: "video.title", id, value: { ...pick(entry, TITLE_FIELDS), episodes: (entry.episodes || []).map(episodeMeta) } });
+      const libraryId = String(entry?.id || "");
+      if (!libraryId || libraryId.length > 600) continue;
+      const id = wireId(libraryId);
+      const context = (code) => ({ title: String(entry.displayTitle || entry.title || "").slice(0, 2000),
+        ...(entry.catalogId ? { catalogId: entry.catalogId } : {}), ...(code ? { episode: code } : {}) });
+      out.push({ type: "video.title", id, value: { ...pick(entry, TITLE_FIELDS),
+        ...(!HASH_ID.test(libraryId) ? { libraryId } : {}), episodes: (entry.episodes || []).map(episodeMeta) } });
       for (const episode of entry.episodes || []) {
         const index = Number(episode?.fileIndex);
         if (!episode?.progress || !Number.isInteger(index) || index < 0) continue;
         out.push({ type: "video.progress", id: `${id}/${index}`, value: {
           positionMs: Math.max(0, Math.round(Number(episode.progress.positionMs) || 0)),
           durationMs: Math.max(0, Math.round(Number(episode.progress.durationMs) || 0)),
-          finished: Boolean(episode.progress.finished) } });
+          finished: Boolean(episode.progress.finished),
+          ...(Number(episode.progress.updatedAt) > 0 ? { updatedAt: Number(episode.progress.updatedAt) } : {}),
+          context: context(episode.code) } });
       }
-      for (const [code, watched] of Object.entries(entry.watchedChapters || {}))
-        if (typeof watched === "boolean") out.push({ type: "video.watched", id: joinId(id, code), value: { watched } });
+      for (const [code, watched] of Object.entries(entry.watchedChapters || {})) {
+        if (typeof watched !== "boolean" && !(typeof watched === "number" && Number.isFinite(watched) && watched > 0)) continue;
+        const updatedAt = typeof watched === "number" ? watched : Number(entry.watchedChapterUpdatedAt?.[code]) || 0;
+        out.push({ type: "video.watched", id: joinId(id, code), value: { watched: Boolean(watched),
+          ...(updatedAt > 0 ? { updatedAt } : {}), context: context(code) } });
+      }
     }
   }
 
@@ -59,7 +80,7 @@ export function createLocalData({ appState, db, recs, log = console }) {
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const expected = appState.sectionUpdatedAt("library");
       const library = structuredClone(appState.readSection("library") || []);
-      const byId = new Map(library.map((entry) => [String(entry?.id || "").toLowerCase(), entry]));
+      const byId = new Map(library.map((entry) => [wireId(String(entry?.id || "")), entry]));
       const appliedNow = [];
       for (const change of sorted) {
         const at = stampMs(change);
@@ -76,7 +97,9 @@ export function createLocalData({ appState, db, recs, log = console }) {
           if (!entry) {
             // A title that doesn't say what it is would be a blank Library card: wait for one that does.
             if (!present(change.value.title) && !present(change.value.displayTitle)) continue;
-            const created = { id: change.id, ...pick(change.value, TITLE_FIELDS), episodes: episodes || [], addedAt: change.value.addedAt || at, updatedAt: at };
+            const originalId = change.value.libraryId;
+            const id = typeof originalId === "string" && wireId(originalId) === change.id ? originalId : change.id;
+            const created = { id, ...pick(change.value, TITLE_FIELDS), episodes: episodes || [], addedAt: change.value.addedAt || at, updatedAt: at };
             library.push(created);
             byId.set(change.id, created);
           } else {
@@ -98,21 +121,28 @@ export function createLocalData({ appState, db, recs, log = console }) {
           entry.episodes = Array.isArray(entry.episodes) ? entry.episodes : [];
           let episode = entry.episodes.find((item) => Number(item.fileIndex) === Number(index));
           if (!episode) { episode = { fileIndex: Number(index) }; entry.episodes.push(episode); }
-          if (Number(episode.progress?.updatedAt || 0) > at) continue;
+          const playedAt = editedMs(change);
+          if (Number(episode.progress?.updatedAt || 0) > playedAt) continue;
           if (change.value === null) delete episode.progress;
           else {
-            episode.progress = { positionMs: change.value.positionMs || 0, durationMs: change.value.durationMs || 0, finished: Boolean(change.value.finished), updatedAt: at };
-            if (at >= Number(entry.lastPlayedAt || 0)) { entry.lastPlayedAt = at; entry.lastPlayedFileIndex = Number(index); }
+            episode.progress = { positionMs: change.value.positionMs || 0, durationMs: change.value.durationMs || 0, finished: Boolean(change.value.finished), updatedAt: playedAt };
+            if (playedAt >= Number(entry.lastPlayedAt || 0)) { entry.lastPlayedAt = playedAt; entry.lastPlayedFileIndex = Number(index); }
           }
           appliedNow.push(change);
         } else if (change.type === "video.watched") {
           const [id, code] = splitId(change.id);
           const entry = byId.get(id);
           if (!entry || !code) continue;
+          const localAt = typeof entry.watchedChapters?.[code] === "number" ? entry.watchedChapters[code] : Number(entry.watchedChapterUpdatedAt?.[code]) || 0;
+          const watchedAt = editedMs(change);
+          if (localAt > watchedAt) continue;
           const marks = { ...(entry.watchedChapters || {}) };
           if (change.value === null) delete marks[code];
           else marks[code] = Boolean(change.value.watched);
           entry.watchedChapters = marks;
+          entry.watchedChapterUpdatedAt = { ...(entry.watchedChapterUpdatedAt || {}) };
+          if (change.value === null || !change.value.updatedAt) delete entry.watchedChapterUpdatedAt[code];
+          else entry.watchedChapterUpdatedAt[code] = watchedAt;
           appliedNow.push(change);
         }
       }

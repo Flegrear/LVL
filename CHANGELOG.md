@@ -1,5 +1,13 @@
 # LVL Changelog
 
+## 0.2.5 — 2026-11-07
+
+- Fix watched episodes and titles added without a playback source syncing between devices.
+- Preserve pending local watched and unwatched changes when receiving updates from another device.
+- Fix synced playback history choosing the wrong current episode.
+- Refresh your Library automatically after receiving synced changes and send progress more promptly.
+- Make saved video tracking records easier to identify while preserving encrypted sync.
+
 ## 0.2.4 — 2026-11-06
 
 - Improve update checks so Windows and Android can update independently from shared releases.

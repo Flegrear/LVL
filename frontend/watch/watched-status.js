@@ -30,7 +30,7 @@ export function currentLibraryEpisode() {
 }
 
 // Where you stopped watching: kept per Library episode (Continue watching, Resume). Saved at most
-// every 30 s while playing, and right away on pause or when leaving the page.
+// every 10 s while playing, and right away on pause or when leaving the page.
 let watchProgressSavedAt = 0;
 
 // positionSeconds/playing: the pop-up player's position, saved by LVL's window while it plays there.
@@ -72,7 +72,7 @@ export function recordWatchProgress({ force = false, positionSeconds = null, pla
       setWatchTrackingStatus(key, "CURRENT", { automatic: true });
     }
   }
-  if (force || now - watchProgressSavedAt > 30_000) {
+  if (force || now - watchProgressSavedAt >= 10_000) {
     watchProgressSavedAt = now;
     saveLibrary();
     if ($("#watch-chapters") && !$("#watch-chapters").hidden) renderWatchChapters();
@@ -124,6 +124,7 @@ function markWatchEpisodeUnwatched(series, code) {
   // An explicit false flag prevents stale AniList imports from immediately
   // re-watching this episode before the remote correction has completed.
   anchor.watchedChapters = { ...anchor.watchedChapters, [normalized]: false };
+  anchor.watchedChapterUpdatedAt = { ...(anchor.watchedChapterUpdatedAt || {}), [normalized]: Date.now() };
   persistAniListQueue(anilistStoredQueue().filter((row) =>
     !(row.seriesKey === series.key && row.code === normalized)));
   saveLibrary();
