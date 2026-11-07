@@ -24,9 +24,9 @@ Your library and settings are stored on your device. Online catalogs, subtitle s
 
 ## Get LVL
 
-**Windows:** download [LVL-Setup.exe](https://github.com/Flegrear/LVL/releases/download/v0.2.4/LVL-Setup.exe). Open **Settings → Updates** in LVL to get the latest Windows update.
+**Windows:** download [LVL-Setup.exe](https://github.com/Flegrear/LVL/releases/download/release-2026-11-07.1/LVL-Setup.exe). Open **Settings → Updates** in LVL to get the latest Windows update.
 
-**Android (12 or newer):** download the [ARM64 APK for phones and tablets](https://github.com/Flegrear/LVL/releases/download/android-v0.1.1/LVL-0.1.1-arm64.apk). For emulators and x86_64 devices, use the [x86_64 APK](https://github.com/Flegrear/LVL/releases/download/android-v0.1.1/LVL-0.1.1-x86_64.apk). Each APK contains everything needed to run.
+**Android (12 or newer):** download the [ARM64 APK for phones and tablets](https://github.com/Flegrear/LVL/releases/download/release-2026-11-07.1/LVL-0.1.2-arm64.apk). For emulators and x86_64 devices, use the [x86_64 APK](https://github.com/Flegrear/LVL/releases/download/release-2026-11-07.1/LVL-0.1.2-x86_64.apk). Each APK contains everything needed to run.
 
 Windows and Android have independent version numbers. Find downloads and release notes on the [Releases page](https://github.com/Flegrear/LVL/releases), or open Settings → Updates in the app to check for updates for your device.
 
