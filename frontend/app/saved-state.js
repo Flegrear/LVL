@@ -187,9 +187,9 @@ function recordUnreflectedPersistentLibraryWrite(visibleBase, submitted, saved) 
   const committed = index(saved);
   for (const id of new Set([...before.keys(), ...mine.keys()])) {
     if (JSON.stringify(before.get(id) ?? null) === JSON.stringify(mine.get(id) ?? null)) continue;
-    if (committed.has(id))
-      persistentAppUnreflectedLibraryWrites.set(id, { value: copyPersistentLibrary([committed.get(id)])[0] });
-    else persistentAppUnreflectedLibraryWrites.set(id, { deleted: true });
+    if (mine.has(id) && committed.has(id))
+      persistentAppUnreflectedLibraryWrites.set(id, { value: copyPersistentLibrary([mine.get(id)])[0] });
+    else if (!mine.has(id) && !committed.has(id)) persistentAppUnreflectedLibraryWrites.set(id, { deleted: true });
   }
 }
 
@@ -268,7 +268,47 @@ function alertPersistentLibraryConflict() {
     alert.style.cssText = "padding:12px 16px;border:1px solid #777;color:#fff;background:#161616;margin:0 0 12px";
     parent.prepend(alert);
   }
-  alert.textContent = "Library changed in another tab. Some edits remain saved only here. Back them up via Library → ⋯ → Export the library before reloading. New nonconflicting changes can still be saved.";
+  alert.textContent = "Saved changes could not be merged with edits in this window. Export the library to keep those edits, or use the saved Library to replace this unsaved copy. ";
+  const recover = document.createElement("button");
+  recover.type = "button";
+  recover.className = "ui-btn ui-btn--secondary ui-btn--sm";
+  recover.textContent = "Use saved Library";
+  recover.addEventListener("click", async () => {
+    recover.disabled = true;
+    try {
+      if (!await useSavedPersistentLibrary()) recover.textContent = "Save in progress — try again";
+    } catch { recover.textContent = "Couldn't load saved Library — retry"; }
+    finally { recover.disabled = false; }
+  });
+  alert.append(recover);
+}
+
+async function useSavedPersistentLibrary() {
+  if (!persistentAppStateReady || persistentAppWriteChains.has("library") || persistentAppWriteTimers.has("library")) return false;
+  const generation = persistentAppWriteGenerations.get("library") || 0;
+  const visible = copyPersistentLibrary(state.library);
+  const disk = await fetchJson("/api/app-state/library");
+  if (!Array.isArray(disk?.value) || !Number.isSafeInteger(disk.updatedAt)
+      || generation !== (persistentAppWriteGenerations.get("library") || 0)
+      || persistentAppWriteChains.has("library") || persistentAppWriteTimers.has("library")
+      || !sameLibraryContent(visible, state.library)) return false;
+  const saved = copyPersistentLibrary(disk.value);
+  state.library = saved;
+  persistentAppSectionRevisions.set("library", disk.updatedAt);
+  persistentAppAcceptedSnapshots.set("library", copyPersistentLibrary(saved));
+  persistentAppLibraryViewBaseline = copyPersistentLibrary(saved);
+  persistentAppUnreflectedLibraryWrites.clear();
+  persistentAppUnresolvedConflicts.delete("library");
+  persistentAppConflictViewBaselines.delete("library");
+  persistentAppPartialLibrarySaves.delete("library");
+  clearPendingLibraryForTab();
+  setPersistentSectionDirty("library", false);
+  storeLocalCopy("blackline-library", saved);
+  if (typeof document !== "undefined") document.getElementById("library-persistence-conflict")?.remove();
+  if (viewActive("library")) renderLibrary();
+  refreshTitlePage();
+  if (viewActive("watch")) renderWatchChapters();
+  return true;
 }
 
 // A stopped WebView may retain a dirty marker even if its last Library save
@@ -289,6 +329,30 @@ function rebasePersistentPlayback(base, local, remote) {
   const equal = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
   const expected = copyPersistentLibrary([base])[0];
   const next = copyPersistentLibrary([remote])[0];
+  // A watch flag, its author and its timestamp are one episode edit. Different
+  // episodes can change on both devices without conflicting over the whole title.
+  const tracking = ["watchedChapters", "watchedChapterUpdatedAt", "watchedChapterOrigins"];
+  for (const entry of [base, local, remote]) for (const field of tracking)
+    if (entry[field] !== undefined && (!entry[field] || typeof entry[field] !== "object" || Array.isArray(entry[field]))) return null;
+  const bundle = (entry, code) => Object.fromEntries(tracking
+    .filter(field => Object.hasOwn(entry[field] || {}, code)).map(field => [field, entry[field][code]]));
+  const codes = new Set(tracking.flatMap(field => [...Object.keys(base[field] || {}), ...Object.keys(local[field] || {})]));
+  for (const code of codes) {
+    if (!/^S\d{2}E\d{2,4}$/.test(code)) return null;
+    const was = bundle(base, code), mine = bundle(local, code), theirs = bundle(remote, code);
+    if (equal(was, mine)) continue;
+    if (!equal(was, theirs) && !equal(mine, theirs)) return null;
+    for (const field of tracking) {
+      if (Object.hasOwn(local[field] || {}, code)) {
+        next[field] = next[field] || {};
+        next[field][code] = local[field][code];
+      } else if (next[field]) delete next[field][code];
+    }
+  }
+  for (const field of tracking) {
+    if (Object.hasOwn(local, field)) expected[field] = JSON.parse(JSON.stringify(local[field]));
+    else delete expected[field];
+  }
   for (const episode of local.episodes) {
     const was = expected.episodes.find(item => item.fileIndex === episode.fileIndex);
     const incoming = next.episodes.find(item => item.fileIndex === episode.fileIndex);
@@ -305,8 +369,8 @@ function rebasePersistentPlayback(base, local, remote) {
     if (Object.hasOwn(local, key)) expected[key] = local[key];
     else delete expected[key];
   }
-  // Only playback moved locally. Metadata, episode identity, manual flags and
-  // deletions retain the strict conflict rule; no removed title is recreated.
+  // Only playback or the proven episode edits moved locally. Metadata and
+  // episode identity retain the strict rule; no removed title is recreated.
   if (!equal(expected, local)) return null;
   if (Number(local.lastPlayedAt || 0) >= Number(remote.lastPlayedAt || 0))
     for (const key of ["lastPlayedAt", "lastPlayedFileIndex"])
@@ -315,8 +379,8 @@ function rebasePersistentPlayback(base, local, remote) {
 }
 
 function rebasePersistentLibrary(base, local, remote) {
-  // A proven playback-only delta can cross incoming tracking/metadata changes.
-  // Other simultaneous same-entry edits, including deletions, remain conflicts.
+  // Proven playback and disjoint episode edits can cross incoming changes.
+  // Competing edits and deletions retain their conflict checks.
   if (![base, local, remote].every(Array.isArray)) return null;
   const index = items => new Map(items.filter(item => item && item.id != null)
     .map(item => [String(item.id), item]));

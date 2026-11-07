@@ -37,11 +37,10 @@ export function readSettingsFile(text) {
 }
 
 export function createSyncLog({ storage, device, key = null }) {
-  // Without a key (the default) files are plain JSON, one change per line, readable on GitHub.
+  // Keep plain records indented so fields and individual edits are readable on GitHub.
   const encode = async (path, data) => {
     if (key) return encryptText(key, path, JSON.stringify(data));
-    const { changes = [], ...head } = data;
-    return `${JSON.stringify(head).slice(0, -1)},"changes":[\n${changes.map((change) => JSON.stringify(change)).join(",\n")}\n]}\n`;
+    return `${JSON.stringify(data, null, 2)}\n`;
   };
   const readJson = async (path, version) => {
     const text = await storage.read(path, version);

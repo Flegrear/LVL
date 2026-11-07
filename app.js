@@ -29,11 +29,11 @@ import { closePopupMenu, openMenuState, openPopupMenu, wirePopupMenu } from "./f
 import { renderLocaleOptions, renderSettings, renderSettingsTabs } from "./frontend/settings/settings-page.js";
 import { wireStorageSettings } from "./frontend/settings/storage-settings.js";
 import {
-  appUpdateCardClosed, appUpdateSettingsBusy, appUpdateView, closeUpdateNotificationPopover,
+  appUpdateSettingsBusy, appUpdateView, closeUpdateNotificationPopover, dismissAppUpdateCard,
   handleOutsideUpdateNotificationClick, openUpdateChangelog, openUpdateNotificationPopover,
   paintAppUpdateCard, paintUpdateNotifications, refreshAppUpdateSettings, reloadAfterAppUpdate,
   renderBundledChangelog, startAppUpdateFromCard, UPDATE_ALERTS_PREF, UPDATE_LATER_KEY,
-  UPDATE_PENDING_KEY, wireAppUpdateSettings, writeStoredJson,
+  wireAppUpdateSettings, writeStoredJson,
 } from "./frontend/updates/app-updates.js";
 import {
   absolutePlaybackSeconds, cancelTranscodeStart, clearPlayerControlsHideTimer,
@@ -372,11 +372,7 @@ $("#app-update-card-later")?.addEventListener("click", () => {
   writeStoredJson(UPDATE_LATER_KEY, { version: appUpdateView.version, at: Date.now() });
   paintAppUpdateCard();
 });
-$("#app-update-card-close")?.addEventListener("click", () => {
-  appUpdateCardClosed.add(`${appUpdateView.phase}:${appUpdateView.version}`);
-  if (appUpdateView.phase === "updated" || appUpdateView.phase === "failed") writeStoredJson(UPDATE_PENDING_KEY, null);
-  paintAppUpdateCard();
-});
+$("#app-update-card-close")?.addEventListener("click", dismissAppUpdateCard);
 $("#settings-notification-update-alerts")?.addEventListener("change", (event) => {
   localStorage.setItem(UPDATE_ALERTS_PREF, event.target.checked ? "1" : "0");
   paintUpdateNotifications();
