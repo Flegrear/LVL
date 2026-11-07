@@ -125,6 +125,16 @@ export function createRunnerEngine({ runner, dir, findExtension, remote }) {
   return {
     id: "runner",
     name: "Extension",
+    async browse(source, { mode = "popular", query = "", page = 1 } = {}) {
+      if (!["popular", "latest", "search"].includes(mode) || !Number.isInteger(page) || page < 1 || page > 20) throw failure("Invalid source page", 400);
+      const result = await using(source, () => runner.call(mode, { source: String(source.id), ...(mode === "search" ? { query } : {}), page }));
+      return {
+        hasNextPage: Boolean(result?.hasNextPage),
+        items: (result?.mangas || []).slice(0, SEARCH_LIMIT).map((manga) => ({
+          path: toLvlPath(manga.url), title: cleanTitle(manga.title), cover: absolute(manga.thumbnail, source.baseUrl),
+        })).filter((item) => item.title && item.path),
+      };
+    },
     async search(source, query) {
       const result = await using(source, () => runner.call("search", { source: String(source.id), query, page: 1 }));
       return (result?.mangas || []).slice(0, SEARCH_LIMIT).map((manga) => ({

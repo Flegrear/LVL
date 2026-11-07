@@ -137,6 +137,7 @@ export async function handleLocalRoutes(req, res, url, deps) {
     const input = await body();
     if (!FILE_ID.test(String(input?.fileId || ""))) return bad("Invalid file");
     const saved = local.saveProgress(input);
+    if (saved && (input.finished === true || Number(input.page) >= Number(input.pages) - 1)) deps.marks?.finish(local.file(input.fileId)?.work_id, input.fileId, true);
     if (saved) await deps.onProgress?.(local.file(input.fileId)?.work_id);
     return saved ? (ctx.json(res, 200, { file: saved }), true) : bad("Unknown file", 404);
   }

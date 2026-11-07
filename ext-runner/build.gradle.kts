@@ -2,6 +2,7 @@
 // (Android APKs) on the JVM with Suwayomi's Android layer, for LVL's Comics.
 // Build: node ext-runner/build.mjs (fetches the pinned sources, builds, makes the runtime).
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+import java.security.MessageDigest
 
 plugins {
     alias(libs.plugins.kotlin.jvm)
@@ -11,7 +12,8 @@ plugins {
 repositories {
     mavenCentral()
     google()
-    maven("https://github.com/Suwayomi/Suwayomi-Server/raw/android-jar/")
+    // This Android jar matches the pinned Suwayomi sources; the android-jar branch moves.
+    maven("https://raw.githubusercontent.com/Suwayomi/Suwayomi-Server/3983289d9481a8ba99c0b16350b27f41364906a2/")
     maven("https://jitpack.io")
 }
 
@@ -38,6 +40,17 @@ sourceSets {
 
 tasks.withType<JavaCompile>().configureEach {
     options.encoding = "UTF-8"
+    doFirst { verifyAndroidJar(classpath.files) }
+}
+
+fun verifyAndroidJar(files: Iterable<java.io.File>) {
+    val matches = files.filter { it.name == "android-jar-1.0.0.jar" }
+    check(matches.size == 1) { "Expected one Suwayomi android-jar:1.0.0 on the classpath" }
+    val digest = MessageDigest.getInstance("SHA-256").digest(matches.single().readBytes())
+        .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+    check(digest == "2743be4f4c9ba50f8c86ccc0769e5be5246542488b34e6085a2574ca8ac303e3") {
+        "Suwayomi android-jar:1.0.0 differs from the pinned Android compatibility API"
+    }
 }
 
 dependencies {
@@ -96,6 +109,7 @@ tasks.jar {
 // build/dist: lvl-ext-runner.jar + lib/*.jar (POM-only artifacts left out).
 tasks.register<Sync>("dist") {
     dependsOn(tasks.jar)
+    doFirst { verifyAndroidJar(configurations.runtimeClasspath.get().files) }
     from(tasks.jar)
     from(configurations.runtimeClasspath.map { files -> files.filter { it.name.endsWith(".jar") } }) { into("lib") }
     into(layout.buildDirectory.dir("dist"))

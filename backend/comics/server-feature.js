@@ -26,6 +26,7 @@ import { readSignedImage, signedImage } from "./ext-routes.js";
 import { LEGACY_ENGINE_PATHS } from "./runner-engine.js";
 import { createVideoComics, handleVideoRoutes, NOT_IN_LIBRARY } from "./video-comics.js";
 import { createMihonImport } from "./mihon-import.js";
+import { createChapterMarks } from "./chapter-marks.js";
 import nodePath from "node:path";
 
 const HOUR = 60 * 60 * 1000;
@@ -44,6 +45,7 @@ export const COMICS_ASSETS = Object.freeze([
   asset("frontend/comics/comics-api.js"),
   asset("frontend/comics/comics-render.js"),
   asset("frontend/comics/comics-browser.js"),
+  asset("frontend/comics/comics-provider.js"),
   asset("frontend/comics/comics-manga.js"),
   asset("frontend/comics/comics-video.js"),
   asset("frontend/comics/comics-title-subject.js"),
@@ -205,7 +207,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       function libraryEntries() {
         const counts = local.fileCounts();
         // readChapters: the highest chapter finished, for the card's progress in the Library's Comics filter.
-        const read = (id) => local.readSummary(id).chapters || 0;
+        const read = (id) => marks.summary(id).chapters || 0;
         const anilistEntries = store.library().map((entry) => ({ ...entry, files: counts.get(entry.id) || 0, readChapters: read(entry.id) }));
         backfillAnime(anilistEntries);
         const localEntries = local.localTitles().filter((row) => counts.get(row.id))
@@ -245,6 +247,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       const sourceBrowser = browserFactory({ dir: nodePath.join(ctx.dataRoot || ".", "runtime", "source-browser") });
       const remote = withBrowserFallback(remoteFactory(), sourceBrowser, { checkHost, isBotCheck });
       const ext = createExtSources({ db: ctx.db, now, adult: () => store.settings().showAdult });
+      const marks = createChapterMarks({ db: ctx.db, now });
       const downloads = downloadsFactory({
         folder: local.defaultFolder,
         onComplete: async (job) => {
@@ -264,8 +267,8 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
         const listed = await units(id, comic).catch(() => null);
         return { comic, mangadexId: listed?.value?.mangadexId || null };
       }
-      const sourceDeps = { ctx, sources, downloads, local, cached, images, workInfo, ext, remote,
-        linked: createLinkedSources({ db: ctx.db, now }), availability, chapterCandidates,
+      const sourceDeps = { ctx, sources, downloads, local, cached, images, workInfo, ext, remote, store,
+        linked: createLinkedSources({ db: ctx.db, now }), availability, chapterCandidates, marks,
         extensionRepos: extensionRepoCache, filterExtensions };
       // Entries chosen with LVL's old theme engines take the extension's path form.
       sourceDeps.linked.migrateLegacy(LEGACY_ENGINE_PATHS);
@@ -318,11 +321,11 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
           return ctx.json(res, 409, { error: "Comics is turned off. Turn it on in Settings › Comics.", code: "comics-off" }), true;
         }
         if (path === "/api/comics/import/mihon" || path === "/api/comics/import/mihon/apply") return (await mihonImport.handle(req, res, path, ctx), true);
-        if (await handleLocalRoutes(req, res, url, { ctx, local, ensureEntry, rescan, onProgress })) return true;
+        if (await handleLocalRoutes(req, res, url, { ctx, local, ensureEntry, rescan, onProgress, marks })) return true;
         if (await handleSourceRoutes(req, res, url, sourceDeps)) return true;
         const tracked = /^\/api\/comics\/work\/(anilist-[1-9]\d{0,9}|local-[0-9a-f]{12})\/(ratings|read)$/.exec(path);
         if (tracked) {
-          if (tracked[2] === "read") return req.method === "GET" ? (ctx.json(res, 200, local.readSummary(tracked[1])), true) : (ctx.methodNotAllowed(res, ["GET"]), true);
+          if (tracked[2] === "read") return req.method === "GET" ? (ctx.json(res, 200, marks.summary(tracked[1])), true) : (ctx.methodNotAllowed(res, ["GET"]), true);
           if (req.method === "GET") return ctx.json(res, 200, tracking.ratings(tracked[1])), true;
           if (req.method !== "PUT") return ctx.methodNotAllowed(res, ["GET", "PUT"]), true;
           let body;
@@ -342,7 +345,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
           const languages = String(url.searchParams.get("langs") || "en").split(",").filter((code) => /^[a-z]{2}(?:-[a-z0-9]{2,3})?$/.test(code)).slice(0, 4);
           try {
             const items = await newChapters({
-              entries: store.library(), languages, readSummary: (workId) => local.readSummary(workId),
+              entries: store.library(), languages, readSummary: (workId) => marks.summary(workId),
               unitsFor: async (id) => { const comic = (await details(id)).value; return comic.hidden ? null : (await units(id, comic)).value; },
               fetchLatest: async (mangadexId, langs) => (await cached(`md-latest:${mangadexId}|${langs.join(",")}`, 6 * HOUR, () => mangadexReader.latest(mangadexId, langs))).value,
             });
@@ -488,7 +491,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
             if (!COMIC_STATUSES.includes(String(body?.status))) return ctx.json(res, 400, { error: `Status must be one of ${COMIC_STATUSES.join(", ")}` }), true;
             if (!local.setLocalStatus(entry[1], body.status)) return ctx.json(res, 404, { error: "This title isn't available" }), true;
             const row = local.localTitle(entry[1]);
-            if (sourceOnly) return ctx.json(res, 200, { entry: sourceTitleEntry(row, local.readSummary(row.id).chapters || 0) }), true;
+            if (sourceOnly) return ctx.json(res, 200, { entry: sourceTitleEntry(row, marks.summary(row.id).chapters || 0) }), true;
             const files = local.files(row.id).length;
             return ctx.json(res, 200, { entry: { ...localTitleEntry(row, files, localCover(row.id)), files } }), true;
           }

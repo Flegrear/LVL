@@ -1,7 +1,7 @@
 {
   "version": "0.1.1",
   "versionCode": 206,
-  "desktopSourceVersion": "0.2.4",
+  "desktopSourceVersion": "0.2.5",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
     "Simplify fullscreen playback controls and keep audio choices open.",

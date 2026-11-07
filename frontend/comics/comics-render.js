@@ -4,6 +4,7 @@ import { bindShelves, buttonMarkup, cardMarkup, emptyMarkup, escapeHtml, refresh
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
 import { comicBrowserMarkup, featuredSlides, mountComicBrowser, showFeatured } from "./comics-browser.js";
+import { providerBrowserMarkup, mountProviderBrowser } from "./comics-provider.js";
 import { WORK_ID } from "../../shared/reading/ids.js";
 
 export const STATUS_LABELS = Object.freeze({
@@ -83,8 +84,10 @@ export const errorMarkup = (ctx, message) => emptyMarkup({
 export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => true, extraShelves = [] } = {}) {
   if (!rows) return;
   rows.setAttribute("aria-busy", "true");
-  rows.innerHTML = "<div class=\"comics-home-body\">" + skeletonShelfMarkup() + skeletonShelfMarkup() + "</div>";
+  rows.innerHTML = "<div class=\"comics-home-body\">" + providerBrowserMarkup() + skeletonShelfMarkup() + skeletonShelfMarkup() + "</div>";
   const body = rows.querySelector(".comics-home-body");
+  const provider = body.querySelector("[data-comic-provider]");
+  mountProviderBrowser(provider, ctx);
   if (hero) hero.hidden = true;
   let data;
   try {
@@ -93,6 +96,7 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
     if (isCurrent()) {
       rows.removeAttribute("aria-busy");
       body.innerHTML = errorMarkup(ctx, error.message) + comicBrowserMarkup();
+      body.prepend(provider);
       mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary: (comic) => Boolean(libraryEntry(comic)) });
     }
     return undefined;
@@ -109,6 +113,7 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
   }
   rows.removeAttribute("aria-busy");
   body.innerHTML = shelves.join("");
+  body.prepend(provider);
   showFeatured(hero, featuredSlides(sections, { inLibrary }));
   mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary });
   bindShelves(body);

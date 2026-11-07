@@ -12,12 +12,14 @@ export function createLinkedSources({ db, now = Date.now } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS comic_work_sources (work_id TEXT NOT NULL, kind TEXT NOT NULL, source_id TEXT NOT NULL, manga_id TEXT NOT NULL,
     name TEXT NOT NULL, title TEXT NOT NULL, lang TEXT NOT NULL DEFAULT '', added_at INTEGER NOT NULL, PRIMARY KEY (work_id, kind, source_id, manga_id))`);
   const list = db.prepare("SELECT * FROM comic_work_sources WHERE work_id = ? ORDER BY added_at");
+  const owners = db.prepare("SELECT work_id FROM comic_work_sources WHERE kind = 'ext' AND source_id = ? AND manga_id = ? ORDER BY added_at");
   const insert = db.prepare(`INSERT INTO comic_work_sources (work_id, kind, source_id, manga_id, name, title, lang, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(work_id, kind, source_id, manga_id) DO UPDATE SET name = excluded.name, title = excluded.title, lang = excluded.lang`);
   const remove = db.prepare("DELETE FROM comic_work_sources WHERE work_id = ? AND kind = ? AND source_id = ? AND manga_id = ?");
   const view = (row) => ({ key: `${row.kind}:${row.source_id}:${row.manga_id}`, kind: row.kind, sourceId: row.source_id, mangaId: row.manga_id, name: row.name, title: row.title, lang: row.lang, addedAt: row.added_at });
   return {
     list: (workId) => list.all(String(workId)).filter((row) => KINDS.has(row.kind)).map(view),
+    owners: (sourceId, mangaId) => owners.all(String(sourceId), String(mangaId)).map((row) => row.work_id),
     link(workId, { kind, sourceId = "", mangaId, name = "", title = "", lang = "" }) {
       if (!KINDS.has(kind)) throw new Error("Unknown source type");
       const manga = String(mangaId || "");

@@ -13,16 +13,17 @@
 // An incoming change older than this device's own copy (by the row's time) isn't applied; a
 // change this LVL can't place (an unknown status, a bad id) waits instead of being guessed.
 import { joinId, splitId } from "../../shared/sync/records.js";
-import { parseStamp } from "../../shared/sync/clock.js";
+import { compareStamps, parseStamp } from "../../shared/sync/clock.js";
 import { SOURCE_ID, WORK_ID } from "../../shared/reading/ids.js";
 import { cleanSiteSettings, extChapterId, validSitePath } from "../comics/ext-sources.js";
 import { NOT_IN_LIBRARY, SOURCE_TITLE_KEY } from "../comics/video-comics.js";
 import { COMIC_STATUSES } from "../comics/comics-store.js";
 import { safeHttpUrl } from "../comics/sources-store.js";
 import { localIdFor } from "../reader/local-library.js";
+import { ensureChapterChoices } from "../comics/chapter-marks.js";
 
 // Applied in this order, so a comic exists before its sources and progress.
-export const COMIC_TYPES = Object.freeze(["comic.repository", "comic.favorite", "comic.library", "comic.source", "comic.read", "comic.rating"]);
+export const COMIC_TYPES = Object.freeze(["comic.repository", "comic.favorite", "comic.library", "comic.source", "comic.read", "comic.choice", "comic.rating"]);
 export const present = (value) => value !== undefined && value !== null && value !== "";
 const compact = (object) => Object.fromEntries(Object.entries(object).filter(([, value]) => present(value)));
 const parse = (text) => { try { const value = JSON.parse(text || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; } };
@@ -34,11 +35,13 @@ const VIDEO_ID = /^tt\d{5,12}$/;
 // The rows each table adds or changes, as a cheap mark: counts and newest times.
 const MARKS = Object.freeze([
   ["comic_library", "COUNT(*), MAX(updated_at)"], ["comic_local_titles", "COUNT(*), MAX(updated_at)"], ["comic_source_titles", "COUNT(*), MAX(created_at)"],
-  ["comic_work_sources", "COUNT(*), MAX(added_at)"], ["comic_progress", "COUNT(*), MAX(updated_at)"], ["comic_ratings", "COUNT(*), MAX(updated_at)"],
+  ["comic_work_sources", "COUNT(*), MAX(added_at)"], ["comic_progress", "COUNT(*), MAX(updated_at)"],
+  ["comic_chapter_choices", "COUNT(*), MAX(changed_at)"], ["comic_ratings", "COUNT(*), MAX(updated_at)"],
   ["comic_ext_sources", "COUNT(*), MAX(added_at)"], ["comic_ext_settings", "COUNT(*), MAX(updated_at)"], ["comic_sources", "COUNT(*), MAX(added_at), SUM(enabled), SUM(removed)"],
 ]);
 
 export function createComicsData({ db, now = Date.now, random = () => Math.random().toString(36).slice(2, 6) }) {
+  ensureChapterChoices(db);
   const has = (table) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const get = (sql, ...args) => db.prepare(sql).get(...args);
@@ -150,20 +153,114 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     if (change.value === null) {
       run("DELETE FROM comic_progress WHERE file_id = ?", id);
       if (units) run("DELETE FROM comic_read_units WHERE unit_id = ?", id);
+      run("DELETE FROM comic_chapter_choices WHERE unit_id = ? AND read = 2", id);
       done.add(change);
       return;
     }
     const { workId, page, pages, finished = false, chapter, volume } = change.value;
     if (!WORK_ID.test(String(workId))) return;
+    const chosen = get("SELECT read, changed_at, sync_stamp FROM comic_chapter_choices WHERE work_id = ? AND unit_id = ?", workId, id);
+    if (chosen?.read === 2 && chosen.sync_stamp && compareStamps(chosen.sync_stamp, change.at) >= 0) return;
+    const unreadAfterThisRead = chosen?.read <= 0 && (chosen.sync_stamp
+      ? compareStamps(chosen.sync_stamp, change.at) >= 0 : Number(chosen.changed_at) > at);
     const total = Math.max(1, Math.min(Math.round(pages) || 1, 10_000));
     const spot = Math.max(0, Math.min(Math.round(page) || 0, total - 1));
     run("INSERT OR IGNORE INTO comic_ext_chapters (id, source_id, path, created_at) VALUES (?, ?, ?, ?)", id, source, path, at);
     // Finished stays finished, as when reading here.
     run(`INSERT INTO comic_progress (file_id, work_id, page, pages, finished, updated_at) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(file_id) DO UPDATE SET work_id = excluded.work_id, page = excluded.page, pages = excluded.pages,
-      finished = MAX(comic_progress.finished, excluded.finished), updated_at = excluded.updated_at`, id, workId, spot, total, finished ? 1 : 0, at);
-    if (finished && units) {
+      finished = CASE WHEN ? = 1 THEN 0 ELSE MAX(comic_progress.finished, excluded.finished) END,
+      updated_at = excluded.updated_at`, id, workId, unreadAfterThisRead && spot === total - 1 ? 0 : spot, total, finished && !unreadAfterThisRead ? 1 : 0, at, unreadAfterThisRead ? 1 : 0);
+    if (finished && !unreadAfterThisRead && units) {
       run("INSERT OR IGNORE INTO comic_read_units (work_id, unit_id, volume, chapter, finished_at) VALUES (?, ?, ?, ?, ?)", workId, id, unitNumber(volume), unitNumber(chapter), at);
+      if (chosen?.read <= 0) run("UPDATE comic_chapter_choices SET read = 1, changed_at = ?, sync_stamp = ? WHERE work_id = ? AND unit_id = ?", at, change.at, workId, id);
+      else if (!chosen || chosen.read === 2) run("INSERT INTO comic_chapter_choices (work_id, unit_id, read, changed_at, source_id, path, chapter, volume, sync_stamp) "
+        + "VALUES (?, ?, 2, ?, ?, ?, ?, ?, ?) ON CONFLICT(work_id, unit_id) DO UPDATE SET "
+        + "read = 2, changed_at = excluded.changed_at, source_id = excluded.source_id, path = excluded.path, "
+        + "chapter = excluded.chapter, volume = excluded.volume, sync_stamp = excluded.sync_stamp",
+      workId, id, at, source, path, unitNumber(chapter), unitNumber(volume), change.at);
+    }
+    done.add(change);
+  }
+
+  function exportChoices(out) {
+    if (!has("comic_chapter_choices")) return;
+    const withChapter = has("comic_ext_chapters");
+    const sql = "SELECT k.work_id, k.unit_id, k.read, k.changed_at, k.chapter, k.volume, "
+      + (withChapter ? "COALESCE(k.source_id, c.source_id) AS source_id, COALESCE(k.path, c.path) AS path" : "k.source_id, k.path")
+      + " FROM comic_chapter_choices k"
+      + (withChapter ? " LEFT JOIN comic_ext_chapters c ON c.id = k.unit_id" : "");
+    for (const row of all(sql)) {
+      if (row.read < 0 || row.read > 1) continue;
+      if (!WORK_ID.test(row.work_id) || !SOURCE_ID.test(String(row.source_id)) || !validSitePath(row.path) ||
+          extChapterId(row.source_id, row.path) !== row.unit_id || (present(row.chapter) && !unitNumber(row.chapter))) continue;
+      const key = joinId(row.work_id, row.source_id, row.path);
+      if (key.length > 600) continue;
+      out.push({ type: "comic.choice", id: key,
+        value: compact({ read: Boolean(row.read), chapter: row.chapter, volume: row.volume, updatedAt: row.changed_at }) });
+    }
+  }
+
+  function applyChoice(change, done) {
+    if (!has("comic_chapter_choices") || !has("comic_read_units")) return;
+    const [work = "", source = "", path = ""] = parts(change.id);
+    if (!WORK_ID.test(work) || !SOURCE_ID.test(source) || !validSitePath(path)) return;
+    const id = extChapterId(source, path);
+    const at = stampMs(change);
+    const prior = get("SELECT read, changed_at, sync_stamp, chapter, volume FROM comic_chapter_choices WHERE work_id = ? AND unit_id = ?", work, id);
+    // A locally authored choice has no sync_stamp until another device applies
+    // it. Once this device has sent it, the sync registry knows its full HLC:
+    // compare that rather than a millisecond timestamp that may be tied.
+    const sentStamp = !prior?.sync_stamp && has("sync_items")
+      ? parse(get("SELECT change_json FROM sync_items WHERE item_key = ?", `comic.choice ${change.id}`)?.change_json).at : null;
+    const previousStamp = prior?.sync_stamp || sentStamp;
+    if (prior && (previousStamp ? compareStamps(previousStamp, change.at) >= 0 : Number(prior.changed_at) > at)) return;
+    const progress = has("comic_progress")
+      ? get("SELECT finished, updated_at FROM comic_progress WHERE work_id = ? AND file_id = ?", work, id) : null;
+    const sentRead = has("sync_items")
+      ? parse(get("SELECT change_json FROM sync_items WHERE item_key = ?", `comic.read ${joinId(source, path)}`)?.change_json).at : null;
+    const readStamp = [prior?.read === 2 ? prior.sync_stamp : null, sentRead]
+      .filter(Boolean).sort(compareStamps).at(-1);
+    const unsentCompletion = progress?.finished && (readStamp
+      ? Number(progress.updated_at) > (parseStamp(readStamp)?.ms || 0) && Number(progress.updated_at) >= at
+      : Number(progress.updated_at) >= at);
+    if ((!change.value || change.value.read === false) && progress?.finished &&
+        (unsentCompletion || (readStamp && compareStamps(readStamp, change.at) > 0))) {
+      const unit = get("SELECT chapter, volume FROM comic_read_units WHERE work_id = ? AND unit_id = ?", work, id);
+      run("INSERT INTO comic_chapter_choices (work_id, unit_id, read, changed_at, source_id, path, chapter, volume, sync_stamp) "
+        + "VALUES (?, ?, 1, ?, ?, ?, ?, ?, NULL) ON CONFLICT(work_id, unit_id) DO UPDATE SET "
+        + "read = 1, changed_at = excluded.changed_at, source_id = excluded.source_id, path = excluded.path, "
+        + "chapter = excluded.chapter, volume = excluded.volume, sync_stamp = NULL",
+      work, id, Number(progress.updated_at), source, path,
+      unitNumber(unit?.chapter ?? change.value?.chapter ?? prior?.chapter), unitNumber(unit?.volume ?? change.value?.volume ?? prior?.volume));
+      return;
+    }
+    if (change.value === null) {
+      run("INSERT INTO comic_chapter_choices (work_id, unit_id, read, changed_at, source_id, path, sync_stamp) "
+        + "VALUES (?, ?, -1, ?, ?, ?, ?) ON CONFLICT(work_id, unit_id) DO UPDATE SET "
+        + "read = -1, changed_at = excluded.changed_at, source_id = excluded.source_id, path = excluded.path, sync_stamp = excluded.sync_stamp",
+      work, id, at, source, path, change.at);
+      const finished = has("comic_progress") ? get("SELECT finished FROM comic_progress WHERE work_id = ? AND file_id = ?", work, id)?.finished : 0;
+      if (!finished) run("DELETE FROM comic_read_units WHERE work_id = ? AND unit_id = ?", work, id);
+      done.add(change);
+      return;
+    }
+    const { read, chapter, volume } = change.value;
+    if (typeof read !== "boolean" || (present(chapter) && !unitNumber(chapter)) || (present(volume) && !unitNumber(volume))) return;
+    run("INSERT INTO comic_chapter_choices (work_id, unit_id, read, changed_at, source_id, path, chapter, volume, sync_stamp) "
+      + "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(work_id, unit_id) DO UPDATE SET "
+      + "read = excluded.read, changed_at = excluded.changed_at, source_id = excluded.source_id, path = excluded.path, "
+      + "chapter = excluded.chapter, volume = excluded.volume, sync_stamp = excluded.sync_stamp",
+    work, id, read ? 1 : 0, at, source, path, unitNumber(chapter), unitNumber(volume), change.at);
+    if (read) {
+      run("INSERT INTO comic_read_units (work_id, unit_id, volume, chapter, finished_at) VALUES (?, ?, ?, ?, ?) "
+        + "ON CONFLICT(work_id, unit_id) DO UPDATE SET volume = excluded.volume, chapter = excluded.chapter, finished_at = excluded.finished_at",
+      work, id, unitNumber(volume), unitNumber(chapter), at);
+    } else {
+      run("DELETE FROM comic_read_units WHERE work_id = ? AND unit_id = ?", work, id);
+      if (progress && Number(progress.updated_at) <= at)
+        run("UPDATE comic_progress SET finished = 0, page = CASE WHEN page >= pages - 1 THEN 0 ELSE page END, "
+          + "updated_at = ? WHERE work_id = ? AND file_id = ?", at, work, id);
     }
     done.add(change);
   }
@@ -242,10 +339,10 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
   }
 
   const appliers = { "comic.repository": applyRepository, "comic.favorite": applyFavorite, "comic.library": applyLibrary,
-    "comic.source": applySource, "comic.read": applyRead, "comic.rating": applyRating };
+    "comic.source": applySource, "comic.read": applyRead, "comic.choice": applyChoice, "comic.rating": applyRating };
   return {
     types: COMIC_TYPES,
-    export(out) { exportRepositories(out); exportFavorites(out); exportLibrary(out); exportSources(out); exportRead(out); exportRatings(out); },
+    export(out) { exportRepositories(out); exportFavorites(out); exportLibrary(out); exportSources(out); exportRead(out); exportChoices(out); exportRatings(out); },
     apply(change, done) { appliers[change.type]?.(change, done); },
     mark: () => MARKS.map(([table, columns]) => (has(table) ? Object.values(get(`SELECT ${columns} FROM ${table}`)).map((value) => value ?? 0).join(".") : "-")).join(","),
   };

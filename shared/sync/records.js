@@ -82,6 +82,10 @@ export const RECORD_TYPES = Object.freeze({
   // id: joinId(<source id>, <the chapter's path on the source>). chapter, volume: its numbers.
   "comic.read": { schema: 1, id: anyId, required: ["workId", "page", "pages"], fields: {
     workId: "string", page: count, pages: count, finished: "boolean", chapter: "string", volume: "string" } },
+  // Explicit read/unread intent for an extension chapter, even before its pages
+  // have been opened. id: joinId(<work>, <source id>, <chapter path>).
+  "comic.choice": { schema: 1, id: anyId, required: ["read"], fields: {
+    read: "boolean", chapter: "string", volume: "string", updatedAt: time } },
   // A volume rating (LVL Manga). id: joinId(<work id>, <volume>); volume "" is the overall score.
   "comic.rating": { schema: 1, id: anyId, required: ["score"], fields: { score: ["number", { min: 1, max: 10 }] } },
   // A favorite source (Settings › Comics). id: the source's id in its extension. The address is

@@ -68,7 +68,7 @@ export async function handleSourceRoutes(req, res, url, deps) {
   }
 
   // ---- Sources chosen for a comic; the chapter list stays the index
-  const linkedRoute = /^\/api\/comics\/work\/([^/]+)\/(linked|availability|chapter)$/.exec(p);
+  const linkedRoute = /^\/api\/comics\/work\/([^/]+)\/(linked|availability|chapter|mark)$/.exec(p);
   if (linkedRoute && WORK_ID.test(linkedRoute[1])) {
     const workId = linkedRoute[1];
     const chapterLists = async () => {
@@ -77,6 +77,16 @@ export async function handleSourceRoutes(req, res, url, deps) {
       return Promise.all(links.map(async (link) => {
         try { return { link, chapters: await extChapterList(link, deps, title) }; } catch (error) { return { link, chapters: [], error: error.message }; }
       }));
+    };
+    const selectableUnits = (lists) => {
+      const records = [];
+      for (const { link, chapters } of lists) {
+        for (const item of chapters) if (item.chapter && !item.externalUrl)
+          records.push({ id: item.id, sourceId: link.sourceId, path: item.path, chapter: item.chapter, volume: item.volume || null });
+      }
+      for (const file of local.files(workId)) if (file.chapter && (!file.chapterEnd || file.chapterEnd === file.chapter))
+        records.push({ id: file.id, sourceId: "local", chapter: file.chapter, volume: file.volume || null });
+      return records;
     };
     if (linkedRoute[2] === "linked") {
       if (req.method === "GET") return send(200, { linked: deps.linked.list(workId) });
@@ -94,10 +104,25 @@ export async function handleSourceRoutes(req, res, url, deps) {
       if (req.method === "DELETE") return send(200, { removed: deps.linked.unlink(workId, url.searchParams.get("key")), linked: deps.linked.list(workId) });
       return ctx.methodNotAllowed(res, ["GET", "POST", "DELETE"]), true;
     }
+    if (linkedRoute[2] === "mark") {
+      if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]), true;
+      let input;
+      try { input = await ctx.readJsonBody(req, 16384); } catch { return bad("Invalid chapter selection"); }
+      const ids = input?.ids;
+      if (typeof input?.read !== "boolean" || !Array.isArray(ids) || !ids.length || ids.length > 200 || new Set(ids).size !== ids.length) return bad("Select 1–200 chapters");
+      const available = new Map(selectableUnits(await chapterLists()).map((item) => [item.id, item]));
+      const selected = ids.map((id) => available.get(id));
+      if (selected.some((item) => !item)) return bad("The selected chapters changed. Refresh their sources.", 409);
+      try {
+        const result = deps.marks.set(workId, selected, input.read);
+        return send(200, { ...result, ...deps.marks.summary(workId) });
+      } catch (error) { return bad(error.message); }
+    }
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
     if (linkedRoute[2] === "availability") {
       const lists = await chapterLists();
-      return send(200, { counts: deps.availability(lists), chapters: sourceChapters(lists), sources: lists.map((item) => ({ ...item.link, chapters: item.chapters.length, error: item.error || null })) });
+      return send(200, { counts: deps.availability(lists), chapters: sourceChapters(lists), units: selectableUnits(lists),
+        sources: lists.map((item) => ({ ...item.link, chapters: item.chapters.length, error: item.error || null })) });
     }
     const chapter = String(url.searchParams.get("chapter") || "");
     if (!/^\d{1,5}(?:\.\d{1,2})?$/.test(chapter)) return bad("Invalid chapter");
@@ -143,9 +168,10 @@ export async function handleSourceRoutes(req, res, url, deps) {
     if (remote[2] === undefined) {
       const workId = WORK_ID.test(url.searchParams.get("work") || "") ? url.searchParams.get("work") : null;
       const progress = local.remoteProgress(remote[1]);
+      const unread = workId && deps.marks?.isExplicitUnread(workId, remote[1]);
       // Opened from its address alone (a reload, a shared link): which chapter of the work this is.
       const about = workId && url.searchParams.get("describe") === "1" ? await describeRemoteChapter(workId, remote[1], deps).catch(() => null) : null;
-      return send(200, { file: { id: remote[1], name: url.searchParams.get("name")?.slice(0, 120) || "", progress: progress ? { page: progress.page, pages: progress.pages, finished: Boolean(progress.finished) } : null }, workId, pages: pages.length, prev: null, next: null,
+      return send(200, { file: { id: remote[1], name: url.searchParams.get("name")?.slice(0, 120) || "", progress: progress ? { page: progress.page, pages: progress.pages, finished: Boolean(progress.finished) && !unread } : null }, workId, pages: pages.length, prev: null, next: null,
         ...(about || {}), ...(pages[0]?.trim === "credit-strip" ? { trim: "credit-strip" } : {}) });
     }
     const target = pages[Number(remote[2])];
@@ -169,6 +195,7 @@ export async function handleSourceRoutes(req, res, url, deps) {
     if (req.method !== "PUT") return ctx.methodNotAllowed(res, ["PUT"]), true;
     const input = await body() || {};
     const saved = local.saveRemoteProgress(input);
+    if (saved && Number(input.page) >= Number(input.pages) - 1) deps.marks?.finish(input.workId, input.id, true);
     if (saved) await deps.onProgress?.(input.workId);
     return saved ? send(200, { progress: saved }) : bad("Invalid chapter");
   }

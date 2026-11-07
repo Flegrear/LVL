@@ -18,6 +18,16 @@ const STATUS_ORDER = ["CURRENT", "PLANNING", "COMPLETED", "PAUSED", "DROPPED", "
 // Blocks on screen by work id, so the hero's Continue reading can use the list.
 export const mangaBlocks = new Map();
 
+// Respect gaps created by explicit unread choices rather than assuming that
+// every chapter before the furthest finished chapter is finished too.
+export function continueReadingFromList(chapterList, { onEmpty = () => {}, onChapters = () => {} } = {}) {
+  const chapters = chapterList?.readingOrder || [];
+  if (!chapters.length) return onEmpty();
+  const next = chapters.find((item) => !chapterList.isRead(item)) || chapters.at(-1);
+  onChapters();
+  return chapterList.read(next.chapter, next.volume ?? "");
+}
+
 export function statusSelectMarkup(current, { label = "Library status" } = {}) {
   const options = [`<option value=""${current ? "" : " selected"}>${escapeHtml(t("Not in Library"))}</option>`]
     .concat(STATUS_ORDER.map((status) => `<option value="${status}"${status === current ? " selected" : ""}>${escapeHtml(t(STATUS_LABELS[status]))}</option>`));
@@ -239,17 +249,10 @@ export function mountMangaBlock(element, ctx, { workId, comic, index, files = []
     onRead: open,
     onChooseSources: () => show("sources"),
   });
-  // First unread chapter after the furthest one read, resolved like any chapter.
-  block.continueReading = () => {
-    const chapters = block.chapterList?.readingOrder || [];
-    if (!chapters.length) return show("sources");
-    const read = block.chapterList.readChapters();
-    let last = -1;
-    chapters.forEach((item, at) => { if (read.has(item.chapter)) last = at; });
-    const next = chapters[last + 1] || chapters[chapters.length - 1];
-    show("chapters");
-    return block.chapterList.read(next.chapter, next.volume ?? "");
-  };
+  block.continueReading = () => continueReadingFromList(block.chapterList, {
+    onEmpty: () => show("sources"),
+    onChapters: () => show("chapters"),
+  });
   show(view);
   bindTabs(element.querySelector(".ui-tabs"), { onChange: (value) => show(value) });
   element.querySelector("[data-manga-continue]")?.addEventListener("click", () => { void block.continueReading(); });

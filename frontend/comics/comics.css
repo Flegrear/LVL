@@ -69,8 +69,15 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
 .comic-volume-head__count { margin-left:auto; color:var(--ui-muted); font-size:13px; font-weight:500; white-space:nowrap; }
 @media (max-width:680px) { .comic-chapter-list .catalog-chapter-row { grid-template-columns:2.5em minmax(0, 1fr); } .comic-chapter-list .catalog-chapter-actions { grid-column:2; } }
 .comic-volumes__loading { height:72px; border-radius:var(--ui-radius-md); }
-.comic-chapter-group { display:none; align-items:center; gap:8px; color:var(--ui-text-2); font:500 13px/1.4 var(--font-sans); cursor:pointer; }
+.comic-chapter-group { display:flex; align-items:center; gap:8px; min-height:36px; color:var(--ui-text-2); font:500 13px/1.4 var(--font-sans); cursor:pointer; }
 .comic-chapter-group input { width:16px; height:16px; accent-color:var(--ui-inverse); }
+.comic-chapter-selection { display:flex; align-items:center; flex-wrap:wrap; gap:8px; }
+.comic-chapter-selection__actions { display:inline-flex; align-items:center; flex-wrap:wrap; gap:6px; }
+.comic-chapter-selection__actions[hidden] { display:none; }
+.comic-chapter-selection [data-chapter-selection-count] { min-width:72px; color:var(--ui-muted); font-size:12px; }
+.comic-chapter-row:has([data-chapter-select]) .catalog-chapter-row { grid-template-columns:18px 3.5em minmax(0,1fr) auto; }
+.comic-chapter-row [data-chapter-select] { width:18px; height:18px; margin:0; accent-color:var(--ui-inverse); }
+.comic-chapter-row [data-chapter-select]:focus-visible { outline:2px solid var(--ui-inverse); outline-offset:2px; }
 .comic-chapter-availability { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; padding:10px 12px; margin-bottom:10px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-sm); color:var(--ui-text-2); }
 .comic-chapter-availability p { margin:0; }
 .comic-chapter-availability small { color:var(--ui-muted); }
@@ -79,6 +86,37 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
   .title-section__head:has(.comic-chapter-group) { flex-wrap:wrap; row-gap:6px; }
   .comic-head-tools:has(.comic-chapter-group) { gap:8px; }
   .comic-chapter-tools { flex-wrap:wrap; min-width:0; }
+}
+@media (max-width:680px) {
+  .comic-chapter-row:has([data-chapter-select]) .catalog-chapter-row { grid-template-columns:18px 2.5em minmax(0,1fr); }
+  .comic-chapter-row:has([data-chapter-select]) .catalog-chapter-actions { grid-column:3; }
+}
+
+/* Source-first exploration is independent of AniList catalog discovery. */
+.comic-provider { display:grid; gap:14px; margin:0 var(--ui-gutter); padding:16px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-md); }
+.comic-provider__header { display:flex; flex-wrap:wrap; align-items:baseline; gap:8px 16px; }
+.comic-provider__header h2 { margin:0; font-size:19px; }
+.comic-provider__header span, .comic-provider__status { color:var(--ui-muted); font-size:13px; }
+.comic-provider__tools, .comic-provider__modes, .comic-provider [data-provider-query] { display:flex; flex-wrap:wrap; align-items:end; gap:8px; }
+.comic-provider__tools label { display:grid; gap:6px; min-width:210px; font-size:13px; }
+.comic-provider__tools select, .comic-provider [data-provider-query] input { max-width:min(100%, 420px); min-height:36px; padding:6px 12px; border:1px solid var(--ui-line); border-radius:var(--ui-radius-sm); background:var(--ui-surface); color:var(--ui-text); font:inherit; }
+.comic-provider [data-provider-mode][aria-pressed="true"] { background:var(--ui-inverse); color:var(--ui-bg); }
+.comic-provider [data-provider-query][hidden] { display:none; }
+.comic-provider__status { margin:0; }
+.comic-provider__status.is-error { color:#ffb4b4; }
+.comic-provider__grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:10px; }
+.comic-provider-card { display:flex; gap:12px; padding:10px; border:1px solid var(--ui-line-subtle); border-radius:var(--ui-radius-sm); background:var(--ui-surface); min-width:0; }
+.comic-provider-card__art { flex:0 0 70px; aspect-ratio:2/3; background:#111; }
+.comic-provider-card__art img { width:100%; height:100%; object-fit:contain; }
+.comic-provider-card__copy { display:flex; flex-direction:column; align-items:start; gap:6px; min-width:0; }
+.comic-provider-card__copy strong { overflow-wrap:anywhere; font-size:14px; }
+.comic-provider-card__copy small { color:var(--ui-muted); }
+.comic-provider__footer { display:flex; justify-content:center; }
+@media(max-width:680px) {
+  .comic-provider { padding:12px; }
+  .comic-provider__tools label { width:100%; }
+  .comic-provider__tools select { width:100%; }
+  .comic-provider__grid { grid-template-columns:minmax(0,1fr); }
 }
 .comic-candidates { display:grid; gap:6px; margin:0; padding:0 16px 14px; list-style:none; }
 .comic-candidates li { display:flex; align-items:center; gap:12px; padding:8px 12px; border:1px solid var(--ui-line-subtle); border-radius:var(--ui-radius-sm); }

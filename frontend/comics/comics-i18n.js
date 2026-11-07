@@ -1,5 +1,16 @@
 // Spanish strings for Comics and the reader, registered through the feature host.
 export const COMICS_ES = Object.freeze({
+  "Browse a source": "Explorar una fuente", "Choose a provider to see its titles.": "Elegí una fuente para ver sus títulos.",
+  "Choose source": "Elegir fuente", "Browse mode": "Modo de exploración", Popular: "Populares", Latest: "Recientes",
+  "Search this source": "Buscar en esta fuente", "Source title": "Título de la fuente",
+  "Add to Library": "Agregar a la biblioteca", "Choose a source to browse.": "Elegí una fuente para explorar.",
+  "Choose Popular, Latest or Search.": "Elegí Populares, Recientes o Buscar.",
+  "Enter a title to search this source.": "Escribí un título para buscar en esta fuente.",
+  "Add favorite sources in Settings › Comics.": "Agregá fuentes favoritas en Configuración › Cómics.",
+  "Select chapters": "Seleccionar capítulos", "Cancel selection": "Cancelar selección",
+  "Select shown": "Seleccionar visibles", "Mark read": "Marcar leídos", "Mark unread": "Marcar no leídos",
+  "{count} selected": "{count} seleccionados", "Select chapter {number}": "Seleccionar capítulo {number}",
+  "{count} titles": "{count} títulos",
   Comics: "Cómics", Comic: "Cómic", "Trending now": "Tendencias", "Popular manga": "Manga popular", "Popular manhwa": "Manhwa popular",
   "Popular manhua": "Manhua popular", "Not animated": "Sin anime", "Continue reading": "Seguir leyendo", "New chapters": "Capítulos nuevos",
   "Search comics": "Buscar cómics", "All genres": "Todos los géneros", Genre: "Género", Search: "Buscar", Clear: "Borrar",

@@ -82,14 +82,14 @@ export function chapterPresentation(items, { grouped = true, descending = false 
 
 // A chapter row: number, title and facts, then Read and Sources. No images
 //: chapters read as a list.
-export function chapterRowMarkup(item, { read, available, onDisk, flat = false } = {}) {
+export function chapterRowMarkup(item, { read, available, onDisk, flat = false, selectable = false, selected = false, selecting = false, key = "" } = {}) {
   const label = t("Chapter {number}", { number: item.chapter });
   // The number is on the left and the volume in its heading; the facts say only what's not shown.
   const facts = flat && item.volume || read
     ? metaMarkup([...(flat && item.volume ? [t("Volume {number}", { number: item.volume })] : []), ...(read ? [t("Read")] : [])]) : "";
   const sourcesLabel = available === 1 ? t("1 source") : available ? t("{count} sources", { count: available }) : t("Sources");
-  return `<li class="catalog-chapter comic-chapter-row${read ? " is-watched" : ""}${onDisk ? " is-saved" : ""}" data-chapter="${escapeHtml(item.chapter)}" data-volume="${escapeHtml(item.volume || "")}">`
-    + `<div class="catalog-chapter-row"><span class="comic-chapter-number" aria-hidden="true">${escapeHtml(item.chapter)}</span>`
+  return `<li class="catalog-chapter comic-chapter-row${read ? " is-watched" : ""}${onDisk ? " is-saved" : ""}" data-chapter="${escapeHtml(item.chapter)}" data-volume="${escapeHtml(item.volume || "")}"${selecting ? ` data-chapter-key="${escapeHtml(key)}"` : ""}>`
+    + `<div class="catalog-chapter-row">${selecting ? `<input type="checkbox" data-chapter-select aria-label="${escapeHtml(t("Select chapter {number}", { number: item.chapter }))}"${selected ? " checked" : ""}${selectable ? "" : " disabled"} />` : ""}<span class="comic-chapter-number" aria-hidden="true">${escapeHtml(item.chapter)}</span>`
     + `<div class="catalog-chapter-copy"><strong>${escapeHtml(item.title || label)}</strong>${facts ? `<span class="catalog-chapter-code">${facts}</span>` : ""}</div>`
     + `<div class="catalog-chapter-actions"><button class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-comic-read-chapter="${escapeHtml(item.chapter)}">${icon("play")}<span>${escapeHtml(t("Read"))}</span></button>`
     + `<button class="ui-btn ui-btn--ghost ui-btn--sm catalog-chapter-toggle" type="button" data-comic-chapter-sources aria-expanded="false"><span>${escapeHtml(sourcesLabel)}</span>${icon("chevron-down")}</button></div></div>`
@@ -120,6 +120,14 @@ export function saveGroupPreference(workId, grouped, store) {
 }
 const groupMarkup = (grouped) => `<label class="comic-chapter-group" data-chapter-group-field><input type="checkbox" data-chapter-group${grouped ? " checked" : ""} />`
   + `<span>${escapeHtml(t("Group by volume"))}</span></label>`;
+const selectionMarkup = () => `<div class="comic-chapter-selection" data-chapter-selection-toolbar>
+  ${buttonMarkup({ label: "Select chapters", size: "sm", variant: "ghost", attrs: { "data-chapter-select-mode": "" } })}
+  <span class="comic-chapter-selection__actions" data-chapter-selection-actions hidden>
+  <span data-chapter-selection-count aria-live="polite"></span>
+  ${buttonMarkup({ label: "Select shown", size: "sm", variant: "ghost", attrs: { "data-chapter-select-shown": "" } })}
+  ${buttonMarkup({ label: "Mark read", size: "sm", variant: "secondary", attrs: { "data-chapter-mark": "read" } })}
+  ${buttonMarkup({ label: "Mark unread", size: "sm", variant: "secondary", attrs: { "data-chapter-mark": "unread" } })}
+  </span></div>`;
 
 // Whether a volume's chapters are hidden: volumes start closed, "Not in a volume yet"
 // (key "") starts open; opened: the user's choices (key -> true/false). A list with
@@ -139,12 +147,13 @@ export function mountChapterList(container, options) {
   let volumeCount = countVolumes();
   const phoneQuery = globalThis.matchMedia?.("(max-width:680px)") || null;
   let groupByVolume = groupPreference(workId, { phone: phoneQuery?.matches === true });
-  const grouped = () => !phoneQuery?.matches || groupByVolume;
+  const grouped = () => groupByVolume;
   // Volumes start closed; "Not in a volume yet" (the newest
   // chapters) starts open. What the user opens or closes is kept per comic.
   const volumesKey = `lvl-comics-volumes-v2:${workId}`;
   const savedVolumes = (() => { try { const value = JSON.parse(localStorage.getItem(volumesKey) || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; } })();
-  const state = { query: "", sort: "asc", shown: PAGE, read: new Set(), volumesRead: new Set(), available: {},
+  const state = { query: "", sort: "asc", shown: PAGE, read: new Set(), volumesRead: new Set(), unitStates: new Map(), exactRead: false, units: [],
+    selecting: false, selected: new Set(), saving: false, available: {},
     availabilityError: "", failedSources: [], opened: new Map(Object.entries(savedVolumes).map(([key, open]) => [String(key), open === true])) };
   const isCollapsed = (key) => volumeCollapsed(key, state.opened, volumeCount);
   const setVolumeOpen = (key, open) => {
@@ -157,8 +166,8 @@ export function mountChapterList(container, options) {
   }
   const volumesOnDisk = new Set(files.filter((file) => !file.chapter && file.volume).map((file) => String(file.volume)));
   const note = `<p class="catalog-chapters-note" data-chapter-note></p>`;
-  if (head) head.innerHTML = note + groupMarkup(groupByVolume) + (all.length > 12 ? toolsMarkup() : "");
-  container.innerHTML = (head ? "" : `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("Chapters"))}</h2>${note}${groupMarkup(groupByVolume)}${all.length > 12 ? toolsMarkup() : ""}</div>`)
+  if (head) head.innerHTML = note + groupMarkup(groupByVolume) + selectionMarkup() + (all.length > 12 ? toolsMarkup() : "");
+  container.innerHTML = (head ? "" : `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("Chapters"))}</h2>${note}${groupMarkup(groupByVolume)}${selectionMarkup()}${all.length > 12 ? toolsMarkup() : ""}</div>`)
     + `<div class="comic-chapter-body"></div>`;
   const scope = head || container;
   const body = container.querySelector(".comic-chapter-body");
@@ -169,13 +178,40 @@ export function mountChapterList(container, options) {
     return chapterPresentation(filtered, { grouped: grouped(), descending: state.sort === "desc" }).flatMap((group) => group.items);
   }
 
+  const keyOf = (item) => `${item.chapter}\n${item.volume ?? ""}`;
+  const unitsFor = (item) => {
+    const matches = state.units.filter((unit) => unit.chapter === item.chapter);
+    const volume = String(item.volume ?? "");
+    const exact = matches.filter((unit) => String(unit.volume ?? "") === volume);
+    // A source missing volume metadata maps to the row only when the chapter
+    // number appears once. Duplicated chapter labels need explicit volumes.
+    const ambiguous = all.filter((candidate) => candidate.chapter === item.chapter).length > 1;
+    return exact.length ? exact : ambiguous ? [] : matches;
+  };
+  const chapterRead = (item) => {
+    if (!state.exactRead) return state.read.has(item.chapter) || Boolean(item.volume && state.volumesRead.has(item.volume));
+    const units = unitsFor(item);
+    if (units.length) return units.some((unit) => state.unitStates.get(unit.id) === true);
+    if (all.filter((candidate) => candidate.chapter === item.chapter).length > 1) return false;
+    return state.read.has(item.chapter) || Boolean(item.volume && state.volumesRead.has(item.volume));
+  };
+
   function paint() {
     const items = list();
-    const readCount = all.filter((item) => state.read.has(item.chapter) || (item.volume && state.volumesRead.has(item.volume))).length;
+    const readCount = all.filter(chapterRead).length;
     scope.querySelector("[data-chapter-note]").innerHTML = escapeHtml(t("{count} chapters", { count: all.length }))
       + (volumeCount ? `<span>${escapeHtml(t("{count} volumes", { count: volumeCount }))}</span>` : "")
       + (readCount ? `<span>${escapeHtml(t("{count} read", { count: readCount }))}</span>` : "");
-    const isRead = (item) => state.read.has(item.chapter) || Boolean(item.volume && state.volumesRead.has(item.volume));
+    const isRead = chapterRead;
+    const actions = scope.querySelector("[data-chapter-selection-actions]");
+    if (actions) {
+      actions.hidden = !state.selecting;
+      const counter = actions.querySelector("[data-chapter-selection-count]");
+      if (counter) counter.textContent = t("{count} selected", { count: state.selected.size });
+      for (const button of actions.querySelectorAll("[data-chapter-mark]")) button.disabled = !state.selected.size || state.saving;
+    }
+    const selectButton = scope.querySelector("[data-chapter-select-mode]");
+    if (selectButton) selectButton.querySelector("span").textContent = t(state.selecting ? "Cancel selection" : "Select chapters");
     // Explicit flat mode never makes volume headings, even when metadata has
     // conflicting or missing numbers. Desktop retains its previous grouping.
     const groups = chapterPresentation(items, { grouped: grouped() });
@@ -196,7 +232,8 @@ export function mountChapterList(container, options) {
       if (!take.length) return heading;
       return heading + take.map((item) => {
         const local = onDisk.has(item.chapter) || (item.volume && volumesOnDisk.has(String(item.volume)));
-        return chapterRowMarkup(item, { read: isRead(item), available: (state.available[item.chapter] || 0) + (local ? 1 : 0), onDisk: local, flat: !grouped() });
+        return chapterRowMarkup(item, { read: isRead(item), available: (state.available[item.chapter] || 0) + (local ? 1 : 0), onDisk: local, flat: !grouped(),
+          selecting: state.selecting, selectable: unitsFor(item).length > 0, selected: state.selected.has(keyOf(item)), key: keyOf(item) });
       }).join("");
     }).join("");
     const status = state.availabilityError || state.failedSources.length
@@ -240,6 +277,15 @@ export function mountChapterList(container, options) {
     state.shown = PAGE;
     paint();
   });
+  container.addEventListener("change", (event) => {
+    if (!event.target.matches("[data-chapter-select]")) return;
+    const key = event.target.closest("[data-chapter-key]")?.dataset.chapterKey;
+    if (!key) return;
+    if (event.target.checked) state.selected.add(key); else state.selected.delete(key);
+    paint();
+    const next = [...body.querySelectorAll("[data-chapter-key]")].find((row) => row.dataset.chapterKey === key);
+    next?.querySelector("[data-chapter-select]")?.focus();
+  });
   scope.addEventListener("change", (event) => {
     if (event.target.matches("[data-chapter-group]")) {
       // Keep the chapter whose Sources panel is open visible across a layout
@@ -262,7 +308,44 @@ export function mountChapterList(container, options) {
     state.sort = event.target.value;
     paint();
   });
+  const selectionClick = async (event) => {
+    if (event.target.closest("[data-chapter-select-mode]")) {
+      state.selecting = !state.selecting;
+      state.selected.clear();
+      return paint();
+    }
+    if (event.target.closest("[data-chapter-select-shown]")) {
+      for (const row of body.querySelectorAll(".comic-chapter-row[data-chapter-key]")) {
+        const item = all.find((candidate) => keyOf(candidate) === row.dataset.chapterKey);
+        if (item && unitsFor(item).length) state.selected.add(keyOf(item));
+      }
+      return paint();
+    }
+    const mark = event.target.closest("[data-chapter-mark]");
+    if (mark && state.selected.size && !state.saving) {
+      const ids = [...new Set(all.filter((item) => state.selected.has(keyOf(item))).flatMap((item) => unitsFor(item).map((unit) => unit.id)))];
+      if (!ids.length) return;
+      state.saving = true;
+      paint();
+      try {
+        // Server verifies every requested unit against this comic's live linked
+        // sources before changing anything.
+        const response = await comicsApi.markChapters(workId, ids, mark.dataset.chapterMark === "read");
+        state.unitStates = new Map((response.unitStates || []).map((unit) => [unit.id, unit.read]));
+        state.exactRead = Array.isArray(response.unitStates);
+        state.read = new Set(response.readChapters || []);
+        state.volumesRead = new Set(response.readVolumes || []);
+        state.selected.clear();
+        state.selecting = false;
+      } catch (error) { toast(error.message); }
+      finally { state.saving = false; paint(); }
+      return;
+    }
+    return undefined;
+  };
+  scope.addEventListener("click", selectionClick);
   container.addEventListener("click", async (event) => {
+    if (scope === container && event.target.closest("[data-chapter-selection-toolbar]")) return;
     if (event.target.closest("[data-chapter-retry]")) return void loadAvailability();
     if (event.target.closest("[data-chapters-more]")) { state.shown += PAGE; return paint(); }
     const volumeToggle = event.target.closest("[data-volume-toggle]");
@@ -294,6 +377,7 @@ export function mountChapterList(container, options) {
       state.failedSources = (result.sources || []).filter((source) => source.error).map((source) => source.name || source.sourceId || t("Source")).slice(0, 8);
       state.available = result.counts || {};
       all = mergeSourceChapters(indexItems, result.chapters || []);
+      state.units = result.units || [];
       volumeCount = countVolumes();
       if (all.length > 12 && !scope.querySelector("[data-chapter-search]")) scope.querySelector("[data-chapter-group-field]")?.insertAdjacentHTML("afterend", toolsMarkup());
       if (container.isConnected) paint();
@@ -309,6 +393,8 @@ export function mountChapterList(container, options) {
   comicsApi.read(workId).then((summary) => {
     state.read = new Set(summary.readChapters || []);
     state.volumesRead = new Set(summary.readVolumes || []);
+    state.unitStates = new Map((summary.unitStates || []).map((item) => [item.id, item.read]));
+    state.exactRead = Array.isArray(summary.unitStates);
     if (container.isConnected) paint();
   }).catch(() => {});
   void loadAvailability();
@@ -317,6 +403,7 @@ export function mountChapterList(container, options) {
     get readingOrder() { return chapterPresentation(all, { grouped: grouped() }).flatMap((group) => group.items); },
     refresh: loadAvailability,
     readChapters: () => state.read,
+    isRead: chapterRead,
     // Opens a chapter as a click on its Read button would.
     async read(chapter, volume = null) {
       const target = all.find((item) => item.chapter === chapter && (volume === null || String(item.volume ?? "") === String(volume)))

@@ -13,6 +13,7 @@ import { validSitePath } from "./ext-sources.js";
 import { normalizeSeriesName } from "../../shared/reading/release-name.js";
 import { sniffImage } from "../reader/pages.js";
 import { SOURCE_ID, WORK_ID } from "../../shared/reading/ids.js";
+import { localIdFor } from "../reader/local-library.js";
 
 const MAX_IMAGE = 25 * 1024 * 1024;
 const signingKey = crypto.randomBytes(32);
@@ -183,7 +184,7 @@ export async function extChapterList(link, deps, title = "") {
     // "ext-chapters3": lists from LVL's old theme engines used other paths than the extensions.
     // A chosen source's list older than an hour is used at once and refreshed in the background.
     const list = (await deps.cached(`ext-chapters3:${source.cacheKey || source.id}:${link.mangaId}`, 60 * 60_000, () => engine.chapters(source, link.mangaId, { remote: deps.remote, title }), { background: true })).value;
-    return list.map((item) => ({ id: deps.ext.chapterId(source.id, item.path), chapter: item.chapter, volume: item.volume, title: item.name, language: source.lang, group: item.group || "", publishedAt: item.date }));
+    return list.map((item) => ({ id: deps.ext.chapterId(source.id, item.path), path: item.path, chapter: item.chapter, volume: item.volume, title: item.name, language: source.lang, group: item.group || "", publishedAt: item.date }));
   });
 }
 
@@ -243,6 +244,83 @@ export async function handleExtRoutes(req, res, url, deps) {
   const p = url.pathname;
   const send = (status, payload) => (ctx.json(res, status, payload), true);
   const bad = (message, status = 400) => send(status, { error: message });
+  const libraryOwner = (sourceId, mangaId) => (deps.linked?.owners?.(sourceId, mangaId) || []).find((id) => {
+    if (id.startsWith("anilist-")) return Boolean(deps.store?.libraryGet(Number(id.slice(8))));
+    const local = deps.local.localTitle(id);
+    return Boolean(local && local.status !== "NONE");
+  }) || null;
+
+  if (p === "/api/comics/ext/browse") {
+    if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
+    const sourceId = String(url.searchParams.get("source") || "");
+    const mode = String(url.searchParams.get("mode") || "popular");
+    const query = String(url.searchParams.get("q") || "").trim();
+    const rawPage = String(url.searchParams.get("page") || "1");
+    if (!SOURCE_ID.test(sourceId) || !["popular", "latest", "search"].includes(mode) ||
+      !/^(?:[1-9]|1\d|20)$/.test(rawPage) || query.length > 80 || (mode === "search" && !query)) return bad("Invalid source browse request");
+    if (!deps.ext.favorite(sourceId)) return bad("Choose a favorite source first", 404);
+    await syncFavorites(deps).catch(() => []);
+    let source;
+    try { source = await ensureSynced(deps, deps.ext.favorite(sourceId)); }
+    catch (error) { return send(200, { status: "error", error: String(error.message).slice(0, 220), items: [], hasNextPage: false }); }
+    if (!source) return bad("This source is no longer available", 404);
+    const unavailable = { source: publicFavorite(source, deps), status: "unsupported", items: [], hasNextPage: false };
+    const engine = engineOf(source, deps);
+    if (!engine || (!engine.browse && (mode !== "search" || Number(rawPage) !== 1))) return send(200, unavailable);
+    try {
+      const result = await withFreshSource(deps, sourceId, async (fresh) => {
+        source = fresh;
+        const current = engineOf(fresh, deps);
+        if (current?.browse) return current.browse(fresh, { mode, query, page: Number(rawPage) });
+        if (mode !== "search" || Number(rawPage) !== 1 || !current?.search) return null;
+        return { items: await current.search(fresh, query, { remote: deps.remote }), hasNextPage: false };
+      });
+      if (!result) return send(200, unavailable);
+      const items = (result.items || []).filter((item) => validSitePath(item.path) && item.title).slice(0, 20);
+      return send(200, { source: publicFavorite(source, deps), status: "ok", page: Number(rawPage),
+        hasNextPage: Boolean(result.hasNextPage) && Number(rawPage) < 20,
+        items: items.map((item) => {
+          const key = `mihon:${source.id}:${item.path}`;
+          const local = key.length <= 300 ? deps.local.localTitle(localIdFor(key)) : null;
+          return {
+            path: item.path, title: String(item.title).slice(0, 200), cover: signedImage(item.cover, source.id),
+            workId: libraryOwner(source.id, item.path) || (local && local.status !== "NONE" ? local.id : null),
+          };
+        }) });
+    } catch (error) {
+      return send(200, { source: publicFavorite(source, deps), status: error.code === "blocked" || error.code === "check-open" ? "blocked" : "error",
+        error: String(error.message).slice(0, 220), items: [], hasNextPage: false });
+    }
+  }
+
+  if (p === "/api/comics/ext/browse/open") {
+    if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]), true;
+    let body;
+    try { body = await ctx.readJsonBody(req, 2048); } catch { return bad("Invalid source title"); }
+    const sourceId = String(body?.sourceId || "");
+    const entryPath = String(body?.path || "");
+    const title = String(body?.title || "").trim().slice(0, 200);
+    const source = SOURCE_ID.test(sourceId) ? deps.ext.favorite(sourceId) : null;
+    if (!source) return bad("Choose a favorite source first", 404);
+    if (!validSitePath(entryPath) || entryPath.length > 280 || !title) return bad("Invalid source title");
+    if (`mihon:${source.id}:${entryPath}`.length > 300) return bad("This source title path is too long");
+    const owner = libraryOwner(source.id, entryPath);
+    if (owner) return send(200, { workId: owner, existed: true });
+    const key = `mihon:${source.id}:${entryPath}`;
+    const workId = localIdFor(key);
+    const existing = deps.local.localTitle(workId);
+    const cover = readSignedImage(body?.cover || "");
+    const db = deps.ctx.db;
+    try {
+      db.exec("BEGIN IMMEDIATE");
+      deps.local.createTitle({ id: workId, title, seriesKey: key, status: "PLANNING" });
+      if (existing?.status === "NONE") deps.local.setLocalStatus(workId, "PLANNING");
+      deps.videoComics.importTitle(workId, cover?.sourceId === source.id ? { cover: cover.url, sourceId: source.id } : {});
+      deps.linked.link(workId, { kind: "ext", sourceId: source.id, mangaId: entryPath, name: source.name, title, lang: source.lang });
+      db.exec("COMMIT");
+    } catch (error) { db.exec("ROLLBACK"); return bad(error.message); }
+    return send(200, { workId, existed: Boolean(existing) });
+  }
 
   if (p === "/api/comics/extensions/index") {
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
