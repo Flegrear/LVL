@@ -82,7 +82,7 @@ export function chapterPresentation(items, { grouped = true, descending = false 
 
 // A chapter row: number, title and facts, then Read and Sources. No images
 //: chapters read as a list.
-export function chapterRowMarkup(item, { read, available, onDisk, flat = false, selectable = false, selected = false, selecting = false, key = "" } = {}) {
+export function chapterRowMarkup(item, { read, readPending = false, available, onDisk, flat = false, selectable = false, selected = false, selecting = false, key = "" } = {}) {
   const label = t("Chapter {number}", { number: item.chapter });
   // The number is on the left and the volume in its heading; the facts say only what's not shown.
   const facts = flat && item.volume || read
@@ -90,7 +90,7 @@ export function chapterRowMarkup(item, { read, available, onDisk, flat = false, 
   const sourcesLabel = available === 1 ? t("1 source") : available ? t("{count} sources", { count: available }) : t("Sources");
   return `<li class="catalog-chapter comic-chapter-row${read ? " is-watched" : ""}${onDisk ? " is-saved" : ""}" data-chapter="${escapeHtml(item.chapter)}" data-volume="${escapeHtml(item.volume || "")}"${selecting ? ` data-chapter-key="${escapeHtml(key)}"` : ""}>`
     + `<div class="catalog-chapter-row">${selecting ? `<input type="checkbox" data-chapter-select aria-label="${escapeHtml(t("Select chapter {number}", { number: item.chapter }))}"${selected ? " checked" : ""}${selectable ? "" : " disabled"} />` : ""}<span class="comic-chapter-number" aria-hidden="true">${escapeHtml(item.chapter)}</span>`
-    + `<div class="catalog-chapter-copy"><strong>${escapeHtml(item.title || label)}</strong>${facts ? `<span class="catalog-chapter-code">${facts}</span>` : ""}</div>`
+    + `<div class="catalog-chapter-copy"><strong>${escapeHtml(item.title || label)}</strong>${facts ? `<span class="catalog-chapter-code">${facts}</span>` : ""}<span class="comic-chapter-state ${read === null || read === undefined ? "is-unknown" : read ? "is-read" : "is-unread"}">${escapeHtml(t(read === null || read === undefined ? readPending ? "Checking…" : "Status unknown" : read ? "Read" : "Unread"))}</span></div>`
     + `<div class="catalog-chapter-actions"><button class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-comic-read-chapter="${escapeHtml(item.chapter)}">${icon("play")}<span>${escapeHtml(t("Read"))}</span></button>`
     + `<button class="ui-btn ui-btn--ghost ui-btn--sm catalog-chapter-toggle" type="button" data-comic-chapter-sources aria-expanded="false"><span>${escapeHtml(sourcesLabel)}</span>${icon("chevron-down")}</button></div></div>`
     + `<div class="catalog-chapter-sources" hidden></div></li>`;
@@ -137,6 +137,42 @@ export function volumeCollapsed(key, opened, volumeCount) {
   return opened.has(key) ? !opened.get(key) : key !== "";
 }
 
+// Progress is unknown until /read resolves. Failed refreshes preserve the last
+// *confirmed* marks; a later bulk mark supersedes an older in-flight GET.
+export function createChapterReadSummaryController(state, fetchSummary, repaint = () => {}) {
+  let revision = 0;
+  const apply = (summary) => {
+    ++revision;
+    state.read = new Set(summary.readChapters || []);
+    state.volumesRead = new Set(summary.readVolumes || []);
+    state.unitStates = new Map((summary.unitStates || []).map((unit) => [unit.id, unit.read]));
+    state.exactRead = Array.isArray(summary.unitStates);
+    state.readConfirmed = true;
+    state.readPending = false;
+    state.readError = "";
+    repaint();
+  };
+  const load = async () => {
+    const request = ++revision;
+    state.readPending = true;
+    state.readError = "";
+    repaint();
+    try {
+      const summary = await fetchSummary();
+      if (request !== revision) return false;
+      apply(summary);
+      return true;
+    } catch (error) {
+      if (request !== revision) return false;
+      state.readPending = false;
+      state.readError = String(error?.message || t("Couldn't load reading progress."));
+      repaint();
+      return false;
+    }
+  };
+  return { apply, load };
+}
+
 // options: { workId, comic, index, files, langs, head (element for the note and tools; else a heading is drawn),
 //   onRead(readerId, page, chapter), onChooseSources() }
 export function mountChapterList(container, options) {
@@ -152,7 +188,8 @@ export function mountChapterList(container, options) {
   // chapters) starts open. What the user opens or closes is kept per comic.
   const volumesKey = `lvl-comics-volumes-v2:${workId}`;
   const savedVolumes = (() => { try { const value = JSON.parse(localStorage.getItem(volumesKey) || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; } })();
-  const state = { query: "", sort: "asc", shown: PAGE, read: new Set(), volumesRead: new Set(), unitStates: new Map(), exactRead: false, units: [],
+  const state = { query: "", sort: "asc", shown: PAGE, read: new Set(), volumesRead: new Set(), unitStates: new Map(), exactRead: false,
+    readConfirmed: false, readPending: true, readError: "", units: [],
     selecting: false, selected: new Set(), saving: false, available: {},
     availabilityError: "", failedSources: [], opened: new Map(Object.entries(savedVolumes).map(([key, open]) => [String(key), open === true])) };
   const isCollapsed = (key) => volumeCollapsed(key, state.opened, volumeCount);
@@ -189,6 +226,7 @@ export function mountChapterList(container, options) {
     return exact.length ? exact : ambiguous ? [] : matches;
   };
   const chapterRead = (item) => {
+    if (!state.readConfirmed) return null;
     if (!state.exactRead) return state.read.has(item.chapter) || Boolean(item.volume && state.volumesRead.has(item.volume));
     const units = unitsFor(item);
     if (units.length) return units.some((unit) => state.unitStates.get(unit.id) === true);
@@ -198,10 +236,11 @@ export function mountChapterList(container, options) {
 
   function paint() {
     const items = list();
-    const readCount = all.filter(chapterRead).length;
+    const readCount = state.readConfirmed ? all.filter(chapterRead).length : 0;
     scope.querySelector("[data-chapter-note]").innerHTML = escapeHtml(t("{count} chapters", { count: all.length }))
       + (volumeCount ? `<span>${escapeHtml(t("{count} volumes", { count: volumeCount }))}</span>` : "")
-      + (readCount ? `<span>${escapeHtml(t("{count} read", { count: readCount }))}</span>` : "");
+      + (readCount ? `<span>${escapeHtml(t("{count} read", { count: readCount }))}</span>` : "")
+      + (!state.readConfirmed && state.readPending ? `<span role="status">${escapeHtml(t("Checking reading progress…"))}</span>` : "");
     const isRead = chapterRead;
     const actions = scope.querySelector("[data-chapter-selection-actions]");
     if (actions) {
@@ -232,7 +271,7 @@ export function mountChapterList(container, options) {
       if (!take.length) return heading;
       return heading + take.map((item) => {
         const local = onDisk.has(item.chapter) || (item.volume && volumesOnDisk.has(String(item.volume)));
-        return chapterRowMarkup(item, { read: isRead(item), available: (state.available[item.chapter] || 0) + (local ? 1 : 0), onDisk: local, flat: !grouped(),
+        return chapterRowMarkup(item, { read: isRead(item), readPending: state.readPending, available: (state.available[item.chapter] || 0) + (local ? 1 : 0), onDisk: local, flat: !grouped(),
           selecting: state.selecting, selectable: unitsFor(item).length > 0, selected: state.selected.has(keyOf(item)), key: keyOf(item) });
       }).join("");
     }).join("");
@@ -240,11 +279,17 @@ export function mountChapterList(container, options) {
       ? `<div class="comic-chapter-availability" role="alert"><p>${escapeHtml(state.availabilityError || t("Some sources couldn't load chapters."))}</p>`
         + `${state.failedSources.length ? `<small>${escapeHtml(state.failedSources.join(" · "))}</small>` : ""}`
         + `${buttonMarkup({ label: "Try again", size: "sm", attrs: { "data-chapter-retry": "" } })}</div>` : "";
-    body.innerHTML = status + (all.length ? `<ol class="catalog-chapter-list comic-chapter-list">${rows || `<li class="title-note">${escapeHtml(t("No chapters match"))}</li>`}</ol>`
+    const readStatus = state.readError
+      ? `<div class="comic-chapter-availability" role="alert"><p>${escapeHtml(t("Reading progress unavailable."))} ${escapeHtml(state.readError)}</p>${buttonMarkup({ label: "Try again", size: "sm", attrs: { "data-chapter-read-retry": "" } })}</div>` : "";
+    body.innerHTML = readStatus + status + (all.length ? `<ol class="catalog-chapter-list comic-chapter-list">${rows || `<li class="title-note">${escapeHtml(t("No chapters match"))}</li>`}</ol>`
       : `<div class="comic-chapters-empty"><p class="title-note">${escapeHtml(t("LVL has no chapter list for this manga yet. Choose a source and its chapters appear here."))}</p>`
         + (onChooseSources ? buttonMarkup({ label: "Choose sources", size: "sm", attrs: { "data-comic-choose-sources": "" } }) : "") + "</div>")
       + (hidden ? `<button class="ui-btn ui-btn--ghost catalog-chapters-more" type="button" data-chapters-more><span>${escapeHtml(t("Show {count} more", { count: Math.min(PAGE, hidden) }))}</span></button>` : "");
   }
+
+  const readSummary = createChapterReadSummaryController(state, () => comicsApi.read(workId), () => {
+    if (container.isConnected) paint();
+  });
 
   function toggleVolume(key) {
     setVolumeOpen(key, isCollapsed(key));
@@ -331,10 +376,7 @@ export function mountChapterList(container, options) {
         // Server verifies every requested unit against this comic's live linked
         // sources before changing anything.
         const response = await comicsApi.markChapters(workId, ids, mark.dataset.chapterMark === "read");
-        state.unitStates = new Map((response.unitStates || []).map((unit) => [unit.id, unit.read]));
-        state.exactRead = Array.isArray(response.unitStates);
-        state.read = new Set(response.readChapters || []);
-        state.volumesRead = new Set(response.readVolumes || []);
+        readSummary.apply(response);
         state.selected.clear();
         state.selecting = false;
       } catch (error) { toast(error.message); }
@@ -346,6 +388,7 @@ export function mountChapterList(container, options) {
   scope.addEventListener("click", selectionClick);
   container.addEventListener("click", async (event) => {
     if (scope === container && event.target.closest("[data-chapter-selection-toolbar]")) return;
+    if (event.target.closest("[data-chapter-read-retry]")) return void readSummary.load();
     if (event.target.closest("[data-chapter-retry]")) return void loadAvailability();
     if (event.target.closest("[data-chapters-more]")) { state.shown += PAGE; return paint(); }
     const volumeToggle = event.target.closest("[data-volume-toggle]");
@@ -390,18 +433,14 @@ export function mountChapterList(container, options) {
     }
   };
   // Read marks and availability arrive after the list is on screen.
-  comicsApi.read(workId).then((summary) => {
-    state.read = new Set(summary.readChapters || []);
-    state.volumesRead = new Set(summary.readVolumes || []);
-    state.unitStates = new Map((summary.unitStates || []).map((item) => [item.id, item.read]));
-    state.exactRead = Array.isArray(summary.unitStates);
-    if (container.isConnected) paint();
-  }).catch(() => {});
+  void readSummary.load();
   void loadAvailability();
   return {
     get chapters() { return all; },
     get readingOrder() { return chapterPresentation(all, { grouped: grouped() }).flatMap((group) => group.items); },
     refresh: loadAvailability,
+    retryReadSummary: readSummary.load,
+    get readStatus() { return { confirmed: state.readConfirmed, pending: state.readPending, error: state.readError }; },
     readChapters: () => state.read,
     isRead: chapterRead,
     // Opens a chapter as a click on its Read button would.

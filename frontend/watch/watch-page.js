@@ -11,7 +11,7 @@ import { saveLibrary } from "../app/saved-state.js";
 import { $ } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { navigateWatchToLibrary, switchView } from "../app/navigation.js";
-import { closePopupMenu, openPopupMenu, wirePopupMenu } from "../ui/popup-menu.js";
+import { closePopupMenu, contextMenuPosition, isNativeTextMenuTarget, openPopupMenu, wirePopupMenu } from "../ui/popup-menu.js";
 import { playerLoadingLibraryId, resumePlayback, seekPlayerTo, setPlayerLoadingTitle } from "../player/player-core.js";
 import { playLibraryEpisode, watchPendingSelection } from "../player/torrent-playback.js";
 import {
@@ -505,7 +505,7 @@ function setEpisodeContextActions(menu, series, code, watched) {
 }
 export function openWatchEpisodeContextMenu(event, item, { keyboard = false } = {}) {
   const code = item?.dataset.watchEpisodeCode;
-  if (!code || !watchChapterActions.has(code)) return;
+  if (!code || !watchChapterActions.has(code) || isNativeTextMenuTarget(event)) return;
   event.preventDefault();
   watchEpisodeContextCode = code;
   episodeContextSurface = "watch";
@@ -513,15 +513,16 @@ export function openWatchEpisodeContextMenu(event, item, { keyboard = false } = 
   const action = watchChapterActions.get(code);
   setEpisodeContextActions(menu, action.series, code,
     watchEpisodeStatus(action.series, { code, stored: action.saved }).watched);
+  const press = contextMenuPosition(event, { anchor: item, keyboard: event.type === "keydown" });
   openPopupMenu(menu, {
     anchor: item,
-    x: keyboard ? null : event.clientX,
-    y: keyboard ? null : event.clientY,
+    x: press?.x ?? null,
+    y: press?.y ?? null,
   });
 }
 export function openTitleEpisodeContextMenu(event, item, { keyboard = false } = {}) {
   const series = titleSubject().series;
-  if (!series || series.type !== "series" || !item) return;
+  if (!series || series.type !== "series" || !item || isNativeTextMenuTarget(event)) return;
   const code = item.dataset.chapterCode || (item.matches(".catalog-chapter")
     ? chapterCode(Number(item.dataset.season), Number(item.dataset.episode)) : "");
   if (!/^S\d{2}E\d{2,4}$/.test(String(code || ""))) return;
@@ -532,10 +533,11 @@ export function openTitleEpisodeContextMenu(event, item, { keyboard = false } = 
   const chapter = libraryOrderedChapters(series).find((item) => item.code === code);
   setEpisodeContextActions(menu, series, code,
     watchEpisodeStatus(series, { code, stored: chapter ? { sources: chapter.sources } : null }).watched);
+  const press = contextMenuPosition(event, { anchor: item, keyboard: event.type === "keydown" });
   openPopupMenu(menu, {
     anchor: item,
-    x: keyboard ? null : event.clientX,
-    y: keyboard ? null : event.clientY,
+    x: press?.x ?? null,
+    y: press?.y ?? null,
   });
 }
 

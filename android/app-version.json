@@ -1,14 +1,14 @@
 {
-  "version": "0.1.2",
-  "versionCode": 207,
+  "version": "0.2.0",
+  "versionCode": 208,
   "desktopSourceVersion": "0.2.5",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Fix watched episodes and titles added without a playback source syncing between devices.",
-    "Preserve pending local watched and unwatched changes when another device updates.",
-    "Fix synced playback history choosing the wrong current episode.",
-    "Refresh your Library automatically after receiving synced changes.",
-    "Preserve imported AniList status and scores without treating them as another account's edits.",
-    "Make saved tracking records easier to identify while preserving encrypted sync."
+    "Refresh Comics with a Material appearance designed for Android.",
+    "Browse Popular and Latest titles directly from your selected source.",
+    "Select chapters to mark read or unread together and continue from your next unread chapter.",
+    "Improve comic reader controls and settings on phones.",
+    "Open long-press menus where you press and keep them within the screen.",
+    "Fix separate episode edits conflicting during sync and make saved records easier to read."
   ]
 }

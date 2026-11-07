@@ -14,7 +14,7 @@ import { clientFeatures, formatBytes, libraryDialogView, libraryView, state } fr
 import { saveLibrary } from "../app/saved-state.js";
 import { $, $$ } from "../app/dom.js";
 import { viewActive } from "../app/navigation.js";
-import { closePopupMenu, openMenuState, openPopupMenu } from "../ui/popup-menu.js";
+import { closePopupMenu, contextMenuPosition, isNativeTextMenuTarget, openMenuState, openPopupMenu } from "../ui/popup-menu.js";
 import { explicitUnwatchCompletionArmed } from "../player/audio-sync.js";
 import { playLibraryEpisode } from "../player/torrent-playback.js";
 import { watchTrackingStatus } from "../watch/watch-page.js";
@@ -145,6 +145,7 @@ export function libraryDialogChaptersMarkup(series, rerender) {
 }
 
 export function openLibraryContextMenu(event, seriesKey, { anchor = null } = {}) {
+  if (isNativeTextMenuTarget(event)) return;
   event?.preventDefault?.();
   libraryContextSeriesKey = seriesKey;
   const series = buildLibrarySeries().find((item) => item.key === seriesKey);
@@ -160,14 +161,12 @@ export function openLibraryContextMenu(event, seriesKey, { anchor = null } = {})
       }
     });
   }
-  // In Edge a mouse right-click may have detail=0, just like a keyboard
-  // ContextMenu key. Use the mouse button to select pointer positioning.
-  const fromPointer = event?.type === "contextmenu" && event.button === 2;
+  const press = contextMenuPosition(event, { anchor });
   openPopupMenu($("#library-context-menu"), {
     anchor,
-    x: fromPointer ? event.clientX : null,
-    y: fromPointer ? event.clientY : null,
-    focusFirst: !fromPointer,
+    x: press?.x ?? null,
+    y: press?.y ?? null,
+    focusFirst: !press,
   });
 }
 

@@ -179,3 +179,109 @@
   .reader__footrow > [data-reader="nextChapter"] { padding-inline:8px; }
 }
 @media (prefers-reduced-motion:reduce) { .reader__bar, .reader__foot { transition:none; } }
+
+/* Native Android reader chrome. Only chrome and controls change; the reading
+   canvas, saved background, page fit and direction remain user-owned. */
+html.lvl-android .reader {
+  --reader-chrome:#211f29;
+  --reader-field:#302e39;
+  --reader-pop:#292733;
+  --reader-line:#4c4857;
+  --reader-muted:#c8c1d0;
+  --reader-hover:#353140;
+  --reader-active:#453b59;
+  font-family:Roboto,system-ui,"Segoe UI",sans-serif;
+}
+html.lvl-android .reader[data-theme="dark"] {
+  --reader-chrome:#282630; --reader-field:#34323d; --reader-pop:#302d38;
+}
+html.lvl-android .reader[data-theme="sepia"] {
+  --reader-chrome:#e4d8c3; --reader-field:#f2e9d6; --reader-pop:#e8dcc6;
+  --reader-line:#b5a994; --reader-hover:#d7c9b2; --reader-active:#cbb89e; --reader-muted:#655746;
+}
+html.lvl-android .reader[data-theme="white"] {
+  --reader-chrome:#f5f1fa; --reader-field:#fff; --reader-pop:#f4eff8;
+  --reader-line:#d0c8d9; --reader-hover:#ebe5f3; --reader-active:#ded5e9; --reader-muted:#625b69;
+}
+html.lvl-android .reader__side { gap:12px; padding:16px 14px 0; border-color:var(--reader-line); }
+html.lvl-android .reader__back,
+html.lvl-android .reader__side-tabs button { min-height:48px; padding-inline:14px; border-radius:100px; }
+html.lvl-android .reader__side-tabs { border-bottom:0; gap:8px; }
+html.lvl-android .reader__side-tabs button { border:1px solid var(--reader-line); box-shadow:none; }
+html.lvl-android .reader__side-tabs button[aria-selected="true"] { background:#d0bcff; color:#332451; border-color:transparent; box-shadow:none; }
+html.lvl-android .reader__ch { min-height:56px; border-radius:16px; padding:10px 12px; }
+html.lvl-android .reader__ch[aria-current="true"] { background:var(--reader-active); }
+html.lvl-android .reader__ch strong { font-size:14px; }
+html.lvl-android .reader__bar { gap:8px; padding:10px 12px; border-bottom-color:var(--reader-line); }
+html.lvl-android .reader__heading strong { font-size:15px; font-weight:650; }
+html.lvl-android .reader__foot { gap:10px; padding:10px 12px max(12px,env(safe-area-inset-bottom, 0px)); border-top-color:var(--reader-line); }
+html.lvl-android .reader__icon-btn { width:48px; height:48px; min-width:48px; border-radius:100px; background:transparent; opacity:1; }
+html.lvl-android .reader__icon-btn[aria-pressed="true"],
+html.lvl-android .reader__icon-btn[aria-expanded="true"] { background:#d0bcff; color:#332451; }
+html.lvl-android .reader__icon-btn:focus-visible, html.lvl-android .reader__chapter-btn:focus-visible { outline:3px solid #d0bcff; outline-offset:2px; }
+html.lvl-android .reader__chapter-btn { min-height:48px; border-radius:100px; padding-inline:14px; }
+html.lvl-android .reader__chapter-btn:not(:disabled):active { background:var(--reader-active); }
+html.lvl-android .reader__select { height:48px; border-radius:14px; font-size:14px; }
+html.lvl-android .reader__pop {
+  box-sizing:border-box; width:min(340px,calc(100vw - 24px)); min-width:0;
+  max-height:min(70dvh,560px); overflow-y:auto; padding:20px;
+  border-radius:24px; border:1px solid var(--reader-line); box-shadow:0 16px 40px #0007;
+  background:var(--reader-pop); font-size:14px;
+}
+html.lvl-android .reader__pop label { min-height:48px; font-size:14px; }
+html.lvl-android .reader__pop .reader__check { min-height:48px; }
+html.lvl-android .reader__pop input[type="checkbox"] { width:24px; height:24px; accent-color:#9a80e3; }
+html.lvl-android .reader__slider { min-height:48px; accent-color:#d0bcff; }
+html.lvl-android .reader__strip-toggle { min-height:48px; border-radius:100px; font-size:13px; }
+html.lvl-android .reader__modes { border-radius:100px; padding:2px; }
+html.lvl-android .reader__modes .reader__icon-btn { width:48px; min-width:48px; height:48px; }
+html.lvl-android .reader__endcard { border:1px solid #55505d; border-radius:20px; backdrop-filter:blur(14px); }
+html.lvl-android .reader__endcard button { min-height:48px; border-radius:100px; }
+@media screen and (max-width:900px) {
+  html.lvl-android .reader__side { width:min(340px,90vw); }
+  html.lvl-android .reader__bar {
+    grid-template-columns:48px minmax(0,1fr) auto;
+    grid-template-rows:auto auto; gap:6px; padding:8px 10px;
+  }
+  html.lvl-android .reader__tools { gap:4px; }
+  html.lvl-android .reader__tools .reader__icon-btn { flex:0 0 48px; min-width:48px; width:48px; min-height:48px; }
+  html.lvl-android .reader__tools .reader__select { min-width:0; width:76px; max-width:76px; flex:0 1 76px; }
+  html.lvl-android .reader__menu { top:108px; right:12px; }
+  html.lvl-android .reader__comfort { bottom:calc(160px + env(safe-area-inset-bottom,0px)); right:12px; }
+  html.lvl-android .reader__footrow { column-gap:8px; row-gap:8px; }
+  html.lvl-android .reader__footrow > :is([data-reader="prevChapter"],[data-reader="nextChapter"]) { padding-inline:10px; font-size:13px; }
+  html.lvl-android .reader__back-footer { min-width:48px; }
+  html.lvl-android .reader__icons { flex-wrap:wrap; row-gap:8px; }
+}
+@media (max-width:380px) {
+  html.lvl-android .reader__tools .reader__select { width:68px; max-width:68px; flex-basis:68px; }
+  html.lvl-android .reader__footrow > :is([data-reader="prevChapter"],[data-reader="nextChapter"]) { padding-inline:7px; font-size:12px; }
+}
+
+/* Short landscape must not spend all 320px of height on Android Material chrome.
+   Retain every 48px hit target: one header row and two footer action rows. */
+@media screen and (orientation:landscape) and (max-width:900px) and (max-height:480px) {
+  html.lvl-android .reader__bar {
+    grid-template-columns:48px minmax(0,1fr) auto auto;
+    grid-template-rows:minmax(48px,auto);
+    gap:6px;
+    padding:4px 8px;
+  }
+  html.lvl-android .reader__bar > [data-reader="sidebar"] { grid-column:1; grid-row:1; }
+  html.lvl-android .reader__bar .reader__heading { grid-column:2; grid-row:1; }
+  html.lvl-android .reader__bar .reader__pager { grid-column:3; grid-row:1; }
+  html.lvl-android .reader__bar .reader__tools { grid-column:4; grid-row:1; }
+  html.lvl-android .reader__foot { gap:4px; padding:4px 8px max(6px,env(safe-area-inset-bottom,0px)); }
+  html.lvl-android .reader__footrow {
+    grid-template-columns:auto auto auto minmax(0,1fr);
+    column-gap:6px; row-gap:4px;
+  }
+  html.lvl-android .reader__footrow .reader__back-footer { grid-column:1; grid-row:1; }
+  html.lvl-android .reader__footrow > [data-reader="prevChapter"] { grid-column:2; grid-row:1; }
+  html.lvl-android .reader__footrow > [data-reader="nextChapter"] { grid-column:3; grid-row:1; }
+  html.lvl-android .reader__footrow .reader__strip { grid-column:4; grid-row:1; }
+  html.lvl-android .reader__footrow .reader__icons { grid-column:1 / -1; grid-row:2; justify-content:center; }
+  /* Popovers stay visible even when the available height is less than a phone's width. */
+  html.lvl-android .reader__menu { top:56px; right:8px; }
+  html.lvl-android .reader__comfort { top:8px; bottom:auto; right:8px; }
+}

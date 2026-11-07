@@ -5,6 +5,8 @@
 // Renewal (the user's choice at setup): asking for "offline_access" gives a token that lasts
 // 8 hours and renews itself with a refresh token (unused for 6 months, it ends); without it
 // the token lasts until the user disconnects or revokes it.
+import { syncCommitMessage } from "./presentation.js";
+
 const API = "https://api.github.com";
 const LOGIN = "https://github.com/login";
 const TIMEOUT_MS = 20_000;
@@ -128,7 +130,7 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
         async write(path, text, { version } = {}) {
           try {
             const { data } = await call(token(), "PUT", `${base}/contents/${encodePath(path)}`, {
-              body: { message: `LVL sync: ${path}`, content: Buffer.from(text, "utf8").toString("base64"), ...(version ? { sha: version } : {}) },
+              body: { message: syncCommitMessage(path, text), content: Buffer.from(text, "utf8").toString("base64"), ...(version ? { sha: version } : {}) },
             });
             return data.content?.sha || "";
           } catch (error) {
