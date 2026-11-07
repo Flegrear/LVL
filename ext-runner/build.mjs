@@ -82,7 +82,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   console.log(`JDK: ${home}`);
   if (!args.has("--skip-fetch")) run(process.execPath, [path.join(here, "fetch.mjs")]);
   const gradlew = path.join(here, ".vendor", "suwayomi", process.platform === "win32" ? "gradlew.bat" : "gradlew");
-  run(gradlew, ["-p", here, "dist", "--console=plain"], { env: { ...process.env, JAVA_HOME: home }, shell: process.platform === "win32" });
+  run(gradlew, ["-p", here, "dist", "--console=plain", "--no-daemon"], { env: { ...process.env, JAVA_HOME: home }, shell: process.platform === "win32" });
   if (!args.has("--skip-runtime")) {
     const runtime = path.join(dist, "runtime");
     // build/dist/runtime is this script's own output.
