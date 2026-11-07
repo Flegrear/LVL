@@ -1,0 +1,10 @@
+LVL website image credits
+
+Product screenshots show LVL running with public catalog artwork. They do not imply that LVL includes the depicted media, or that the respective publishers endorse LVL.
+
+Cyberpunk: Edgerunners artwork: its respective creators, Studio Trigger, CD PROJEKT RED and rights holders.
+Frieren: Beyond Journey's End artwork: Kanehito Yamada, Tsukasa Abe, Shogakukan and respective anime rights holders.
+The Devil Butler and the other comic cover images shown in the Android catalog: their respective creators, publishers and rights holders, as identified in the depicted catalogs.
+
+Screenshots and third party artwork are not offered under LVL's original-code MIT license. LVL's original code and applicable third party notices: https://github.com/Flegrear/LVL
+Manrope font: Copyright 2018 The Manrope Project Authors, distributed under SIL Open Font License 1.1. See fonts/OFL-Manrope.txt.
