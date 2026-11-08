@@ -1,7 +1,7 @@
 {
   "version": "0.2.0",
   "versionCode": 208,
-  "desktopSourceVersion": "0.2.5",
+  "desktopSourceVersion": "0.2.6",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
     "Refresh Comics with a Material appearance designed for Android.",

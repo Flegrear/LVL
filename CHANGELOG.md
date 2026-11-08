@@ -1,5 +1,12 @@
 # LVL Changelog
 
+## 0.2.6 — 2026-11-07
+
+- Fix watched changes on different episodes conflicting between devices.
+- Add recovery for a Library blocked by pending local edits.
+- Make saved GitHub sync records and history easier to read.
+- Keep update completion notifications available until you read them.
+
 ## 0.2.5 — 2026-11-07
 
 - Fix watched episodes and titles added without a playback source syncing between devices.
