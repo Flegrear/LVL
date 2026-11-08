@@ -23,11 +23,9 @@ export async function appStateBootstrapEndpoint(req, res) {
   const legacyState = body?.legacyState && typeof body.legacyState === "object" && !Array.isArray(body.legacyState)
     ? body.legacyState
     : null;
-  // Bootstrap migration is only for an *uninitialized* database. A different
-  // browser profile can still have old localStorage with a removed Library
-  // title; merging it into the already-initialized shared SQLite database
-  // would resurrect deletions in the app window.
-  if (legacyState && !appDatabase.isCoreInitialized()) appDatabase.mergeLegacyState(legacyState);
+  // Check and claim initial migration inside the database's write transaction.
+  // An earlier preflight in this handler could race another server process.
+  if (legacyState) appDatabase.bootstrapLegacyState(legacyState);
   json(res, 200, appStatePayload());
   return true;
 }

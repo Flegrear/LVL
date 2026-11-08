@@ -351,19 +351,49 @@ function mergeCoachUsage(existing, incoming) {
 export function createAppDatabase(databasePath) {
   fs.mkdirSync(path.dirname(databasePath), { recursive: true });
   const db = new DatabaseSync(databasePath);
-  db.exec(`
-    PRAGMA journal_mode = WAL;
-    PRAGMA synchronous = NORMAL;
-    CREATE TABLE IF NOT EXISTS app_state (
-      section TEXT PRIMARY KEY,
-      value_json TEXT NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS app_meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-  `);
+  try {
+    // Inspect the existing marker before any schema setup or journal-mode
+    // change. Older binaries must never downgrade a newer database on open.
+    const hasMeta = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_meta'").get();
+    if (hasMeta) {
+      const version = Number(db.prepare("SELECT value FROM app_meta WHERE key = 'schema_version'").get()?.value);
+      if (Number.isFinite(version) && version > APP_STATE_SCHEMA_VERSION)
+        throw new Error(`Unsupported newer app-state schema version ${version}; this build supports ${APP_STATE_SCHEMA_VERSION}`);
+    }
+    // SQLite cannot change journal_mode inside a transaction. These operational
+    // PRAGMAs are separate from the atomic schema/marker setup below.
+    db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;");
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      // The initial preflight is not authoritative: a newer writer might have
+      // committed after it. Recheck under the SAME lock as all setup DDL and
+      // the schema marker initialization, before touching any tables.
+      const lockedHasMeta = db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'app_meta'").get();
+      if (lockedHasMeta) {
+        const version = Number(db.prepare("SELECT value FROM app_meta WHERE key = 'schema_version'").get()?.value);
+        if (Number.isFinite(version) && version > APP_STATE_SCHEMA_VERSION)
+          throw new Error(`Unsupported newer app-state schema version ${version}; this build supports ${APP_STATE_SCHEMA_VERSION}`);
+      }
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS app_state (
+          section TEXT PRIMARY KEY,
+          value_json TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS app_meta (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL
+        );
+      `);
+      db.prepare(`
+        INSERT INTO app_meta(key, value) VALUES ('schema_version', ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `).run(String(APP_STATE_SCHEMA_VERSION));
+      db.exec("COMMIT");
+    } catch (error) {
+      try { db.exec("ROLLBACK"); } catch { /* Preserve the original setup error. */ }
+      throw error;
+    }
 
   const readStatement = db.prepare("SELECT value_json, updated_at FROM app_state WHERE section = ?");
   const writeStatement = db.prepare(`
@@ -378,6 +408,7 @@ export function createAppDatabase(databasePath) {
   function writeTransaction(work) {
     db.exec("BEGIN IMMEDIATE");
     try {
+      assertSupportedSchema();
       const result = work();
       db.exec("COMMIT");
       return result;
@@ -391,7 +422,11 @@ export function createAppDatabase(databasePath) {
     INSERT INTO app_meta(key, value) VALUES (?, ?)
     ON CONFLICT(key) DO UPDATE SET value = excluded.value
   `);
-  metaWriteStatement.run("schema_version", String(APP_STATE_SCHEMA_VERSION));
+  function assertSupportedSchema() {
+    const version = Number(metaReadStatement.get("schema_version")?.value);
+    if (Number.isFinite(version) && version > APP_STATE_SCHEMA_VERSION)
+      throw new Error(`Unsupported newer app-state schema version ${version}; this build supports ${APP_STATE_SCHEMA_VERSION}`);
+  }
 
   function readSection(section) {
     if (!APP_STATE_SECTIONS.includes(section)) return undefined;
@@ -470,12 +505,9 @@ export function createAppDatabase(databasePath) {
     return metaReadStatement.get(key)?.value ?? null;
   }
 
-  function mergeLegacyState(legacyState = {}) {
-    const incoming = safeObject(legacyState);
-    if (Object.keys(incoming).length === 0) return readAll();
-    return writeTransaction(() => {
-      const existing = readAll();
-      const merged = {
+  function mergeLegacyStateLocked(incoming) {
+    const existing = readAll();
+    const merged = {
       cards: mergeCards(existing.cards, incoming.cards),
       known: mergeKnown(existing.known, incoming.known),
       library: mergeLibrary(existing.library, incoming.library),
@@ -491,9 +523,28 @@ export function createAppDatabase(databasePath) {
           ...safeArray(safeObject(incoming.preferences).voiceUsageSegments, 512),
         ],
       }),
-      };
-      for (const section of APP_STATE_SECTIONS) writeSectionLocked(section, merged[section]);
-      return merged;
+    };
+    for (const section of APP_STATE_SECTIONS) writeSectionLocked(section, merged[section]);
+    return merged;
+  }
+
+  // General explicit merges remain additive, including preference/coach
+  // migration. Only the browser's initial bootstrap is one-shot.
+  function mergeLegacyState(legacyState = {}) {
+    const incoming = safeObject(legacyState);
+    if (Object.keys(incoming).length === 0) return readAll();
+    return writeTransaction(() => mergeLegacyStateLocked(incoming));
+  }
+
+  function bootstrapLegacyState(legacyState = {}) {
+    const incoming = safeObject(legacyState);
+    return writeTransaction(() => {
+      // BEGIN IMMEDIATE serializes this check with all other core writes.
+      // No second process may merge an obsolete browser snapshot afterward.
+      if (meta("core_initialized") === "1" || Object.keys(incoming).length === 0)
+        return { applied: false };
+      mergeLegacyStateLocked(incoming);
+      return { applied: true };
     });
   }
 
@@ -501,7 +552,16 @@ export function createAppDatabase(databasePath) {
     path: databasePath,
     sqlite: db,
     getMeta: (key) => meta(String(key)),
-    setMeta: (key, value) => metaWriteStatement.run(String(key), String(value)),
+    setMeta: (key, value) => {
+      const name = String(key);
+      if (name !== "schema_version") return metaWriteStatement.run(name, String(value));
+      return writeTransaction(() => {
+        const version = Number(value);
+        if (!Number.isSafeInteger(version) || version < 1 || version > APP_STATE_SCHEMA_VERSION)
+          throw new Error("Unsupported app-state schema version");
+        return metaWriteStatement.run(name, String(version));
+      });
+    },
     readSection,
     sectionUpdatedAt,
     writeSection,
@@ -509,8 +569,13 @@ export function createAppDatabase(databasePath) {
     mergeSection,
     readAll,
     mergeLegacyState,
+    bootstrapLegacyState,
     isCoreInitialized: () => meta("core_initialized") === "1",
     schemaVersion: () => Number(meta("schema_version") || APP_STATE_SCHEMA_VERSION),
     close: () => db.close(),
   };
+  } catch (error) {
+    try { db.close(); } catch { /* preserve the actual schema/open error */ }
+    throw error;
+  }
 }

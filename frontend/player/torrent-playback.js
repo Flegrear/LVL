@@ -234,7 +234,7 @@ function flushAbandonedLibrarySessions() {
   }
 }
 
-async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = null } = {}) {
+async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = null, shouldAutoPlay = () => true } = {}) {
   // Another video in LVL's window: the pop-up player closes.
   if (typeof dismissPopupPlayer === "function") dismissPopupPlayer();
   // A direct torrent selection supersedes a pending Library resolution too.
@@ -359,28 +359,39 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
     startAtSeconds,
   };
   if (needsTranscode) {
-    const opened = await openTranscodeAt(startAtSeconds, { wasPlaying: true, initialize: sourceOptions });
+    const opened = await openTranscodeAt(startAtSeconds, { wasPlaying: shouldAutoPlay(), initialize: sourceOptions });
     if (!opened || loadId !== playbackLoadRequestId) return false;
+    if (!shouldAutoPlay()) {
+      if (state.pendingSeek) state.pendingSeek.wasPlaying = false;
+      video.pause();
+    }
   } else {
     setMediaSource({ ...sourceOptions, src: baseUrl });
   }
   updatePlayerIdentity(state.currentSource.title, episode);
   // The player no longer reads the previous torrent: free its slot (the server allows 4 sessions).
   if (previousSessionId && previousSessionId !== session.id) void releaseTorrentSession(previousSessionId);
-  if (!needsTranscode) {
-    void video.play().catch((error) => {
+  if (!needsTranscode && shouldAutoPlay()) {
+    void video.play().then(() => {
+      // Play promises can settle after the user paused a still-loading B.
+      // Its source/load identity must also still be the one we installed.
+      if (!shouldAutoPlay() && loadId === playbackLoadRequestId
+        && state.currentSource?.sessionId === session.id) video.pause();
+    }).catch((error) => {
       if (error?.name !== "NotAllowedError" || video.muted
         || loadId !== playbackLoadRequestId || state.currentSource?.sessionId !== session.id
-        || video.dataset.mode !== "torrent-direct") return;
+        || video.dataset.mode !== "torrent-direct" || !shouldAutoPlay()) return;
       // Same browser policy, but the direct torrent path has no FFmpeg attempt.
       video.muted = true;
       updateCompatControls();
       void video.play().then(() => {
-        if (loadId === playbackLoadRequestId)
+        if (!shouldAutoPlay() && loadId === playbackLoadRequestId
+          && state.currentSource?.sessionId === session.id) video.pause();
+        if (loadId === playbackLoadRequestId && shouldAutoPlay())
           toast("Your browser blocked automatic sound. Video is playing muted; use the speaker control to enable audio.", { timeout: 5500 });
       }).catch(() => {});
     });
-  }
+  } else if (!needsTranscode) video.pause();
   window.setTimeout(async () => {
     try {
       // Reuse the still-running probe rather than starting another 20s FFprobe
@@ -504,7 +515,7 @@ export async function resolveTorrentMagnet(magnet, onProgress, { timeoutMs = 0, 
   return session;
 }
 
-export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds = 0 } = {}) {
+export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds = 0, onLoadRequest = null, shouldAutoPlay = null } = {}) {
   const entry = libraryEntryById(libraryId);
   if (!entry?.magnet) return false;
   libraryPlaybackResolveController?.abort("another library episode selected");
@@ -518,6 +529,9 @@ export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds
   let reservedSession = null;
   let playAccepted = false;
   const loadId = ++playbackLoadRequestId;
+  // Recovery may observe this specific Library attempt without guessing which
+  // later global generation belongs to its failed alternate.
+  onLoadRequest?.(loadId);
   const buttonSource = entry.episodes?.find((episode) => Number(episode.fileIndex) === Number(fileIndex));
   preparePlayerForLibraryLoad(entry, buttonSource, { resumeAtSeconds });
   try {
@@ -552,7 +566,10 @@ export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds
     const file = session.files.find((item) => Number(item.index) === Number(fileIndex))
       || session.files.find((item) => item.name === buttonSource?.name);
     if (!file) throw new Error("That file is no longer present in this torrent.");
-    const played = await playTorrentFile(session, file, { startAtSeconds: resumeAtSeconds, requestId: loadId });
+    const played = await playTorrentFile(session, file, {
+      startAtSeconds: resumeAtSeconds, requestId: loadId,
+      shouldAutoPlay: () => typeof shouldAutoPlay === "function" ? Boolean(shouldAutoPlay(loadId)) : true,
+    });
     playAccepted = played !== false && loadId === playbackLoadRequestId && !controller.signal.aborted;
     return playAccepted;
   } catch (error) {

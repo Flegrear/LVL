@@ -745,6 +745,10 @@ export let recoveryBusy = false;
 // still reach bounded recovery instead of being dismissed as idle.
 let recoveryPlaybackRequested = false;
 let recoveryPauseSerial = 0;
+// The old decoder is intentionally paused while a recovery-selected Library
+// source resolves. Controls must address that source's desired playback, not
+// the temporary video.paused value. A newer load ID cannot inherit this token.
+let recoveryAlternateIntent = null;
 let recoveryWatchTimer = null;
 let recoveryDisplayPhase = "";
 let recoveryDisplayEvents = [];
@@ -1140,6 +1144,21 @@ export async function recoverPlayback(reason = "error") {
   playbackRecovery = next.state;
   const action = next.action;
   if (action.type === "none") return;
+  // The Library target may advance playbackLoadRequestId before becoming an
+  // active source. Only that observed attempt may carry the existing recovery
+  // incident across a failed alternate, never a later manual source choice.
+  let recoverySwitchOwner = playbackRecovery;
+  let recoverySwitchLoadId = playbackLoadRequestId;
+  let alternateIntent = null;
+  const ownsRecoveryLoad = () => playbackRecovery === recoverySwitchOwner
+    && playbackLoadRequestId === recoverySwitchLoadId
+    && currentRecoveryKey() === key;
+  const ownsFailedRecoverySwitch = () => ownsRecoveryLoad()
+    && (!alternateIntent || recoveryAlternateIntent === alternateIntent
+      && alternateIntent.wantsPlay && recoveryPlaybackRequested)
+    && (viewActive("watch") || $("#view-watch")?.classList.contains("is-floating")
+      || floatingDesktopWindow || floatingDesktopPending
+      || document.pictureInPictureElement === video || window.documentPictureInPicture?.window);
   if (!recoveryStallDiagnosis) recoveryStallDiagnosis = currentStreamDiagnosis();
   if (recoveryDisplayPhase !== "recovering") {
     recoveryDisplayEvents = [];
@@ -1189,19 +1208,33 @@ export async function recoverPlayback(reason = "error") {
     } else if (action.type === "switch-source") {
       const alternate = alternatives.find((item) => item.key === action.sourceKey);
       if (!alternate) throw new Error("Alternate source no longer exists");
+      alternateIntent = { loadId: null, sourceKey: action.sourceKey, wantsPlay: recoveryPlaybackRequested || !video.paused, phase: "pending" };
+      recoveryAlternateIntent = alternateIntent;
       recoveryStallDiagnosis = null; // The new source has no measured stall yet.
       const at = absolutePlaybackSeconds();
       setPlayerLoading(10, "Switching source", "The current video stopped responding");
-      const switched = await playLibraryEpisode(alternate.entry.id, Number(alternate.episode.fileIndex), { resumeAtSeconds: at });
+      const switched = await playLibraryEpisode(alternate.entry.id, Number(alternate.episode.fileIndex), {
+        resumeAtSeconds: at,
+        onLoadRequest: (loadId) => { recoverySwitchLoadId = loadId; alternateIntent.loadId = loadId; },
+        shouldAutoPlay: () => recoveryAlternateIntent === alternateIntent
+          && playbackLoadRequestId === alternateIntent.loadId && alternateIntent.wantsPlay,
+      });
       if (!switched) {
-        playbackRecovery = failPlaybackRecoverySwitch(playbackRecovery);
+        if (!ownsRecoveryLoad() || recoveryAlternateIntent !== alternateIntent
+          || playbackRecovery.pendingSourceKey !== action.sourceKey) return;
+        playbackRecovery = failPlaybackRecoverySwitch(playbackRecovery, { sourceGeneration: recoverySwitchLoadId });
+        recoverySwitchOwner = playbackRecovery;
+        alternateIntent.phase = "failed";
+        if (!alternateIntent.wantsPlay) return;
         throw new Error("The alternate source could not start.");
       }
+      if (recoveryAlternateIntent === alternateIntent) alternateIntent.phase = "ready";
     }
     recoveryWaitingSince = Date.now();
     recoveryLastMotionAt = Date.now();
     recoveryLastPosition = -1;
   } catch (error) {
+    if (action.type === "switch-source" && !ownsFailedRecoverySwitch()) return;
     recordRecoveryDisplay("failed", reason);
     renderRecoveryOverlay();
     console.warn("Playback recovery attempt failed:", error);
@@ -1212,7 +1245,8 @@ export async function recoverPlayback(reason = "error") {
     // recover this internally failed attempt; advance the bounded controller
     // even if it was a same-source retry. Never wake a different source.
     window.setTimeout(() => {
-      if (currentRecoveryKey() === key && recoveryDisplayPhase === "recovering")
+      if (currentRecoveryKey() === key && recoveryDisplayPhase === "recovering"
+        && (action.type !== "switch-source" || ownsFailedRecoverySwitch()))
         void recoverPlayback(action.type === "switch-source" ? "alternate-failed" : "error");
     }, 400);
   } finally {
@@ -2712,6 +2746,28 @@ function resyncTranscodeAfterLongPause() {
 export function resumePlayback() {
   // The pop-up player has the video; LVL's window takes it back first.
   if (typeof popupPlayer !== "undefined" && popupPlayer.open) return;
+  const alternate = recoveryAlternateIntent;
+  if (alternate && alternate.loadId === playbackLoadRequestId) {
+    // A real Resume belongs to this Library load even after B became ready or
+    // its recovery overlay cleared. Retain the token: deferred startup still
+    // consults its shouldAutoPlay() callback and late play events check it.
+    alternate.wantsPlay = true;
+    if (alternate.phase !== "ready") {
+      // B is still pending (or failed before adoption): never play old A.
+      // Only this owned incident can resume its bounded C continuation.
+      recoveryPlaybackRequested = true;
+      recoveryPauseSerial += 1;
+      if (state.pendingSeek && state.currentSource?.kind === "torrent"
+        && playbackRecoverySourceKey(state.currentSource.libraryId, state.currentSource.fileIndex) === alternate.sourceKey)
+        state.pendingSeek.wasPlaying = true;
+      if (alternate.phase === "failed") {
+        recoveryAlternateIntent = null;
+        void recoverPlayback("alternate-failed");
+      }
+      updateCompatControls();
+      return;
+    }
+  }
   if (state.pendingSeek) {
     state.pendingSeek.wasPlaying = true;
     updateCompatControls();
@@ -2742,6 +2798,27 @@ export function resumePlayback() {
 }
 
 export function togglePlayback() {
+  const alternate = recoveryAlternateIntent;
+  if (alternate && alternate.loadId === playbackLoadRequestId
+    && recoveryDisplayPhase === "recovering") {
+    // Frame, Space, floating and all Play/Pause buttons share this handler.
+    // During recovery B, paused means the *old decoder* was stopped, not that
+    // the user asked to Resume A. Toggle the B intent without playing A.
+    alternate.wantsPlay = !alternate.wantsPlay;
+    recoveryPlaybackRequested = alternate.wantsPlay;
+    recoveryPauseSerial += 1;
+    if (state.currentSource?.kind === "torrent"
+      && playbackRecoverySourceKey(state.currentSource.libraryId, state.currentSource.fileIndex) === alternate.sourceKey
+      && state.pendingSeek) state.pendingSeek.wasPlaying = alternate.wantsPlay;
+    if (!alternate.wantsPlay) video.pause();
+    else if (alternate.phase === "ready") resumePlayback();
+    else if (alternate.phase === "failed") {
+      recoveryAlternateIntent = null;
+      void recoverPlayback("alternate-failed");
+    }
+    updateCompatControls();
+    return;
+  }
   if (state.pendingSeek) {
     state.pendingSeek.wasPlaying = !state.pendingSeek.wasPlaying;
     updateCompatControls();
@@ -2749,6 +2826,10 @@ export function togglePlayback() {
   }
   if (video.paused) resumePlayback();
   else {
+    // Ready B keeps its load-owned intent even after the recovery display
+    // clears. A normal Pause must revoke it so late play events stay paused.
+    if (alternate && alternate.loadId === playbackLoadRequestId)
+      alternate.wantsPlay = false;
     recoveryPlaybackRequested = false;
     recoveryPauseSerial += 1;
     video.pause();
@@ -2951,6 +3032,12 @@ export function wirePlayerVideoEvents() {
     scheduleAudioSync(1500);
   });
   video.addEventListener("play", () => {
+    const alternate = recoveryAlternateIntent;
+    if (alternate && alternate.loadId === playbackLoadRequestId && !alternate.wantsPlay) {
+      // A delayed play() or decoder start from B must not undo a real Pause.
+      video.pause();
+      return;
+    }
     if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
     recoveryPauseSerial += 1;
     recoveryPlaybackRequested = true;
@@ -2991,7 +3078,10 @@ export function wirePlayerVideoEvents() {
     const pauseSerial = ++recoveryPauseSerial;
     if (!video.error && recoveryPlaybackRequested) window.setTimeout(() => {
       if (pauseSerial === recoveryPauseSerial && video.paused && !video.error
-        && !state.pendingSeek) {
+        && !state.pendingSeek && !(recoveryBusy && playbackRecovery.pendingSourceKey)) {
+        // Source replacement pauses the old decoder before Library metadata
+        // resolves. Its synthetic Pause must not cancel the already-requested
+        // recovery after one second; explicit Pause clears intent immediately.
         recoveryPlaybackRequested = false;
         if (recoveryDisplayPhase !== "recovering") {
           if (typeof clearStreamStatusLabel === "function") clearStreamStatusLabel();

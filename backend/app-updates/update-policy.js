@@ -240,23 +240,32 @@ export function createUpdatePolicy({
 
   // Runs every 30 s: moves the automatic preference over from the launcher,
   // checks every hour, and installs when no video has been open for 2 minutes.
+  function refreshIdle() {
+    if (isBusy()) idleSince = null;
+    else if (idleSince === null) idleSince = now();
+  }
   async function tick() {
     if (ticking) return;
     ticking = true;
     try {
-      if (isBusy()) idleSince = null;
-      else if (idleSince === null) idleSince = now();
-      let native = await request("status");
+      refreshIdle();
+      let native;
+      try { native = await request("status"); }
+      finally { refreshIdle(); }
       observe(native);
       if (automatic === null) {
         automatic = Boolean(native.automatic);
         savePrefs();
       }
-      if (native.automatic) native = await request("settings", { automatic: false, intervalDays: 1 });
+      if (native.automatic) {
+        try { native = await request("settings", { automatic: false, intervalDays: 1 }); }
+        finally { refreshIdle(); }
+      }
       if (!automatic || native.checking || native.downloading || download || launched) return;
       const lastChecked = Date.parse(native.lastCheckedAt || "") || 0;
       if (now() - lastChecked >= CHECK_INTERVAL_MS) {
-        await request("check", { apply: false });
+        try { await request("check", { apply: false }); }
+        finally { refreshIdle(); }
         return;
       }
       const version = String(native.availableVersion || "");
@@ -264,6 +273,8 @@ export function createUpdatePolicy({
       // A new Android app version asks the user to confirm, so it waits for Install.
       if (native.autoInstall === false) return;
       if (now() - (autoAttempts.get(version) || 0) < AUTO_RETRY_MS) return;
+      refreshIdle();
+      if (idleSince === null || now() - idleSince < IDLE_BEFORE_INSTALL_MS) return;
       log(`Installing LVL ${version} automatically (no video open)`);
       await install({ auto: true });
     } catch (error) {

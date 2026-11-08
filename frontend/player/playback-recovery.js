@@ -122,10 +122,12 @@ export function changePlaybackRecoverySource(state, currentSourceKey, options = 
 // magnet resolution or startup returns false). Keep the failed target in attemptedSourceKeys and
 // keep the switch budget consumed, but release the pending guard so recovery can choose the next
 // untried alternate while the old source remains current.
-export function failPlaybackRecoverySwitch(state) {
+export function failPlaybackRecoverySwitch(state, { sourceGeneration: failedAttemptGeneration } = {}) {
   const current = state || createPlaybackRecoveryState();
   if (!current.pendingSourceKey) return current;
-  return { ...current, pendingSourceKey: "" };
+  return { ...current, pendingSourceKey: "",
+    sourceGeneration: failedAttemptGeneration === undefined ? current.sourceGeneration
+      : sourceGeneration(failedAttemptGeneration) };
 }
 
 export function cancelPlaybackRecovery(state) {
