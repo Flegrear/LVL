@@ -44,6 +44,8 @@ export function stopPlaybackIfHiddenAfterNavigation(destination) {
   if ($("#view-watch")?.classList.contains("is-floating") || floatingDesktopWindow || (typeof popupPlayer !== "undefined" && popupPlayer.open)
     || floatingDesktopPending || document.pictureInPictureElement === video) return;
   playbackLoadRequestId += 1;
+  pendingDirectTorrentSelection = null;
+  flushAbandonedLibrarySessions();
   cancelTranscodeStart();
   libraryPlaybackResolveController?.abort("left player without floating playback");
   libraryPlaybackResolveController = null;
@@ -94,7 +96,9 @@ export let watchPendingSelection = null;
 
 export async function releaseTorrentSession(sessionId) {
   // Adding a chapter can resolve the torrent that is already playing (same pack): keep that one.
-  if (!sessionId || sessionId === state.currentSource?.sessionId) return;
+  if (!sessionId || sessionId === state.currentSource?.sessionId
+    || sessionId === libraryPlaybackResolveController?.sessionId
+    || sessionId === pendingDirectTorrentSelection?.sessionId) return;
   try {
     await fetch(`/api/torrents/${encodeURIComponent(sessionId)}`, { method: "DELETE" });
   } catch {}
@@ -214,6 +218,21 @@ function setCurrentTorrentSource(session, file) {
 export let playbackLoadRequestId = 0;
 let libraryPlaybackResolveController = null;
 let libraryPlaybackPendingMagnet = "";
+let pendingDirectTorrentSelection = null;
+const abandonedLibrarySessions = new Set();
+
+// An aborted Library POST can own a fresh session before the replacement POST
+// has reported whether it reuses that very session. Defer deletion until the
+// current selection's reservation is known, and never delete a pending player.
+function flushAbandonedLibrarySessions() {
+  const active = libraryPlaybackResolveController;
+  if (active && !active.sessionId) return;
+  for (const sessionId of abandonedLibrarySessions) {
+    if (sessionId === active?.sessionId || sessionId === pendingDirectTorrentSelection?.sessionId) continue;
+    abandonedLibrarySessions.delete(sessionId);
+    if (sessionId !== state.currentSource?.sessionId) void releaseTorrentSession(sessionId);
+  }
+}
 
 async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = null } = {}) {
   // Another video in LVL's window: the pop-up player closes.
@@ -226,17 +245,39 @@ async function playTorrentFile(session, file, { startAtSeconds = 0, requestId = 
     libraryPlaybackPendingMagnet = "";
   }
   const loadId = requestId ?? ++playbackLoadRequestId;
-  const storageLimit = await playerStorageLimit();
-  if (loadId !== playbackLoadRequestId) return false;
+  const directSelection = requestId === null ? Object.freeze({ loadId, sessionId: session.id }) : null;
+  if (directSelection) {
+    pendingDirectTorrentSelection = directSelection;
+    flushAbandonedLibrarySessions();
+  }
+  const clearDirectSelection = () => {
+    if (directSelection && pendingDirectTorrentSelection === directSelection) {
+      pendingDirectTorrentSelection = null;
+      flushAbandonedLibrarySessions();
+    }
+  };
+  let storageLimit;
+  try {
+    storageLimit = await playerStorageLimit();
+  } catch (error) {
+    clearDirectSelection();
+    throw error;
+  }
+  if (loadId !== playbackLoadRequestId) { clearDirectSelection(); return false; }
   if (storageLimit && Number(file?.length) > storageLimit) {
+    clearDirectSelection();
     const message = `This video is ${(Number(file.length) / 1024 ** 3).toFixed(1)} GB, more than the ${Math.round(storageLimit / 1024 ** 3)} GB set for player storage. Raise it in Settings, Storage.`;
     if (!$("#video-loading")?.hidden) setPlayerLoading(100, "Not enough player storage", message, { error: true });
     toast(message, { tone: "error", timeout: 8000 });
     return false;
   }
   const previousSessionId = state.currentSource?.kind === "torrent" ? state.currentSource.sessionId : null;
-  beginSourceTransition();
-  setCurrentTorrentSource(session, file);
+  try {
+    beginSourceTransition();
+    setCurrentTorrentSource(session, file);
+  } finally {
+    clearDirectSelection();
+  }
   $("#magnet-dialog")?.close();
   switchView("watch");
   renderWatchChapters();
@@ -470,7 +511,12 @@ export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds
   const controller = new AbortController();
   libraryPlaybackResolveController = controller;
   libraryPlaybackPendingMagnet = entry.magnet;
+  // A Library intent supersedes a direct selection even if its storage check
+  // never settles. Install B's controller first so cleanup waits for B's POST.
+  pendingDirectTorrentSelection = null;
+  flushAbandonedLibrarySessions();
   let reservedSession = null;
+  let playAccepted = false;
   const loadId = ++playbackLoadRequestId;
   const buttonSource = entry.episodes?.find((episode) => Number(episode.fileIndex) === Number(fileIndex));
   preparePlayerForLibraryLoad(entry, buttonSource, { resumeAtSeconds });
@@ -485,7 +531,13 @@ export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds
         ? `${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}`
         : "");
     }, { preferredFileIndex: Number.isInteger(fileIndex) ? fileIndex : null, timeoutMs: recoveryBusy ? 25_000 : 60_000,
-      signal: controller.signal, onSession: (session) => { reservedSession = session; controller.sessionId = session.id; } });
+      // This caller owns cleanup in finally, AFTER its reservation retires.
+      // The resolver cannot DELETE while a replacement's POST is still unknown.
+      signal: controller.signal, releaseOnFailure: false, onSession: (session) => {
+        reservedSession = session;
+        controller.sessionId = session.id;
+        if (libraryPlaybackResolveController === controller) flushAbandonedLibrarySessions();
+      } });
     if (loadId !== playbackLoadRequestId) return false;
     setPlayerLoading(62, "Source ready");
     upsertLibrarySession(session, entry.magnet, {
@@ -500,7 +552,9 @@ export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds
     const file = session.files.find((item) => Number(item.index) === Number(fileIndex))
       || session.files.find((item) => item.name === buttonSource?.name);
     if (!file) throw new Error("That file is no longer present in this torrent.");
-    return (await playTorrentFile(session, file, { startAtSeconds: resumeAtSeconds, requestId: loadId })) !== false;
+    const played = await playTorrentFile(session, file, { startAtSeconds: resumeAtSeconds, requestId: loadId });
+    playAccepted = played !== false && loadId === playbackLoadRequestId && !controller.signal.aborted;
+    return playAccepted;
   } catch (error) {
     if (loadId !== playbackLoadRequestId || controller.signal.aborted) return false;
     $("#media-status").textContent = "Couldn't open this source";
@@ -512,10 +566,12 @@ export async function playLibraryEpisode(libraryId, fileIndex, { resumeAtSeconds
       libraryPlaybackResolveController = null;
       libraryPlaybackPendingMagnet = "";
     }
-    // Release only a newly owned abandoned torrent, not a reused session, an
-    // active player session, or one the replacement request may still reuse.
-    if (controller.signal.aborted && reservedSession?.reused === false
-      && libraryPlaybackPendingMagnet !== entry.magnet) await releaseTorrentSession(reservedSession.id);
+    // Resolver timeout/error also needs cleanup, not just cancellation. Its
+    // early release was protected by this controller's own reservation. Queue
+    // once after retiring that reservation; a newer owner still wins.
+    if (!playAccepted && reservedSession?.reused === false)
+      abandonedLibrarySessions.add(reservedSession.id);
+    flushAbandonedLibrarySessions();
   }
 }
 
@@ -564,6 +620,8 @@ export function wireLocalVideoInput() {
     // Local selection supersedes any torrent resolve/metadata response that
     // could otherwise install the old source after the file is chosen.
     playbackLoadRequestId += 1;
+    pendingDirectTorrentSelection = null;
+    flushAbandonedLibrarySessions();
     libraryPlaybackResolveController?.abort("local file selected");
     libraryPlaybackResolveController = null;
     libraryPlaybackPendingMagnet = "";
