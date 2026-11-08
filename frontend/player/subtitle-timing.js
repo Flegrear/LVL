@@ -1,10 +1,11 @@
 // Subtitle timing: offsets, alignment between tracks and timeline fits.
 import { createSubtitleCueLookup, offsetAt as syncOffsetAt } from "../../shared/subtitles/subtitle-sync.js";
-import { pairedCueMemo, state } from "../../app.js";
+import { audioSync, pairedCueMemo, state } from "../../app.js";
 import { $ } from "../app/dom.js";
 import { postJson } from "../app/http.js";
 import { activeTrack, currentSourceTracks, normalizeTrackLanguage } from "./player-tracks.js";
 import { renderSubtitles, renderTracks, subtitleRenderMemo } from "./subtitle-display.js";
+import { playbackLoadRequestId } from "./torrent-playback.js";
 
 export function allPrimaryCues() {
   return activeTrack()?.cues || [];
@@ -176,14 +177,64 @@ export function syncTrackToBestReference(track, { initial = false } = {}) {
   return estimate.offsetMs;
 }
 
+let subtitleAlignmentRequestSerial = 0;
 export async function alignCurrentSubtitleSet() {
-  const tracks = currentSourceTracks().filter((track) => track.cues?.length);
+  // Even identical selections can issue overlapping alignments. The latest
+  // invocation owns publication, including when it needs no HTTP request.
+  const requestSerial = ++subtitleAlignmentRequestSerial;
+  const scoped = currentSourceTracks();
+  const tracks = scoped.filter((track) => track.cues?.length);
   if (tracks.length < 2) return { reference: tracks[0] || null, offsets: [], backend: false };
   const reference = tracks.find((track) => track.exactMedia)
     || tracks.find((track) => track.syncSource === "audio")
     || tracks.find((track) => normalizeTrackLanguage(track.language) === state.targetLanguage)
     || tracks.find((track) => track.id === state.selectedTrackId)
     || tracks[0];
+  // Keep the request owned by the existing playback/audio selection and the
+  // exact subtitle set. A later episode can reuse track IDs or even objects.
+  const source = state.currentSource;
+  const sourceIdentity = (item) => JSON.stringify([
+    item?.kind, item?.libraryId, item?.sessionId, item?.fileIndex,
+    item?.fileName, item?.sourceTag, item?.episode?.code, item?.title,
+  ]);
+  const sourceKey = sourceIdentity(source);
+  const loadId = playbackLoadRequestId;
+  const audioIndex = state.selectedAudioTrack;
+  const audioGeneration = audioSync.generation;
+  const audioKey = audioSync.key;
+  const selectedTrackId = state.selectedTrackId;
+  const targetLanguage = state.targetLanguage;
+  const allTracks = state.tracks;
+  const updatedByThisRequest = new Set();
+  const selectedSet = scoped.map((track) => ({
+    track, id: track.id, sourceTag: track.sourceTag, visible: track.visible,
+    language: track.language, exactMedia: track.exactMedia, syncSource: track.syncSource,
+    offsetMs: track.offsetMs, syncMode: track.syncMode,
+    anchors: track.syncAnchors, anchorCount: track.syncAnchors?.length,
+    cues: track.cues, cueCount: track.cues?.length,
+    firstCue: track.cues?.[0], lastCue: track.cues?.at(-1),
+  }));
+  const current = () => {
+    if (requestSerial !== subtitleAlignmentRequestSerial
+      || state.currentSource !== source || sourceIdentity(state.currentSource) !== sourceKey
+      || playbackLoadRequestId !== loadId || state.selectedAudioTrack !== audioIndex
+      || audioSync.generation !== audioGeneration || audioSync.key !== audioKey
+      || state.selectedTrackId !== selectedTrackId || state.targetLanguage !== targetLanguage
+      || state.tracks !== allTracks) return false;
+    const live = currentSourceTracks();
+    return live.length === selectedSet.length && live.every((track, index) => {
+      const saved = selectedSet[index];
+      return track === saved.track && track.id === saved.id && track.sourceTag === saved.sourceTag
+        && track.visible === saved.visible && track.language === saved.language
+        && track.exactMedia === saved.exactMedia
+        && (updatedByThisRequest.has(track) || (track.syncSource === saved.syncSource
+          && track.offsetMs === saved.offsetMs && track.syncMode === saved.syncMode
+          && track.syncAnchors === saved.anchors && track.syncAnchors?.length === saved.anchorCount))
+        && track.cues === saved.cues && track.cues?.length === saved.cueCount
+        && track.cues?.[0] === saved.firstCue && track.cues?.at(-1) === saved.lastCue;
+    });
+  };
+  const discarded = () => ({ reference: null, offsets: [], backend: false, stale: true });
   try {
     const data = await postJson("/api/subtitles/align", {
       referenceTrackId: reference.id,
@@ -202,23 +253,26 @@ export async function alignCurrentSubtitleSet() {
         }),
       })),
     });
+    if (!current()) return discarded();
     const alignedById = new Map((Array.isArray(data?.tracks) ? data.tracks : []).map((item) => [String(item.id), item]));
     const offsets = [];
-    tracks.forEach((track) => {
+    for (const track of tracks) {
+      if (!current()) return discarded();
       const aligned = alignedById.get(String(track.id));
-      if (!aligned) return;
+      if (!aligned) continue;
       if (track.syncSource === "audio" && track.id !== reference.id) {
         offsets.push("AUDIO");
-        return;
+        continue;
       }
       track.syncConfidence = Number(aligned.confidence) || 0;
       track.syncSpanRatio = Number(aligned.spanRatio) || 0;
       track.syncRejected = Boolean(aligned.rejected);
       track.syncReferenceId = data?.referenceTrackId || reference.id;
       track.syncReferenceExact = Boolean(reference.exactMedia);
+      updatedByThisRequest.add(track);
       if (track.id === reference.id) {
         track.syncRejected = false;
-        return;
+        continue;
       }
       if (!track.syncRejected) {
         const anchors = Array.isArray(aligned.anchors) ? aligned.anchors
@@ -248,20 +302,24 @@ export async function alignCurrentSubtitleSet() {
             : `${low >= 0 ? "+" : ""}${low}→${high >= 0 ? "+" : ""}${high}ms`);
         }
       }
-    });
+    }
+    if (!current()) return discarded();
     state.alignedSubtitleTimeline = Array.isArray(data?.timeline) ? data.timeline : [];
-    state.alignedSubtitleSourceKey = [state.currentSource.libraryId || state.currentSource.sourceTag || state.currentSource.title || state.currentSource.kind || "source", state.currentSource.fileIndex ?? state.currentSource.fileName ?? "file"].join("|");
+    state.alignedSubtitleSourceKey = [source?.libraryId || source?.sourceTag || source?.title || source?.kind || "source", source?.fileIndex ?? source?.fileName ?? "file"].join("|");
 
     return { reference, offsets, backend: true };
   } catch {
+    if (!current()) return discarded();
     state.alignedSubtitleTimeline = [];
     state.alignedSubtitleSourceKey = "";
     const offsets = [];
-    tracks.forEach((track) => {
-      if (track.id === reference.id) return;
+    for (const track of tracks) {
+      if (!current()) return discarded();
+      if (track.id === reference.id) continue;
       const offset = syncTrackToBestReference(track, { initial: true });
+      updatedByThisRequest.add(track);
       offsets.push(`${offset >= 0 ? "+" : ""}${offset}ms`);
-    });
+    }
 
     return { reference, offsets, backend: false };
   }

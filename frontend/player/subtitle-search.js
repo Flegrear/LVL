@@ -281,6 +281,14 @@ function bestSubtitleIndexesByLanguage(results, languageList) {
 async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {}) {
   const sourceAtSearch = state.currentSource;
   const searchRevision = ++webSubtitleSearchRevision;
+  const currentSearch = () => state.currentSource === sourceAtSearch && searchRevision === webSubtitleSearchRevision;
+  const discardStaleSearch = () => {
+    // Only clear this request's own outstanding progress message. A newer
+    // request or unrelated UI update owns its message independently.
+    if (searchRevision === webSubtitleSearchRevision
+      && $("#subtitle-web-status")?.textContent === "Searching for subtitles…")
+      setToolStatus("#subtitle-web-status", "");
+  };
   const apiKey = state.subdlKey;
   const query = $("#subtitle-query").value.trim();
   const selected = parseSubtitleFinderLanguages($("#subtitle-language").value);
@@ -318,7 +326,7 @@ async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {
       animeFallback: type === "tv" && Boolean(aliases.length),
       forceBroad,
     });
-    if (state.currentSource !== sourceAtSearch || searchRevision !== webSubtitleSearchRevision) return;
+    if (!currentSearch()) { discardStaleSearch(); return; }
     const sourceName = state.currentSource?.fileName || state.currentSource?.title || "";
     state.webSubtitleResults = (data.results || []).slice().sort((a, b) => subtitleReleaseScore(b, sourceName) - subtitleReleaseScore(a, sourceName));
     webSubtitleResultsSource = sourceAtSearch;
@@ -330,17 +338,22 @@ async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {
       const indexes = bestSubtitleIndexesByLanguage(state.webSubtitleResults, language);
       const added = [];
       for (const index of indexes) {
+        if (!currentSearch()) { discardStaleSearch(); return; }
         const result = state.webSubtitleResults[index];
         if (currentSourceTracks().some((track) => track.language === String(result.language || "").toUpperCase())) continue;
         const imported = await importWebSubtitle(index, null, { quiet: true });
+        if (!currentSearch()) { discardStaleSearch(); return; }
         if (imported) added.push(String(result.language || "").toUpperCase());
       }
-      if (added.length && currentSourceTracks().filter((track) => track.cues?.length).length > 1) await alignCurrentSubtitleSet();
-      if (added.length) setToolStatus("#subtitle-web-status", `Added ${added.map(languageName).join(" and ")} subtitles`);
+      if (added.length && currentSourceTracks().filter((track) => track.cues?.length).length > 1) {
+        const alignment = await alignCurrentSubtitleSet();
+        if (!currentSearch() || alignment?.stale) { discardStaleSearch(); return; }
+      }
+      if (added.length && currentSearch()) setToolStatus("#subtitle-web-status", `Added ${added.map(languageName).join(" and ")} subtitles`);
     }
   } catch (error) {
-    if (state.currentSource === sourceAtSearch && searchRevision === webSubtitleSearchRevision)
-      setToolStatus("#subtitle-web-status", error.message, true);
+    if (currentSearch()) setToolStatus("#subtitle-web-status", error.message, true);
+    else discardStaleSearch();
   }
 }
 

@@ -81,12 +81,6 @@ export function mountProviderBrowser(section, ctx) {
       !source ? t("Choose a source to browse.") : state.loaded ? t("{count} titles", { count: state.items.length }) : t("Choose Popular, Latest or Search."));
     status.classList.toggle("is-error", Boolean(state.error));
     grid.innerHTML = state.items.map((item) => card(item, opened.get(`${state.sourceId}\n${item.path}`) || item.workId)).join("");
-    if (!state.items.length && globalThis.document?.documentElement?.classList?.contains("lvl-android")) {
-      grid.innerHTML = state.loading
-        ? '<div class="comic-provider__placeholder" role="status" aria-label="Loading source titles"><span class="comic-provider__skeleton"></span><span class="comic-provider__skeleton"></span></div>'
-        : state.error ? `<div class="comic-provider__empty" role="alert"><strong>${escapeHtml(t("This source couldn't load."))}</strong>${buttonMarkup({ label: "Try again", size: "sm", attrs: { "data-provider-retry": "" } })}</div>`
-          : state.loaded ? `<p class="comic-provider__empty">${escapeHtml(t("No comics matched these filters."))}</p>` : "";
-    }
     more.hidden = !state.hasNextPage || Boolean(state.error);
     more.disabled = state.loading;
     refreshImages(grid);
@@ -120,7 +114,6 @@ export function mountProviderBrowser(section, ctx) {
     void load();
   });
   section.addEventListener("click", async (event) => {
-    if (event.target.closest("[data-provider-retry]")) return void load();
     const mode = event.target.closest("[data-provider-mode]");
     if (mode) {
       for (const button of section.querySelectorAll("[data-provider-mode]")) button.setAttribute("aria-pressed", String(button === mode));

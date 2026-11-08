@@ -48,6 +48,7 @@ import { addBestCatalogMovie, compareStreamsByPeers, setButtonText } from "../ca
 import { authenticatedTitleAniList } from "../anilist/anilist-sync.js";
 
 let titleMovieView = null;
+let titleMovieSourceRequestSerial = 0;
 let titleRenderQueued = false;
 
 export function titleRoute() {
@@ -800,6 +801,7 @@ function titleMovieSourcesMarkup(info) {
   view.visible = view.floorOnly
     ? view.streams.filter((stream) => meetsSourceFloor(stream)).sort((a, b) => height(b) - height(a) || (Number(b.peers) || 0) - (Number(a.peers) || 0))
     : view.streams.slice().sort(compareStreamsByPeers).slice(0, 30);
+  view.paintedRows = Object.freeze([...view.visible]);
   const title = view.floorOnly ? `${view.visible.length} magnet${view.visible.length === 1 ? "" : "s"}` : `${view.streams.length} source${view.streams.length === 1 ? "" : "s"}`;
   const toggle = view.floorOnly
     ? buttonMarkup({ label: `Show all ${view.streams.length}`, variant: "ghost", size: "sm", className: "catalog-movie-all" })
@@ -807,7 +809,7 @@ function titleMovieSourcesMarkup(info) {
   return `${head(title, view.floorOnly ? '<span class="catalog-sources-note">720p or better, 2+ peers</span>' : "")}
     <div class="title-source-actions">${best}${toggle}</div>
     <div class="catalog-stream-list">${view.visible.length
-      ? view.visible.map((stream, index) => catalogStreamRowMarkup(stream, index, { contentType: "movie" })).join("")
+      ? view.visible.map((stream, index) => catalogStreamRowMarkup(stream, index, { contentType: "movie", requestSerial: view.requestSerial })).join("")
       : emptyMarkup({ compact: true, title: view.floorOnly ? "None at 720p or better with 2+ peers" : "No sources found" })}</div>`;
 }
 
@@ -821,16 +823,28 @@ function renderTitleMovieSources() {
 async function loadTitleMovieSources({ scroll = false } = {}) {
   const id = titleView.id;
   if (!id) return;
-  titleMovieView = { id, status: "loading", streams: [], floorOnly: false, error: "", visible: [] };
-  renderTitleMovieSources();
+  const routeToken = catalogSeriesToken;
+  const request = {
+    id, routeToken, requestSerial: ++titleMovieSourceRequestSerial,
+    status: "loading", streams: [], floorOnly: false, error: "", visible: [], paintedRows: [],
+  };
+  const ownsCache = () => titleMovieView === request && titleView.id === id
+    && titleView.type === "movie" && catalogSeriesToken === routeToken;
+  const mayPaint = () => ownsCache() && viewActive("title");
+  titleMovieView = request;
+  if (mayPaint()) renderTitleMovieSources();
   if (scroll) $("#title-sources")?.scrollIntoView({ behavior: "smooth", block: "start" });
   try {
     const data = await fetchJson(`/api/streams?type=movie&id=${encodeURIComponent(id)}`);
-    if (titleMovieView?.id === id) titleMovieView = { ...titleMovieView, status: "ready", streams: data.streams || [] };
+    if (!ownsCache()) return;
+    request.status = "ready";
+    request.streams = data.streams || [];
   } catch (error) {
-    if (titleMovieView?.id === id) titleMovieView = { ...titleMovieView, status: "error", error: error.message || "The source lookup failed" };
+    if (!ownsCache()) return;
+    request.status = "error";
+    request.error = error.message || "The source lookup failed";
   }
-  renderTitleMovieSources();
+  if (mayPaint()) renderTitleMovieSources();
 }
 
 function titleMissingMarkup() {
@@ -1158,7 +1172,9 @@ export function handleTitleMainClick(event) {
     titleMovieView.floorOnly = target.matches(".catalog-fetch-all-movie");
     renderTitleMovieSources();
   } else if (target.matches(".catalog-add-stream")) {
-    const stream = titleMovieView?.visible?.[Number(target.closest("[data-stream-index]")?.dataset.streamIndex)];
+    const row = target.closest("[data-stream-index]");
+    const stream = row?.dataset.sourceRequest === String(titleMovieView?.requestSerial)
+      ? titleMovieView?.paintedRows?.[Number(row.dataset.streamIndex)] : null;
     if (stream) {
       void importCatalogStream(titleCatalogMeta(), stream, { button: target, seriesKey: titleView.key || null })
         .catch((error) => setToolStatus(TITLE_STATUS, error.message || "Could not add this source", true));
@@ -1168,6 +1184,7 @@ export function handleTitleMainClick(event) {
 
 export let catalogSeriesView = null;
 let catalogSeriesToken = 0;
+export const titleSourceRouteToken = () => catalogSeriesToken;
 
 // The page's chapter list for a catalog series. Kept per title, so open source panels and the
 // chosen season survive re-renders; starts on the season of the next chapter to watch.

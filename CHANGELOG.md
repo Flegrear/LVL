@@ -1,5 +1,13 @@
 # LVL Changelog
 
+## 0.3.0 — 2026-11-08
+
+- Improve recovery after backward seeks and stalled video.
+- Preserve watched history when refreshing a title's playback source.
+- Keep source searches consistent when retrying or returning to a title.
+- Prevent older subtitle alignment results from changing current playback.
+- Add source browsing and bulk chapter read and unread controls for Comics.
+
 ## 0.2.6 — 2026-11-07
 
 - Fix watched changes on different episodes conflicting between devices.

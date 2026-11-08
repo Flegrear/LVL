@@ -138,6 +138,7 @@ export function recordPlaybackProgress(state, {
   sourceGeneration: currentSourceGeneration,
   currentTimeSeconds,
   seeking = false,
+  reanchor = false,
   policy,
 } = {}) {
   let current = state || createPlaybackRecoveryState();
@@ -156,7 +157,7 @@ export function recordPlaybackProgress(state, {
   const jumpedForward = Number.isFinite(previous)
     && seconds - previous > Math.max(15, normalized.progressResetSeconds * 3);
   const anchor = current.progressAnchorSeconds === null ? Number.NaN : Number(current.progressAnchorSeconds);
-  if (!Number.isFinite(anchor) || movedBackward || jumpedForward) {
+  if (reanchor || !Number.isFinite(anchor) || movedBackward || jumpedForward) {
     return { ...current, progressAnchorSeconds: seconds, lastProgressSeconds: seconds };
   }
 

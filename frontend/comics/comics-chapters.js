@@ -85,12 +85,14 @@ export function chapterPresentation(items, { grouped = true, descending = false 
 export function chapterRowMarkup(item, { read, readPending = false, available, onDisk, flat = false, selectable = false, selected = false, selecting = false, key = "" } = {}) {
   const label = t("Chapter {number}", { number: item.chapter });
   // The number is on the left and the volume in its heading; the facts say only what's not shown.
-  const facts = flat && item.volume || read
-    ? metaMarkup([...(flat && item.volume ? [t("Volume {number}", { number: item.volume })] : []), ...(read ? [t("Read")] : [])]) : "";
+  const unknown = read === null || read === undefined ? t(readPending ? "Checking…" : "Status unknown") : "";
+  const details = [...(flat && item.volume ? [t("Volume {number}", { number: item.volume })] : []),
+    ...(read ? [t("Read")] : []), ...(unknown ? [unknown] : [])];
+  const facts = details.length ? metaMarkup(details) : "";
   const sourcesLabel = available === 1 ? t("1 source") : available ? t("{count} sources", { count: available }) : t("Sources");
   return `<li class="catalog-chapter comic-chapter-row${read ? " is-watched" : ""}${onDisk ? " is-saved" : ""}" data-chapter="${escapeHtml(item.chapter)}" data-volume="${escapeHtml(item.volume || "")}"${selecting ? ` data-chapter-key="${escapeHtml(key)}"` : ""}>`
     + `<div class="catalog-chapter-row">${selecting ? `<input type="checkbox" data-chapter-select aria-label="${escapeHtml(t("Select chapter {number}", { number: item.chapter }))}"${selected ? " checked" : ""}${selectable ? "" : " disabled"} />` : ""}<span class="comic-chapter-number" aria-hidden="true">${escapeHtml(item.chapter)}</span>`
-    + `<div class="catalog-chapter-copy"><strong>${escapeHtml(item.title || label)}</strong>${facts ? `<span class="catalog-chapter-code">${facts}</span>` : ""}<span class="comic-chapter-state ${read === null || read === undefined ? "is-unknown" : read ? "is-read" : "is-unread"}">${escapeHtml(t(read === null || read === undefined ? readPending ? "Checking…" : "Status unknown" : read ? "Read" : "Unread"))}</span></div>`
+    + `<div class="catalog-chapter-copy"><strong>${escapeHtml(item.title || label)}</strong>${facts ? `<span class="catalog-chapter-code">${facts}</span>` : ""}</div>`
     + `<div class="catalog-chapter-actions"><button class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-comic-read-chapter="${escapeHtml(item.chapter)}">${icon("play")}<span>${escapeHtml(t("Read"))}</span></button>`
     + `<button class="ui-btn ui-btn--ghost ui-btn--sm catalog-chapter-toggle" type="button" data-comic-chapter-sources aria-expanded="false"><span>${escapeHtml(sourcesLabel)}</span>${icon("chevron-down")}</button></div></div>`
     + `<div class="catalog-chapter-sources" hidden></div></li>`;

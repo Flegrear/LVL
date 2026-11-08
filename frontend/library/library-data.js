@@ -126,9 +126,11 @@ export function upsertLibrarySession(session, magnet = "", {
     ...(existing?.anilistImported ? { anilistImported: true } : {}),
     ...(existing?.externalSource ? { externalSource: existing.externalSource } : {}),
     ...(existing?.externalId ? { externalId: existing.externalId } : {}),
-    // Manual watched flags are independent of torrent availability. Keep them
-    // when an updated torrent source replaces the existing Library entry.
+    // Watched flags, their author and timestamp belong together. Source refresh
+    // must preserve the recorded origin; absent legacy provenance stays unknown.
     watchedChapters: existing?.watchedChapters || {},
+    ...(existing?.watchedChapterOrigins ? { watchedChapterOrigins: existing.watchedChapterOrigins } : {}),
+    ...(existing?.watchedChapterUpdatedAt ? { watchedChapterUpdatedAt: existing.watchedChapterUpdatedAt } : {}),
     aliases: [...new Set([...(Array.isArray(existing?.aliases) ? existing.aliases : []), ...(Array.isArray(anchorSeries?.aliases) ? anchorSeries.aliases : []), ...(Array.isArray(aliases) ? aliases : [])].map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 20),
     sourceMeta: normalizeLibrarySourceMeta(sourceMeta, existing?.sourceMeta),
     addedAt: existing?.addedAt || Date.now(),

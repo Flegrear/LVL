@@ -51,7 +51,7 @@ export function formatLabel(comic) {
   return ({ KR: "Manhwa", CN: "Manhua", TW: "Manhua" })[comic?.country] || "Manga";
 }
 
-export function comicCardMarkup(comic, ctx, { badge = "", files = 0, read = 0, knownRead = undefined } = {}) {
+export function comicCardMarkup(comic, ctx, { badge = "", files = 0, read = 0 } = {}) {
   const key = comicKey(comic?.id && String(comic.id).startsWith("local-") ? comic.id : comic);
   if (!key) return "";
   // read: the highest chapter finished (Library Comics filter only). The chip replaces the
@@ -63,28 +63,14 @@ export function comicCardMarkup(comic, ctx, { badge = "", files = 0, read = 0, k
     : total ? tr(ctx, "{count} chapters", { count: total }) : "";
   const meta = [tr(ctx, formatLabel(comic)), comic.year ? String(comic.year) : "", chapterChip,
     files === 1 ? tr(ctx, "1 file") : files ? tr(ctx, "{count} files", { count: files }) : ""].filter(Boolean);
-  const saved = libraryEntry(key);
   const html = cardMarkup({
     title: comic.title, image: comic.cover, meta, badge,
     rating: Number.isFinite(comic.score) && comic.score > 0 ? comic.score.toFixed(1) : "",
     // At least 2%, so one chapter of 224 still shows as started.
     progress: done && total ? Math.min(1, Math.max(0.02, done / total)) : 0,
-  }, { inLibrary: Boolean(saved) });
-  // The API exposes the highest completed chapter, not the count of finished
-  // units. Never turn it into a precise unread number when chapters have gaps.
-  const android = globalThis.document?.documentElement?.classList?.contains("lvl-android");
-  // Presentation progress is intentionally omitted in Home/Library All.
-  // A card may still have an independently confirmed chapter maximum from
-  // its Library record. An unknown summary must never become "0 read".
-  const known = knownRead === undefined ? saved?.readChapters : knownRead;
-  const confirmedRead = known !== null && known !== undefined && known !== ""
-    && Number.isFinite(Number(known)) && Number(known) >= 0 ? Number(known) : null;
-  const hasUnread = android && total > 0 && confirmedRead !== null && confirmedRead < total;
-  const mobileCard = hasUnread
-    ? html.replace('<span class="ui-card__shade"', '<span class="comic-unread-badge">Unread chapters</span><span class="ui-card__shade"')
-    : html;
+  }, { inLibrary: Boolean(libraryEntry(key)) });
   // No data-title-id / data-series-key: core's video card handlers ignore these cards.
-  return mobileCard.replace("<article class=\"", `<article data-comic-id="${escapeHtml(key)}" class="`);
+  return html.replace("<article class=\"", `<article data-comic-id="${escapeHtml(key)}" class="`);
 }
 
 export const errorMarkup = (ctx, message) => emptyMarkup({
@@ -170,8 +156,7 @@ export function statusCounts(entries) {
 
 // progress: the Library's Comics filter shows how far you've read (not "All" or Home).
 const libraryCard = (entry, ctx, { progress = false } = {}) => comicCardMarkup(entry.local ? { ...entry.work, id: entry.id } : entry.work, ctx,
-  { badge: tr(ctx, STATUS_LABELS[entry.status] || ""), files: entry.files || 0, read: progress ? entry.readChapters || 0 : 0,
-    knownRead: entry.readChapters ?? null });
+  { badge: tr(ctx, STATUS_LABELS[entry.status] || ""), files: entry.files || 0, read: progress ? entry.readChapters || 0 : 0 });
 
 // Main Library "All": synchronous from the cache. The first call starts loading
 // and reports through onLoaded so the Library redraws once the entries are in.
@@ -192,19 +177,12 @@ export function libraryGroup(options = {}, ctx, onLoaded = () => {}, { joined = 
 export async function renderComicsLibrary(list, ctx, { query = "", sort = "recent", status = "any", isCurrent = () => true } = {}) {
   if (!list) return;
   list.classList.remove("is-grouped");
-  const android = globalThis.document?.documentElement?.classList?.contains("lvl-android");
-  if (android) {
-    list.setAttribute("aria-busy", "true");
-    list.innerHTML = '<div class="comic-library-loading" role="status">Loading your comics…</div>';
-  }
   try {
     await loadLibrary({ force: true });
   } catch (error) {
     if (isCurrent()) list.innerHTML = errorMarkup(ctx, error.message);
-    if (android) list.removeAttribute("aria-busy");
     return;
   }
-  if (android) list.removeAttribute("aria-busy");
   if (!isCurrent()) return;
   const entries = sortEntries(filterEntries([...library.entries.values()], { query, status }), sort);
   list.innerHTML = entries.length

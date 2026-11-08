@@ -25,7 +25,7 @@ import {
   repeatedLibrarySourceIndexes, repeatedLibrarySourceTag, updateLibrarySummary,
 } from "../library/library-page.js";
 import {
-  catalogSeriesView, renderTitlePage, titleRelatedMoviesMarkup, titleRendered, titleSubject,
+  catalogSeriesView, renderTitlePage, titleRelatedMoviesMarkup, titleRendered, titleSourceRouteToken, titleSubject,
 } from "./title-page.js";
 import {
   buttonText, catalogKindText, catalogSeriesKey, compareLibrarySourceRefsByPeers, setButtonText,
@@ -33,6 +33,7 @@ import {
 } from "../catalog/catalog-search.js";
 
 const SEASON_PACKS_SHOWN = 6;
+let catalogSourceRequestSerial = 0;
 
 function catalogSeasonLabel(season) {
   return Number(season) === 0 ? "Specials" : `Season ${season}`;
@@ -277,12 +278,12 @@ function streamMetaParts(stream, sizeDetail = "") {
   ].filter(Boolean);
 }
 
-export function catalogStreamRowMarkup(stream, index, { seriesKey = null, compact = false, contentType = null } = {}) {
+export function catalogStreamRowMarkup(stream, index, { seriesKey = null, compact = false, contentType = null, requestSerial = null } = {}) {
   const releaseName = String(stream.title || "Torrent source").split("\n")[0];
   const kind = catalogSourceKindPresentation({ ...stream, contentType: contentType || stream.contentType });
   const isMovie = (contentType || stream.contentType) === "movie";
   const size = stream.sizeBytes ? formatBytes(stream.sizeBytes) : "";
-  return `<article class="catalog-stream-row${compact ? " compact" : ""}" data-stream-index="${index}" ${seriesKey ? `data-series-key="${escapeHtml(seriesKey)}"` : ""}>
+  return `<article class="catalog-stream-row${compact ? " compact" : ""}" data-stream-index="${index}"${requestSerial === null ? "" : ` data-source-request="${requestSerial}"`} ${seriesKey ? `data-series-key="${escapeHtml(seriesKey)}"` : ""}>
     <span class="catalog-stream-rank">${index + 1}</span>
     <div class="catalog-stream-copy">
       <strong title="${escapeHtml(releaseName)}">${escapeHtml(releaseName)}</strong>
@@ -312,13 +313,13 @@ function catalogChapterSourcesMarkup(sources) {
     const hidden = episodeFiles.length + others.length - listed.length;
     return `<section class="catalog-source-group">
       <div class="catalog-sources-head catalog-sources-head--group"><h4>${listed.length} episode magnet${listed.length === 1 ? "" : "s"}</h4><span class="catalog-sources-note">720p or better, 2+ peers</span>${hidden ? buttonMarkup({ label: `Show all ${episodeFiles.length + others.length}`, variant: "ghost", size: "sm", className: "catalog-source-all" }) : ""}</div>
-      ${listed.length ? `<div class="catalog-stream-list">${listed.map(({ stream, rowIndex }, position) => catalogChapterSourceRowMarkup(stream, rowIndex, position)).join("")}</div>` : '<p class="catalog-chapter-sources-status">No single-episode sources meet the quality and peer requirements.</p>'}
+      ${listed.length ? `<div class="catalog-stream-list">${listed.map(({ stream, rowIndex }, position) => catalogChapterSourceRowMarkup(stream, rowIndex, position, sources.requestSerial)).join("")}</div>` : '<p class="catalog-chapter-sources-status">No single-episode sources meet the quality and peer requirements.</p>'}
     </section>`;
   }
   if (!episodeFiles.length && !others.length) {
     return emptyMarkup({ compact: true, title: "No single-episode sources found", text: [nonmatching ? `${nonmatching} different-episode result${nonmatching === 1 ? "" : "s"} omitted.` : "", unplayable ? `${unplayable} archive${unplayable === 1 ? "" : "s"} skipped.` : ""].filter(Boolean).join(" ") });
   }
-  const rows = (list, offset) => list.map((stream, index) => catalogChapterSourceRowMarkup(stream, sources.rows.indexOf(stream), offset + index)).join("");
+  const rows = (list, offset) => list.map((stream, index) => catalogChapterSourceRowMarkup(stream, sources.rows.indexOf(stream), offset + index, sources.requestSerial)).join("");
   const group = (title, list, offset) => `<section class="catalog-source-group">
       <div class="catalog-sources-head catalog-sources-head--group"><h4>${title}</h4><span class="ui-chip__count">${list.length}</span></div>
       <div class="catalog-stream-list">${rows(list, offset)}</div>
@@ -341,7 +342,7 @@ function catalogSeasonPacksMarkup(state) {
   </section>`;
 }
 
-function catalogChapterSourceRowMarkup(stream, rowIndex, position = rowIndex) {
+function catalogChapterSourceRowMarkup(stream, rowIndex, position = rowIndex, requestSerial = null) {
   const info = stream.chapterSource;
   const releaseName = String(stream.title || "Torrent source").split("\n")[0];
   const size = stream.sizeBytes ? formatBytes(stream.sizeBytes) : "";
@@ -349,7 +350,7 @@ function catalogChapterSourceRowMarkup(stream, rowIndex, position = rowIndex) {
   // present the unverified provider figure as a measured chapter/pack total.
   const fileDetail = size ? (info.kind === "pack" ? `${size} reported size` : size) : "";
   const added = sourceInLibrary(stream);
-  return `<article class="catalog-stream-row compact" data-row-index="${rowIndex}">
+  return `<article class="catalog-stream-row compact" data-row-index="${rowIndex}"${requestSerial === null || requestSerial === undefined ? "" : ` data-source-request="${requestSerial}"`}>
     <span class="catalog-stream-rank">${position + 1}</span>
     <div class="catalog-stream-copy">
       <strong title="${escapeHtml(releaseName)}">${escapeHtml(releaseName)}</strong>
@@ -376,6 +377,7 @@ function sourceInLibrary(stream) {
 function renderCatalogChapterPanel(item, sources) {
   const panel = item?.querySelector(".catalog-chapter-sources");
   if (!panel || !catalogSeriesView) return;
+  if (catalogSeriesView.sources.get(item.dataset.videoId) !== sources) return;
   const open = Boolean(sources?.open);
   item.classList.toggle("is-open", open);
   item.querySelector(".catalog-chapter-toggle")?.setAttribute("aria-expanded", String(open));
@@ -391,24 +393,34 @@ function catalogChapterItem(videoId) {
 
 async function loadCatalogChapterSources(view, chapter, { force = false } = {}) {
   const current = view.sources.get(chapter.id);
-  if (current?.status === "ready" && !force) return current;
-  if (current?.promise && !force) return current.promise;
-  const sources = { open: Boolean(current?.open), floorOnly: Boolean(current?.floorOnly), status: "loading" };
+  const routeToken = titleSourceRouteToken();
+  if (current?.status === "ready" && !force && current.routeToken === routeToken) return current;
+  if (current?.promise && !force && current.routeToken === routeToken) return current.promise;
+  const sources = {
+    open: Boolean(current?.open), floorOnly: Boolean(current?.floorOnly), status: "loading",
+    requestSerial: ++catalogSourceRequestSerial, routeToken,
+  };
+  const ownsCache = () => view.sources.get(chapter.id) === sources && catalogSeriesView === view
+    && titleSourceRouteToken() === routeToken
+    && (!view.routeKey || view.routeKey === titleView.routeKey);
+  const mayPaint = () => ownsCache() && viewActive("title");
   view.sources.set(chapter.id, sources);
-  renderCatalogChapterPanel(catalogChapterItem(chapter.id), sources);
+  if (mayPaint()) renderCatalogChapterPanel(catalogChapterItem(chapter.id), sources);
   sources.promise = (async () => {
     try {
       const data = await fetchJson(`/api/streams?type=series&id=${encodeURIComponent(chapter.id)}`);
+      if (!ownsCache()) return null;
       sources.groups = groupChapterSources(data.streams || [], catalogChapterTarget(view, chapter));
-      sources.rows = [...sources.groups.episodeFiles, ...sources.groups.packs, ...sources.groups.others];
+      sources.rows = Object.freeze([...sources.groups.episodeFiles, ...sources.groups.packs, ...sources.groups.others]);
       sources.status = "ready";
     } catch (error) {
+      if (!ownsCache()) return null;
       sources.status = "error";
       sources.error = error.message || "Source lookup failed";
     } finally {
       delete sources.promise;
     }
-    if (catalogSeriesView === view) renderCatalogChapterPanel(catalogChapterItem(chapter.id), sources);
+    if (mayPaint()) renderCatalogChapterPanel(catalogChapterItem(chapter.id), sources);
     return sources;
   })();
   return sources.promise;
@@ -417,12 +429,13 @@ async function loadCatalogChapterSources(view, chapter, { force = false } = {}) 
 // Providers accept episode IDs, not season IDs. Reuse the selected season's first released
 // episode lookup, but display its packs in a mutually exclusive season-source tab.
 async function loadCatalogSeasonPacks(view, seasonNumber, { force = false } = {}) {
+  const mayPaint = () => typeof viewActive !== "function" || viewActive("title");
   const season = view.seasons.find((item) => item.season === seasonNumber);
   const first = season?.episodes.find((episode) => !chapterUpcoming(episode));
   if (!first) {
     const empty = { status: "ready", rows: [], showAll: false, chapter: null };
     view.seasonPacks.set(seasonNumber, empty);
-    if (catalogSeriesView === view && view.season === seasonNumber && view.packsActive) renderTitleChapters();
+    if (catalogSeriesView === view && mayPaint() && view.season === seasonNumber && view.packsActive) renderTitleChapters();
     return empty;
   }
   const current = view.seasonPacks.get(seasonNumber);
@@ -430,20 +443,25 @@ async function loadCatalogSeasonPacks(view, seasonNumber, { force = false } = {}
   if (current?.promise && !force) return current.promise;
   const state = { status: "loading", rows: [], showAll: Boolean(current?.showAll), chapter: { ...first, season: seasonNumber } };
   view.seasonPacks.set(seasonNumber, state);
-  if (catalogSeriesView === view && view.season === seasonNumber) renderTitleChapters();
+  if (catalogSeriesView === view && mayPaint() && view.season === seasonNumber) renderTitleChapters();
   state.promise = (async () => {
     try {
-      const sources = await loadCatalogChapterSources(view, state.chapter, { force });
+      let sources = await loadCatalogChapterSources(view, state.chapter, { force });
+      if (view.seasonPacks.get(seasonNumber) !== state || catalogSeriesView !== view) return null;
+      // If a newer episode lookup superseded this one, join its result.
+      if (!sources) sources = await loadCatalogChapterSources(view, state.chapter);
+      if (view.seasonPacks.get(seasonNumber) !== state || catalogSeriesView !== view || !sources) return null;
       if (sources.status !== "ready") throw new Error(sources.error || "Pack lookup failed");
       state.rows = sources.groups.packs;
       state.status = "ready";
     } catch (error) {
+      if (view.seasonPacks.get(seasonNumber) !== state || catalogSeriesView !== view) return null;
       state.status = "error";
       state.error = error.message || "Pack lookup failed";
     } finally {
       delete state.promise;
     }
-    if (catalogSeriesView === view && view.season === seasonNumber && view.seasonPacks.get(seasonNumber) === state) renderTitleChapters();
+    if (catalogSeriesView === view && mayPaint() && view.season === seasonNumber && view.seasonPacks.get(seasonNumber) === state) renderTitleChapters();
     return state;
   })();
   return state.promise;
@@ -589,6 +607,7 @@ async function fetchAllCatalogChapterSources(view) {
       const chapter = chapters[next];
       next += 1;
       await loadCatalogChapterSources(view, chapter, { force });
+      if (catalogSeriesView !== view || !viewActive("title") || view.season !== season.season) return;
       view.fetchAll.done += 1;
       label();
     }
@@ -623,6 +642,8 @@ export async function playCatalogChapter(view, chapter, button) {
   try {
     setToolStatus(TITLE_STATUS, `Finding a source for ${libraryChapterName({ code }) || code}…`);
     const sources = await loadCatalogChapterSources(view, chapter);
+    if (!sources || catalogSeriesView !== view || !viewActive("title")
+      || view.sources.get(chapter.id) !== sources) return;
     if (sources.status !== "ready") throw new Error(sources.error || "Source lookup failed.");
     const candidates = chapterPlayOrder(sources.groups);
     if (!candidates.length) throw new Error(`No playable source was found for ${code}.`);
@@ -756,6 +777,7 @@ export function handleCatalogChapterClick(event) {
     return;
   }
   const row = target.closest("[data-row-index]");
+  if (!row || row.dataset.sourceRequest !== String(sources?.requestSerial)) return;
   const stream = sources?.rows?.[Number(row?.dataset.rowIndex)];
   if (!stream || !target.matches(".catalog-source-play, .catalog-source-add")) return;
   if (view.busy) return;

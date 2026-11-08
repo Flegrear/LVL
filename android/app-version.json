@@ -1,14 +1,14 @@
 {
   "version": "0.2.0",
   "versionCode": 208,
-  "desktopSourceVersion": "0.2.6",
+  "desktopSourceVersion": "0.3.0",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Refresh Comics with a Material appearance designed for Android.",
     "Browse Popular and Latest titles directly from your selected source.",
-    "Select chapters to mark read or unread together and continue from your next unread chapter.",
-    "Improve comic reader controls and settings on phones.",
+    "Mark selected comic chapters read or unread together and continue from the next unread chapter.",
     "Open long-press menus where you press and keep them within the screen.",
+    "Improve playback recovery after backward seeks and buffering.",
+    "Keep source searches and subtitle alignment attached to your current selection.",
     "Fix separate episode edits conflicting during sync and make saved records easier to read."
   ]
 }

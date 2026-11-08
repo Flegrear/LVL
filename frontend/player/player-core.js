@@ -937,29 +937,56 @@ function currentRecoveryKey() {
 // A new source starts its own recovery history (sourceGeneration: the load it belongs to).
 export function changeRecoverySource(sourceGeneration) {
   playbackRecovery = changePlaybackRecoverySource(playbackRecovery, currentRecoveryKey(), { sourceGeneration });
+  recoveryLastPosition = -1;
+  recoveryLastMotionAt = Date.now();
+  recoveryMotionAnchorRequired = true;
 }
 
 export function markPlaybackMotion() {
-  if (!currentRecoveryKey() || state.pendingSeek) return;
-  const position = absolutePlaybackSeconds();
-  if (position >= recoveryLastPosition + 0.3 || recoveryLastPosition < 0) {
-    const advanced = recoveryLastPosition >= 0 && position >= recoveryLastPosition + 0.3;
+  const sourceKey = currentRecoveryKey();
+  if (!sourceKey || state.pendingSeek || video.seeking || video.paused === true
+    || playbackRecovery.sourceKey && playbackRecovery.sourceKey !== sourceKey
+    || playbackRecovery.sourceGeneration != null
+      && playbackRecovery.sourceGeneration !== playbackLoadRequestId) return;
+  const now = Date.now();
+  if (!recoveryPictureVisible(now)) return;
+  const mediaClock = absolutePlaybackSeconds();
+  // After buffering the audio/media clock can advance while the decoder keeps
+  // presenting the same picture. Those clock-only updates must not disarm the
+  // frozen-frame watchdog or replenish the bounded recovery retry budget.
+  // The raw rVFC clock is tied to this source, unlike the cue display clock
+  // which intentionally falls back to currentTime when video frames are late.
+  const hasFrameClock = typeof video.requestVideoFrameCallback === "function";
+  const presented = hasFrameClock ? presentedSubtitleSeconds() : null;
+  if (hasFrameClock && (!Number.isFinite(presented) || Math.abs(presented - mediaClock) > 0.75)) {
+    // Keep one uncredited baseline so the first subsequent real forward frame
+    // can close Recovery; the baseline alone earns no motion or retry reset.
+    if (recoveryLastPosition < 0 && Number.isFinite(mediaClock)) recoveryLastPosition = mediaClock;
+    return;
+  }
+  const position = hasFrameClock ? presented : mediaClock;
+  const previous = recoveryLastPosition;
+  const movedBack = previous >= 0 && position < previous - 0.25;
+  const movedForward = previous >= 0 && position >= previous + 0.3;
+  if (movedForward || movedBack || previous < 0) {
+    // A first decoded frame after a long observation gap is a new anchor, not
+    // five seconds of continuous playback. Use the existing five-second policy
+    // for that break; a backward/large seek also starts at its proven frame.
+    const observationGap = previous >= 0 && now - recoveryLastMotionAt >= 5_000;
+    const clockJump = movedForward && position - previous > 15;
+    const reanchor = recoveryMotionAnchorRequired || previous < 0 || observationGap
+      || movedBack || clockJump;
+    const advanced = movedForward && !observationGap && !movedBack && !clockJump;
+    recoveryMotionAnchorRequired = false;
     recoveryLastPosition = position;
-    recoveryLastMotionAt = Date.now();
+    recoveryLastMotionAt = now;
     recoveryWaitingSince = null;
     playbackRecovery = recordPlaybackProgress(playbackRecovery, {
       sourceKey: currentRecoveryKey(), currentTimeSeconds: position,
       sourceGeneration: playbackLoadRequestId,
+      reanchor,
     });
-    // A timeupdate/clock jump can advance without a decoded frame after a
-    // source replacement. On browsers with frame callbacks, require the new
-    // source's presented clock before dismissing a recovery overlay. Older
-    // browsers retain the bounded forward-progress fallback.
-    const presented = typeof video.requestVideoFrameCallback === "function"
-      ? (typeof presentedSubtitleSeconds === "function" ? presentedSubtitleSeconds() : null)
-      : position;
-    const frameProven = Number.isFinite(presented) && Math.abs(presented - position) <= 0.75;
-    if (advanced && frameProven && recoveryDisplayPhase === "recovering" && !recoveryBusy) {
+    if (advanced && recoveryDisplayPhase === "recovering" && !recoveryBusy) {
       recordRecoveryDisplay("restored");
       recoveryDisplayPhase = "";
       recoveryStallDiagnosis = null;
@@ -969,10 +996,30 @@ export function markPlaybackMotion() {
   }
 }
 
+// Private observation state belongs to the active source's decoded timeline;
+// a visible frame after a hidden interval or seek must establish a new anchor.
+let recoveryFrameVisibilitySuspended = false;
+let recoveryMotionAnchorRequired = false;
+function recoveryPictureVisible(now = Date.now()) {
+  // Hidden Chromium tabs can play audio while suppressing video callbacks.
+  // Native and document PiP remain rendered when the parent document is hidden.
+  const visible = document.hidden !== true || document.pictureInPictureElement === video
+    || Boolean(window.documentPictureInPicture?.window);
+  if (!visible) { recoveryFrameVisibilitySuspended = true; return false; }
+  if (recoveryFrameVisibilitySuspended) {
+    recoveryFrameVisibilitySuspended = false;
+    recoveryLastMotionAt = now;
+    recoveryLastPosition = -1;
+    recoveryMotionAnchorRequired = true;
+  }
+  return true;
+}
+
 function beginRecoveryWatch() {
   recoveryWaitingSince = Date.now();
   recoveryLastMotionAt = Date.now();
   recoveryLastPosition = -1;
+  if (typeof recoveryMotionAnchorRequired !== "undefined") recoveryMotionAnchorRequired = true;
   if (recoveryWatchTimer !== null) return;
   recoveryWatchTimer = window.setInterval(() => {
     // PiP remains the active viewing surface after navigating to Library or
@@ -983,6 +1030,12 @@ function beginRecoveryWatch() {
         && document.pictureInPictureElement !== video && !window.documentPictureInPicture?.window)
       || recoveryBusy || state.pendingSeek || video.seeking || video.ended || video.paused) return;
     const now = Date.now();
+    // Keep the watchdog's readyState-based buffering test independent of the
+    // picture visibility check, including before frame observation starts.
+    const hiddenPicture = typeof recoveryPictureVisible === "function"
+      ? !recoveryPictureVisible(now)
+      : document.hidden === true && document.pictureInPictureElement !== video
+        && !window.documentPictureInPicture?.window;
     const stalled = isPlaybackStallExpired({
       waitingSinceMs: recoveryWaitingSince, nowMs: now,
       paused: video.paused,
@@ -990,7 +1043,7 @@ function beginRecoveryWatch() {
       ended: video.ended,
       readyState: video.readyState,
     });
-    const frozen = !video.paused && recoveryLastMotionAt && now - recoveryLastMotionAt >= 16_000
+    const frozen = !hiddenPicture && !video.paused && recoveryLastMotionAt && now - recoveryLastMotionAt >= 16_000
       && (!state.mediaDurationMs || absolutePlaybackSeconds() < state.mediaDurationMs / 1000 - 3);
     if ((stalled || frozen) && waitOutTorrentBuffering(now)) return;
     if (stalled || frozen) void recoverPlayback("stall");
@@ -2826,6 +2879,9 @@ export function suspendPlayerForPopup() {
 }
 
 export function wirePlayerVideoEvents() {
+  // Detect tab hide/show even when Chromium throttles both video callbacks
+  // and interval timers for the entire background interval.
+  document.addEventListener?.("visibilitychange", () => recoveryPictureVisible());
   video.addEventListener("seeking", () => {
     if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
     if (typeof clearStreamStatusLabel === "function") clearStreamStatusLabel();

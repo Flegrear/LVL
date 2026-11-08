@@ -918,7 +918,9 @@ $("#settings-subdl-clear").addEventListener("click", () => {
   setToolStatus("#settings-subdl-message", t("Keys cleared. OpenSubtitles stays on."));
 });
 $("#find-subtitles-web").addEventListener("click", () => { void openSubtitleSearch({ auto: true }); });
+let subtitleSyncClickStatusSerial = 0;
 $("#sync-subtitles")?.addEventListener("click", async () => {
+  const clickSerial = ++subtitleSyncClickStatusSerial;
   const tracks = currentSourceTracks().filter((track) => track.cues?.length);
   if (!tracks.length) {
     $("#media-status").textContent = "Add subtitles first";
@@ -937,9 +939,39 @@ $("#sync-subtitles")?.addEventListener("click", async () => {
     $("#media-status").textContent = "Add another track to line them up";
     return;
   }
-  $("#media-status").textContent = "Lining up tracks…";
-  const { reference } = await alignCurrentSubtitleSet();
-  $("#media-status").textContent = `Tracks lined up with ${reference?.label || "the best-timed track"}`;
+  const statusAtClick = $("#media-status");
+  const pendingStatus = "Lining up tracks…";
+  statusAtClick.textContent = pendingStatus;
+  const ownsPendingStatus = () => clickSerial === subtitleSyncClickStatusSerial
+    && $("#media-status") === statusAtClick && statusAtClick.textContent === pendingStatus;
+  const sourceAtClick = state.currentSource;
+  const sourceKeyAtClick = [sourceAtClick?.sessionId, sourceAtClick?.fileIndex,
+    sourceAtClick?.sourceTag, sourceAtClick?.fileName, sourceAtClick?.episode?.code].join("|");
+  const audioAtClick = state.selectedAudioTrack;
+  const audioKeyAtClick = audioSync.key;
+  const audioGenerationAtClick = audioSync.generation;
+  const selectedTrackAtClick = state.selectedTrackId;
+  const languageAtClick = state.targetLanguage;
+  const tracksAtClick = currentSourceTracks();
+  const result = await alignCurrentSubtitleSet();
+  const liveTracks = currentSourceTracks();
+  if (clickSerial !== subtitleSyncClickStatusSerial || result?.stale
+    || state.currentSource !== sourceAtClick
+    || [state.currentSource?.sessionId, state.currentSource?.fileIndex,
+      state.currentSource?.sourceTag, state.currentSource?.fileName,
+      state.currentSource?.episode?.code].join("|") !== sourceKeyAtClick
+    || state.selectedAudioTrack !== audioAtClick || audioSync.key !== audioKeyAtClick
+    || audioSync.generation !== audioGenerationAtClick
+    || state.selectedTrackId !== selectedTrackAtClick
+    || state.targetLanguage !== languageAtClick
+    || !tracksAtClick.every((track, index) => liveTracks[index] === track)
+    || liveTracks.length !== tracksAtClick.length) {
+    if (ownsPendingStatus()) statusAtClick.textContent = "";
+    return;
+  }
+  const { reference } = result;
+  if (ownsPendingStatus())
+    statusAtClick.textContent = `Tracks lined up with ${reference?.label || "the best-timed track"}`;
   renderSubtitleWorkspace({ includeLearning: false });
 });
 $("#subtitle-add-file")?.addEventListener("click", () => $("#subtitle-input")?.click());
