@@ -169,12 +169,20 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       // Adds an AniList title to the Library (keeps an existing entry's status unless one is given).
       async function ensureEntry(id, status = null) {
         const existing = store.libraryGet(id);
-        if (existing && !status) return existing;
+        if (existing && !status && String(existing.work?.title || "").trim()) return existing;
         const comic = (await details(id)).value;
-        if (comic.hidden) throw Object.assign(new Error("This title isn't available"), { status: 404 });
+        if (comic?.hidden || comic?.anilistId !== id || !String(comic?.title || "").trim() || comic.title === "Untitled")
+          throw Object.assign(new Error("This title isn't available"), { status: 404 });
         return store.librarySet(id, status || existing?.status || "PLANNING", cardSnapshot(comic));
       }
-      const matchOptions = { search: searchTitles, ensureLibrary: (id) => ensureEntry(id).catch(() => null) };
+      // A rejected/hidden metadata fetch must reach the matcher: treating it as
+      // a fulfilled null would claim AniList ownership without a usable card.
+      const matchOptions = { search: searchTitles, ensureLibrary: async (id) => {
+        const entry = await ensureEntry(id);
+        if (entry?.id !== `anilist-${id}` || !String(entry.work?.title || "").trim())
+          throw new Error("Comic Library metadata is incomplete");
+        return entry;
+      } };
       let pendingScan = null;
       function rescan({ wait = false } = {}) {
         const run = local.scanAll(matchOptions);

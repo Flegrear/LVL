@@ -227,7 +227,7 @@ export async function removeTorrentSession(id) {
   // Stop only the background conversion for this session; it may still be
   // reading selected pieces through an internal local HTTP stream.
   await indexedVideoCache.stopSession(id);
-  await progressiveIndexCache.stopSession(id);
+  await progressiveIndexCache.stopSession(id, { retire: true });
   for (const [key,attempt] of progressiveStarts) {
     if (attempt.sessionId===id) progressiveStarts.delete(key);
   }

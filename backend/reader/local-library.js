@@ -74,30 +74,61 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
   const debounce = new Map();
 
   async function ensureDefaultFolder() {
-    await fs.mkdir(defaultFolder, { recursive: true });
+    // Create it for a fresh installation, but do not silently recreate a
+    // previously scanned missing root: an empty replacement could prune saved
+    // files before the original folder becomes accessible again.
+    if (!q.folders.all().some((folder) => folder.path === defaultFolder))
+      await fs.mkdir(defaultFolder, { recursive: true });
     q.addFolder.run(defaultFolder, 1, now());
   }
 
   // Bounded walk: archives, and folders that directly contain images (one chapter or volume each).
   async function walk(root) {
     const found = [];
+    const errors = [];
+    let complete = true;
+    const incomplete = (message) => {
+      complete = false;
+      if (errors.length < 8) errors.push(String(message).slice(0, 200));
+    };
+    const add = (full, kind) => {
+      if (found.length >= SCAN_LIMITS.files) {
+        incomplete(`File limit reached (${SCAN_LIMITS.files})`);
+        return;
+      }
+      found.push({ full, kind });
+    };
     const visit = async (dir, depth) => {
-      if (depth > SCAN_LIMITS.depth || found.length >= SCAN_LIMITS.files) return;
+      if (depth > SCAN_LIMITS.depth) {
+        incomplete(`Depth limit reached (${SCAN_LIMITS.depth}) at ${dir}`);
+        return;
+      }
+      if (found.length >= SCAN_LIMITS.files) {
+        incomplete(`File limit reached (${SCAN_LIMITS.files})`);
+        return;
+      }
       let entries;
-      try { entries = await fs.readdir(dir, { withFileTypes: true }); } catch { return; }
+      try { entries = await fs.readdir(dir, { withFileTypes: true }); }
+      catch (problem) {
+        incomplete(`Cannot read ${dir}: ${problem?.message || problem}`);
+        return;
+      }
       let images = 0;
       for (const entry of entries) {
-        if (found.length >= SCAN_LIMITS.files) return;
+        if (found.length >= SCAN_LIMITS.files) {
+          incomplete(`File limit reached (${SCAN_LIMITS.files})`);
+          return;
+        }
         if (entry.isSymbolicLink() || entry.name.startsWith(".")) continue;
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) await visit(full, depth + 1);
-        else if (entry.isFile() && ARCHIVE_EXT.test(entry.name)) found.push({ full, kind: "cbz" });
+        else if (entry.isFile() && ARCHIVE_EXT.test(entry.name)) add(full, "cbz");
         else if (entry.isFile() && IMAGE_EXT.test(entry.name)) images += 1;
       }
-      if (images > 0 && dir !== root) found.push({ full: dir, kind: "folder" });
+      if (images > 0 && dir !== root) add(dir, "folder");
     };
     await visit(root, 0);
-    return found;
+    return { found, complete, errors };
   }
 
   function describe(full, kind, root) {
@@ -114,13 +145,23 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     const known = new Map(q.filesIn.all(root).map((row) => [row.id, row]));
     let error = null;
     let count = 0;
+    let complete = false;
+    let errors = [];
     try {
       const stat = await fs.stat(root);
       if (!stat.isDirectory()) throw new Error("Not a folder");
-      for (const { full, kind } of await walk(root)) {
+      const walked = await walk(root);
+      complete = walked.complete;
+      errors = [...walked.errors];
+      for (const { full, kind } of walked.found) {
         const id = fileIdFor(full);
-        const stat2 = await fs.stat(full).catch(() => null);
-        if (!stat2) continue;
+        let stat2;
+        try { stat2 = await fs.stat(full); }
+        catch (problem) {
+          complete = false;
+          if (errors.length < 8) errors.push(`Cannot stat ${full}: ${problem?.message || problem}`.slice(0, 200));
+          continue;
+        }
         count += 1;
         const size = kind === "folder" ? 0 : stat2.size;
         const mtime = Math.round(stat2.mtimeMs);
@@ -146,12 +187,15 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
           chapter_end: parsed.chapterEnd, anilist_hint: info?.anilistId || null, error: fileError, seen_at: started,
         });
       }
+      if (!complete) error = `Incomplete scan: ${errors.join("; ")}`.slice(0, 200);
     } catch (problem) {
       error = String(problem?.message || problem).slice(0, 200);
+      complete = false;
+      errors = [error];
     }
-    if (!error) for (const id of known.keys()) q.deleteFile.run(id);
+    if (complete) for (const id of known.keys()) q.deleteFile.run(id);
     q.folderScanned.run(started, count, error, root);
-    return { folder: root, files: count, error };
+    return { folder: root, files: count, error, complete, errors };
   }
 
   // Pending files are matched per series: a manual override first, then the
@@ -189,7 +233,11 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         try {
           // Do not assign files to a catalog entry that failed to load: they
           // would stop being pending without gaining a readable Library card.
-          await ensureLibrary?.(Number(workId.slice(8)));
+          if (typeof ensureLibrary !== "function") throw new Error("Comic Library verification is unavailable");
+          const verified = await ensureLibrary(Number(workId.slice(8)));
+          if (verified === null || verified === false || (verified && typeof verified === "object"
+            && (verified.id !== workId || !String(verified.work?.title || "").trim())))
+            throw new Error("Comic Library entry is not verified");
         } catch (problem) {
           log.warn?.("Comic metadata unavailable:", problem?.message);
           // Explicit ownership is retained and retried on the next scan.

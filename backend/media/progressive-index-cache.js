@@ -385,6 +385,11 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
   const retiredWindows=new Set();
   let retiredTimer=null;
   const attemptedPrefixBytes=new Map();
+  function releaseSessionAttempts(sessionId){
+    for(const [key,attempt] of attemptedPrefixBytes){
+      if(attempt.sessionId===sessionId)attemptedPrefixBytes.delete(key);
+    }
+  }
   let purgeTimer=null,purgeRetryRunning=false,purgeRun=null;
   const diagnose=(code)=>{try{onDiagnostic(code);}catch{}};
   let purging=false;
@@ -528,7 +533,7 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     const record=await readIndex(info);
     const {ranges,complete}=record;
     const job=jobs.get(info.key);
-    const lastAttempt=attemptedPrefixBytes.get(info.key)||0;
+    const lastAttempt=attemptedPrefixBytes.get(info.key)?.bytes||0;
     const prefixProgress=info.sourceFullyVerified?info.identity.sourceLength:info.verifiedSourceBytes;
     const triedCurrentPrefix=info.sourceMode==='verified-prefix'
       &&lastAttempt>=prefixProgress;
@@ -603,9 +608,10 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     },2000);
     job.escalation.unref?.();
   }
-  async function stopSession(id){
+  async function stopSession(id,{retire=false}={}){
     await Promise.all([...jobs.values()].filter(j=>j.info.identity.sessionId===id)
       .map(async j=>{await cancelJob(j);await j.done;}));
+    if(retire)releaseSessionAttempts(id);
   }
   async function stopAll(){await Promise.all([...jobs.values()].map(async j=>{
     await cancelJob(j);await j.done;
@@ -623,6 +629,7 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
         try{
           await removeProgressiveDir(dir,{recursive:true,force:true,maxRetries:2,retryDelay:100});
           pendingPurges.delete(dir);
+          releaseSessionAttempts(path.basename(path.dirname(dir)));
         }catch{/* Windows reader may still pin this exact indexed-only directory. */}
       }
     }finally{purgeRetryRunning=false;schedulePurgeRetry();}
@@ -632,12 +639,19 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     purging=true;
     purgeRun=(async()=>{
       await stopAll();
-      const sessions=await fs.readdir(sessionsRoot,{withFileTypes:true}).catch(()=>[]);
+      const sessions=await fs.readdir(sessionsRoot,{withFileTypes:true}).catch(error=>{
+        if(error?.code==='ENOENT')return [];
+        throw error;
+      });
       for(const entry of sessions){
         if(!entry.isDirectory()||!UUID.test(entry.name))continue;
         pendingPurges.add(path.join(sessionsRoot,entry.name,'progressive-index'));
       }
       await retryPendingPurges();
+      for(const [key,attempt] of attemptedPrefixBytes){
+        if(!pendingPurges.has(path.join(sessionsRoot,attempt.sessionId,'progressive-index')))
+          attemptedPrefixBytes.delete(key);
+      }
       verifiedContents.clear();
       retiredWindows.clear();
       clearTimeout(retiredTimer);retiredTimer=null;
@@ -649,7 +663,7 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     if(!info.eligible||!valid(info)||foregroundBusy()||jobs.size)return;
     const prefixProgress=info.sourceFullyVerified?info.identity.sourceLength:info.verifiedSourceBytes;
     if(sourceKind!=='island'&&info.sourceMode==='verified-prefix'
-      &&(attemptedPrefixBytes.get(info.key)||0)>=prefixProgress)return;
+      &&(attemptedPrefixBytes.get(info.key)?.bytes||0)>=prefixProgress)return;
     const job={info,cancelled:false,child:null,probe:null,escalation:null,
       abortController:new AbortController()};
     job.cancel=new Promise(resolve=>{job.resolveCancel=resolve;});
@@ -705,7 +719,7 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
         '-f','mp4','pipe:1'];
       if(job.cancelled||!valid(info)||foregroundBusy())return;
       if(sourceKind!=='island'&&info.sourceMode==='verified-prefix')
-        attemptedPrefixBytes.set(info.key,prefixProgress);
+        attemptedPrefixBytes.set(info.key,{sessionId:info.identity.sessionId,bytes:prefixProgress});
       const child=spawn(ffmpegPath,args,{windowsHide:true,stdio:['ignore','pipe','pipe']});
       job.child=child;
       child.stderr?.resume?.();

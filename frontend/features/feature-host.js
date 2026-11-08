@@ -155,6 +155,8 @@ export function createClientFeatureHost(features = [], { log = console } = {}) {
   const sections = new Map();
   const panels = new Map();
   const mounted = new Set();
+  const mounting = new Map();
+  const activated = new Set();
   let ctx = {};
   let activeView = "";
 
@@ -289,12 +291,37 @@ export function createClientFeatureHost(features = [], { log = console } = {}) {
       const section = sections.get(entry.id);
       if (!section) continue;
       if (entry.id === view) {
-        if (!mounted.has(entry.id)) {
-          mounted.add(entry.id);
-          guarded(log, `${feature.id} mount`, () => entry.mount?.(section, ctx));
+        if (!mounted.has(entry.id) && !mounting.has(entry.id)) {
+          try {
+            const result = entry.mount?.(section, ctx);
+            if (result && typeof result.then === "function") {
+              const pending = Promise.resolve(result).then(
+                () => {
+                  if (mounting.get(entry.id) !== pending) return;
+                  mounting.delete(entry.id);
+                  mounted.add(entry.id);
+                  if (activeView === entry.id) {
+                    activated.add(entry.id);
+                    guarded(log, `${feature.id} activate`, () => entry.activate?.(section, ctx));
+                  }
+                },
+                (error) => {
+                  if (mounting.get(entry.id) !== pending) return;
+                  mounting.delete(entry.id);
+                  log.error?.(`Feature ${feature.id} mount failed:`, error);
+                },
+              );
+              mounting.set(entry.id, pending);
+            } else mounted.add(entry.id);
+          } catch (error) {
+            log.error?.(`Feature ${feature.id} mount failed:`, error);
+          }
         }
-        guarded(log, `${feature.id} activate`, () => entry.activate?.(section, ctx));
-      } else if (activeView === entry.id) {
+        if (mounted.has(entry.id)) {
+          activated.add(entry.id);
+          guarded(log, `${feature.id} activate`, () => entry.activate?.(section, ctx));
+        }
+      } else if (activeView === entry.id && activated.delete(entry.id)) {
         guarded(log, `${feature.id} deactivate`, () => entry.deactivate?.(section, ctx));
       }
     }
@@ -404,7 +431,7 @@ export function createClientFeatureHost(features = [], { log = console } = {}) {
     },
     handleKey(event) {
       const entry = views.find(({ view }) => view.id === activeView);
-      if (!entry?.view.onKey) return false;
+      if (!entry?.view.onKey || !mounted.has(activeView)) return false;
       return Boolean(guarded(log, `${entry.feature.id} keys`, () => entry.view.onKey(event, ctx), false));
     },
     run(hook, payload = {}) {

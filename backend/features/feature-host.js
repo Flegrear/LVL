@@ -77,7 +77,13 @@ export function createServerFeatureHost(features = [], { coreAssets = new Map(),
   }
   const instances = new Map();
   const failed = new Map();
+  // A factory failure is terminal for this init; only a failed start hook is
+  // eligible for a later explicit start() retry.
+  const lifecycle = new Map();
   let helpers = null;
+  let stopped = false;
+  let startup = null;
+  let generation = 0;
 
   function featureForPath(pathname) {
     for (const [prefix, id] of prefixes) {
@@ -94,12 +100,21 @@ export function createServerFeatureHost(features = [], { coreAssets = new Map(),
     // ctx: { db, getMeta, setMeta, dataRoot, port, root, json, readJsonBody, methodNotAllowed, rejectNonLocal }
     init(ctx = {}) {
       helpers = ctx;
+      generation += 1;
+      stopped = false;
+      startup = null;
+      instances.clear();
+      failed.clear();
+      lifecycle.clear();
       for (const feature of features) {
         try {
-          instances.set(feature.id, feature.create ? feature.create(ctx) || {} : {});
+          const instance = feature.create ? feature.create(ctx) || {} : {};
+          instances.set(feature.id, instance);
+          lifecycle.set(feature.id, typeof instance.start === "function" ? "pending" : "ready");
         } catch (error) {
           failed.set(feature.id, error);
-          log.error?.(`Feature "${feature.id}" failed to start; its routes answer 503:`, error);
+          lifecycle.set(feature.id, "factory-failed");
+          log.error?.(`Feature "${feature.id}" failed to create; its routes answer 503:`, error);
         }
       }
     },
@@ -109,7 +124,7 @@ export function createServerFeatureHost(features = [], { coreAssets = new Map(),
       if (!feature) return false;
       if (helpers?.rejectNonLocal?.(req, res)) return true;
       const instance = instances.get(feature.id);
-      if (failed.has(feature.id) || !instance) {
+      if (failed.has(feature.id) || !instance || lifecycle.get(feature.id) !== "ready") {
         helpers?.json?.(res, 503, { error: `${feature.id} is unavailable` });
         return true;
       }
@@ -117,17 +132,35 @@ export function createServerFeatureHost(features = [], { coreAssets = new Map(),
       return Boolean(await instance.handle(req, res, url));
     },
 
-    async start() {
-      for (const [id, instance] of instances) {
-        try {
-          await instance.start?.();
-        } catch (error) {
-          log.warn?.(`Feature "${id}" start hook failed:`, error?.message || error);
+    start() {
+      if (stopped) return Promise.resolve();
+      if (startup) return startup;
+      const owner = generation;
+      const run = (async () => {
+        for (const [id, instance] of instances) {
+          if (stopped || owner !== generation) return;
+          if (!["pending", "start-failed"].includes(lifecycle.get(id))) continue;
+          lifecycle.set(id, "starting");
+          try {
+            await instance.start();
+            if (!stopped && owner === generation && lifecycle.get(id) === "starting") lifecycle.set(id, "ready");
+          } catch (error) {
+            if (stopped || owner !== generation || lifecycle.get(id) !== "starting") continue;
+            lifecycle.set(id, "start-failed");
+            log.warn?.(`Feature "${id}" start hook failed:`, error?.message || error);
+          }
         }
-      }
+      })();
+      startup = run;
+      run.then(() => { if (startup === run) startup = null; },
+        () => { if (startup === run) startup = null; });
+      return run;
     },
 
     async stop({ timeoutMs = STOP_TIMEOUT_MS } = {}) {
+      stopped = true;
+      generation += 1;
+      for (const id of instances.keys()) lifecycle.set(id, "stopped");
       for (const [id, instance] of instances) {
         try {
           await withTimeout(instance.stop?.(), timeoutMs);
