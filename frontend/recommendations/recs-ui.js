@@ -213,6 +213,12 @@ export function createRecsUi(hooks) {
   let overview = null;
   let loadedAt = 0;
   let loading = null;
+  // GET and mutation responses can settle out of order. A GET represents the
+  // overview revision at request time; only acknowledged POSTs advance it.
+  // A later-started acknowledged mutation also supersedes older POST results.
+  let overviewRevision = 0;
+  let nextMutationId = 0;
+  let acceptedMutationId = 0;
   let pollTimer = 0;
   let announce = false;
   const rendered = new WeakMap();
@@ -220,8 +226,13 @@ export function createRecsUi(hooks) {
   function load({ force = false } = {}) {
     if (!force && overview && Date.now() - loadedAt < FRESH_MS) return Promise.resolve(overview);
     if (loading) return loading;
+    const requestRevision = overviewRevision;
     loading = fetchJson("/api/recs")
-      .then((data) => { apply(data); return data; })
+      .then((data) => {
+        if (requestRevision !== overviewRevision) return overview || data;
+        apply(data);
+        return data;
+      })
       .finally(() => { loading = null; });
     return loading;
   }
@@ -230,11 +241,18 @@ export function createRecsUi(hooks) {
   // While an update runs, ask for its progress every 1.5 s. A failed check (the app busy or
   // restarting) is retried instead of leaving the row on "Finding your picks" for good.
   function poll() {
-    void load({ force: true }).catch(() => {
-      if (!overview?.status?.running) return;
-      clearTimeout(pollTimer);
-      pollTimer = setTimeout(poll, POLL_MS * 3);
+    void load({ force: true }).then(() => {
+      // An older coalesced GET may have been discarded after a mutation.
+      // In that case apply() never schedules the next poll for us.
+      if (overview?.status?.running && !pollTimer) schedulePoll(POLL_MS);
+    }, () => {
+      if (overview?.status?.running && !pollTimer) schedulePoll(POLL_MS * 3);
     });
+  }
+
+  function schedulePoll(delay) {
+    clearTimeout(pollTimer);
+    pollTimer = setTimeout(() => { pollTimer = 0; poll(); }, delay);
   }
 
   function apply(data) {
@@ -242,7 +260,8 @@ export function createRecsUi(hooks) {
     overview = data;
     loadedAt = Date.now();
     clearTimeout(pollTimer);
-    if (data.status?.running) pollTimer = setTimeout(poll, POLL_MS);
+    pollTimer = 0;
+    if (data.status?.running) schedulePoll(POLL_MS);
     else if (wasRunning && announce) {
       announce = false;
       const last = data.status?.lastRun;
@@ -254,6 +273,14 @@ export function createRecsUi(hooks) {
     // without injecting a "Top picks for you" shelf into Home or Library.
     paintSettings();
     onOverview(data);
+  }
+
+  function applyAcknowledgedMutation(operationId, data) {
+    if (operationId < acceptedMutationId) return false;
+    acceptedMutationId = operationId;
+    overviewRevision += 1;
+    apply(data);
+    return true;
   }
 
   // Replace a picks row only when it changed, keeping its scroll position. While the first
@@ -325,8 +352,9 @@ export function createRecsUi(hooks) {
     const index = items.findIndex((item) => item.contains(card));
     const holder = card?.closest(".recs-picks");
     card?.classList.add("is-leaving");
+    const operationId = ++nextMutationId;
     try {
-      apply(await postJson("/api/recs/hide", { itemId }));
+      applyAcknowledgedMutation(operationId, await postJson("/api/recs/hide", { itemId }));
       toast("Hidden from your picks");
       const next = holder?.querySelectorAll(".pick-card .ui-card__hit");
       if (next?.length) next[Math.min(index, next.length - 1)]?.focus();
@@ -338,10 +366,11 @@ export function createRecsUi(hooks) {
 
   async function refresh() {
     announce = true;
+    const operationId = ++nextMutationId;
     try {
-      apply(await postJson("/api/recs/refresh", {}));
+      applyAcknowledgedMutation(operationId, await postJson("/api/recs/refresh", {}));
     } catch (error) {
-      announce = false;
+      if (operationId >= acceptedMutationId && !overview?.status?.running) announce = false;
       toast(error.message || "Couldn't start the update", { tone: "error" });
     }
   }
@@ -430,12 +459,13 @@ export function createRecsUi(hooks) {
 
   // One request from a Settings button: busy state, the card's status line, then the new figures.
   async function act(button, request, { status, busy = "", done = "" } = {}) {
+    const operationId = ++nextMutationId;
     if (button) button.disabled = true;
     if (status) setToolStatus(status, busy);
     try {
       const data = await request();
       titleCache.clear();
-      apply(data);
+      applyAcknowledgedMutation(operationId, data);
       if (status) setToolStatus(status, typeof done === "function" ? done(data) : done);
       return data;
     } catch (error) {

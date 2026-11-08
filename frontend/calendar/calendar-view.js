@@ -241,6 +241,8 @@ export function createCalendarView({
   const chapterQueue = [];
   const queuedChapters = new Set();
   const pendingChapters = new Set();
+  const chapterOwners = new Map();
+  const chapterMembership = new Map();
   const attemptedChapters = new Map();
   let chapterRefreshTimer = null;
   try { panelWidth = Math.max(240, Math.min(520, Number(storage.getItem(CALENDAR_PANEL_WIDTH_KEY)) || 340)); } catch {}
@@ -323,15 +325,34 @@ export function createCalendarView({
     while (pendingChapters.size < 6 && chapterQueue.length) {
       const id = chapterQueue.shift();
       queuedChapters.delete(id);
-      if (lists.has(id)) continue;
+      if (lists.has(id) || !chapterMembership.has(id)) continue;
+      const owner = { membership: chapterMembership.get(id), timeout: null };
+      chapterOwners.set(id, owner);
       pendingChapters.add(id);
       attemptedChapters.set(id, Date.now());
-      const timeout = setTimeout(() => {
-        if (pendingChapters.delete(id)) pumpChapters();
+      owner.timeout = setTimeout(() => {
+        if (chapterOwners.get(id) !== owner) return;
+        chapterOwners.delete(id);
+        pendingChapters.delete(id);
+        pumpChapters();
       }, 30_000);
-      timeout.unref?.();
+      owner.timeout.unref?.();
       const onReady = (record) => {
-        clearTimeout(timeout);
+        if (chapterOwners.get(id) !== owner) return;
+        // A callback may arrive after the Library changes but before its next
+        // calendar refresh. Only the original tracked generation may publish.
+        const stillTracked = getSeries().filter((item) => item.type !== "movie"
+          && item.catalogId === id).map((item) => String(item.key)).sort().join("\0");
+        if (!stillTracked || stillTracked !== owner.membership || chapterMembership.get(id) !== owner.membership) {
+          clearTimeout(owner.timeout);
+          chapterOwners.delete(id);
+          pendingChapters.delete(id);
+          attemptedChapters.delete(id);
+          pumpChapters();
+          return;
+        }
+        clearTimeout(owner.timeout);
+        chapterOwners.delete(id);
         pendingChapters.delete(id);
         if (record) lists.set(id, record);
         scheduleChapterRefresh();
@@ -356,6 +377,33 @@ export function createCalendarView({
     librarySeries = getSeries();
     const series = librarySeries.filter((item) => item.type !== "movie" && /^tt\d{5,12}$/.test(item.catalogId || ""));
     trackedSeriesCount = series.length;
+    const currentMembership = new Map();
+    for (const item of series) {
+      const keys = currentMembership.get(item.catalogId) || [];
+      keys.push(String(item.key));
+      currentMembership.set(item.catalogId, keys);
+    }
+    for (const [id, keys] of currentMembership)
+      currentMembership.set(id, keys.sort().join("\0"));
+    for (const [id, membership] of chapterMembership) {
+      if (currentMembership.get(id) === membership) continue;
+      const owner = chapterOwners.get(id);
+      if (owner) {
+        clearTimeout(owner.timeout);
+        chapterOwners.delete(id);
+        pendingChapters.delete(id);
+      }
+      attemptedChapters.delete(id);
+      lists.delete(id);
+    }
+    chapterMembership.clear();
+    for (const [id, membership] of currentMembership) chapterMembership.set(id, membership);
+    for (let index = chapterQueue.length - 1; index >= 0; index--) {
+      const id = chapterQueue[index];
+      if (currentMembership.has(id)) continue;
+      chapterQueue.splice(index, 1);
+      queuedChapters.delete(id);
+    }
     for (const item of series.slice(0, limit)) {
       const id = item.catalogId;
       if (lists.has(id)) continue;
@@ -492,13 +540,23 @@ export function createCalendarView({
     const cached = torrentCache.get(key);
     if (cached?.expiresAt > Date.now()) return Promise.resolve(cached);
     if (cached?.promise) return cached.promise;
+    const entry = { promise: null };
     const promise = Promise.resolve().then(() => checkTorrentAvailability(lookup))
       .then((payload) => ({ message: calendarTorrentSummary(payload), best: calendarBestSource(payload),
         expiresAt: Date.now() + 3 * 60_000 }))
       .catch(() => ({ message: "Torrent lookup unavailable", best: "Torrent lookup unavailable",
         expiresAt: Date.now() + 30_000 }))
-      .then((result) => { torrentCache.set(key, result); return result; });
-    torrentCache.set(key, { promise });
+      .then((result) => {
+        // Eviction or a newer request may have replaced this entry while its
+        // provider call was pending. Never resurrect or overwrite that owner.
+        if (torrentCache.get(key) === entry) {
+          torrentCache.set(key, result);
+          if (torrentCache.size > 100) torrentCache.delete(torrentCache.keys().next().value);
+        }
+        return result;
+      });
+    entry.promise = promise;
+    torrentCache.set(key, entry);
     if (torrentCache.size > 100) torrentCache.delete(torrentCache.keys().next().value);
     return promise;
   };
@@ -515,8 +573,11 @@ export function createCalendarView({
       return;
     }
     showTorrentTooltip(button, event, "Checking torrent availability…");
-    void torrentResult(lookup).then(({ message }) => {
-      if (hoveredTorrentId === event.id) showTorrentTooltip(button, event, message);
+    const request = torrentResult(lookup);
+    void request.then((result) => {
+      const current = torrentCache.get(key);
+      if (hoveredTorrentId === event.id && (current === result || current?.promise === request))
+        showTorrentTooltip(button, event, result.message);
     });
   };
   const hideTorrentTooltip = () => {
@@ -576,10 +637,13 @@ export function createCalendarView({
       sourceDetailKey = key;
       const result = root?.querySelector?.("[data-calendar-source-result]");
       if (result) result.textContent = "Checking best source…";
-      void torrentResult(lookup).then(({ best }) => {
-        if (sourceDetailKey === key && visible().some((item) => item.id === selected && item.id === event.id)) {
+      const request = torrentResult(lookup);
+      void request.then((result) => {
+        const current = torrentCache.get(key);
+        if (sourceDetailKey === key && (current === result || current?.promise === request)
+          && visible().some((item) => item.id === selected && item.id === event.id)) {
           const target = root?.querySelector?.("[data-calendar-source-result]");
-          if (target) target.textContent = best;
+          if (target) target.textContent = result.best;
         }
       });
       return;

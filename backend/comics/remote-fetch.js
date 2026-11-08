@@ -24,15 +24,46 @@ function ipv4Private(address) {
     || (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
 }
 
+// WHATWG URL canonicalization turns dotted IPv4-mapped literals into hex,
+// e.g. ::ffff:127.0.0.1 -> ::ffff:7f00:1. Decode the actual IPv6 words
+// before applying the same IPv4 policy to mapped/compatible addresses.
+function ipv6Words(address) {
+  let canonical;
+  try { canonical = new URL(`http://[${address}]/`).hostname.slice(1, -1); }
+  catch { return null; }
+  const halves = canonical.split("::");
+  if (halves.length > 2) return null;
+  const before = halves[0] ? halves[0].split(":") : [];
+  const after = halves.length === 2 && halves[1] ? halves[1].split(":") : [];
+  const gap = 8 - before.length - after.length;
+  if (halves.length === 2 ? gap < 1 : before.length !== 8) return null;
+  const words = [...before, ...Array(halves.length === 2 ? gap : 0).fill("0"), ...after]
+    .map((value) => Number.parseInt(value, 16));
+  return words.length === 8 && words.every((value) => Number.isInteger(value) && value >= 0 && value <= 0xffff)
+    ? words : null;
+}
+
 export function isPublicAddress(address) {
-  const kind = net.isIP(String(address));
+  address = String(address);
+  // Scoped IPv6 values cannot be validated as globally routable endpoints.
+  if (address.includes("%")) return false;
+  const kind = net.isIP(address);
   if (kind === 4) return !ipv4Private(address);
   if (kind !== 6) return false;
-  const lower = address.toLowerCase();
-  const mapped = /^(?:0*:)*:?ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower) || /^::(\d+\.\d+\.\d+\.\d+)$/.exec(lower);
-  if (mapped) return !ipv4Private(mapped[1]);
-  if (lower === "::" || lower === "::1") return false;
-  return !/^(?:f[cd]|fe[89ab]|ff)/.test(lower) && !lower.startsWith("64:ff9b:") && !lower.startsWith("2001:db8");
+  const words = ipv6Words(address);
+  if (!words) return false;
+  if (words.slice(0, 5).every((value) => value === 0)
+    && (words[5] === 0xffff || words[5] === 0)) {
+    const octets = [words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255];
+    return !ipv4Private(octets.join("."));
+  }
+  const first = words[0];
+  // Preserve the existing loopback/unspecified, ULA, link-local, multicast,
+  // NAT64 and documentation-address restrictions, regardless of textual form.
+  if (words.slice(0, 7).every((value) => value === 0) && words[7] <= 1) return false;
+  if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00) return false;
+  if (first === 0x64 && words[1] === 0xff9b) return false;
+  return !(first === 0x2001 && words[1].toString(16).startsWith("db8"));
 }
 
 export function checkUrl(value) {
