@@ -106,9 +106,52 @@ function audioTrackIdentity(track) {
     de: "deu", ger: "deu", german: "deu", pt: "por", portuguese: "por",
     ko: "kor", korean: "kor", zh: "zho", chi: "zho", chinese: "zho",
     it: "ita", italian: "ita", ru: "rus", russian: "rus" };
+  // FFprobe may return `und` while the stream title says JP/JPN or ENG. Without
+  // this identity, a renamed track can fall back to its old *index* even when
+  // that index now contains the other language in the next episode.
+  const hasJapaneseLabel = /\b(?:japanese|jpn|jp|ja)\b/i.test(title);
+  const hasEnglishLabel = /\b(?:english|eng)\b/i.test(title);
+  const titledLanguage = hasJapaneseLabel && !hasEnglishLabel ? "jpn"
+    : hasEnglishLabel && !hasJapaneseLabel ? "eng"
+    : hasJapaneseLabel && hasEnglishLabel ? ""
+    : Object.entries(languages).find(([name]) => name.length > 2 && new RegExp(`\\b${name}\\b`).test(title))?.[1] || "";
   const language = languages[raw] || (raw === "und" || raw === "unknown" ? "" : raw)
-    || Object.entries(languages).find(([name]) => name.length > 2 && new RegExp(`\\b${name}\\b`).test(title))?.[1] || "";
+    || titledLanguage;
   return { language, title };
+}
+
+function sourceAudioCatalogKey(source = state.currentSource) {
+  const id = String(source?.catalogId || "").trim().toLowerCase().slice(0, 100);
+  if (!id) return "";
+  const type = String(source?.catalogType || "series").trim().toLowerCase().slice(0, 32);
+  return `catalog:${type}:${id}`;
+}
+
+// Human-readable series keys may change after catalog relinking or a title
+// translation. Catalog choices therefore live under a stable identity within
+// each bounded series record, but must be searched independently of its key.
+// An explicit choice made before a catalog link is also an owned preference:
+// only that unscoped intent can override an older catalog choice later.
+const audioChoiceAt = (choice) => Number.isSafeInteger(choice?.selectedAt) && choice.selectedAt > 0
+  ? choice.selectedAt : 0;
+let lastAudioChoiceAt = 0;
+for (const choice of seriesAudioPreferences.values()) {
+  lastAudioChoiceAt = Math.max(lastAudioChoiceAt, audioChoiceAt(choice), audioChoiceAt(choice?.unscopedPreference));
+  if (choice?.catalogPreferences && typeof choice.catalogPreferences === "object"
+    && !Array.isArray(choice.catalogPreferences)) {
+    for (const entry of Object.values(choice.catalogPreferences).slice(-12))
+      lastAudioChoiceAt = Math.max(lastAudioChoiceAt, audioChoiceAt(entry));
+  }
+}
+
+function catalogAudioPreference(catalogKey) {
+  let chosen = seriesAudioPreferences.get(catalogKey) || null; // Legacy catalog-only key.
+  for (const choice of seriesAudioPreferences.values()) {
+    const entry = choice?.catalogPreferences?.[catalogKey];
+    if (entry && typeof entry === "object" && !Array.isArray(entry)
+      && (!chosen || audioChoiceAt(entry) >= audioChoiceAt(chosen))) chosen = entry;
+  }
+  return chosen;
 }
 
 export function rememberSeriesAudioTrack(track, index, source = state.currentSource) {
@@ -116,8 +159,25 @@ export function rememberSeriesAudioTrack(track, index, source = state.currentSou
   if (!key || !Number.isInteger(index) || index < 0) return;
   const identity = audioTrackIdentity(track);
   const count = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks.length : 0;
+  lastAudioChoiceAt = Math.max(Date.now(), lastAudioChoiceAt + 1);
+  const choice = { ...identity, index, count, selectedAt: lastAudioChoiceAt };
+  const catalogKey = sourceAudioCatalogKey(source);
+  const prior = seriesAudioPreferences.get(key);
+  const catalogs = prior?.catalogPreferences && typeof prior.catalogPreferences === "object"
+    && !Array.isArray(prior.catalogPreferences)
+    ? new Map(Object.entries(prior.catalogPreferences).slice(-12)) : new Map();
+  if (catalogKey) {
+    catalogs.delete(catalogKey);
+    catalogs.set(catalogKey, { ...choice });
+    while (catalogs.size > 12) catalogs.delete(catalogs.keys().next().value);
+  }
+  // Retain a newer explicit unlinked choice even if this same title later
+  // gets assigned a catalog ID, without mistaking a scoped choice for one.
+  if (!catalogKey) choice.unscopedPreference = { ...choice };
+  else if (prior?.unscopedPreference) choice.unscopedPreference = prior.unscopedPreference;
+  if (catalogs.size) choice.catalogPreferences = Object.fromEntries(catalogs);
   seriesAudioPreferences.delete(key);
-  seriesAudioPreferences.set(key, { ...identity, index, count });
+  seriesAudioPreferences.set(key, choice);
   while (seriesAudioPreferences.size > 80) seriesAudioPreferences.delete(seriesAudioPreferences.keys().next().value);
   try { localStorage.setItem(SERIES_AUDIO_PREFERENCES_KEY, JSON.stringify(Object.fromEntries(seriesAudioPreferences))); }
   catch (error) { console.warn("Could not save series audio preference:", error); }
@@ -127,7 +187,18 @@ export function preferredAudioTrackIndex(media, source = state.currentSource) {
   const tracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
   if (!tracks.length) return 0;
   const key = sourceAudioPreferenceKey(source);
-  const saved = key ? seriesAudioPreferences.get(key) : null;
+  let saved = key ? seriesAudioPreferences.get(key) : null;
+  const catalogKey = sourceAudioCatalogKey(source);
+  if (catalogKey) {
+    const catalogChoice = catalogAudioPreference(catalogKey);
+    const unscopedChoice = saved?.unscopedPreference;
+    if (unscopedChoice && (!catalogChoice || audioChoiceAt(unscopedChoice) > audioChoiceAt(catalogChoice)))
+      saved = unscopedChoice;
+    else if (catalogChoice) saved = catalogChoice;
+    else if (saved?.catalogPreferences) saved = null;
+    // Legacy v1 choices without a catalog owner still load by series key.
+    // Once scoped choices exist, another catalog cannot inherit them.
+  }
   if (saved) {
     const identities = tracks.map(audioTrackIdentity);
     const exact = identities.findIndex((track) => track.title && track.title === saved.title

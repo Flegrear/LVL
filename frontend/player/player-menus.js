@@ -152,7 +152,9 @@ function renderAudioPlaybackDetails() {
 export function renderPlayerAudioMenu() {
   const menu = $("#player-audio-menu");
   if (!menu) return;
-  const tracks = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks : [];
+  const source = state.currentSource;
+  const probe = state.currentMediaProbe;
+  const tracks = Array.isArray(probe?.audioTracks) ? probe.audioTracks : [];
   if (!tracks.length) {
     $("#player-audio-switcher")?.setAttribute("data-tooltip", "Audio track");
     menu.innerHTML = `<div class="player-popover-head"><span>Audio tracks</span><span>0</span></div><div class="player-popover-row"><div><strong>No audio track found</strong><small>This video may be silent, or its details couldn't be read.</small></div><span>—</span></div>`;
@@ -171,6 +173,9 @@ export function renderPlayerAudioMenu() {
     return `<button class="player-popover-row${index === state.selectedAudioTrack ? " is-active" : ""}" type="button" data-audio-index="${index}"><div><strong>${escapeHtml(label.title)}</strong><small>${escapeHtml(label.meta)}</small></div><span>${index === state.selectedAudioTrack ? "Playing" : "Use"}</span></button>`;
   }).join("")}<details class="player-audio-info"${detailsOpen ? " open" : ""}><summary>Playback information</summary>${renderAudioPlaybackDetails()}</details>`;
   menu.querySelectorAll("[data-audio-index]").forEach((button) => button.addEventListener("click", () => {
+    // An old menu click can arrive after a new episode/source was installed.
+    // Never save an A-track preference under B or switch B with A's index.
+    if (state.currentSource !== source || state.currentMediaProbe !== probe) return;
     const index = Number(button.dataset.audioIndex);
     if (!Number.isInteger(index) || !tracks[index]) return;
     menu.hidden = true;
