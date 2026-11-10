@@ -220,6 +220,7 @@ end;
 function PrepareToInstall(var NeedsRestart: Boolean): string;
 var
   TokenFile, Handoff, Command: string;
+  TokenBytes: AnsiString;
 begin
   Result := '';
   TransactionCommitted := False;
@@ -245,11 +246,12 @@ begin
     Result := 'Another LVL installation owns this target, or installation recovery is required.';
     exit;
   end;
-  if not LoadStringFromFile(TokenFile, InstallToken) then
+  if not LoadStringFromFile(TokenFile, TokenBytes) then
   begin
     Result := 'Could not preserve the LVL installation ownership token.';
     exit;
   end;
+  InstallToken := string(TokenBytes);
   InstallToken := Trim(InstallToken);
   DeleteFile(TokenFile);
   TransactionStarted := True;
