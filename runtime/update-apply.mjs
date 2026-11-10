@@ -21,6 +21,9 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
+import {
+  acquireInstallLease, awaitInstallLease, releaseInstallLease, updateInstallLease,
+} from "./windows-install-transaction.mjs";
 
 const FORMAT = "lvl-patch-v1";
 const TX = ".lvl-patch-transaction";
@@ -219,7 +222,7 @@ function persistJournal(tx, journal) {
 }
 function inspectJournal(tx) {
   const record = readJson(path.join(tx, "journal.json"), 512 * 1024, "recovery journal");
-  if (record.format !== FORMAT || !["preparing", "applying", "committed"].includes(record.state)
+  if (record.format !== FORMAT || !["preparing", "applying", "committed", "awaiting-restart", "acknowledged"].includes(record.state)
       || !isVersion(record.fromVersion) || !isVersion(record.toVersion)
       || !Array.isArray(record.records) || record.records.length > MAX_MEMBERS + 1)
     fail("invalid recovery journal");
@@ -238,7 +241,7 @@ export function recoverInterruptedPatch(appRoot) {
   if (!fs.lstatSync(tx).isDirectory() || fs.lstatSync(tx).isSymbolicLink())
     fail("transaction storage is unsafe");
   const journal = inspectJournal(tx);
-  if (journal.state === "applying") {
+  if (journal.state === "applying" || journal.state === "awaiting-restart") {
     // Idempotent rollback, repeatable after a crash *during* rollback.
     for (const item of journal.records) {
       const target = safeLivePath(root, item.path);
@@ -256,11 +259,37 @@ export function recoverInterruptedPatch(appRoot) {
       } else if (fs.existsSync(target)) fs.unlinkSync(target);
     }
   }
-  // Preparing cannot touch installed files; committed must not be rolled back.
+  // Preparing cannot touch installed files; an acknowledged update is final.
   fs.rmSync(tx, { recursive: true, force: true });
   return true;
 }
-function installPrepared(root, patch, marker, fromVersion, toVersion, afterFile) {
+export function acknowledgeIncrementalPatch(appRoot, version) {
+  const root = validateRoot(appRoot), tx = txFolder(root);
+  if (!fs.existsSync(tx)) return false;
+  const journal = inspectJournal(tx);
+  if (journal.state !== "awaiting-restart" || journal.toVersion !== version)
+    fail("patch has not reached restart acknowledgement");
+  installation(root, version);
+  journal.state = "acknowledged";
+  persistJournal(tx, journal);
+  // A locked Windows handle during cleanup must not turn a verified,
+  // acknowledged restart into a failed/rolled-back installation.
+  try { fs.rmSync(tx, { recursive: true, force: true }); }
+  catch { /* next update safely reclaims the acknowledged journal */ }
+  return true;
+}
+export function cleanupCommittedIncrementalPatch(appRoot, version) {
+  const root = validateRoot(appRoot), tx = txFolder(root);
+  if (!fs.existsSync(tx)) return false;
+  const journal = inspectJournal(tx);
+  if (!["committed", "acknowledged"].includes(journal.state)
+      || journal.toVersion !== version) return false;
+  installation(root, version);
+  try { fs.rmSync(tx, { recursive: true, force: true }); }
+  catch { /* do not undo successfully installed code for cleanup alone */ }
+  return true;
+}
+function installPrepared(root, patch, marker, fromVersion, toVersion, afterFile, retainUntilAck) {
   const tx = txFolder(root);
   if (fs.existsSync(tx)) fail("transaction still present");
   fs.mkdirSync(tx);
@@ -310,13 +339,15 @@ function installPrepared(root, patch, marker, fromVersion, toVersion, afterFile)
     for (const name of patch.deletes) if (fs.existsSync(safeLivePath(root, name)))
       fail("deleted file still present: " + name);
     installation(root, toVersion);
-    journal.state = "committed";
+    journal.state = retainUntilAck ? "awaiting-restart" : "committed";
     persistJournal(tx, journal);
     // A crash or transient Windows lock during *cleanup* must not turn an
     // already verified and committed update into a failed, stopped app. The
     // next patch discards this committed journal without reversing the update.
-    try { fs.rmSync(tx, { recursive: true, force: true }); }
-    catch { /* committed journal retained for safe later cleanup */ }
+    if (!retainUntilAck) {
+      try { fs.rmSync(tx, { recursive: true, force: true }); }
+      catch { /* committed journal retained for safe later cleanup */ }
+    }
     return { installed: toVersion, replaced: patch.hashes.size, deleted: patch.deletes.length };
   } catch (error) {
     try { recoverInterruptedPatch(root); }
@@ -383,9 +414,27 @@ async function waitParent(pid, timeoutMs = 90000) {
 export async function applyIncrementalPatch({
   appRoot, zipPath, fromVersion, toVersion, parentPid, zipSha256 = null,
   requestQuit = quitPublic, waitForParent = waitParent,
-  relaunch = relaunchPublic, afterFile,
+  relaunch = relaunchPublic, afterFile, installToken = null,
+  requireRestartAcknowledgement = relaunch === relaunchPublic,
 }) {
   const root = validateRoot(appRoot);
+  if (fs.existsSync(path.join(root, ".lvl-full-transaction")))
+    fail("previous full installation must finish recovery before patch");
+  // A completed replacement awaiting startup evidence is not a recoverable
+  // interrupted *apply*: the previous backup must remain intact, including
+  // after the detached installer's OS PID becomes stale. Check before claiming
+  // or reclaiming the lease and again inside the owned transaction below.
+  if (fs.existsSync(txFolder(root))
+      && inspectJournal(txFolder(root)).state === "awaiting-restart")
+    fail("previous patch is awaiting restart acknowledgement");
+  // The native updater reserves before download and hands the token to its
+  // detached child. Offline/legacy callers acquire the same target lease here.
+  const lease = installToken
+    ? await awaitInstallLease(root, installToken)
+    : acquireInstallLease(root);
+  const token = lease.token;
+  const retainUntilAck = requireRestartAcknowledgement;
+  try {
   if (!isUpgrade(fromVersion, toVersion)) fail("target must be a newer numeric version");
   // Fully authenticate/validate + decompress/hashes BEFORE signalling quit.
   const patch = decodePatch(zipPath, root, fromVersion, toVersion, zipSha256);
@@ -393,8 +442,10 @@ export async function applyIncrementalPatch({
   const txn = txFolder(root);
   if (fs.existsSync(txn)) {
     const pending = inspectJournal(txn);
+    if (pending.state === "awaiting-restart")
+      fail("previous patch is awaiting restart acknowledgement");
     const isThisInterruptedAttempt = pending.fromVersion === fromVersion && pending.toVersion === toVersion;
-    const isEarlierCommittedAttempt = pending.state === "committed"
+    const isEarlierCommittedAttempt = (pending.state === "committed" || pending.state === "acknowledged")
       && pending.toVersion === fromVersion
       && original.marker.version === fromVersion && original.pkg.version === fromVersion;
     if (!isThisInterruptedAttempt && !isEarlierCommittedAttempt)
@@ -415,11 +466,28 @@ export async function applyIncrementalPatch({
     stopped = true;
     if (fs.existsSync(txn)) recoverInterruptedPatch(root);
     const { marker } = installation(root, fromVersion);
-    const result = installPrepared(root, patch, marker, fromVersion, toVersion, afterFile);
+    updateInstallLease(root, token, { phase: "installing-patch", version: toVersion });
+    // Always keep the backup at least through relaunch. Injected callers
+    // resolve their own verified acknowledgement immediately below.
+    const result = installPrepared(root, patch, marker, fromVersion, toVersion, afterFile, true);
     installed = true;
+    if (retainUntilAck) updateInstallLease(root, token, { phase: "awaiting-restart", version: toVersion });
     await relaunch(root);
+    if (!retainUntilAck) {
+      acknowledgeIncrementalPatch(root, toVersion);
+      releaseInstallLease(root, token);
+    }
     return result;
   } catch (error) {
+    if (stopped && installed) {
+      try {
+        recoverInterruptedPatch(root);
+        installed = false;
+      } catch (rollbackError) {
+        updateInstallLease(root, token, { phase: "recovery-required", failure: rollbackError.message });
+        throw new AggregateError([error, rollbackError], "Update requires rollback recovery");
+      }
+    }
     if (stopped && !installed && !fs.existsSync(txn)) {
       // Restart only if rollback completed and old metadata is consistent.
       try { installation(root, fromVersion); await relaunch(root); }
@@ -429,13 +497,24 @@ export async function applyIncrementalPatch({
     }
     throw error;
   }
+  } catch (error) {
+    try {
+      if (!fs.existsSync(txFolder(root))) {
+        releaseInstallLease(root, token);
+      } else {
+        updateInstallLease(root, token, { phase: "recovery-required", failure: error.message });
+      }
+    } catch {}
+    throw error;
+  }
 }
 async function cli(args) {
-  let appRoot, zipPath, fromVersion, toVersion, pid, zipSha256 = null;
+  let appRoot, zipPath, fromVersion, toVersion, pid, zipSha256 = null, installToken = null;
   if (args[0]?.startsWith("--")) {
     const names = new Map([
       ["--app-root", "appRoot"], ["--zip", "zipPath"], ["--from", "fromVersion"],
       ["--to", "toVersion"], ["--parent-pid", "pid"], ["--zip-sha256", "zipSha256"],
+      ["--install-token", "installToken"],
     ]);
     const options = {}, seen = new Set();
     for (let i = 0; i < args.length; i += 1) {
@@ -452,6 +531,7 @@ async function cli(args) {
     }
     ({ appRoot, zipPath, fromVersion, toVersion, pid } = options);
     zipSha256 = options.zipSha256 || null;
+    installToken = options.installToken || null;
     if (!seen.has("--relaunch")) fail("named update CLI must explicitly request relaunch");
   } else {
     const tail = args.slice(5);
@@ -467,7 +547,7 @@ async function cli(args) {
     fail("an externally verified ZIP SHA-256 is required for detached installation");
   const result = await applyIncrementalPatch({
     appRoot, zipPath, fromVersion, toVersion, parentPid: Number(pid),
-    zipSha256,
+    zipSha256, installToken,
   });
   process.stdout.write(JSON.stringify({ ok: true, ...result }) + "\n");
 }

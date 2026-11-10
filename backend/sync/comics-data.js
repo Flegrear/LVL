@@ -36,6 +36,7 @@ const VIDEO_ID = /^tt\d{5,12}$/;
 const MARKS = Object.freeze([
   ["comic_library", "COUNT(*), MAX(updated_at)"], ["comic_local_titles", "COUNT(*), MAX(updated_at)"], ["comic_source_titles", "COUNT(*), MAX(created_at)"],
   ["comic_work_sources", "COUNT(*), MAX(added_at)"], ["comic_progress", "COUNT(*), MAX(updated_at)"],
+  ["comic_remote_progress", "COUNT(*), MAX(updated_at)"],
   ["comic_chapter_choices", "COUNT(*), MAX(changed_at)"], ["comic_ratings", "COUNT(*), MAX(updated_at)"],
   ["comic_ext_sources", "COUNT(*), MAX(added_at)"], ["comic_ext_settings", "COUNT(*), MAX(updated_at)"], ["comic_sources", "COUNT(*), MAX(added_at), SUM(enabled), SUM(removed)"],
 ]);
@@ -47,6 +48,53 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
   const newerHere = (row, column, change) => Boolean(row) && Number(row[column] || 0) > stampMs(change);
+  let remoteReady = false;
+  function ensureRemoteProgress() {
+    if (remoteReady || !has("comic_progress")) return;
+    // Sync can initialize before the Comics reader. One-time backfill preserves
+    // only each legacy row's actual owner, even if a second work used its path.
+    db.exec(`CREATE TABLE IF NOT EXISTS comic_remote_progress (
+      work_id TEXT NOT NULL, file_id TEXT NOT NULL, page INTEGER NOT NULL, pages INTEGER NOT NULL,
+      finished INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY(work_id, file_id));
+      INSERT OR IGNORE INTO comic_remote_progress (work_id, file_id, page, pages, finished, updated_at)
+        SELECT work_id, file_id, page, pages, finished, updated_at FROM comic_progress
+        WHERE file_id LIKE 'ex-%' AND work_id IS NOT NULL`);
+    remoteReady = true;
+  }
+  // SQLite change counters avoid hashing every Comics table on each short sync check.
+  // Triggers are installed lazily because the sync and Comics features may start in either order.
+  db.exec("CREATE TABLE IF NOT EXISTS comic_sync_metadata_revision (id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL DEFAULT 0)");
+  db.exec("INSERT OR IGNORE INTO comic_sync_metadata_revision (id, revision) VALUES (1, 0)");
+  const metadataTriggers = new Map([
+    ["comic_work_sources", ["name", "title", "lang"]],
+    ["comic_source_titles", ["video_id", "cover_url", "cover_source"]],
+    // A source comic's exported origin is taken from this table. Title/type
+    // updates leave the existing row count and added_at unchanged.
+    ["comic_video_links", ["work_id", "video_id", "video_type", "video_title", "origin"]],
+    ["comic_ext_sources", ["pkg", "repo", "ext_name", "name", "lang", "base_url", "version", "nsfw"]],
+    ["comic_sources", ["name", "enabled", "removed", "config_json"]],
+  ]);
+  const installedTriggers = new Set();
+  function ensureMetadataTriggers() {
+    for (const [table, columns] of metadataTriggers) {
+      if (installedTriggers.has(table) || !has(table)) continue;
+      const available = new Set(all(`PRAGMA table_info(${table})`).map((column) => column.name));
+      const changed = columns.filter((column) => available.has(column))
+        .map((column) => `OLD.${column} IS NOT NEW.${column}`).join(" OR ");
+      if (!changed) continue;
+      db.exec(`CREATE TRIGGER IF NOT EXISTS implicit_comics_meta_${table} AFTER UPDATE ON ${table}
+        WHEN ${changed} BEGIN
+          UPDATE comic_sync_metadata_revision SET revision = revision + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS implicit_comics_meta_${table}_insert AFTER INSERT ON ${table} BEGIN
+          UPDATE comic_sync_metadata_revision SET revision = revision + 1 WHERE id = 1;
+        END;
+        CREATE TRIGGER IF NOT EXISTS implicit_comics_meta_${table}_delete AFTER DELETE ON ${table} BEGIN
+          UPDATE comic_sync_metadata_revision SET revision = revision + 1 WHERE id = 1;
+        END`);
+      installedTriggers.add(table);
+    }
+  }
 
   function exportLibrary(out) {
     if (has("comic_library")) {
@@ -105,7 +153,9 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     }
     if (videoId && has("comic_video_links")) {
       run(`INSERT INTO comic_video_links (work_id, video_id, video_type, video_title, origin, hidden, added_at) VALUES (?, ?, ?, ?, 1, 0, ?)
-        ON CONFLICT(work_id, video_id) DO UPDATE SET origin = 1`, change.id, videoId, video.type === "movie" ? "movie" : "series", String(video.title || title).slice(0, 200), at);
+        ON CONFLICT(work_id, video_id) DO UPDATE SET
+          origin = 1, video_type = excluded.video_type, video_title = excluded.video_title`,
+      change.id, videoId, video.type === "movie" ? "movie" : "series", String(video.title || title).slice(0, 200), at);
     }
     done.add(change);
   }
@@ -131,34 +181,59 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
 
   function exportRead(out) {
     if (!has("comic_progress") || !has("comic_ext_chapters")) return;
+    ensureRemoteProgress();
     const units = has("comic_read_units");
-    const seen = new Set();
-    for (const row of all(`SELECT p.work_id, p.page, p.pages, p.finished, c.source_id, c.path${units ? ", u.volume, u.chapter" : ""}
-        FROM comic_progress p JOIN comic_ext_chapters c ON c.id = p.file_id${units ? " LEFT JOIN comic_read_units u ON u.unit_id = p.file_id AND u.work_id = p.work_id" : ""}
+    const progressTable = has("comic_remote_progress") ? "comic_remote_progress" : "comic_progress";
+    const current = (field) => progressTable === "comic_remote_progress"
+      ? `CASE WHEN legacy.updated_at > p.updated_at THEN legacy.${field} ELSE p.${field} END AS ${field}`
+      : `p.${field}`;
+    for (const row of all(`SELECT p.work_id, ${current("page")}, ${current("pages")}, ${current("finished")}, c.source_id, c.path${units ? ", u.volume, u.chapter" : ""}
+        FROM ${progressTable} p JOIN comic_ext_chapters c ON c.id = p.file_id
+          ${progressTable === "comic_remote_progress" ? "LEFT JOIN comic_progress legacy ON legacy.file_id = p.file_id AND legacy.work_id = p.work_id" : ""}
+          ${units ? " LEFT JOIN comic_read_units u ON u.unit_id = p.file_id AND u.work_id = p.work_id" : ""}
         WHERE p.work_id IS NOT NULL`)) {
-      const id = joinId(row.source_id, row.path);
-      if (seen.has(id) || !WORK_ID.test(row.work_id)) continue;
-      seen.add(id);
+      const id = joinId(row.work_id, row.source_id, row.path);
+      if (!WORK_ID.test(row.work_id) || id.length > 600) continue;
       out.push({ type: "comic.read", id, value: compact({ workId: row.work_id, page: row.page, pages: row.pages, finished: Boolean(row.finished), chapter: row.chapter, volume: row.volume }) });
     }
   }
   function applyRead(change, done) {
     if (!has("comic_progress") || !has("comic_ext_chapters")) return;
-    const [source = "", path = ""] = parts(change.id);
+    ensureRemoteProgress();
+    const key = parts(change.id);
+    const scoped = key.length === 3;
+    if (key.length !== 2 && !scoped) return;
+    const [source = "", path = ""] = scoped ? key.slice(1) : key;
     if (!SOURCE_ID.test(source) || !validSitePath(path)) return;
     const id = extChapterId(source, path);
     const at = stampMs(change);
-    if (newerHere(get("SELECT updated_at FROM comic_progress WHERE file_id = ?", id), "updated_at", change)) return;
     const units = has("comic_read_units");
+    const perWork = has("comic_remote_progress");
     if (change.value === null) {
-      run("DELETE FROM comic_progress WHERE file_id = ?", id);
-      if (units) run("DELETE FROM comic_read_units WHERE unit_id = ?", id);
-      run("DELETE FROM comic_chapter_choices WHERE unit_id = ? AND read = 2", id);
+      // Legacy deletions have no work key; restrict them to the sole known legacy owner.
+      const owner = scoped ? key[0] : get("SELECT work_id FROM comic_progress WHERE file_id = ?", id)?.work_id;
+      if (!WORK_ID.test(String(owner))) { done.add(change); return; }
+      const previous = perWork
+        ? get("SELECT updated_at FROM comic_remote_progress WHERE work_id = ? AND file_id = ?", owner, id)
+        : get("SELECT updated_at FROM comic_progress WHERE work_id = ? AND file_id = ?", owner, id);
+      if (newerHere(previous, "updated_at", change)) return;
+      if (perWork) run("DELETE FROM comic_remote_progress WHERE work_id = ? AND file_id = ?", owner, id);
+      run("DELETE FROM comic_progress WHERE file_id = ? AND work_id = ?", id, owner);
+      if (units) run("DELETE FROM comic_read_units WHERE work_id = ? AND unit_id = ?", owner, id);
+      run("DELETE FROM comic_chapter_choices WHERE work_id = ? AND unit_id = ? AND read = 2", owner, id);
       done.add(change);
       return;
     }
     const { workId, page, pages, finished = false, chapter, volume } = change.value;
-    if (!WORK_ID.test(String(workId))) return;
+    if (!WORK_ID.test(String(workId)) || (scoped && workId !== key[0])) return;
+    const scopedProgress = perWork
+      ? get("SELECT updated_at FROM comic_remote_progress WHERE work_id = ? AND file_id = ?", workId, id)
+      : get("SELECT updated_at FROM comic_progress WHERE work_id = ? AND file_id = ?", workId, id);
+    const legacyProgress = perWork
+      ? get("SELECT updated_at FROM comic_progress WHERE work_id = ? AND file_id = ?", workId, id) : null;
+    const existing = legacyProgress && (!scopedProgress || Number(legacyProgress.updated_at) > Number(scopedProgress.updated_at))
+      ? legacyProgress : scopedProgress;
+    if (newerHere(existing, "updated_at", change)) return;
     const chosen = get("SELECT read, changed_at, sync_stamp FROM comic_chapter_choices WHERE work_id = ? AND unit_id = ?", workId, id);
     if (chosen?.read === 2 && chosen.sync_stamp && compareStamps(chosen.sync_stamp, change.at) >= 0) return;
     const unreadAfterThisRead = chosen?.read <= 0 && (chosen.sync_stamp
@@ -166,11 +241,21 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     const total = Math.max(1, Math.min(Math.round(pages) || 1, 10_000));
     const spot = Math.max(0, Math.min(Math.round(page) || 0, total - 1));
     run("INSERT OR IGNORE INTO comic_ext_chapters (id, source_id, path, created_at) VALUES (?, ?, ?, ?)", id, source, path, at);
-    // Finished stays finished, as when reading here.
-    run(`INSERT INTO comic_progress (file_id, work_id, page, pages, finished, updated_at) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(file_id) DO UPDATE SET work_id = excluded.work_id, page = excluded.page, pages = excluded.pages,
-      finished = CASE WHEN ? = 1 THEN 0 ELSE MAX(comic_progress.finished, excluded.finished) END,
-      updated_at = excluded.updated_at`, id, workId, unreadAfterThisRead && spot === total - 1 ? 0 : spot, total, finished && !unreadAfterThisRead ? 1 : 0, at, unreadAfterThisRead ? 1 : 0);
+    // A source path can legitimately be attached to several works. Legacy progress
+    // keeps its first known owner; independent entries live in the composite table.
+    const effectiveSpot = unreadAfterThisRead && spot === total - 1 ? 0 : spot;
+    const effectiveDone = finished && !unreadAfterThisRead ? 1 : 0;
+    if (perWork) run(`INSERT INTO comic_remote_progress (work_id, file_id, page, pages, finished, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(work_id, file_id) DO UPDATE SET
+      page = excluded.page, pages = excluded.pages,
+      finished = CASE WHEN ? = 1 THEN 0 ELSE MAX(comic_remote_progress.finished, excluded.finished) END,
+      updated_at = excluded.updated_at`, workId, id, effectiveSpot, total, effectiveDone, at, unreadAfterThisRead ? 1 : 0);
+    const shadow = get("SELECT work_id FROM comic_progress WHERE file_id = ?", id);
+    if (!shadow || shadow.work_id === workId)
+      run(`INSERT INTO comic_progress (file_id, work_id, page, pages, finished, updated_at) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(file_id) DO UPDATE SET page = excluded.page, pages = excluded.pages,
+        finished = CASE WHEN ? = 1 THEN 0 ELSE MAX(comic_progress.finished, excluded.finished) END,
+        updated_at = excluded.updated_at`, id, workId, effectiveSpot, total, effectiveDone, at, unreadAfterThisRead ? 1 : 0);
     if (finished && !unreadAfterThisRead && units) {
       run("INSERT OR IGNORE INTO comic_read_units (work_id, unit_id, volume, chapter, finished_at) VALUES (?, ?, ?, ?, ?)", workId, id, unitNumber(volume), unitNumber(chapter), at);
       if (chosen?.read <= 0) run("UPDATE comic_chapter_choices SET read = 1, changed_at = ?, sync_stamp = ? WHERE work_id = ? AND unit_id = ?", at, change.at, workId, id);
@@ -203,6 +288,7 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
 
   function applyChoice(change, done) {
     if (!has("comic_chapter_choices") || !has("comic_read_units")) return;
+    ensureRemoteProgress();
     const [work = "", source = "", path = ""] = parts(change.id);
     if (!WORK_ID.test(work) || !SOURCE_ID.test(source) || !validSitePath(path)) return;
     const id = extChapterId(source, path);
@@ -215,10 +301,24 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
       ? parse(get("SELECT change_json FROM sync_items WHERE item_key = ?", `comic.choice ${change.id}`)?.change_json).at : null;
     const previousStamp = prior?.sync_stamp || sentStamp;
     if (prior && (previousStamp ? compareStamps(previousStamp, change.at) >= 0 : Number(prior.changed_at) > at)) return;
-    const progress = has("comic_progress")
+    // The legacy row is still authoritative for its original owner if an older
+    // local client updated it directly. Other works use their separate rows.
+    const legacyProgress = has("comic_progress")
       ? get("SELECT finished, updated_at FROM comic_progress WHERE work_id = ? AND file_id = ?", work, id) : null;
+    const scopedProgress = has("comic_remote_progress")
+      ? get("SELECT finished, updated_at FROM comic_remote_progress WHERE work_id = ? AND file_id = ?", work, id) : null;
     const sentRead = has("sync_items")
-      ? parse(get("SELECT change_json FROM sync_items WHERE item_key = ?", `comic.read ${joinId(source, path)}`)?.change_json).at : null;
+      ? [joinId(work, source, path), joinId(source, path)]
+        .map((id) => parse(get("SELECT change_json FROM sync_items WHERE item_key = ?", `comic.read ${id}`)?.change_json).at)
+        .filter(Boolean).sort(compareStamps).at(-1) : null;
+    // A legacy owner's progress can have been acknowledged under the old read
+    // key. Its matching HLC is authoritative when comparing a cross-type
+    // choice at the same millisecond, even if the new shadow has a newer clock.
+    const acknowledgedLegacy = Boolean(legacyProgress && sentRead &&
+      Number(legacyProgress.updated_at) === (parseStamp(sentRead)?.ms ?? -1));
+    const progress = acknowledgedLegacy ? legacyProgress
+      : scopedProgress && (!legacyProgress || Number(scopedProgress.updated_at) > Number(legacyProgress.updated_at))
+        ? scopedProgress : legacyProgress || scopedProgress;
     const readStamp = [prior?.read === 2 ? prior.sync_stamp : null, sentRead]
       .filter(Boolean).sort(compareStamps).at(-1);
     const unsentCompletion = progress?.finished && (readStamp
@@ -240,7 +340,7 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
         + "VALUES (?, ?, -1, ?, ?, ?, ?) ON CONFLICT(work_id, unit_id) DO UPDATE SET "
         + "read = -1, changed_at = excluded.changed_at, source_id = excluded.source_id, path = excluded.path, sync_stamp = excluded.sync_stamp",
       work, id, at, source, path, change.at);
-      const finished = has("comic_progress") ? get("SELECT finished FROM comic_progress WHERE work_id = ? AND file_id = ?", work, id)?.finished : 0;
+      const finished = progress?.finished || 0;
       if (!finished) run("DELETE FROM comic_read_units WHERE work_id = ? AND unit_id = ?", work, id);
       done.add(change);
       return;
@@ -260,6 +360,9 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
       run("DELETE FROM comic_read_units WHERE work_id = ? AND unit_id = ?", work, id);
       if (progress && Number(progress.updated_at) <= at)
         run("UPDATE comic_progress SET finished = 0, page = CASE WHEN page >= pages - 1 THEN 0 ELSE page END, "
+          + "updated_at = ? WHERE work_id = ? AND file_id = ?", at, work, id);
+      if (progress && Number(progress.updated_at) <= at && has("comic_remote_progress"))
+        run("UPDATE comic_remote_progress SET finished = 0, page = CASE WHEN page >= pages - 1 THEN 0 ELSE page END, "
           + "updated_at = ? WHERE work_id = ? AND file_id = ?", at, work, id);
     }
     done.add(change);
@@ -344,6 +447,11 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     types: COMIC_TYPES,
     export(out) { exportRepositories(out); exportFavorites(out); exportLibrary(out); exportSources(out); exportRead(out); exportChoices(out); exportRatings(out); },
     apply(change, done) { appliers[change.type]?.(change, done); },
-    mark: () => MARKS.map(([table, columns]) => (has(table) ? Object.values(get(`SELECT ${columns} FROM ${table}`)).map((value) => value ?? 0).join(".") : "-")).join(","),
+    mark: () => {
+      ensureRemoteProgress();
+      ensureMetadataTriggers();
+      return MARKS.map(([table, columns]) => (has(table) ? Object.values(get(`SELECT ${columns} FROM ${table}`)).map((value) => value ?? 0).join(".") : "-")).join(",")
+        + `,meta:${get("SELECT revision FROM comic_sync_metadata_revision WHERE id = 1")?.revision ?? 0}`;
+    },
   };
 }

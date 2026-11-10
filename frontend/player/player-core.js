@@ -2097,7 +2097,6 @@ export function cancelTranscodeStart({ preservePending = false } = {}) {
     else attempt.overlay.setAttribute("aria-hidden", attempt.previousOverlayAriaHidden);
   }
   if (attempt.mutedForPreroll) video.muted = attempt.wantedMuted;
-  if (attempt.fastPreroll) video.playbackRate = attempt.wantedRate;
   if (!preservePending && state.pendingSeek === attempt.pending) state.pendingSeek = null;
 }
 
@@ -2522,11 +2521,6 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
   }
   attempt.mutedForPreroll = true;
   attempt.wantedMuted = video.muted;
-  if (!serverCanConvertVideo()) {
-    attempt.fastPreroll = true;
-    attempt.wantedRate = Number(video.defaultPlaybackRate) || 1;
-    video.playbackRate = Math.max(attempt.wantedRate, 4);
-  }
   frame.classList.add("is-sync-preroll");
   attempt.overlay = $("#subtitle-overlay");
   if (attempt.overlay) {
@@ -3230,8 +3224,6 @@ export function wirePlayerSourceButtons() {
 }
 
 export function syncPlayerSpeed() {
-  // Temporary fast preroll must not overwrite the user's speed selection.
-  if (transcodeStartAttempt?.fastPreroll) return;
   const rate = Number(video.playbackRate) || 1;
   const label = `${Number(rate.toFixed(2))}×`;
   const trigger = $("#speed-select");

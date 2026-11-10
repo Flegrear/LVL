@@ -38,20 +38,44 @@ export function startPullToRefresh(win = globalThis.window) {
   const notice = doc.createElement("div");
   notice.className = "phone-pull-refresh";
   notice.setAttribute("role", "status");
+  notice.setAttribute("aria-live", "polite");
+  notice.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9" /></svg><span class="ui-visually-hidden" data-refresh-label>Pull to update</span>';
+  const label = notice.querySelector("[data-refresh-label]");
   notice.hidden = true;
   doc.body.append(notice);
-  let start = null, distance = 0, refreshing = false;
-  const reset = () => { start = null; distance = 0; notice.hidden = true; };
+  let start = null, distance = 0, refreshing = false, retractTimer = null, reloadTimer = null;
+  const setState = (state, message) => {
+    notice.dataset.state = state;
+    if (label && label.textContent !== message) label.textContent = message;
+  };
+  const reset = () => {
+    start = null;
+    distance = 0;
+    if (retractTimer !== null) win.clearTimeout(retractTimer);
+    retractTimer = null;
+    notice.hidden = true;
+    setState("pulling", "Pull to update");
+  };
+  const retract = () => {
+    if (refreshing) return;
+    start = null;
+    distance = 0;
+    if (notice.hidden) return;
+    setState("retracting", "Pull to update");
+    notice.style.transform = "translate3d(-50%, -12px, 0)";
+    retractTimer = win.setTimeout(() => { notice.hidden = true; retractTimer = null; }, 180);
+  };
   const atTop = (target) => {
     if ((win.scrollY || 0) > 1 || (doc.scrollingElement?.scrollTop || 0) > 1) return false;
     for (let node = target; node && node !== doc; node = node.parentElement)
-      if ((node.scrollTop || 0) > 1 || (node.scrollWidth || 0) > (node.clientWidth || 0) + 2) return false;
+      if ((node.scrollTop || 0) > 1) return false;
     return true;
   };
   const blocked = () => doc.querySelector("dialog[open], #view-watch.is-active, #view-comic.is-active");
   const begin = (event) => {
+    if (refreshing) return;
     reset();
-    if (refreshing || event.touches.length !== 1 || blocked() || !atTop(event.target) ||
+    if (event.touches.length !== 1 || blocked() || !atTop(event.target) ||
         event.target?.closest?.("input, textarea, select, button, a, [contenteditable], [role=slider], [role=tablist]")) return;
     const point = event.touches[0];
     start = { x: point.clientX, y: point.clientY, target: event.target };
@@ -66,24 +90,46 @@ export function startPullToRefresh(win = globalThis.window) {
     if (dy < 14) return;
     distance = dy;
     if (event.cancelable) event.preventDefault();
-    notice.textContent = dy >= 96 ? "Release to refresh" : "Pull to refresh";
-    notice.style.transform = `translate(-50%, ${Math.min(48, dy * 0.35)}px)`;
+    const progress = Math.min(1, Math.max(0, (dy - 14) / 82));
+    setState(progress >= 1 ? "ready" : "pulling", progress >= 1 ? "Release to update" : "Pull to update");
+    notice.style.setProperty("--pull-angle", `${Math.round(progress * 270)}deg`);
+    notice.style.transform = `translate3d(-50%, ${Math.min(54, 8 + dy * .28)}px, 0)`;
     notice.hidden = false;
   };
   const finish = () => {
     const ready = start && distance >= 96 && !blocked() && atTop(start.target);
-    reset();
-    if (ready && !refreshing) { refreshing = true; win.location.reload(); }
+    if (!ready || refreshing) return retract();
+    refreshing = true;
+    start = null;
+    distance = 0;
+    setState("refreshing", "Updating");
+    notice.style.transform = "translate3d(-50%, 38px, 0)";
+    // Refresh the current SPA route in place. A full WebView navigation can
+    // return to its native /home startup URL and discard the current screen.
+    reloadTimer = win.setTimeout(() => {
+      const done = () => {
+        if (!refreshing) return;
+        refreshing = false;
+        retract();
+      };
+      const event = typeof win.CustomEvent === "function"
+        ? new win.CustomEvent("lvl:pull-refresh", { cancelable: true, detail: { done } }) : null;
+      if (event) win.dispatchEvent?.(event);
+      // If initialization is incomplete there is no safe refresh yet. Keep
+      // the screen in place instead of navigating through the Android host.
+      if (!event?.defaultPrevented) done();
+    }, 220);
   };
   doc.addEventListener("touchstart", begin, { passive: true });
   doc.addEventListener("touchmove", move, { passive: false });
   doc.addEventListener("touchend", finish);
-  doc.addEventListener("touchcancel", reset);
+  doc.addEventListener("touchcancel", retract);
   return { dispose() {
     doc.removeEventListener("touchstart", begin);
     doc.removeEventListener("touchmove", move);
     doc.removeEventListener("touchend", finish);
-    doc.removeEventListener("touchcancel", reset);
+    doc.removeEventListener("touchcancel", retract);
+    if (reloadTimer !== null) win.clearTimeout(reloadTimer);
     reset(); notice.remove();
   } };
 }

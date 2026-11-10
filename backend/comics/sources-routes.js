@@ -7,20 +7,28 @@ import { sourceChapters } from "./linked-sources.js";
 import { EXT_CHAPTER_ID, WORK_ID } from "../../shared/reading/ids.js";
 import { normalizeUnitNumber } from "../../shared/reading/units.js";
 
-// Which chapter of a work an "ex-" reader id is: { chapter, volume, source }, from the chapter
-// list of the chosen source it belongs to (cached for an hour, like the title page's).
-export async function describeRemoteChapter(workId, readerId, deps) {
+// Resolve a chapter through the currently chosen source and its chapter index.
+// A bare chapter id or client-provided chapter number proves no work membership.
+async function currentRemoteChapter(workId, readerId, deps) {
   const known = deps.ext.chapter(readerId);
   if (!known) return null;
+  const revision = deps.linked.revision?.(workId) ?? null;
   const links = deps.linked.list(workId).filter((link) => link.kind === "ext" && link.sourceId === known.sourceId);
   if (!links.length) return null;
   const title = await deps.workInfo(workId).then((info) => info.comic.title, () => "");
   for (const link of links) {
-    const item = (await extChapterList(link, deps, title).catch(() => [])).find((entry) => entry.id === readerId);
-    const chapter = item ? normalizeUnitNumber(item.chapter) : "";
-    if (chapter) return { chapter, volume: normalizeUnitNumber(item.volume) || null, source: link.name || "" };
+    const item = (await (deps.chapterList || extChapterList)(link, deps, title).catch(() => []))
+      .find((entry) => entry.id === readerId && entry.path === known.path && !entry.externalUrl);
+    if (item && (deps.linked.revision?.(workId) ?? null) === revision &&
+        deps.linked.list(workId).some((current) => current.kind === "ext" && current.sourceId === link.sourceId && current.mangaId === link.mangaId))
+      return { chapter: normalizeUnitNumber(item.chapter) || null, volume: normalizeUnitNumber(item.volume) || null,
+        source: link.name || "", sourceId: known.sourceId, path: known.path, mangaId: link.mangaId, revision };
   }
   return null;
+}
+export async function describeRemoteChapter(workId, readerId, deps) {
+  const found = await currentRemoteChapter(workId, readerId, deps);
+  return found ? { chapter: found.chapter, volume: found.volume, source: found.source, sourceId: found.sourceId } : null;
 }
 
 const settle = async (name, run) => {
@@ -75,7 +83,7 @@ export async function handleSourceRoutes(req, res, url, deps) {
       const links = deps.linked.list(workId);
       const title = links.length ? await workInfo(workId).then((info) => info.comic.title, () => "") : "";
       return Promise.all(links.map(async (link) => {
-        try { return { link, chapters: await extChapterList(link, deps, title) }; } catch (error) { return { link, chapters: [], error: error.message }; }
+        try { return { link, chapters: await (deps.chapterList || extChapterList)(link, deps, title) }; } catch (error) { return { link, chapters: [], error: error.message }; }
       }));
     };
     const selectableUnits = (lists) => {
@@ -110,7 +118,10 @@ export async function handleSourceRoutes(req, res, url, deps) {
       try { input = await ctx.readJsonBody(req, 16384); } catch { return bad("Invalid chapter selection"); }
       const ids = input?.ids;
       if (typeof input?.read !== "boolean" || !Array.isArray(ids) || !ids.length || ids.length > 200 || new Set(ids).size !== ids.length) return bad("Select 1–200 chapters");
+      const beforeRevision = deps.linked.revision?.(workId) ?? null;
       const available = new Map(selectableUnits(await chapterLists()).map((item) => [item.id, item]));
+      if ((deps.linked.revision?.(workId) ?? null) !== beforeRevision)
+        return bad("The selected chapters changed. Refresh their sources.", 409);
       const selected = ids.map((id) => available.get(id));
       if (selected.some((item) => !item)) return bad("The selected chapters changed. Refresh their sources.", 409);
       try {
@@ -162,12 +173,12 @@ export async function handleSourceRoutes(req, res, url, deps) {
     if (!EXT_CHAPTER_ID.test(remote[1])) return bad("Unknown chapter", 404);
     let pages;
     try {
-      pages = (await cached(`pages:${remote[1]}`, 10 * 60_000, () => extPages(remote[1], deps))).value;
+      pages = (await cached(`pages:${remote[1]}`, 10 * 60_000, () => (deps.chapterPages || extPages)(remote[1], deps))).value;
     } catch (error) { return bad(error.message, Number(error.status) === 404 ? 404 : 502); }
     if (!pages.length) return bad("This chapter has no page images (it may be a text chapter)", 502);
     if (remote[2] === undefined) {
       const workId = WORK_ID.test(url.searchParams.get("work") || "") ? url.searchParams.get("work") : null;
-      const progress = local.remoteProgress(remote[1]);
+      const progress = local.remoteProgress(remote[1], workId);
       const unread = workId && deps.marks?.isExplicitUnread(workId, remote[1]);
       // Opened from its address alone (a reload, a shared link): which chapter of the work this is.
       const about = workId && url.searchParams.get("describe") === "1" ? await describeRemoteChapter(workId, remote[1], deps).catch(() => null) : null;
@@ -194,8 +205,32 @@ export async function handleSourceRoutes(req, res, url, deps) {
   if (p === "/api/reader/remote-progress") {
     if (req.method !== "PUT") return ctx.methodNotAllowed(res, ["PUT"]), true;
     const input = await body() || {};
-    const saved = local.saveRemoteProgress(input);
-    if (saved && Number(input.page) >= Number(input.pages) - 1) deps.marks?.finish(input.workId, input.id, true);
+    if (!EXT_CHAPTER_ID.test(String(input.id)) || !WORK_ID.test(String(input.workId)))
+      return bad("Invalid chapter");
+    const known = await currentRemoteChapter(input.workId, input.id, deps).catch(() => null);
+    if (!known) return bad("The chapter is no longer linked to this comic. Refresh its sources.", 409);
+    const requestedChapter = normalizeUnitNumber(input.chapter) || null;
+    const requestedVolume = normalizeUnitNumber(input.volume) || null;
+    if ((input.chapter != null && requestedChapter !== known.chapter) ||
+        (input.volume != null && requestedVolume !== known.volume))
+      return bad("The chapter numbers changed. Refresh its sources.", 409);
+    let actualPages;
+    try {
+      actualPages = (await cached(`pages:${input.id}`, 10 * 60_000,
+        () => (deps.chapterPages || extPages)(input.id, deps))).value.length;
+    } catch { return bad("The chapter pages are unavailable. Try again.", 502); }
+    if (!actualPages || !Number.isSafeInteger(input.page) || input.page < 0 || input.page >= actualPages ||
+        Number(input.pages) !== actualPages)
+      return bad("The chapter page count changed. Reload the reader.", 409);
+    // The source may have been removed while page metadata was being fetched.
+    if ((deps.linked.revision?.(input.workId) ?? null) !== known.revision ||
+        !deps.linked.list(input.workId).some((link) => link.kind === "ext" &&
+        link.sourceId === known.sourceId && link.mangaId === known.mangaId) ||
+        deps.ext.chapter(input.id)?.path !== known.path)
+      return bad("The chapter is no longer linked to this comic. Refresh its sources.", 409);
+    const saved = local.saveRemoteProgress({ id: input.id, workId: input.workId, page: input.page,
+      pages: actualPages, chapter: known.chapter, volume: known.volume });
+    if (saved?.finished) deps.marks?.finish(input.workId, input.id, true);
     if (saved) await deps.onProgress?.(input.workId);
     return saved ? send(200, { progress: saved }) : bad("Invalid chapter");
   }

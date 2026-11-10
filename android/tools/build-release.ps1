@@ -6,13 +6,25 @@ param(
   [string] $OutDir = "tmp/android-batch/release/assets",
   [string] $GradleCommand = "",
   [string] $ApkSigner = "",
-  [switch] $SkipStage
+  [switch] $SkipStage,
+  [string] $ReviewedCommit = "",
+  [string] $CandidateVersion = ""
 )
 $ErrorActionPreference = 'Stop'
 $root = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
+if ($SkipStage) { throw 'Retained Android staging cannot establish release source provenance; fresh staging is required.' }
+if (-not $ReviewedCommit -or -not $CandidateVersion) {
+  throw 'Signed Android release requires explicit -ReviewedCommit and -CandidateVersion.'
+}
+$sourceCheck = @('scripts/release-provenance.mjs', 'verify', '--platform', 'android',
+  '--reviewed-commit', $ReviewedCommit, '--version', $CandidateVersion)
+Push-Location $root
+try { & node @sourceCheck; if ($LASTEXITCODE -ne 0) { throw 'Android release source is not equal to reviewed commit/version.' } }
+finally { Pop-Location }
 $androidVersion = Get-Content -LiteralPath (Join-Path $root 'android\app-version.json') -Raw | ConvertFrom-Json
 $version = [string]$androidVersion.version
 $versionCode = [int]$androidVersion.versionCode
+if ($version -cne $CandidateVersion) { throw 'Android candidate version differs from app-version.json.' }
 if ($versionCode -lt 205) { throw 'Android versionCode must be greater than all previous synthetic builds (204)' }
 $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } elseif ($env:ANDROID_SDK_ROOT) { $env:ANDROID_SDK_ROOT } else { Join-Path $root 'build\tools\android-sdk' }
 $gradle = if ($GradleCommand) { $GradleCommand } elseif (Test-Path (Join-Path $root 'build\tools\gradle-9.8.2\bin\gradle.bat')) { Join-Path $root 'build\tools\gradle-9.8.2\bin\gradle.bat' } else { (Get-Command gradle -ErrorAction SilentlyContinue).Source }
@@ -36,11 +48,9 @@ Push-Location $root
 try {
   & node android/tools/release-check.mjs
   if ($LASTEXITCODE -ne 0) { throw 'Native Android release source validation failed' }
-  if (-not $SkipStage) {
-    & node android/stage-app.mjs --release --abi arm64-v8a --abi x86_64
-    if ($LASTEXITCODE -ne 0) { throw 'Android release staging failed' }
-  }
-  & node android/tools/release-check.mjs --stage-dir (Join-Path $root 'build\android-stage') --version $version
+  & node android/stage-app.mjs --release --abi arm64-v8a --abi x86_64 --reviewed-commit $ReviewedCommit --candidate-version $CandidateVersion
+  if ($LASTEXITCODE -ne 0) { throw 'Android release staging failed' }
+  & node android/tools/release-check.mjs --stage-dir (Join-Path $root 'build\android-stage') --version $version --reviewed-commit $ReviewedCommit
   if ($LASTEXITCODE -ne 0) { throw 'Staged Android release content failed validation' }
   # A release APK must be produced from a clean package output, not reused
   # incremental ZIP state from an earlier (possibly debug) Gradle invocation.
@@ -74,13 +84,15 @@ try {
     $match = [regex]::Match($signature, '(?im)^(?:V[234](?:\.\d+)? Signer:|Signer #\d+) certificate SHA-256 digest:\s*([0-9a-fA-F:]+)\s*$')
     if (-not $match.Success -or $match.Groups[1].Value.Replace(':','').ToLowerInvariant() -cne $cert) { throw "Unexpected signing certificate for $abi" }
     if ($signature -notmatch '(?im)^Verified using v[23] scheme.*:\s*true\s*$') { throw "APK signature scheme v2/v3 was not verified for $abi" }
+    & node android/tools/release-check.mjs --stage-dir (Join-Path $root 'build\android-stage') --version $version --reviewed-commit $ReviewedCommit --apk $apk
+    if ($LASTEXITCODE -ne 0) { throw "Signed APK payload differs from staged reviewed release: $abi" }
     $hashes[$abi] = (Get-FileHash -LiteralPath $apk -Algorithm SHA256).Hash.ToLowerInvariant()
     $verifiedApks += $apk
   }
   $evidenceDir = Join-Path $root 'tmp\android-batch\release'
   New-Item -ItemType Directory -Path $evidenceDir -Force | Out-Null
   $evidence = Join-Path $evidenceDir 'signature-evidence.json'
-  [ordered]@{version=$version;signerSha256=$cert;apks=$hashes} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $evidence -Encoding utf8
+  [ordered]@{version=$version;reviewedCommit=$ReviewedCommit;signerSha256=$cert;apks=$hashes} | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $evidence -Encoding utf8
   # Gradle also writes optional baselineProfiles/*.dm build metadata. Give the
   # strict asset packager only the APKs whose identity and signature we checked.
   $verifiedApkDir = Join-Path $evidenceDir 'verified-apks'

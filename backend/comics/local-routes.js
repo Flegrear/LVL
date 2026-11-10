@@ -15,26 +15,142 @@ const FILE_ID = /^f[0-9a-f]{16}$/;
 // file there. Names are reduced to a plain file name; an existing file is never replaced.
 export const MAX_UPLOAD_BYTES = 4 * 1024 ** 3;
 const UPLOAD_NAME = /^[^\\/:*?"<>|\u0000-\u001f]{1,180}\.(?:cbz|zip)$/i;
+const PART_SUFFIX = /^(.+\.[A-Za-z]{3})\.([0-9a-f]{8}|[0-9a-f]{16})\.lvl-part$/;
+const HOUR = 60 * 60 * 1000;
+const ACTIVE_PARTS = new Set();
+export const UPLOAD_CLEANUP_LIMITS = Object.freeze({
+  ageMs: 24 * HOUR,
+  intervalMs: 6 * HOUR,
+  maxExamined: 4096,
+  maxRemovedFiles: 64,
+  maxRemovedBytes: 16 * 1024 ** 3,
+});
 export function uploadName(value) {
   const name = path.basename(String(value || "").replace(/\\/g, "/")).trim();
   return UPLOAD_NAME.test(name) && !name.startsWith(".") ? name : null;
 }
 
-async function freeTarget(folder, name) {
-  const ext = path.extname(name);
-  const stem = name.slice(0, -ext.length);
-  for (let n = 1; n < 100; n++) {
-    const candidate = path.join(folder, n === 1 ? name : `${stem} (${n})${ext}`);
-    try { await fs.access(candidate); } catch { return candidate; }
+async function closeUploadSweepCursor(cursor) {
+  const handle = cursor.handle;
+  cursor.handle = null;
+  cursor.dev = null;
+  cursor.ino = null;
+  if (handle) await handle.close().catch((error) => {
+    if (error?.code !== "ERR_DIR_CLOSED") throw error;
+  });
+}
+
+// Only LVL's unique unfinished upload names in its own default Comics folder
+// are candidates. Completed archives, other files, links and live writers remain owned.
+export async function sweepAbandonedUploads(folder, {
+  now = Date.now, ageMs = UPLOAD_CLEANUP_LIMITS.ageMs,
+  maxExamined = UPLOAD_CLEANUP_LIMITS.maxExamined,
+  maxRemovedFiles = UPLOAD_CLEANUP_LIMITS.maxRemovedFiles,
+  maxRemovedBytes = UPLOAD_CLEANUP_LIMITS.maxRemovedBytes,
+  shouldContinue = () => true,
+  cursor = null,
+} = {}) {
+  const result = { examined: 0, removed: 0, removedBytes: 0 };
+  const state = cursor || { handle: null, dev: null, ino: null };
+  const dir = await fs.lstat(folder).catch(() => null);
+  if (!dir?.isDirectory() || dir.isSymbolicLink()) {
+    await closeUploadSweepCursor(state);
+    return result;
   }
-  throw Object.assign(new Error("Too many files with this name"), { statusCode: 409 });
+  const cutoff = now() - ageMs;
+  if (state.handle && (state.dev !== dir.dev || state.ino !== dir.ino)) await closeUploadSweepCursor(state);
+  if (!state.handle) {
+    try {
+      state.handle = await fs.opendir(folder);
+      state.dev = dir.dev;
+      state.ino = dir.ino;
+    } catch { return result; }
+  }
+  let exhausted = false;
+  let completed = false;
+  try {
+    while (shouldContinue() && result.examined < maxExamined && result.removed < maxRemovedFiles) {
+      const entry = await state.handle.read();
+      if (!entry) { exhausted = true; break; }
+      result.examined++;
+      if (!entry.isFile()) continue;
+      const match = PART_SUFFIX.exec(entry.name);
+      if (!match || uploadName(match[1]) !== match[1]) continue;
+      const file = path.join(folder, entry.name);
+      if (ACTIVE_PARTS.has(file)) continue;
+      try {
+        const old = await fs.lstat(file);
+        if (!old.isFile() || old.nlink !== 1 || old.size > MAX_UPLOAD_BYTES || old.mtimeMs > cutoff) continue;
+        if (result.removedBytes + old.size > maxRemovedBytes) continue;
+        // Recheck identity and timestamp immediately before removal: a newly
+        // opened writer or completed publication must not inherit a stale stat.
+        if (ACTIVE_PARTS.has(file) || !shouldContinue()) break;
+        const current = await fs.lstat(file);
+        if (!current.isFile() || current.nlink !== 1 || current.ino !== old.ino || current.dev !== old.dev
+          || current.size !== old.size || current.mtimeMs !== old.mtimeMs || current.ctimeMs !== old.ctimeMs) continue;
+        if (ACTIVE_PARTS.has(file) || !shouldContinue()) break;
+        await fs.unlink(file);
+        result.removed++;
+        result.removedBytes += old.size;
+      } catch (error) {
+        if (!["ENOENT", "EPERM", "EACCES", "EBUSY"].includes(error?.code)) throw error;
+      }
+    }
+    completed = true;
+  } finally {
+    if (!cursor || exhausted || !shouldContinue() || !completed) await closeUploadSweepCursor(state);
+  }
+  return { ...result, hasMore: Boolean(state.handle) };
+}
+
+export function createUploadMaintenance(folder, options = {}) {
+  let stopped = false;
+  let timer = null;
+  let continuation = null;
+  let pending = null;
+  const cursor = { handle: null, dev: null, ino: null };
+  const run = () => {
+    if (stopped) return Promise.resolve(null);
+    if (pending) return pending;
+    pending = sweepAbandonedUploads(folder, { ...options, cursor, shouldContinue: () => !stopped })
+      .then((result) => {
+        if (!stopped && result.hasMore && !continuation) {
+          continuation = setTimeout(() => {
+            continuation = null;
+            void run().catch(() => {});
+          }, options.continuationMs ?? 1000);
+          continuation.unref?.();
+        }
+        return result;
+      })
+      .finally(() => { pending = null; });
+    return pending;
+  };
+  return {
+    start() {
+      if (stopped) throw new Error("Upload cleanup has stopped");
+      if (!timer) {
+        timer = setInterval(() => { void run().catch(() => {}); }, options.intervalMs ?? UPLOAD_CLEANUP_LIMITS.intervalMs);
+        timer.unref?.();
+      }
+      return run();
+    },
+    async stop() {
+      stopped = true;
+      clearInterval(timer);
+      clearTimeout(continuation);
+      timer = null;
+      continuation = null;
+      await pending?.catch(() => {});
+      await closeUploadSweepCursor(cursor);
+    },
+  };
 }
 
 export async function saveUpload(req, folder, name, length) {
   await fs.mkdir(folder, { recursive: true });
-  const target = await freeTarget(folder, name);
   // The scanner reads only .cbz/.zip files, so the unfinished copy is never picked up.
-  const part = `${target}.${crypto.randomBytes(4).toString("hex")}.lvl-part`;
+  const part = path.join(folder, `${name}.${crypto.randomBytes(8).toString("hex")}.lvl-part`);
   let written = 0;
   const counter = new Transform({
     transform(chunk, _encoding, done) {
@@ -42,16 +158,38 @@ export async function saveUpload(req, folder, name, length) {
       done(written > length ? Object.assign(new Error("The file is larger than announced"), { statusCode: 400 }) : null, chunk);
     },
   });
+  const sink = createWriteStream(part, { flags: "wx" });
+  let ownsPart = false;
+  sink.once("open", () => { ownsPart = true; ACTIVE_PARTS.add(part); });
   try {
-    await pipeline(req, counter, createWriteStream(part, { flags: "wx" }));
+    await pipeline(req, counter, sink);
     if (written !== length) throw Object.assign(new Error("The file didn't arrive completely"), { statusCode: 400 });
-    // Taken in the meantime: the next free name.
-    const final = await freeTarget(folder, path.basename(target));
-    await fs.rename(part, final);
-    return final;
+    // Same-directory hard-link creation is an atomic no-replace publication,
+    // including across processes. Rename may replace someone else's completed
+    // file after an access check, so never use it as a collision fallback.
+    const ext = path.extname(name);
+    const stem = name.slice(0, -ext.length);
+    for (let n = 1; n < 100; n++) {
+      const final = path.join(folder, n === 1 ? name : `${stem} (${n})${ext}`);
+      try {
+        await fs.link(part, final);
+      } catch (error) {
+        if (error.code === "EEXIST") continue;
+        throw error; // Unsupported hard links fail closed: no visible partial.
+      }
+      // Publication already succeeded; a failed partial unlink must not make
+      // the caller retry and publish the same complete upload a second time.
+      await fs.rm(part, { force: true }).catch(() => {});
+      return final;
+    }
+    throw Object.assign(new Error("Too many files with this name"), { statusCode: 409 });
   } catch (error) {
-    await fs.rm(part, { force: true }).catch(() => {});
+    // A rare token collision fails the exclusive wx open. Never unlink an
+    // existing partial owned by another upload in that error path.
+    if (ownsPart) await fs.rm(part, { force: true }).catch(() => {});
     throw error;
+  } finally {
+    if (ownsPart) ACTIVE_PARTS.delete(part);
   }
 }
 
@@ -123,12 +261,26 @@ export async function handleLocalRoutes(req, res, url, deps) {
     const input = await body();
     const anilistId = input?.anilistId === null ? null : Number(input?.anilistId);
     if (anilistId !== null && !(Number.isInteger(anilistId) && anilistId > 0)) return bad("Choose a title");
+    // Do not fetch/create an unrelated AniList Library card if this title has
+    // nothing to transfer. A failed verification must not move its files or
+    // existing reading history out of the local title.
+    // local.files() is intentionally a readable-only view, but rematch() also
+    // transfers temporarily errored archives and their saved reading history.
+    // Use the Reader's all-owned-row predicate; tolerate small legacy stubs.
+    const hasFiles = () => typeof local.hasLocalFiles === "function"
+      ? local.hasLocalFiles(from) : local.files(from).length > 0;
+    if (!hasFiles()) return bad("This title has no local files", 404);
     const status = from.startsWith("local-") ? local.localTitle(from)?.status : null;
+    if (anilistId) {
+      try {
+        const entry = await ensureEntry(anilistId, status || "PLANNING", { isCurrent: hasFiles });
+        if (!hasFiles()) return bad("This title has no local files", 404);
+        if (entry?.id !== `anilist-${anilistId}` || !String(entry.work?.title || "").trim())
+          throw new Error("Comic Library metadata is incomplete");
+      } catch (error) { return bad(error.message || "Comic Library metadata is unavailable", 502); }
+    }
     const target = local.rematch(from, anilistId ? `anilist-${anilistId}` : null);
     if (!target) return bad("This title has no local files", 404);
-    if (anilistId) {
-      try { await ensureEntry(anilistId, status || "PLANNING"); } catch (error) { return bad(error.message, 502); }
-    }
     return ctx.json(res, 200, { workId: target }), true;
   }
 

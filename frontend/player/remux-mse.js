@@ -4,14 +4,14 @@
 const MAX_INIT_BYTES = 4 * 1024 * 1024;
 const MAX_ATOM_BYTES = 128 * 1024 * 1024;
 const MAX_AHEAD_SECONDS = 45;
-const KEEP_BEHIND_SECONDS = 90;
-const MAX_APPEND_BYTES = 96 * 1024 * 1024;
 const MAX_FRAGMENT_BYTES = 16 * 1024 * 1024;
 const LIVE_APPEND_CHUNK_BYTES = 256 * 1024;
 const MAX_LIVE_MOOF_BYTES = 1024 * 1024;
 const RESTORED_GAP_CHECK_MS = 250;
 const RESTORED_GAP_APPROACH_SECONDS = 0.5;
 const RESTORED_STALL_MS = 5000;
+const QUOTA_RETRY_MS = 250;
+const QUOTA_NO_PROGRESS_MS = 8000;
 const TOKEN = /^[0-9a-f]{48}$/;
 
 function combine(parts) {
@@ -119,6 +119,7 @@ function createLiveAtomTracker() {
           if (remaining === 0) {
             if (kind === 'mdat') pendingMoof = false;
             kind = null;
+            if (!pendingMoof) return at;
           }
           continue;
         }
@@ -128,8 +129,10 @@ function createLiveAtomTracker() {
         if (remaining === 0) {
           if (kind === 'mdat') pendingMoof = false;
           kind = null;
+          if (!pendingMoof) return at;
         }
       }
+      return bytes.length;
     },
     get boundary() { return kind === null && !pendingMoof && !headerBytes; },
   };
@@ -206,25 +209,6 @@ function appendBuffer(sourceBuffer, bytes, signal) {
   });
 }
 
-function removeBuffer(sourceBuffer, from, to, signal) {
-  if (to <= from + 0.1) return Promise.resolve();
-  return new Promise((resolve, reject) => {
-    if (signal.aborted) return reject(Error('MSE closed'));
-    const done = () => {
-      sourceBuffer.removeEventListener('updateend', succeed);
-      sourceBuffer.removeEventListener('error', failed);
-      signal.removeEventListener('abort', failed);
-    };
-    const succeed = () => { done(); resolve(); };
-    const failed = () => { done(); reject(Error('MSE eviction failed')); };
-    sourceBuffer.addEventListener('updateend', succeed, { once: true });
-    sourceBuffer.addEventListener('error', failed, { once: true });
-    signal.addEventListener('abort', failed, { once: true });
-    try { sourceBuffer.remove(from, to); }
-    catch (error) { done(); reject(error); }
-  });
-}
-
 function bufferedAt(ranges, time, lookAhead = 0.18) {
   try {
     for (let i = 0; i < ranges.length; i += 1) {
@@ -283,11 +267,10 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
   const controller = new AbortController();
   const signal = controller.signal;
   let buffer = null, reader = null, failed = false, ended = false, producerToken = '';
-  let liveInit = null, liveTracker = null, windowSerial = 0, windowRequest = null;
+  let liveInit = null, liveTracker = null, liveAppendPending = false, windowSerial = 0, windowRequest = null;
   let restoreBlock = null, releaseRestore = null, parkedFailure = null;
   let historicalWindow = null, gapTimer = null;
   let operations = Promise.resolve();
-  let totalSinceTrim = 0;
   const isActive = () => !signal.aborted && isCurrent();
   const clearGapTimer = () => {
     if (gapTimer !== null) { clearTimeout(gapTimer); gapTimer = null; }
@@ -304,6 +287,44 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
     operations = running.catch(() => {});
     return running;
   };
+  const waitForPlayback = () => new Promise(resolve => {
+    const done = () => {
+      clearTimeout(timer);
+      for (const event of ['timeupdate', 'play', 'seeking']) video.removeEventListener(event, done);
+      signal.removeEventListener('abort', done);
+      resolve();
+    };
+    const timer = setTimeout(done, QUOTA_RETRY_MS);
+    for (const event of ['timeupdate', 'play', 'seeking']) video.addEventListener(event, done, {once:true});
+    signal.addEventListener('abort', done, {once:true});
+    if (signal.aborted) done();
+  });
+  async function appendLiveBytes(bytes) {
+    let position = Number(video.currentTime) || 0, motionAt = Date.now();
+    while (isActive()) {
+      try {
+        await serialize(() => appendBuffer(buffer, bytes, signal));
+        return;
+      } catch (error) {
+        if (error?.name !== 'QuotaExceededError' ||
+          !bufferedAt(buffer?.buffered, Number(video.currentTime) || 0, 0.15)) throw error;
+        // The browser accepted none of these bytes. Keep this exact chunk and
+        // backpressure the existing reader. Retrying after playback advances
+        // lets its coded-frame eviction retain the current GOP dependencies.
+        // Do not hold the append queue while waiting: cached seeks still need it.
+        do {
+          const suspended = video.paused || video.seeking;
+          await waitForPlayback();
+          const next = Number(video.currentTime) || 0;
+          if (suspended || video.paused || video.seeking || Math.abs(next - position) >= 0.05) {
+            motionAt = Date.now();
+            position = next;
+          } else if (Date.now() - motionAt >= QUOTA_NO_PROGRESS_MS) throw error;
+        } while (isActive() && (video.paused || video.seeking));
+      }
+    }
+    throw Error('MSE closed');
+  }
   const close = () => {
     if (signal.aborted) return;
     clearHistoricalWindow();
@@ -410,24 +431,11 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
       // separate decode discontinuity without endlessly appending far ahead.
       const ahead = buffer?.buffered?.length
         ? buffer.buffered.end(buffer.buffered.length - 1) - now : 0;
-      const tooManyBytes = totalSinceTrim >= MAX_APPEND_BYTES;
-      // At high bitrate the 96 MiB limit can arrive before 90 seconds.
-      // Retain at least two seconds of decoded context instead of freezing
-      // the producer until the playhead reaches an unrelated 90s threshold.
-      const keepBehind = tooManyBytes ? 2 : KEEP_BEHIND_SECONDS;
-      const trimBefore = now - keepBehind;
-      if (trimBefore > 0.5 && buffer?.buffered?.length &&
-        buffer.buffered.start(0) + 0.25 < trimBefore) {
-        const previousStart = buffer.buffered.start(0);
-        const previousEnd = buffer.buffered.end(buffer.buffered.length - 1);
-        await serialize(() => removeBuffer(buffer, 0, trimBefore, signal));
-        const removedRatio = Math.max(0, Math.min(1,
-          (trimBefore - previousStart) / Math.max(0.01, previousEnd - previousStart)));
-        // Byte accounting is conservative between trims; SourceBuffer has
-        // its own quota guard and failures still fall back to native playback.
-        totalSinceTrim = Math.ceil(totalSinceTrim * (1 - removedRatio));
-      }
-      if (ahead <= MAX_AHEAD_SECONDS && totalSinceTrim < MAX_APPEND_BYTES) return;
+      // SourceBuffer.remove() can extend an arbitrary cutoff to the next RAP
+      // and erase the GOP still being decoded. Let browser coded-frame
+      // eviction enforce its byte quota; appendLiveBytes applies backpressure
+      // when no safe space is available yet. Keep producer lead bounded here.
+      if (ahead <= MAX_AHEAD_SECONDS) return;
       await new Promise(resolve => {
         const settle = () => {
           clearTimeout(timer);
@@ -501,18 +509,17 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
       // Do not splice a cached moof into a live mdat. Wait briefly for the
       // ongoing atom to finish, then the producer parks at that boundary.
       const deadline = Date.now() + 2000;
-      while (!liveTracker?.boundary && isActive() && serial === windowSerial &&
+      while ((!liveTracker?.boundary || liveAppendPending) && isActive() && serial === windowSerial &&
         Date.now() < deadline)
         await new Promise(resolve => setTimeout(resolve, 30));
-      if (!liveTracker?.boundary || !isActive() || serial !== windowSerial) return false;
+      if (!liveTracker?.boundary || liveAppendPending || !isActive() || serial !== windowSerial) return false;
       await serialize(async () => {
-        if (serial !== windowSerial || !isActive() || !liveTracker?.boundary)
+        if (serial !== windowSerial || !isActive() || !liveTracker?.boundary || liveAppendPending)
           throw Error('Stale cached window');
         for (const fragment of fragments) {
           if (serial !== windowSerial || !isActive())
             throw Error('Cancelled cached window append');
           await appendBuffer(buffer, fragment, signal);
-          totalSinceTrim += fragment.length;
         }
       });
       const restored = isActive() && serial === windowSerial &&
@@ -584,11 +591,16 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
           if (restoreBlock && liveTracker.boundary) await restoreBlock;
           if (!isActive()) return;
           const end = Math.min(data.length, at + LIVE_APPEND_CHUNK_BYTES);
-          const part = data.subarray(at, end);
-          liveTracker.push(part);
-          await serialize(() => appendBuffer(buffer, part, signal));
-          totalSinceTrim += part.length;
-          at = end;
+          const available = data.subarray(at, end);
+          const consumed = liveTracker.push(available);
+          const part = available.subarray(0, consumed);
+          liveAppendPending = true;
+          await appendLiveBytes(part);
+          liveAppendPending = false;
+          at += consumed;
+          // Network reads need not end at MP4 atom boundaries. Enforce lead
+          // inside a coalesced read before starting its next complete fragment.
+          if (liveTracker.boundary) await throttle();
         }
       };
       for (const part of remainder) if (part.length) await appendLive(part);

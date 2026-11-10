@@ -10,6 +10,7 @@
 //   because the WebView can't read those URLs once the page has revoked them.
 
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
+const activeBridges = new WeakMap();
 const PLAYBACK_EVENTS = ["play", "playing", "pause", "ended", "emptied", "loadedmetadata", "seeked", "ratechange", "durationchange", "waiting"];
 // A phone held either way (tablets keep the page around the player).
 export const AUTO_FULLSCREEN_QUERY = "(hover: none) and (pointer: coarse) and (max-width: 680px), (hover: none) and (pointer: coarse) and (max-height: 680px)";
@@ -97,7 +98,35 @@ function blobToBase64(blob, win) {
   });
 }
 
+/** Incremental limit before allocating a Blob or invoking FileReader. */
+export async function limitedResponseBlob(response, win, limit = MAX_DOWNLOAD_BYTES) {
+  if (!response.ok) throw new Error("The download couldn't be read");
+  const advertised = response.headers?.get?.("content-length");
+  if (advertised != null && advertised !== "" && Number(advertised) > limit)
+    throw new Error("The file is too large to save (50 MiB limit)");
+  const reader = response.body?.getReader?.();
+  if (!reader) throw new Error("This WebView can't stream downloads");
+  const chunks = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > limit) throw new Error("The file is too large to save (50 MiB limit)");
+      chunks.push(value);
+    }
+  } catch (error) {
+    await reader.cancel?.().catch(() => {});
+    throw error;
+  } finally {
+    reader.releaseLock?.();
+  }
+  return new win.Blob(chunks, { type: response.headers?.get?.("content-type") || "application/octet-stream" });
+}
+
 export function startAndroidBridge(win = globalThis.window) {
+  if (win && activeBridges.has(win)) return activeBridges.get(win);
   const native = win?.LvlAndroid;
   const doc = win?.document;
   if (!native || !doc) return null;
@@ -179,7 +208,13 @@ export function startAndroidBridge(win = globalThis.window) {
     const blob = this.hasAttribute("download") ? blobs.get(href) : null;
     if (!blob && !(this.hasAttribute("download") && href.startsWith("data:"))) return click.apply(this, args);
     const name = this.getAttribute("download") || "download";
-    const source = blob ? Promise.resolve(blob) : win.fetch(href).then((response) => response.blob());
+    // Large data: URLs are already materialized strings. Reject before fetch()
+    // can decode them into another unbounded object; allow regular small data URLs.
+    if (!blob && href.length > Math.ceil(MAX_DOWNLOAD_BYTES / 3) * 4 + 1024) {
+      try { native.downloadFailed(name, "The file is too large to save (50 MiB limit)"); } catch {}
+      return undefined;
+    }
+    const source = blob ? Promise.resolve(blob) : win.fetch(href).then((response) => limitedResponseBlob(response, win));
     source.then((file) => {
       if (file.size > MAX_DOWNLOAD_BYTES) throw new Error("The file is too large to save");
       return blobToBase64(file, win).then((data) => native.saveDownload(name, file.type || "application/octet-stream", data));
@@ -196,6 +231,7 @@ export function startAndroidBridge(win = globalThis.window) {
     media: (command, value) => runMediaCommand(doc, String(command), Number(value)),
     playback: () => playbackSnapshot(doc),
   });
+  activeBridges.set(win, win.lvlAndroid);
   report();
   return win.lvlAndroid;
 }

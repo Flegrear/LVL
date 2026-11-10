@@ -8,7 +8,8 @@ import {
 import { json, localRequestRejected, methodNotAllowed, readJsonBody } from "./http-helpers.js";
 import { appStateBootstrapEndpoint, appStateEndpoint } from "./app-state.js";
 import {
-  createTorrentSession, fileDownloadMap, getTorrentSession, removeTorrentSession, sessionPayload,
+  cancelTorrentAcquisition, createTorrentSession, fileDownloadMap, getTorrentSession,
+  releaseTorrentSessionLease, sessionPayload,
 } from "../torrents/torrent-sessions.js";
 import {
   copiedSeekOriginEndpoint, serveIndexedSeek, serveProgressiveSeek, serveRemuxWarmWindow,
@@ -27,6 +28,7 @@ import { appUpdatesEndpoint } from "../app-updates/updates-api.js";
 import { alignSubtitleTracks, processSubtitleTrack } from "../subtitles/subtitle-alignment.js";
 import { handleStorageApi } from "../persistence/storage-api.js";
 import { handleRecsApi } from "../recommendations/recs-api.js";
+import { attachAndroidHealthProof } from "./server-identity.js";
 
 // Requests only LVL's own page may send. Requests sent by other sites (a page you visit can
 // post to 127.0.0.1) and under other host names (DNS rebinding) are refused, so no other
@@ -38,6 +40,7 @@ const LOCAL_ONLY_PATHS = new Set([
 ]);
 const LOCAL_ONLY_PREFIXES = [
   "/api/app-state/", "/api/app-updates/", "/api/popup/", "/api/coach/", "/api/torrents/", "/api/recs/",
+  "/api/torrent-acquisitions/",
   "/api/anki/", "/api/ankiweb/", "/api/clips/", "/api/storage/",
   "/api/subtitles/", "/api/learning/subtitles/",
 ];
@@ -77,6 +80,9 @@ async function playbackDiagnosticsEndpoint(req, res, url) {
 // The Windows launcher checks this before starting the app, so it never starts a second copy.
 function healthEndpoint(req, res) {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
+  // Desktop and legacy callers still receive the same JSON. Only a child with
+  // the private per-spawn environment key can sign an explicit Android probe.
+  attachAndroidHealthProof(req, res, process.env.LVL_ANDROID_CHILD_SECRET);
   json(res, 200, {
     app: "language-video-learner",
     appId: fs.existsSync(path.join(root, "installed-app.json")) ? "lvl-public" : null,
@@ -202,15 +208,10 @@ async function torrentEndpoint(req, res, url, torrentMatch) {
     return true;
   }
   if (req.method === "DELETE") {
-    // A second Watch/PiP window can still be streaming this same session.
-    // Closing one view must not destroy media actively held by another.
-    if ((Number(session.openStreams) || 0) > 0) {
-      json(res, 409, { error: "torrent_session_in_use", message: "This video is still playing in another view. Its download was preserved." });
-      return true;
-    }
-    await removeTorrentSession(id);
-    res.writeHead(204);
-    res.end();
+    const authority = await releaseTorrentSessionLease(id,
+      url.searchParams.get("lease"), url.searchParams.get("incarnation"));
+    if (authority.status !== 204) json(res, authority.status, { error: authority.error });
+    else { res.writeHead(204); res.end(); }
     return true;
   }
   return methodNotAllowed(res, ["GET", "DELETE"]);
@@ -232,6 +233,13 @@ const API_ROUTES = [
   { path: (p) => p === "/api/storage" || p.startsWith("/api/storage/"),
     handle: async (req, res, url) => (await handleStorageApi(req, res, url)) || false },
   { path: "/api/torrents", handle: postOnly(createTorrentSession) },
+  { path: /^\/api\/torrent-acquisitions\/([^/]+)$/, handle: async (req, res, _url, match) => {
+    if (req.method !== "DELETE") return methodNotAllowed(res, ["DELETE"]);
+    const result = await cancelTorrentAcquisition(match[1]);
+    if (result.status === 204) { res.writeHead(204); res.end(); }
+    else json(res, result.status, { error: result.error });
+    return true;
+  } },
   { path: /^\/api\/torrents\/([0-9a-f-]+)(?:\/files(?:\/(\d+)\/(stream|transcode|transcode-start|metadata|subtitle|speech|indexed|indexed\/status|progressive\/status|progressive\/events|progressive\/window\/[a-f0-9]{64}|remux-cache\/window))?)?$/,
     handle: torrentEndpoint },
   { path: "/api/subtitles/process", handle: postOnly(processSubtitleTrack) },

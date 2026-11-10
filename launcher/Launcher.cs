@@ -4,15 +4,19 @@
 // else Edge), and stops the server cleanly on Quit by closing its stdin (server.js listens).
 // A second launcher passes its request to the first one: open, --quit or --restart.
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
 using System.Windows.Forms;
+using System.Web.Script.Serialization;
 using Microsoft.Win32;
 
 [assembly: AssemblyTitle("LVL")]
@@ -60,6 +64,9 @@ namespace LanguageVideoLearner
         private static int Main(string[] args)
         {
             Options options = Options.Parse(args);
+            int recoveryResult;
+            if (TryStartInterruptedFullRecovery(options, out recoveryResult))
+                return recoveryResult;
             // LVL's own signal identity: never send a Quit or Open signal to
             // another program's launcher, even one using port 4273.
             // Keep this identity stable across LVL updates.
@@ -120,6 +127,150 @@ namespace LanguageVideoLearner
                 GC.KeepAlive(mutex);
             }
             return 0;
+        }
+
+        // Runs BEFORE FindRoot(), package/runtime resolution, tray initialization
+        // and the local server. A hard crash can leave server.js/package.json or
+        // runtime/node.exe absent while a full-install journal is still durable.
+        // The new launcher was atomically promoted before any such directories
+        // were touched, and its standalone recovery Node lives in that journal.
+        private static bool TryStartInterruptedFullRecovery(Options options, out int result)
+        {
+            result = 0;
+            string root = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
+            string tx = Path.Combine(root, ".lvl-full-transaction");
+            string journal = Path.Combine(tx, "journal.json");
+            if (!File.Exists(journal)) return false;
+            string state;
+            Dictionary<string, object> record;
+            try
+            {
+                RequireOrdinaryRecoveryPath(tx, true);
+                RequireOrdinaryRecoveryPath(journal, false);
+                record = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(File.ReadAllText(journal));
+                object value;
+                if (record == null || !record.TryGetValue("state", out value) || !(value is string))
+                    throw new InvalidDataException("Installation recovery journal is invalid");
+                state = (string)value;
+            }
+            catch (Exception problem)
+            {
+                ReportRecoveryError(options, "LVL installation recovery is unavailable: " + problem.Message);
+                result = 1;
+                return true;
+            }
+            // After final verification the new app may start normally and
+            // acknowledge its own healthy server. 'preparing' may mean the
+            // verified new bootstrap was atomically installed just before a
+            // hard exit; the helper distinguishes old/new executable hashes.
+            if (state == "awaiting-restart" ||
+                state == "acknowledged" || state == "rolled-back") return false;
+            if (state != "preparing" && state != "bootstrap-ready" && state != "backing-up" &&
+                state != "installing" && state != "restoring" &&
+                state != "rollback-ready")
+            {
+                ReportRecoveryError(options, "LVL installation recovery journal has an unknown state.");
+                result = 1;
+                return true;
+            }
+            try
+            {
+                string recovery = Path.Combine(tx, "recovery");
+                string node = Path.Combine(recovery, "node.exe");
+                string helper = Path.Combine(recovery, "windows-install-transaction.mjs");
+                VerifyRecoveryPair(root, record, recovery, node, helper);
+                string ready = Path.Combine(recovery, "launch-" + Guid.NewGuid().ToString("N") + ".ready");
+                using (Process self = Process.GetCurrentProcess())
+                {
+                    string arguments = QuoteRecovery(helper) + " recover-startup"
+                        + " --app-root " + QuoteRecovery(root)
+                        + " --launcher-pid " + self.Id
+                        + " --launcher-start-ticks " + self.StartTime.ToUniversalTime().Ticks
+                        + " --ready-file " + QuoteRecovery(ready)
+                        + " --relaunch " + (options.Quit || options.Restart || options.WhichBrowser ? "no" : "yes");
+                    using (Process child = Process.Start(new ProcessStartInfo(node, arguments) {
+                        WorkingDirectory = root, CreateNoWindow = true, UseShellExecute = false,
+                        WindowStyle = ProcessWindowStyle.Hidden,
+                    }))
+                    {
+                        if (child == null) throw new IOException("Could not start the recovery worker");
+                        DateTime deadline = DateTime.UtcNow.AddSeconds(6);
+                        while (!File.Exists(ready) && !child.HasExited && DateTime.UtcNow < deadline)
+                            Thread.Sleep(25);
+                        if (!File.Exists(ready) || File.ReadAllText(ready).Trim() != "READY")
+                            throw new IOException("The recovery worker did not confirm this launcher");
+                        File.Delete(ready);
+                        // Recovery must replace the old launcher only AFTER
+                        // this process exits. The independent worker owns its
+                        // PID+birth identity, lease, journal and eventual relaunch.
+                    }
+                }
+                result = 0;
+            }
+            catch (Exception problem)
+            {
+                ReportRecoveryError(options, "LVL could not start installation recovery: " + problem.Message);
+                result = 1;
+            }
+            return true;
+        }
+
+        private static void ReportRecoveryError(Options options, string message)
+        {
+            // --quit and background processes need a truthful noninteractive
+            // failure; a hidden modal dialog would leave the updater hanging.
+            try { Console.Error.WriteLine(message); } catch (Exception) { }
+            if (!options.Quit && !options.Background && !options.WhichBrowser)
+                MessageBox.Show(message, Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private static void RequireOrdinaryRecoveryPath(string location, bool directory)
+        {
+            FileAttributes attributes = File.GetAttributes(location);
+            if ((attributes & FileAttributes.ReparsePoint) != 0
+                || (((attributes & FileAttributes.Directory) != 0) != directory))
+                throw new InvalidDataException("Recovery path is redirected or has an unexpected type");
+        }
+
+        private static string RecoveryFileHash(string location)
+        {
+            // The binary and script are read through absolute expected paths
+            // after checking each component for Windows reparse-point redirects.
+            using (FileStream input = new FileStream(location, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (SHA256 checksum = SHA256.Create())
+                return BitConverter.ToString(checksum.ComputeHash(input)).Replace("-", "").ToLowerInvariant();
+        }
+
+        private static void VerifyRecoveryPair(string root, Dictionary<string, object> journal,
+            string recovery, string node, string helper)
+        {
+            string basePath = Path.GetFullPath(Path.Combine(root, ".lvl-full-transaction", "recovery"));
+            if (!string.Equals(Path.GetFullPath(recovery), basePath, StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Path.GetFullPath(node), Path.Combine(basePath, "node.exe"), StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Path.GetFullPath(helper), Path.Combine(basePath, "windows-install-transaction.mjs"), StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("Recovery executable paths are not the expected private paths");
+            RequireOrdinaryRecoveryPath(recovery, true);
+            RequireOrdinaryRecoveryPath(node, false);
+            RequireOrdinaryRecoveryPath(helper, false);
+            object rawPair;
+            if (journal == null || !journal.TryGetValue("recoveryPair", out rawPair))
+                throw new InvalidDataException("Recovery executable identities are missing");
+            Dictionary<string, object> pair = rawPair as Dictionary<string, object>;
+            object expectedNode, expectedHelper;
+            if (pair == null || !pair.TryGetValue("nodeSha256", out expectedNode)
+                || !pair.TryGetValue("helperSha256", out expectedHelper)
+                || !(expectedNode is string) || !(expectedHelper is string)
+                || !Regex.IsMatch((string)expectedNode, @"\A[0-9a-f]{64}\z")
+                || !Regex.IsMatch((string)expectedHelper, @"\A[0-9a-f]{64}\z"))
+                throw new InvalidDataException("Recovery executable identities are malformed");
+            if (!string.Equals(RecoveryFileHash(node), (string)expectedNode, StringComparison.Ordinal)
+                || !string.Equals(RecoveryFileHash(helper), (string)expectedHelper, StringComparison.Ordinal))
+                throw new InvalidDataException("Recovery executable SHA-256 integrity check failed");
+        }
+
+        private static string QuoteRecovery(string value)
+        {
+            return "\"" + value.Replace("\"", "\\\"") + "\"";
         }
 
         // The app folder: this launcher's folder or one above it, the one with server.js and package.json.

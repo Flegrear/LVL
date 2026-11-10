@@ -7,6 +7,7 @@
 // the runner then gets that browser's cookies and user agent.
 import fs from "node:fs";
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { normalizeUnitNumber } from "../../shared/reading/units.js";
 import { chapterNumber, volumeNumber } from "./chapter-names.js";
 import { cleanTitle, fail as failure } from "./source-site.js";
@@ -15,6 +16,9 @@ import { sniffImage } from "../reader/pages.js";
 
 const MAX_APK = 20 * 1024 * 1024;
 const SEARCH_LIMIT = 20;
+const SIGNER = /^(?:[0-9a-f]{64}|(?:[0-9a-f]{2}:){31}[0-9a-f]{2})$/i;
+const PACKAGE = /^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)+$/;
+const trustFailure = (message) => failure(message, 403, "extension-trust");
 
 // Extension URLs are usually site paths ("/series/x"); some are full addresses or ids.
 // Those are kept as "/~r/<encoded>" so LVL's path checks accept them.
@@ -56,17 +60,27 @@ export function runnerChapter(item, mangaTitle = "") {
   };
 }
 
-// runner: createExtRunner(); dir: where APKs are kept; findExtension(pkg) -> { pkg, version, apk, fingerprint? };
+// runner: createExtRunner(); dir: where APKs are kept; findExtension(pkg) -> trusted repository entry
+// { pkg, version, apk, fingerprint, sources }. Repository identities are mandatory for executable code.
 // remote: LVL's site requests (downloads, and siteCookies for checks).
 export function createRunnerEngine({ runner, dir, findExtension, remote }) {
   async function apkFor(source, { fresh = false } = {}) {
     const ext = await findExtension(source.pkg);
     if (!ext) throw failure(`${source.extension || source.name} isn't in the repository any more`, 404);
+    if (!PACKAGE.test(String(ext.pkg || "")) || ext.pkg !== source.pkg
+      || !ext.sources?.some((item) => String(item.id) === String(source.id)))
+      throw trustFailure("The extension's repository package or source identity changed");
+    if (!SIGNER.test(String(ext.fingerprint || "")))
+      throw trustFailure("The extension repository has no valid approved SHA-256 signing fingerprint");
+    const fingerprint = String(ext.fingerprint).replaceAll(":", "").toLowerCase();
     if (!/^https:\/\//.test(String(ext.apk || ""))) throw failure("The repository doesn't link this extension's file");
     const file = path.join(dir, `${safeName(ext.pkg)}-v${safeName(ext.version)}.apk`);
     if (fresh) fs.rmSync(file, { force: true });
     if (!fs.existsSync(file)) {
-      const response = await remote.request(ext.apk, { accept: "application/vnd.android.package-archive,*/*", maxBytes: MAX_APK, timeoutMs: 60_000 });
+      const response = await remote.request(ext.apk, {
+        accept: "application/vnd.android.package-archive,*/*",
+        maxBytes: MAX_APK, timeoutMs: 60_000, httpsOnly: true, browser: "never",
+      });
       if (!response.ok) throw failure(`The extension file couldn't be downloaded (HTTP ${response.status})`);
       fs.mkdirSync(dir, { recursive: true });
       const partial = `${file}.part`;
@@ -77,14 +91,16 @@ export function createRunnerEngine({ runner, dir, findExtension, remote }) {
         if (name.startsWith(`${safeName(ext.pkg)}-v`) && name.endsWith(".apk") && path.join(dir, name) !== file) fs.rmSync(path.join(dir, name), { force: true });
       }
     }
-    // A file downloaded again under the same version is loaded again.
+    // Content, publisher and package are authoritative; an unchanged size/mtime is not.
     const stat = fs.statSync(file);
-    return { file, key: `${ext.pkg}@${ext.version}#${stat.size}-${Math.round(stat.mtimeMs)}`, fingerprint: String(ext.fingerprint || "") };
+    if (!stat.isFile() || stat.size < 1 || stat.size > MAX_APK) throw trustFailure("The cached extension file is invalid");
+    const digest = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+    return { file, key: `${ext.pkg}@${ext.version}#${fingerprint}#${digest}`, fingerprint, packageName: ext.pkg };
   }
 
   async function ready(source, options) {
-    const { file, key, fingerprint } = await apkFor(source, options);
-    const loaded = await runner.load(file, key, { fingerprint });
+    const { file, key, fingerprint, packageName } = await apkFor(source, options);
+    const loaded = await runner.load(file, key, { fingerprint, packageName });
     if (!loaded.sources.some((item) => String(item.id) === String(source.id))) throw failure(`The ${source.extension || source.name} extension no longer has this source`, 404);
     return loaded;
   }

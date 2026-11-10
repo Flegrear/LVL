@@ -13,11 +13,29 @@ export function createAppBrowser({ dataDir, hostSocket = process.env.LVL_EXT_HOS
   const client = runner || createExtRunner({ hostSocket, dataDir, home: null, java: null });
   let verify = { open: false, passed: false, at: null };
   let refreshing = null;
+  let verifyGeneration = 0;
 
   const fail = (message, status = 502, code = "") => Object.assign(new Error(message), { status, ...(code ? { code } : {}) });
+  const checkOpenError = () => fail("Finish the check on the Verify screen, close it, then search again", 409, "check-open");
+  const updateVerify = (state) => {
+    verify = { open: Boolean(state?.open), passed: Boolean(state?.passed), at: state?.at || null };
+  };
+
+  // A cached poll can still say "open" after the native screen was closed.
+  // Recheck before blocking a real request, while preserving the synchronous UI poll API.
+  async function ensureVerifyClosed() {
+    if (!verify.open) return;
+    if (refreshing) await refreshing;
+    if (verify.open && client.available()) {
+      const generation = verifyGeneration;
+      const state = await client.call("verifyState", {}, { timeoutMs: 10_000 });
+      if (generation === verifyGeneration) updateVerify(state);
+    }
+    if (verify.open) throw checkOpenError();
+  }
 
   async function request(url, { method = "GET", body = null, contentType = "", headers = {}, referer = "", accept = "", lang = "", maxBytes = 8 * 1024 * 1024, timeoutMs = 60_000 } = {}) {
-    if (verify.open) throw Object.assign(fail("Finish the check on the Verify screen, close it, then search again", 409), { code: "check-open" });
+    await ensureVerifyClosed();
     const sent = {
       ...(accept ? { Accept: accept } : {}),
       ...(lang ? { "Accept-Language": `${lang},en;q=0.8` } : {}),
@@ -41,8 +59,9 @@ export function createAppBrowser({ dataDir, hostSocket = process.env.LVL_EXT_HOS
   // The state the UI polls: the last answer from the app, refreshed in the background.
   function verifyState() {
     if (!refreshing && client.available()) {
+      const generation = verifyGeneration;
       refreshing = client.call("verifyState", {}, { timeoutMs: 10_000 })
-        .then((state) => { verify = { open: Boolean(state?.open), passed: Boolean(state?.passed), at: state?.at || null }; })
+        .then((state) => { if (generation === verifyGeneration) updateVerify(state); })
         .catch(() => {})
         .finally(() => { refreshing = null; });
     }
@@ -53,12 +72,14 @@ export function createAppBrowser({ dataDir, hostSocket = process.env.LVL_EXT_HOS
     available: client.available(),
     request,
     async siteCookies(url) {
-      if (verify.open) throw Object.assign(fail("Finish the check on the Verify screen, close it, then search again", 409), { code: "check-open" });
+      await ensureVerifyClosed();
       return client.call("siteCookies", { url: String(url) }, { timeoutMs: 70_000 });
     },
     async openVisible(url) {
+      // Ignore a poll started before this new Verify session.
+      const generation = ++verifyGeneration;
       const state = await client.call("openVisible", { url: String(url) }, { timeoutMs: 15_000 });
-      verify = { open: Boolean(state?.open), passed: false, at: null };
+      if (generation === verifyGeneration) verify = { open: Boolean(state?.open), passed: false, at: null };
       return { open: verify.open };
     },
     verifyState,

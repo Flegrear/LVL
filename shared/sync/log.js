@@ -100,13 +100,36 @@ export function createSyncLog({ storage, device, key = null }) {
       if (!changes.length) return null;
       if (changes.length > MAX_CHANGES_PER_FILE) throw new Error("Too many changes for one sync file");
       const path = changePath(device, seq);
-      const version = await storage.write(path, await encode(path, { device, seq, changes }), {});
-      return { path, version };
+      const planned = { device, seq, changes };
+      try {
+        const version = await storage.write(path, await encode(path, planned), {});
+        return { path, version };
+      } catch (error) {
+        if (error.code !== "conflict") throw error;
+        // An HTTP response may have been lost after GitHub committed this exact
+        // immutable file. Reuse its identity only after verifying every record.
+        const existing = (await storage.list()).find((file) => file.path === path);
+        if (!existing) throw error;
+        const content = await readJson(path, existing.version);
+        if (content?.device !== device || content?.seq !== seq
+          || JSON.stringify(content.changes) !== JSON.stringify(changes)) throw error;
+        return { path, version: existing.version, replayed: true };
+      }
     },
     // Replaces this device's snapshot: all current changes, up to its change file `upTo`.
     async snapshot(changes, upTo, version) {
       const path = snapshotPath(device);
-      return storage.write(path, await encode(path, { device, upTo, changes }), { version });
+      const planned = { device, upTo, changes };
+      try { return await storage.write(path, await encode(path, planned), { version }); }
+      catch (error) {
+        if (error.code !== "conflict") throw error;
+        const current = (await storage.list()).find((file) => file.path === path);
+        if (!current) throw error;
+        const content = await readJson(path, current.version);
+        if (content?.device !== device || content?.upTo !== upTo
+          || JSON.stringify(content.changes) !== JSON.stringify(changes)) throw error;
+        return current.version;
+      }
     },
   };
 }

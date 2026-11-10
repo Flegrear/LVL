@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import "./backend/torrents/tracker-cancellation.js";
 import WebTorrent from "webtorrent";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
@@ -31,7 +32,10 @@ import { createUpdatePolicy } from "./backend/app-updates/update-policy.js";
 import { json, localRequestRejected, methodNotAllowed, readJsonBody } from "./backend/app/http-helpers.js";
 import { addBuiltInAssets, PUBLIC_ASSETS, serveStatic } from "./backend/app/static-files.js";
 import { handleApi } from "./backend/app/api-routes.js";
-import { internalTorrentSource, removeTorrentSession } from "./backend/torrents/torrent-sessions.js";
+import {
+  evictTorrentSessionIfIdle, internalTorrentSource, removeTorrentSession,
+  torrentSessionHasActiveBorrower,
+} from "./backend/torrents/torrent-sessions.js";
 import { emitProgressiveReady } from "./backend/streaming/torrent-stream.js";
 import { isVideoConversionAvailable } from "./backend/streaming/transcode.js";
 import { catalogSearchResults } from "./backend/catalog/catalog-api.js";
@@ -104,11 +108,12 @@ export const storage = createStorageManager({
   // Called later (torrentSessions is set up further down).
   sessions: () => [...torrentSessions.values()].map((session) => ({
     id: session.id,
+    incarnation: session.incarnation,
     name: session.torrent?.name || session.displayName || "",
     lastUsedAt: Number(session.lastUsedAt) || 0,
-    busy: (Number(session.openStreams) || 0) > 0,
+    busy: torrentSessionHasActiveBorrower(session),
   })),
-  removeSession: (id) => removeTorrentSession(id),
+  removeSession: (id, incarnation) => evictTorrentSessionIfIdle(id, incarnation),
 });
 // Progressive remux outputs live beside (and are counted with) WebTorrent's
 // per-session source bytes, never in a second unlimited storage pool.

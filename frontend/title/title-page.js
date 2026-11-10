@@ -541,6 +541,24 @@ export function savedTitleBadge(series) {
     : { label: "On your list", title: "Title added to your Library; no torrent source saved" };
 }
 
+// Library title pages share the same quiet, arrow-only Back affordance.
+function titleBackButtonMarkup() {
+  return iconButtonMarkup({ icon: "arrow-left", label: "Back", className: "title-back",
+    attrs: { "data-title-action": "back" } });
+}
+
+function comicsTitleSortMarkup() {
+  return `<details class="comic-title-sort" data-comic-title-sort>
+    <summary aria-label="${escapeHtml(t("Sort chapters"))}" title="${escapeHtml(t("Sort chapters"))}">${icon("sort")}</summary>
+    <div class="comic-title-sort__menu">
+      <div class="comic-title-sort__caption">${escapeHtml(t("Order"))}</div>
+      <button type="button" data-comic-sort-order="asc" aria-pressed="true">${escapeHtml(t("Ascending"))}</button>
+      <button type="button" data-comic-sort-order="desc" aria-pressed="false">${escapeHtml(t("Descending"))}</button>
+      <label><input type="checkbox" data-comic-group-volumes /><span>${escapeHtml(t("Group by volume"))}</span></label>
+    </div>
+  </details>`;
+}
+
 function titleHeroMarkup(subject, info, view, communityRating = null) {
   const series = subject.series;
   const savedBadge = savedTitleBadge(series);
@@ -573,7 +591,7 @@ function titleHeroMarkup(subject, info, view, communityRating = null) {
   return `<div class="title-hero${info.backdrop ? " has-backdrop" : ""}">
     <div class="title-hero__media" aria-hidden="true">${info.backdrop ? `<img class="title-hero__backdrop" src="${escapeHtml(info.backdrop)}" alt="" decoding="async" fetchpriority="high"${fallbackAttr(info.backdropFallback, info.backdrop)} />` : ""}</div>
     <div class="title-hero__shade" aria-hidden="true"></div>
-    <div class="title-hero__bar">${buttonMarkup({ label: titleView.fromApp ? "Back" : "Library", variant: "glass", size: "sm", icon: "chevron-left", className: "title-back", attrs: { "data-title-action": "back" } })}</div>
+    <div class="title-hero__bar">${titleBackButtonMarkup()}</div>
     <div class="title-hero__content">
       <div class="title-hero__poster-wrap">${poster}${savedBadge ? `<span class="title-hero__poster-saved" title="${escapeHtml(savedBadge.title)}">${icon("check")}<span>${escapeHtml(savedBadge.label)}</span></span>` : ""}</div>
       <div class="title-hero__copy">
@@ -924,10 +942,26 @@ function featureTitleHeroMarkup(info) {
   const poster = info.poster
     ? `<img class="title-hero__poster" src="${escapeHtml(info.poster)}" alt="${escapeHtml(`${info.name} cover`)}" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(info.name)}" />`
     : `<img class="title-hero__poster" src="${escapeHtml(artworkFallback(info.name, { label: info.kind || "" }))}" alt="" />`;
+  if (info.comicsHero) return `<div class="title-hero comic-detail-hero">
+    <div class="title-hero__bar">${titleBackButtonMarkup()}${comicsTitleSortMarkup()}</div>
+    <div class="comic-detail-hero__body">
+      <div class="comic-detail-hero__identity">
+        <div class="title-hero__poster-wrap">${poster}</div>
+        <div class="comic-detail-hero__identity-copy">
+          <h1 class="ui-hero__title title-hero__title" id="title-name"><span class="ui-hero__title-text">${escapeHtml(info.name)}</span></h1>
+          <div class="title-hero__facts">${metaMarkup(info.facts || [])}</div>
+        </div>
+      </div>
+      <div class="comic-detail-hero__scores title-hero__scores">${scores}<div id="title-lvl-rating-slot" class="title-lvl-rating-slot"></div></div>
+      ${info.description ? `<details class="comic-detail-hero__description"><summary>${escapeHtml(info.description)}</summary><p>${escapeHtml(info.description)}</p></details>` : ""}
+      ${info.genres?.length ? `<ul class="title-genres" aria-label="Genres">${info.genres.map((genre) => `<li>${escapeHtml(genre)}</li>`).join("")}</ul>` : ""}
+    </div>
+    <div class="comic-detail-hero__resume">${actions}</div>
+  </div>`;
   return `<div class="title-hero${info.backdrop ? " has-backdrop" : ""}">
     <div class="title-hero__media" aria-hidden="true">${info.backdrop ? `<img class="title-hero__backdrop" src="${escapeHtml(info.backdrop)}" alt="" decoding="async" fetchpriority="high" />` : ""}</div>
     <div class="title-hero__shade" aria-hidden="true"></div>
-    <div class="title-hero__bar">${buttonMarkup({ label: titleView.fromApp ? "Back" : "Library", variant: "glass", size: "sm", icon: "chevron-left", className: "title-back", attrs: { "data-title-action": "back" } })}</div>
+    <div class="title-hero__bar">${titleBackButtonMarkup()}</div>
     <div class="title-hero__content">
       <div class="title-hero__poster-wrap">${poster}</div>
       <div class="title-hero__copy">
@@ -964,7 +998,7 @@ function renderFeatureTitlePage(route) {
   const open = chips.find((chip) => chip.id === titleView.featureSection)?.id || chips[0]?.id || "";
   const markup = `<section class="title-block" aria-labelledby="title-chapters-heading"><div id="title-chapters">
       <div class="title-section__head"><h2 class="title-section__title" id="title-chapters-heading">Chapters</h2><div class="title-feature-head"></div></div>
-      <div class="ui-chip-row catalog-season-switch" role="group" aria-label="Sections">${chips.map((chip) => `<button class="ui-chip catalog-feature-section" type="button" data-feature-section="${escapeHtml(chip.id)}" aria-pressed="${chip.id === open}">${escapeHtml(t(chip.label))}${Number.isFinite(chip.count) ? `<span class="ui-chip__count">${chip.count}</span>` : ""}</button>`).join("")}</div>
+      ${chips.length > 1 ? `<div class="ui-chip-row catalog-season-switch" role="group" aria-label="Sections">${chips.map((chip) => `<button class="ui-chip catalog-feature-section" type="button" data-feature-section="${escapeHtml(chip.id)}" aria-pressed="${chip.id === open}">${escapeHtml(t(chip.label))}${Number.isFinite(chip.count) ? `<span class="ui-chip__count">${chip.count}</span>` : ""}</button>`).join("")}</div>` : ""}
       <div class="title-feature-section" data-feature-section="${escapeHtml(open)}"></div></div></section>`;
   const mainChanged = setTitlePart(parts.main, "main", markup);
   if (mainChanged && open) {

@@ -45,6 +45,12 @@ const MAX_WINDOW = 32 * 1024 * 1024;
 const MAX_WINDOWS = 7200;
 const MAX_PROBE_JSON = 4 * 1024 * 1024;
 const MAX_VERIFY_FILES_PARALLEL = 16;
+// Filesystems can report identical mtime/ctime/inode for distinct writes in
+// one metadata tick (observed even with NTFS nanosecond stat fields). Only
+// memoize a full digest after its timestamp is older than the 2s coarse
+// filesystem timestamp window. Fresh files get bounded full verification
+// again on the next access; established GOPs retain fast stat-only status.
+const STAT_SETTLE_MS = 2000;
 const UUID = /^[a-f\d]{8}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{4}-[a-f\d]{12}$/i;
 const HEX = /^[a-f\d]{64}$/;
 const AVC = /^avc1\.[a-f\d]{6}$/i;
@@ -417,6 +423,10 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
   function snapshot(stat){
     return [stat.size,stat.mtimeMs,stat.ctimeMs,stat.birthtimeMs,stat.ino,stat.dev,stat.mode].join(':');
   }
+  function settledStat(stat){
+    const latest=Math.max(stat.mtimeMs,stat.ctimeMs,stat.birthtimeMs);
+    return Number.isFinite(latest)&&Date.now()-latest>STAT_SETTLE_MS;
+  }
   function metadataSafe(item,info){
     const offset=item?.timelineOffsetSeconds??0;
     return HEX.test(String(item?.id))&&HEX.test(String(item.initHash))
@@ -473,7 +483,12 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     if(snapshot(after)!==mark)return false;
     const computed=digest.digest('hex');
     if(computed!==expectedHash){verifiedContents.delete(file);return false;}
-    verifiedContents.set(file,{mark,hash:computed});
+    // An immediate same-size rewrite can share every stat field with a fresh
+    // publication. If that digest were memoized, later status/open could
+    // advertise corrupt bytes forever. Verify normally but withhold memo
+    // until metadata has aged beyond the tick-coalescence window.
+    if(settledStat(after))verifiedContents.set(file,{mark,hash:computed});
+    else verifiedContents.delete(file);
     return true;
   }
   async function checkFile(file,item){

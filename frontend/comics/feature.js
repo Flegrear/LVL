@@ -11,9 +11,11 @@ import { STATUS_LABELS, cachedEntries, comicCardMarkup, comicKey, libraryGroup, 
 import { renderComicsSettings } from "./comics-settings.js";
 import { checkComicsEnabled, comicsEnabled, leaveComicsTab } from "./comics-enabled.js";
 import { openReader } from "../reader/reader.js";
+import { readerChapterPosition } from "../reader/reader-core.js";
 import { COMIC_SETTINGS_SECTIONS, COMIC_HOME_SECTIONS, COMIC_HOOKS, TITLE_SECTIONS } from "./comics-extensions.js";
 import { sourceLanguages } from "./comics-sources.js";
 import { flattenIndex, mergeSourceChapters } from "./comics-chapters.js";
+import { preloadChapterImages } from "./comics-chapter-preload.js";
 import { knownAnimeCatalog, matchLibraryAnime, openComic as openComicTitle } from "./comics-links.js";
 import { comicTitleSubject, comicTitles, loadComicTitle } from "./comics-title-subject.js";
 import { joinedToVideo } from "../../shared/reading/franchise.js";
@@ -156,7 +158,7 @@ function verifyReaderInfo(route, info, target = null) {
 // onPage during its first render, *before* its promise resolves. Keeping its
 // callbacks gated means the old route/page/reader survives metadata and render
 // failures, and no staging progress is persisted.
-async function prepareReader(section, ctx, route, isAllowed, target = null, targetName = null) {
+async function prepareReader(section, ctx, route, isAllowed, target = null, targetName = null, cascadeNotice = false) {
   const data = readerData(route.id, ctx);
   await data.loaded;
   if (!isAllowed()) return null;
@@ -180,16 +182,68 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
   let born = -1;
   const owns = () => mounted && reader === instance && readerGeneration === born
     && readerKey === key && routeIsCurrent(route) && ctx.viewActive?.("comic") !== false;
-  const next = async (nextId, at = null, unit = null, check = () => true) => {
+  // Warm the next chapters only after the new reader's route is committed.
+  // Each candidate must prove the exact chapter AND linked provider identity.
+  // Warmed images are retained by the server's quota-limited disk cache and
+  // the browser's private HTTP cache, not by an unbounded JS blob collection.
+  const preloadNextChapters = async ({ targets = [], count = 0, signal, isCurrent = () => true } = {}) => {
+    const allowed = () => owns() && !signal?.aborted && isCurrent();
+    if (!allowed() || !count) return;
+    // A direct reader URL after app restart may not have a transient
+    // `readerNames` entry. The verified source lookup ties `info.sourceId`
+    // to this exact `ex-` chapter and its linked work.
+    const sourceId = route.read.startsWith("ex-")
+      ? (info.sourceId || (readerNames.get(route.read) || known).sourceId || "") : "local";
+    if (route.read.startsWith("ex-") && !sourceId) return; // never infer a provider from a shared display name
+    const list = await chaptersReady;
+    if (!allowed()) return;
+    await preloadChapterImages({ targets: targets.slice(0, count), signal, isCurrent: allowed,
+      resolve: async (next) => {
+        if (!allowed()) return null;
+        if (next.file) {
+          if (!/^f[0-9a-f]{16}$/.test(next.file)) return null;
+          const metadata = await comicsApi.readerFile(next.file, { workId: route.id });
+          if (!allowed()) return null;
+          verifyReaderInfo({ id: route.id, read: next.file }, metadata);
+          return { readerId: next.file, pages: Number(metadata.pages) || 0 };
+        }
+        if (next.chapter === undefined || next.chapter === null || !sourceId) return null;
+        const at = readerChapterPosition(list, { chapter: next.chapter, volume: next.volume ?? null });
+        if (at.index < 0) return null;
+        const { candidates } = await comicsApi.candidates(route.id, String(next.chapter), next.volume ?? "", langs);
+        if (!allowed()) return null;
+        const candidatesOnSource = (candidates || []).filter((candidate) =>
+          readerIdValid(candidate.readerId) && candidate.sourceId === sourceId
+          && candidate.kind === (route.read.startsWith("ex-") ? "ext" : "local"));
+        for (const candidate of candidatesOnSource) {
+          try {
+            const metadata = await comicsApi.readerFile(candidate.readerId, { workId: route.id, describe: candidate.readerId.startsWith("ex-") });
+            if (!allowed()) return null;
+            verifyReaderInfo({ id: route.id, read: candidate.readerId }, metadata,
+              { chapter: String(next.chapter), volume: next.volume ?? null,
+                ambiguous: list.filter((item) => sameUnit(item.chapter, next.chapter)).length > 1 });
+            return { readerId: candidate.readerId, pages: Number(metadata.pages) || 0 };
+          } catch { /* wrong-volume or unreadable candidate: never prefetch it */ }
+        }
+        return null;
+      },
+      fetchPage: (id, at, aborted) => {
+        const timeout = AbortSignal.timeout(30_000);
+        const combined = aborted && typeof AbortSignal.any === "function" ? AbortSignal.any([aborted, timeout]) : aborted || timeout;
+        return fetch(pageUrl(id, at), { signal: combined, cache: "force-cache", headers: { Accept: "image/*" }, priority: "low" });
+      },
+    });
+  };
+  const next = async (nextId, at = null, unit = null, check = () => true, { cascadeNotice: automatic = false } = {}) => {
     const serial = ++navigationGeneration;
     const valid = () => owns() && navigationGeneration === serial && check();
     if (!readerIdValid(nextId) || nextId === route.read || !valid()) return false;
-    return handoverReader(section, ctx, { id: route.id, read: nextId, page: at }, valid, unit, null, true);
+    return handoverReader(section, ctx, { id: route.id, read: nextId, page: at }, valid, unit, null, true, automatic);
   };
   try {
     instance = await openReader(stage, {
       fileId: route.read, page: route.page, comic: data.comic,
-      chapter: currentChapter, volume: currentVolume,
+      chapter: currentChapter, volume: currentVolume, cascadeNotice,
       chapters: chaptersReady,
       source: known.source || info.source || (route.read.startsWith("f") ? t("Your file") : ""),
       sources: currentChapter !== null || route.read.startsWith("ex-") ? async () => {
@@ -222,7 +276,7 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
           return await handoverReader(section, ctx, { id: route.id, read: nextId, page: at }, valid, unit, null, true);
         } catch (error) { if (valid()) toast(error?.message || t("Cannot open the selected chapter.")); return false; }
       },
-      onChapter: async (chapter, { volume = undefined, isCurrent } = {}) => {
+      onChapter: async (chapter, { volume = undefined, isCurrent, strictSource = false, startAtBeginning = false } = {}) => {
         const serial = ++navigationGeneration;
         const valid = () => owns() && navigationGeneration === serial && (typeof isCurrent !== "function" || isCurrent());
         const list = await chaptersReady;
@@ -232,29 +286,37 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
         if (!valid()) return false;
         if (!Array.isArray(response?.candidates)) throw Error("Chapter sources could not be loaded.");
         const kind = route.read.startsWith("ex-") ? "ext" : "local";
-        const currentSource = (readerNames.get(route.read) || known).source || info.source || "";
+        const currentIdentity = readerNames.get(route.read) || known;
+        const currentSource = currentIdentity.source || info.source || "";
+        const currentSourceId = route.read.startsWith("ex-")
+          ? (info.sourceId || currentIdentity.sourceId || "") : "local";
         const others = response.candidates.filter((entry) => readerIdValid(entry.readerId) && entry.readerId !== route.read
           && entry.kind === (entry.readerId.startsWith("ex-") ? "ext" : "local"));
-        const choices = [
-          ...others.filter((entry) => currentSource && entry.kind === kind && entry.name === currentSource),
+        const sameSource = others.filter((entry) => entry.kind === kind && (currentSourceId
+          ? entry.sourceId === currentSourceId : currentSource && entry.name === currentSource));
+        // A scroll-driven automatic chapter transition must never silently
+        // switch to another provider. Manual Next keeps its fallback choices.
+        const choices = strictSource ? (currentSourceId ? sameSource : []) : [
+          ...sameSource,
           ...others.filter((entry) => entry.kind === kind), ...others,
         ];
         if (!choices.length) throw Error(t("No chosen source has this chapter yet."));
         let lastError = null;
         for (const choice of new Map(choices.map((entry) => [entry.readerId, entry])).values()) {
           if (!valid()) return false;
-          const label = { label: `${data.comic?.title || ""} · ${t("Chapter {number}", { number: unit.chapter })}`, chapter: unit.chapter, volume: unit.volume, source: choice.name || "" };
+          const label = { label: `${data.comic?.title || ""} · ${t("Chapter {number}", { number: unit.chapter })}`, chapter: unit.chapter, volume: unit.volume, source: choice.name || "", sourceId: choice.sourceId || "" };
           try {
             // A candidate's default page=0 means "no explicit position";
             // the reader then resumes an unfinished saved chapter page.
-            const at = Number(choice.page) > 0 ? Number(choice.page) : null;
-            const moved = await handoverReader(section, ctx, { id: route.id, read: choice.readerId, page: at }, valid, unit, label, true);
+            const at = startAtBeginning ? 0 : Number(choice.page) > 0 ? Number(choice.page) : null;
+            const moved = await handoverReader(section, ctx, { id: route.id, read: choice.readerId, page: at }, valid, unit, label, true, strictSource);
             if (moved || !valid()) return moved;
           } catch (error) { lastError = error; }
         }
         if (!valid()) return false;
         throw lastError || Error(t("No chosen source has this chapter yet."));
       },
+      onPreloadChapters: preloadNextChapters,
       api: {
         readerFile: async (fileId) => fileId === route.read ? info : comicsApi.readerFile(fileId, { workId: route.id }),
         // Only a current mounted reader saves normally. A superseded mounted
@@ -272,7 +334,7 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
         readerRoute.page = at;
         history.replaceState(history.state, "", `/comic${comicUrl(route.id, fileId, at)}`);
       },
-      onOpenFile: (fileId) => next(fileId),
+      onOpenFile: (fileId, at = null, options = {}) => next(fileId, at, null, () => true, options),
       onClose: () => {
         if (!owns()) return;
         mounted = false;
@@ -299,7 +361,7 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
   }
 }
 
-async function handoverReader(section, ctx, route, valid, unit = null, targetName = null, replaceUrl = false) {
+async function handoverReader(section, ctx, route, valid, unit = null, targetName = null, replaceUrl = false, cascadeNotice = false) {
   const previous = reader;
   const previousKey = readerKey;
   const previousRoute = readerRoute ? { ...readerRoute } : null;
@@ -310,7 +372,7 @@ async function handoverReader(section, ctx, route, valid, unit = null, targetNam
   let prepared = null;
   let committed = false;
   try {
-    prepared = await prepareReader(section, ctx, route, valid, unit, targetName);
+    prepared = await prepareReader(section, ctx, route, valid, unit, targetName, cascadeNotice);
     if (!prepared || !valid()) { prepared?.instance.close({ keepUrl: true }); return false; }
     section.append(prepared.root);
     reader = prepared.instance;
@@ -348,6 +410,7 @@ async function handoverReader(section, ctx, route, valid, unit = null, targetNam
       history.replaceState(history.state, "", `/comic${routeAt(readerRoute)}`);
     }
     prepared.root.focus({ preventScroll: true });
+    prepared.instance.startPreloading?.();
     return true;
   } catch (error) {
     if (prepared && !committed) prepared.instance.close({ keepUrl: true });

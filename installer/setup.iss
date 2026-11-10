@@ -43,23 +43,6 @@ DisableDirPage=auto
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
-[InstallDelete]
-; Replace the app folders completely, so files dropped from LVL never stay
-; behind after an update. User data and the browser profile live in
-; %LOCALAPPDATA%\LVL, never here. Earlier development folders go too.
-Type: filesandordirs; Name: "{app}\assets"
-Type: filesandordirs; Name: "{app}\backend"
-Type: filesandordirs; Name: "{app}\frontend"
-Type: filesandordirs; Name: "{app}\learning"
-Type: filesandordirs; Name: "{app}\shared"
-Type: filesandordirs; Name: "{app}\node_modules"
-Type: filesandordirs; Name: "{app}\runtime"
-Type: filesandordirs; Name: "{app}\ext-runner"
-Type: filesandordirs; Name: "{app}\.lvl-patch-transaction"
-Type: filesandordirs; Name: "{app}\tests"
-Type: filesandordirs; Name: "{app}\devtools"
-Type: filesandordirs; Name: "{app}\docs"
-
 [UninstallDelete]
 ; Incremental releases may add files that were not in the first installer's
 ; uninstall log. These are managed source-only trees INSIDE {app}; public
@@ -70,13 +53,37 @@ Type: filesandordirs; Name: "{app}\frontend"
 Type: filesandordirs; Name: "{app}\learning"
 Type: filesandordirs; Name: "{app}\shared"
 Type: filesandordirs; Name: "{app}\ext-runner"
+; Files arrive in the verified staging tree, then are moved to these live
+; destinations; Inno's extraction log records their staging locations.
+Type: filesandordirs; Name: "{app}\node_modules"
+Type: filesandordirs; Name: "{app}\runtime"
+Type: filesandordirs; Name: "{app}\tests"
+Type: filesandordirs; Name: "{app}\devtools"
+Type: filesandordirs; Name: "{app}\docs"
+Type: files; Name: "{app}\LVL.exe"
+Type: files; Name: "{app}\installed-app.json"
+Type: files; Name: "{app}\app.js"
+Type: files; Name: "{app}\server.js"
+Type: files; Name: "{app}\index.html"
+Type: files; Name: "{app}\package.json"
+Type: files; Name: "{app}\CHANGELOG.md"
+Type: files; Name: "{app}\THIRD_PARTY_NOTICES.txt"
 Type: filesandordirs; Name: "{app}\.lvl-patch-transaction"
+Type: filesandordirs; Name: "{app}\.lvl-full-transaction"
 Type: filesandordirs; Name: "{localappdata}\LVL\window-theme"
 
 [Files]
 ; build.ps1 constructs this directory from scripts/release-inputs.mjs;
 ; never point this at the repository root or node_modules in the checkout.
-Source: "{#PayloadDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Inno's own extraction is the preparation phase. Only the verified staged
+; tree is later swapped into the live target by the transaction helper.
+Source: "{#PayloadDir}\*"; DestDir: "{code:FullStageDir}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; Inno runs the signed installer payload's Node from its PRIVATE temporary
+; directory so replacing the live/staged runtime cannot lock its executable.
+Source: "{#PayloadDir}\runtime\node.exe"; Flags: dontcopy
+; This exact reviewed helper is also contained by the generic staged payload;
+; the temporary extraction must use those SAME bytes, never mutable SourcePath.
+Source: "{#PayloadDir}\runtime\windows-install-transaction.mjs"; Flags: dontcopy
 
 [Icons]
 Name: "{group}\LVL"; Filename: "{app}\{#LauncherName}"; Parameters: "--port 4273"; WorkingDir: "{app}"
@@ -84,16 +91,47 @@ Name: "{autodesktop}\LVL"; Filename: "{app}\{#LauncherName}"; Parameters: "--por
 
 [Run]
 Filename: "{app}\{#LauncherName}"; Parameters: "--port 4273"; Description: "{cm:LaunchProgram,LVL}"; Flags: nowait postinstall skipifsilent unchecked
-; Every update setup runs silently and passes /LVLRestart=1 (see [Code]).
-; Start the replacement launcher AFTER files are installed and the previous
-; launcher has exited; never open another instance.
-Filename: "{app}\{#LauncherName}"; Parameters: "--background --port 4273"; Flags: nowait runhidden; Check: RestartAfterAutomaticUpgrade
 
 [Code]
 const
   // Same AppId as [Setup]; a per-user install registers it under HKCU.
   InstalledKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{D3C04C52-7A8E-4DC7-9B0A-1EAF4B4A8B8B}_is1';
   SilentUpdateArguments = '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /LVLRestart=1';
+
+var
+  InstallToken: string;
+  TransactionStarted: Boolean;
+  TransactionCommitted: Boolean;
+  FreshInstall: Boolean;
+
+function GetCurrentProcessId(): Integer;
+  external 'GetCurrentProcessId@kernel32.dll stdcall';
+
+function FullStageDir(Param: string): string;
+begin
+  Result := ExpandConstant('{app}\.lvl-full-transaction\pending');
+end;
+
+function Quoted(const Value: string): string;
+begin
+  Result := '"' + Value + '"';
+end;
+
+// The helper is extracted from this very setup and talks only to {app}.
+// No live source or installed launcher is trusted for the transaction.
+function RunInstallHelper(const Operation, More: string): Boolean;
+var
+  NodePath, ScriptPath, Args: string;
+  ExitCode: Integer;
+begin
+  Result := False;
+  NodePath := ExpandConstant('{tmp}\node.exe');
+  ScriptPath := ExpandConstant('{tmp}\windows-install-transaction.mjs');
+  Args := Quoted(ScriptPath) + ' ' + Operation
+    + ' --app-root ' + Quoted(ExpandConstant('{app}')) + More;
+  if Exec(NodePath, Args, '', SW_HIDE, ewWaitUntilTerminated, ExitCode) then
+    Result := ExitCode = 0;
+end;
 
 // Updating an installed LVL never shows the wizard, whoever started this
 // setup (the updater, an older updater that passes no options, or the user):
@@ -106,8 +144,11 @@ begin
   Result := True;
   if WizardSilent() or not RegKeyExists(HKCU, InstalledKey) then
     exit;
-  if Exec(ExpandConstant('{srcexe}'), SilentUpdateArguments, '', SW_SHOWNORMAL, ewNoWait, ResultCode) then
-    Result := False;
+  // Even an Exec failure must terminate this original setup. Otherwise the
+  // ordinary wizard appears while an installed app is being replaced.
+  if not Exec(ExpandConstant('{srcexe}'), SilentUpdateArguments, '', SW_HIDE, ewNoWait, ResultCode) then
+    Log('Could not start the required silent LVL upgrade child.');
+  Result := False;
 end;
 
 function RestartAfterAutomaticUpgrade(): Boolean;
@@ -177,11 +218,82 @@ begin
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): string;
+var
+  TokenFile, Handoff, Command: string;
 begin
-  if StopPublicLauncher() then
-    Result := ''
-  else
-    Result := 'This LVL installation is still running. Quit it and try Setup again.';
+  Result := '';
+  TransactionCommitted := False;
+  TransactionStarted := False;
+  FreshInstall := not FileExists(ExpandConstant('{app}\installed-app.json'));
+  TokenFile := ExpandConstant('{tmp}\lvl-install-token-' + IntToStr(GetCurrentProcessId()) + '.txt');
+  if FileExists(TokenFile) then
+    DeleteFile(TokenFile);
+  try
+    ExtractTemporaryFile('node.exe');
+    ExtractTemporaryFile('windows-install-transaction.mjs');
+  except
+    Result := 'The installation helper could not be extracted. The existing LVL installation was preserved.';
+    exit;
+  end;
+  Handoff := ExpandConstant('{param:LVLInstallToken|}');
+  Command := ' --owner-pid ' + IntToStr(GetCurrentProcessId())
+    + ' --token-output ' + Quoted(TokenFile);
+  if Handoff <> '' then
+    Command := Command + ' --token ' + Quoted(Handoff);
+  if not RunInstallHelper('reserve', Command) then
+  begin
+    Result := 'Another LVL installation owns this target, or installation recovery is required.';
+    exit;
+  end;
+  if not LoadStringFromFile(TokenFile, InstallToken) then
+  begin
+    Result := 'Could not preserve the LVL installation ownership token.';
+    exit;
+  end;
+  InstallToken := Trim(InstallToken);
+  DeleteFile(TokenFile);
+  TransactionStarted := True;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Parameters: string;
+  ExitCode: Integer;
+begin
+  if CurStep <> ssPostInstall then
+    exit;
+  Parameters := ' --version ' + Quoted('{#AppVersion}') + ' --token ' + Quoted(InstallToken);
+  if not RunInstallHelper('prepare-full', Parameters) then
+    RaiseException('LVL staging verification failed. The previous installation is unchanged.');
+  if not StopPublicLauncher() then
+    RaiseException('LVL is still running. Quit it and retry setup.');
+  if not RunInstallHelper('commit-full', Parameters) then
+    RaiseException('LVL could not complete the verified replacement. The previous app was restored where possible.');
+  TransactionCommitted := True;
+  if FreshInstall then
+  begin
+    if not RunInstallHelper('ack-fresh', Parameters) then
+      RaiseException('LVL first-install completion could not be acknowledged.');
+    exit;
+  end;
+  if RestartAfterAutomaticUpgrade() then
+  begin
+    if not Exec(ExpandConstant('{app}\LVL.exe'), '--background --port 4273',
+      ExpandConstant('{app}'), SW_HIDE, ewNoWait, ExitCode) then
+    begin
+      RunInstallHelper('rollback-full', '');
+      TransactionCommitted := False;
+      RaiseException('The upgraded LVL launcher could not start. The prior app was restored.');
+    end;
+  end;
+end;
+
+procedure DeinitializeSetup();
+begin
+  // Failed extraction, staging, or cancelled wizard: release this attempt's
+  // lease without deleting an older/newer controller's transaction.
+  if TransactionStarted and not TransactionCommitted then
+    RunInstallHelper('cancel-full', ' --token ' + Quoted(InstallToken));
 end;
 
 function InitializeUninstall(): Boolean;

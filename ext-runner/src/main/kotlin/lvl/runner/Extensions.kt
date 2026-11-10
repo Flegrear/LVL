@@ -49,7 +49,7 @@ object Extensions {
     private const val METADATA_NSFW = "tachiyomi.extension.nsfw"
     private const val METADATA_CONTENT_WARNING = "tachiyomix.contentWarning"
     // Raise when the APK -> jar conversion changes, so cached jars are made again (3: FrameRepair).
-    private const val CONVERSION_REVISION = 3
+    private const val CONVERSION_REVISION = 4
     const val LIB_VERSION_MIN = 1.3
     const val LIB_VERSION_MAX = 1.6
 
@@ -150,7 +150,7 @@ object Extensions {
         // A repository can re-publish an extension under the same version, and the
         // conversion itself improves (CONVERSION_REVISION): both make a new jar.
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(apk.readBytes())
-        val stamp = digest.take(6).joinToString("") { "%02x".format(it) } + "-r$CONVERSION_REVISION"
+        val stamp = digest.joinToString("") { "%02x".format(it.toInt() and 0xff) } + "-r$CONVERSION_REVISION"
         val jar = File(jarDir, "${manifest.pkg.replace(safe, "_")}-v${manifest.versionName.replace(safe, "_")}-$stamp.jar").toPath()
         if (Files.exists(jar)) return jar
         val classes = Files.createTempFile(jarDir.toPath(), "classes-", ".jar")
@@ -172,35 +172,42 @@ object Extensions {
     fun load(
         apk: File,
         jarDir: File,
+        expectedPackage: String,
+        expectedFingerprint: String,
     ): LoadedExtension {
-        require(apk.isFile) { "The extension file is missing" }
-        val manifest = readManifest(apk)
-        require(EXTENSION_FEATURE in manifest.features) { "This file is not a Mihon/Tachiyomi extension" }
-        val libVersion = manifest.versionName.substringBeforeLast('.').toDoubleOrNull() ?: 0.0
-        require(libVersion in LIB_VERSION_MIN..LIB_VERSION_MAX) {
-            "Extension library $libVersion isn't supported (only $LIB_VERSION_MIN to $LIB_VERSION_MAX)"
+        val admitted = ApkTrust.admit(apk, expectedPackage, expectedFingerprint, jarDir)
+        try {
+            val manifest = readManifest(admitted.apk)
+            if (manifest.pkg != expectedPackage) throw ApkTrustException("The extension manifest package differs from its approved repository identity")
+            require(EXTENSION_FEATURE in manifest.features) { "This file is not a Mihon/Tachiyomi extension" }
+            val libVersion = manifest.versionName.substringBeforeLast('.').toDoubleOrNull() ?: 0.0
+            require(libVersion in LIB_VERSION_MIN..LIB_VERSION_MAX) {
+                "Extension library $libVersion isn't supported (only $LIB_VERSION_MIN to $LIB_VERSION_MAX)"
+            }
+            val classNames =
+                (manifest.meta[METADATA_SOURCE_CLASS] ?: throw IllegalStateException("The extension names no source class"))
+                    .split(';')
+                    .map { it.trim() }
+                    .filter { it.isNotEmpty() }
+                    .map { if (it.startsWith(".")) manifest.pkg + it else it }
+            val jar = jarFor(admitted.apk, manifest, jarDir)
+            val jarPath = jar.toAbsolutePath().toString()
+            loaded[manifest.pkg]?.takeIf { it.jar == jarPath }?.let { return it }
+            val loader = loaders.getOrPut(jarPath) { ChildFirstURLClassLoader(arrayOf(jar.toUri().toURL())) }
+            val sources =
+                classNames.flatMap { className ->
+                    when (val instance = Class.forName(className, false, loader).getDeclaredConstructor().newInstance()) {
+                        is Source -> listOf(instance)
+                        is SourceFactory -> instance.createSources()
+                        else -> throw IllegalStateException("Unknown source class $className")
+                    }
+                }.filterIsInstance<CatalogueSource>()
+            val warning = manifest.meta[METADATA_CONTENT_WARNING]?.toIntOrNull() ?: manifest.meta[METADATA_NSFW]?.toIntOrNull() ?: 0
+            val extension = LoadedExtension(manifest.pkg, manifest.versionName, libVersion, warning != 0, sources, jarPath)
+            loaded[manifest.pkg] = extension
+            return extension
+        } finally {
+            admitted.apk.delete()
         }
-        val classNames =
-            (manifest.meta[METADATA_SOURCE_CLASS] ?: throw IllegalStateException("The extension names no source class"))
-                .split(';')
-                .map { it.trim() }
-                .filter { it.isNotEmpty() }
-                .map { if (it.startsWith(".")) manifest.pkg + it else it }
-        val jar = jarFor(apk, manifest, jarDir)
-        val jarPath = jar.toAbsolutePath().toString()
-        loaded[manifest.pkg]?.takeIf { it.jar == jarPath }?.let { return it }
-        val loader = loaders.getOrPut(jarPath) { ChildFirstURLClassLoader(arrayOf(jar.toUri().toURL())) }
-        val sources =
-            classNames.flatMap { className ->
-                when (val instance = Class.forName(className, false, loader).getDeclaredConstructor().newInstance()) {
-                    is Source -> listOf(instance)
-                    is SourceFactory -> instance.createSources()
-                    else -> throw IllegalStateException("Unknown source class $className")
-                }
-            }.filterIsInstance<CatalogueSource>()
-        val warning = manifest.meta[METADATA_CONTENT_WARNING]?.toIntOrNull() ?: manifest.meta[METADATA_NSFW]?.toIntOrNull() ?: 0
-        val extension = LoadedExtension(manifest.pkg, manifest.versionName, libVersion, warning != 0, sources, jarPath)
-        loaded[manifest.pkg] = extension
-        return extension
     }
 }

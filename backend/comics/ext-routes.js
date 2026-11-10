@@ -161,6 +161,7 @@ export function explainSiteError(source, error) {
 
 // Runs task(source) for a favorite; after a site error, reads the repository
 // again and retries once if the source's address, version or theme changed.
+export const extSearchCacheLifetimeMs = (fresh = false) => fresh ? 0 : 6 * 60 * 60_000;
 export async function withFreshSource(deps, sourceId, task) {
   let source = deps.ext.favorite(sourceId);
   if (!source) throw Object.assign(new Error("This source is no longer a favorite"), { status: 404 });
@@ -421,6 +422,9 @@ export async function handleExtRoutes(req, res, url, deps) {
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
     if (!WORK_ID.test(search[1])) return bad("Invalid comic id");
     const sourceId = String(url.searchParams.get("source") || "");
+    // Verification must prove fresh reachability. A six-hour search cache
+    // should never turn a closed challenge window into false success.
+    const fresh = url.searchParams.get("fresh") === "1";
     if (!SOURCE_ID.test(sourceId) || !ext.favorite(sourceId)) return bad("Not a favorite source", 404);
     // Addresses and versions as the repository has them now.
     await syncFavorites(deps).catch(() => []);
@@ -438,7 +442,7 @@ export async function handleExtRoutes(req, res, url, deps) {
         for (const variant of titleVariants(info.comic)) {
           const key = `ext-search3:${current.cacheKey || current.id}${current.adult ? "|adult" : ""}:${variant.toLowerCase()}`;
           const load = () => engine.search(current, variant, { remote: deps.remote });
-          let result = await deps.cached(key, 6 * 60 * 60_000, load);
+          let result = await deps.cached(key, extSearchCacheLifetimeMs(fresh), load);
           // Nothing found is only remembered for 10 minutes (the site may have been down).
           if (!result.value.length && Date.now() - result.fetchedAt > 10 * 60_000) result = await deps.cached(key, 0, load);
           found = rank(result.value, info.comic);

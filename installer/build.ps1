@@ -2,7 +2,10 @@
 param(
   [switch]$StageOnly,
   [string]$CompilerPath = '',
-  [string]$NodeRuntimePath = ''
+  [string]$NodeRuntimePath = '',
+  [string]$ReviewedCommit = '',
+  [string]$CandidateVersion = '',
+  [switch]$Development
 )
 
 # New public LVL Windows setup. Only build/ and dist/ are written.
@@ -87,8 +90,27 @@ $package = Get-Content -LiteralPath (Join-Path $projectRoot 'package.json') -Raw
 if ($package.name -ne 'lvl' -or $package.version -notmatch '^\d+\.\d+\.\d+$') {
   throw "LVL release builder requires a semantic version; got $($package.name) v$($package.version)."
 }
+if ($Development) {
+  if (-not $StageOnly -or $ReviewedCommit -or $CandidateVersion) {
+    throw 'Development staging requires -Development -StageOnly with no release identity arguments.'
+  }
+  Write-Warning 'Development-only staging: source is mutable and cannot certify a Windows release.'
+} else {
+  if (-not $ReviewedCommit -or -not $CandidateVersion) {
+    throw 'Release packaging requires explicit -ReviewedCommit and -CandidateVersion arguments.'
+  }
+  # Reject dirty or unreviewed installed inputs and lockfile before removing or
+  # writing staging, downloading dependencies or invoking a native compiler.
+  & $node (Join-Path $projectRoot 'scripts\release-provenance.mjs') verify --platform windows --reviewed-commit $ReviewedCommit --version $CandidateVersion
+  if ($LASTEXITCODE -ne 0) { throw 'Windows release source is not equal to its reviewed commit/version.' }
+}
 
 New-Item -ItemType Directory -Path $buildRoot, $cacheRoot -Force | Out-Null
+$sourceReceipt = Join-Path $buildRoot 'source-provenance.json'
+$payloadReceipt = Join-Path $buildRoot 'release-provenance.json'
+foreach ($oldReceipt in @($sourceReceipt, $payloadReceipt)) {
+  if (Test-Path -LiteralPath $oldReceipt -PathType Leaf) { Remove-Item -LiteralPath $oldReceipt -Force }
+}
 if (Test-Path -LiteralPath $payloadRoot) {
   Write-Host 'Replacing generated installer staging directory.'
   Remove-Item -LiteralPath (Assert-Under $payloadRoot $buildRoot) -Recurse -Force
@@ -96,7 +118,10 @@ if (Test-Path -LiteralPath $payloadRoot) {
 New-Item -ItemType Directory -Path $payloadRoot -Force | Out-Null
 
 Write-Host 'Staging reviewed application inputs from positive source allowlist...'
-& $node (Join-Path $PSScriptRoot 'stage.mjs') $payloadRoot
+$sourceArgs = @((Join-Path $PSScriptRoot 'stage.mjs'))
+if (-not $Development) { $sourceArgs += @('--release', '--reviewed-commit', $ReviewedCommit, '--receipt', $sourceReceipt) }
+$sourceArgs += $payloadRoot
+& $node @sourceArgs
 if ($LASTEXITCODE -ne 0) { throw 'Allowlisted source staging failed.' }
 
 # package-lock is required to install exact packages but is not itself bundled.
@@ -158,13 +183,27 @@ $runtimeDir = Join-Path $payloadRoot 'runtime'
 New-Item -ItemType Directory -Path $runtimeDir -Force | Out-Null
 Copy-Item -LiteralPath $nodeCache -Destination (Join-Path $runtimeDir 'node.exe')
 Copy-Item -LiteralPath $licenseCache -Destination (Join-Path $runtimeDir 'LICENSE.txt')
-# The standalone patch helper is NOT part of source asset selection or Git
-# diff patches: it is installed by the one-time bootstrap/full setup.
-$patchHelper = Join-Path $projectRoot 'runtime\update-apply.mjs'
-if (-not (Test-Path -LiteralPath $patchHelper -PathType Leaf)) {
-  throw 'Missing bundled offline patch helper runtime/update-apply.mjs.'
+# Release staging copied both installed helpers from the reviewed commit and
+# compared their bytes to its Git blobs. Never overwrite those staged bytes
+# from the mutable working tree after provenance was established.
+$installedHelpers = @('update-apply.mjs', 'windows-install-transaction.mjs')
+foreach ($helperName in $installedHelpers) {
+  $stagedHelper = Join-Path $runtimeDir $helperName
+  if ($Development) {
+    $developmentSource = Join-Path $projectRoot (Join-Path 'runtime' $helperName)
+    if (-not (Test-Path -LiteralPath $developmentSource -PathType Leaf)) {
+      throw "Missing development runtime helper $helperName"
+    }
+    Copy-Item -LiteralPath $developmentSource -Destination $stagedHelper
+  } else {
+    $sourceInfo = (Get-Content -LiteralPath $sourceReceipt -Raw | ConvertFrom-Json).inputs |
+      Where-Object { $_.path -ceq "runtime/$helperName" }
+    if (@($sourceInfo).Count -ne 1 -or -not (Test-Path -LiteralPath $stagedHelper -PathType Leaf)) {
+      throw "Reviewed runtime helper was not copied into the release payload: $helperName"
+    }
+    Assert-Hash $stagedHelper ([string]$sourceInfo.sha256)
+  }
 }
-Copy-Item -LiteralPath $patchHelper -Destination (Join-Path $runtimeDir 'update-apply.mjs')
 
 # The Comics extension runner, built by ext-runner/build.mjs (the release workflow
 # runs it for full releases): lvl-ext-runner.jar, lib/, a Java runtime made from
@@ -226,10 +265,19 @@ Write-Host 'Generating dependency, Node, FFmpeg and FFprobe license notices...'
 & $node (Join-Path $PSScriptRoot 'notices.mjs') $payloadRoot
 if ($LASTEXITCODE -ne 0) { throw 'Third-party license generation failed.' }
 Write-Host 'Auditing payload and bundled binary executables...'
-& $node (Join-Path $PSScriptRoot 'verify.mjs') $payloadRoot
+$verifyArgs = @((Join-Path $PSScriptRoot 'verify.mjs'), $payloadRoot)
+if (-not $Development) {
+  $verifyArgs += @('--reviewed-commit', $ReviewedCommit, '--candidate-version', $CandidateVersion,
+    '--source-receipt', $sourceReceipt, '--output-receipt', $payloadReceipt)
+}
+& $node @verifyArgs
 if ($LASTEXITCODE -ne 0) { throw 'Installer payload validation failed.' }
 Write-Host "Verified payload: $payloadRoot"
-if ($StageOnly) { Write-Host 'StageOnly: no setup compiled.'; exit 0 }
+if ($StageOnly) {
+  if ($Development) { Write-Host 'Development StageOnly: no release-source proof or setup compiled.' }
+  else { Write-Host "Release StageOnly: reviewed source $ReviewedCommit, no setup compiled." }
+  exit 0
+}
 
 $iscc = Find-InnoSetup $CompilerPath
 New-Item -ItemType Directory -Path $distRoot -Force | Out-Null
@@ -245,6 +293,11 @@ Write-Host "Compiling Windows setup with $iscc"
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed ($LASTEXITCODE)." }
 $setupExe = Join-Path $distRoot 'LVL-Setup.exe'
 if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) { throw "Expected installer missing: $setupExe" }
+& $node (Join-Path $PSScriptRoot 'verify.mjs') $payloadRoot --reviewed-commit $ReviewedCommit --candidate-version $CandidateVersion --recheck-receipt $payloadReceipt
+if ($LASTEXITCODE -ne 0) {
+  Remove-Item -LiteralPath $setupExe -Force
+  throw 'Installer inputs changed after the reviewed release receipt; setup discarded.'
+}
 $setupHash = (Get-FileHash -LiteralPath $setupExe -Algorithm SHA256).Hash.ToLowerInvariant()
 [IO.File]::WriteAllText((Join-Path $distRoot 'LVL-Setup.exe.sha256'),
   "$setupHash *LVL-Setup.exe`n", [Text.UTF8Encoding]::new($false))

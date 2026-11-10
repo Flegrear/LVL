@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# Serialize every supported public release path from initial admission through
+# the final draft verification and publication. GitHub concurrency groups are
+# shared between workflows within this repository.
+concurrency:
+  group: lvl-public-release-serialization
+  cancel-in-progress: false
+
 jobs:
   package:
     runs-on: windows-2022
@@ -40,6 +47,10 @@ jobs:
           } else { throw 'Unsupported Windows build event' }
           git merge-base --is-ancestor HEAD origin/main
           if ($LASTEXITCODE -ne 0) { throw 'Build source must be reviewed on main' }
+          if ($env:GITHUB_EVENT_NAME -ceq 'push') {
+            node scripts/combined-release.mjs windows-admit --version $version
+            if ($LASTEXITCODE -ne 0) { throw 'Windows candidate is stale relative to published legacy or combined releases' }
+          }
           "LVL_WINDOWS_VERSION=$version" >> $env:GITHUB_ENV
           node --version
       - name: Build source patch or select full bootstrap
@@ -52,16 +63,20 @@ jobs:
           $prior = node scripts/combined-release.mjs windows-base --version $version | ConvertFrom-Json
           if ($LASTEXITCODE -ne 0) { throw 'Could not resolve published Windows update baseline' }
           $mode = 'full'
-          if ($version -ne '0.1.1' -and $null -ne $prior) {
+          if ($version -ne '0.1.1' -and $null -eq $prior) {
+            throw 'No published Windows patch baseline; full installer requires explicit native incompatibility'
+          }
+          if ($version -ne '0.1.1') {
             node scripts/build-update.mjs --from $prior.version --from-ref $prior.ref --to $version --out-dir dist
-            if ($LASTEXITCODE -eq 0) { $mode = 'patch' }
-            else { Write-Host 'This change is incompatible with source-only patches; building the full installer fallback.' }
+            $patchExit = $LASTEXITCODE
+            if ($patchExit -eq 0) { $mode = 'patch' }
+            elseif ($patchExit -eq 42) { Write-Host 'Installed native input changed; building the full installer.' }
+            else { throw "Source patch validation failed ($patchExit); refusing fallback and publication" }
           }
           "mode=$mode" >> $env:GITHUB_OUTPUT
           Write-Host "Release $tag mode: $mode"
-          # A rejected source-only patch is an expected full-installer fallback.
-          # PowerShell otherwise propagates Node's nonzero LASTEXITCODE even
-          # after this script successfully selects the full installer.
+          # The builder's dedicated 42 exit status is the sole fallback protocol.
+          # A Git, infrastructure or malformed-source error must fail the job.
           exit 0
       - name: Install Inno Setup for full/bootstrapping releases
         if: steps.update.outputs.mode == 'full'
@@ -80,7 +95,9 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          ./installer/build.ps1
+          # GITHUB_SHA identifies the checked-out, reviewed source commit;
+          # the installer independently checks its staged bytes against it.
+          ./installer/build.ps1 -ReviewedCommit $env:GITHUB_SHA -CandidateVersion $env:LVL_WINDOWS_VERSION
           if ($LASTEXITCODE -ne 0) { throw 'LVL setup build failed' }
           # build.ps1 produces exactly one installer and its matching hash.
           if (-not (Test-Path dist/LVL-Setup.exe) -or -not (Test-Path dist/LVL-Setup.exe.sha256)) {
@@ -129,6 +146,15 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+      - run: npm ci --no-audit --no-fund
       - uses: actions/download-artifact@v4
         with:
           name: lvl-windows-release-review-${{ github.run_id }}-${{ github.run_attempt }}
@@ -143,7 +169,10 @@ jobs:
           $record = Get-Content -LiteralPath build/windows-review/build-evidence.json -Raw | ConvertFrom-Json
           if ($env:GITHUB_REPOSITORY -cne 'Flegrear/LVL' -or $record.sourceCommit -cne $env:GITHUB_SHA -or
               $record.eventName -cne 'push' -or $record.gitRef -cne $env:GITHUB_REF -or $record.version -cne $tag.Substring(1) -or
-              $record.workflowRunId -cne $env:GITHUB_RUN_ID -or $record.workflowAttempt -ne [int]$env:GITHUB_RUN_ATTEMPT) { throw 'Windows artifact identity mismatch' }
+              $record.workflowRunId -cne $env:GITHUB_RUN_ID -or $record.workflowAttempt -ne [int]$env:GITHUB_RUN_ATTEMPT -or
+              $record.mode -cnotin @('patch','full')) { throw 'Windows artifact identity mismatch' }
+          node scripts/combined-release.mjs windows-admit --version $record.version
+          if ($LASTEXITCODE -ne 0) { throw 'Windows candidate is not newer than every published release' }
           $releaseTitle = if ($tag -eq 'v0.1.1') { 'LVL Alpha 0.1.1 — Updater test' } else { "LVL Alpha $tag" }
           $assetName = if ($record.mode -eq 'full') { 'LVL-Setup.exe' } else { "LVL-update-$tag.zip" }
           $expected = @($assetName, "$assetName.sha256")
@@ -156,5 +185,19 @@ jobs:
             if ($record.assetHashes.PSObject.Properties[$name].Value -cne (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'Windows review artifact bytes changed' }
           }
           if ($assets | Where-Object { $_ -match '[\\/]LVL\.exe(?:\.sha256)?$' }) { throw 'LVL.exe is the installed app, not a GitHub release installer' }
-          gh release create $tag @assets --repo '${{ github.repository }}' --verify-tag --title $releaseTitle --generate-notes --latest
-          if ($LASTEXITCODE -ne 0) { throw "GitHub Release upload failed for $tag" }
+          node scripts/release-gates.mjs verify-local --kind windows --version $record.version --mode $record.mode --tag $tag --local-dir build/windows-review/assets
+          if ($LASTEXITCODE -ne 0) { throw 'Windows asset inventory or checksum content is invalid' }
+          gh release create $tag @assets --repo '${{ github.repository }}' --verify-tag --title $releaseTitle --generate-notes --draft --latest=false
+          if ($LASTEXITCODE -ne 0) { throw "GitHub draft upload failed for $tag" }
+          New-Item -ItemType Directory -Path build/windows-draft-verify -Force | Out-Null
+          if (@(Get-ChildItem -LiteralPath build/windows-draft-verify -Force).Count -ne 0) { throw 'Windows draft destination is not empty' }
+          gh release download $tag --repo '${{ github.repository }}' --pattern '*' --dir build/windows-draft-verify
+          if ($LASTEXITCODE -ne 0) { throw 'Could not re-download Windows draft assets' }
+          gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" > build/windows-draft-release.json
+          if ($LASTEXITCODE -ne 0) { throw 'Could not inspect Windows draft REST metadata' }
+          node scripts/release-gates.mjs verify-draft --kind windows --version $record.version --mode $record.mode --tag $tag --local-dir build/windows-review/assets --remote-dir build/windows-draft-verify --release-json build/windows-draft-release.json
+          if ($LASTEXITCODE -ne 0) { throw 'Windows draft bytes, checksums or REST inventory mismatch' }
+          node scripts/combined-release.mjs windows-admit --version $record.version
+          if ($LASTEXITCODE -ne 0) { throw 'Windows version became stale while draft was verified' }
+          gh release edit $tag --repo '${{ github.repository }}' --draft=false --latest
+          if ($LASTEXITCODE -ne 0) { throw 'Verified Windows draft could not be published' }

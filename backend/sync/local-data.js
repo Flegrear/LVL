@@ -45,8 +45,8 @@ export function createLocalData({ appState, db, recs, log = console }) {
   const types = ["video.title", "video.progress", "video.watched", "video.imported-watched", "rating.lvl", "rating.imported", ...COMIC_TYPES];
   const tableExists = (name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
-  function exportLibrary(out) {
-    for (const entry of appState.readSection("library") || []) {
+  function exportLibrary(out, entries = appState.readSection("library") || []) {
+    for (const entry of entries) {
       const libraryId = String(entry?.id || "");
       if (!libraryId || libraryId.length > 600) continue;
       const id = wireId(libraryId);
@@ -89,7 +89,7 @@ export function createLocalData({ appState, db, recs, log = console }) {
   }
 
   // Library changes in one revision-checked write (tried again if a window saved meanwhile).
-  function applyLibrary(changes, done) {
+  function applyLibrary(changes, done, onLibraryApplied) {
     const order = { "video.title": 0, "video.progress": 1, "video.watched": 2, "video.imported-watched": 3 };
     const sorted = [...changes].sort((a, b) => order[a.type] - order[b.type]);
     for (let attempt = 0; attempt < 4; attempt += 1) {
@@ -179,7 +179,8 @@ export function createLocalData({ appState, db, recs, log = console }) {
         }
       }
       if (!appliedNow.length) return;
-      const result = appState.compareAndSwapSection("library", library, expected);
+      const result = appState.compareAndSwapSection("library", library, expected,
+        onLibraryApplied ? (updatedAt) => onLibraryApplied({ library, updatedAt }) : null);
       if (result.ok) { for (const change of appliedNow) done.add(change); return; }
     }
     throw new Error("The Library kept changing while sync applied changes; it tries again on the next sync");
@@ -206,6 +207,13 @@ export function createLocalData({ appState, db, recs, log = console }) {
 
   return {
     types,
+    // Used to detect user edits made after a journaled incoming Library apply,
+    // including removal of an entire title (which has no per-title timestamp).
+    exportLibrarySnapshot(entries = appState.readSection("library") || []) {
+      const out = [];
+      exportLibrary(out, entries);
+      return out;
+    },
     export() {
       const out = [];
       exportLibrary(out);
@@ -215,21 +223,26 @@ export function createLocalData({ appState, db, recs, log = console }) {
     },
     // Applies changes; returns the ones applied (the rest stay pending, or a newer local
     // value is sent on the next export). previous: Map "type id" -> the change before.
-    apply(changes, previous = new Map()) {
+    apply(changes, previous = new Map(), { onLibraryApplied, applyOtherAtomically } = {}) {
       const done = new Set();
       const library = changes.filter((change) => change.type.startsWith("video."));
-      if (library.length) applyLibrary(library, done);
+      if (library.length) applyLibrary(library, done, onLibraryApplied);
       const isRating = (change) => change.type === "rating.lvl" || change.type === "rating.imported";
       const order = (change) => (isRating(change) ? -1 : COMIC_TYPES.indexOf(change.type));
-      for (const change of changes.filter((item) => order(item) !== -1 || isRating(item)).sort((a, b) => order(a) - order(b))) {
-        // A change LVL's own stores refuse stays pending instead of failing the whole sync.
-        try {
-          if (isRating(change)) applyRating(change, previous.get(`${change.type} ${change.id}`), done);
-          else comics.apply(change, done);
-        } catch (error) {
-          log.warn?.(`Sync: ${change.type} ${String(change.id).slice(0, 80)} not applied: ${error.message}`);
+      const other = changes.filter((item) => order(item) !== -1 || isRating(item)).sort((a, b) => order(a) - order(b));
+      const applyOther = () => {
+        for (const change of other) {
+          // A change LVL's own stores refuse stays pending instead of failing the whole sync.
+          try {
+            if (isRating(change)) applyRating(change, previous.get(`${change.type} ${change.id}`), done);
+            else comics.apply(change, done);
+          } catch (error) {
+            log.warn?.(`Sync: ${change.type} ${String(change.id).slice(0, 80)} not applied: ${error.message}`);
+          }
         }
-      }
+      };
+      if (other.length && applyOtherAtomically) applyOtherAtomically(applyOther);
+      else applyOther();
       return done;
     },
     mark() {

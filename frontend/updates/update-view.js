@@ -34,12 +34,16 @@ export function updatePercent(progress) {
 // Android's full APK replacement is the only update that asks for an Android
 // PackageInstaller confirmation. A Windows installer is also called "installer"
 // in the size report, so kind alone is not proof of Android context.
-const androidApkInstall = (report) => report?.autoInstall === false
-  && [report?.availableSize, report?.update?.size, report?.download, report?.update?.progress]
-    .some((item) => item?.kind === "installer");
+const androidApkInstall = (report) => report?.autoInstall !== true && (
+  Boolean(report?.apkInstall?.version)
+  || (report?.autoInstall === false
+    && [report?.availableSize, report?.update?.size, report?.download, report?.update?.progress]
+      .some((item) => item?.kind === "installer")));
 
-const installing = (version, androidApk = false) => ({ phase: "installing", version, title: `Installing LVL ${version}`,
-  detail: androidApk
+const installing = (version, androidApk = false, pendingConfirmation = false) => ({ phase: "installing", version, title: `Installing LVL ${version}`,
+  detail: pendingConfirmation
+    ? "Waiting for you to confirm the installation in Android."
+    : androidApk
     ? "After installation, reopen LVL if the window doesn't reload by itself."
     : "LVL restarts by itself. This window reloads when it's back.",
   progress: { percent: null } });
@@ -85,11 +89,12 @@ export function updateView({ report = null, downSince = null, pending = null, lo
     return { phase: "downloading", version, title: `Downloading LVL ${version}`,
       detail: percent === null ? amount : `${percent}% · ${amount}`, progress: { percent } };
   }
-  if (update.phase === "installing" && version) return installing(version, apkInstall);
+  if (update.phase === "installing" && version) return installing(version, apkInstall, update.pendingConfirmation === true);
   if (update.phase === "failed" && version) return failed(version, installed, update.error || "");
 
   // LVL restarted on the old version after this window saw the install start.
-  if (pending?.active && pending.from && installed === pending.from && now - (Number(pending.at) || 0) > ROLLED_BACK_AFTER_MS)
+  if (pending?.active && pending.from && installed === pending.from && now - (Number(pending.at) || 0) > ROLLED_BACK_AFTER_MS
+      && !(update.phase === "ready" && version && version !== pending.to))
     return failed(pending.to, installed);
 
   if (update.phase === "ready" && version) {

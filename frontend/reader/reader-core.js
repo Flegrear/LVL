@@ -66,6 +66,47 @@ export function readerChapterNeighbours(chapters = [], current = {}) {
     next: index >= 0 && index + 1 < items.length ? at(index + 1) : null };
 }
 
+export const MAX_NEXT_CHAPTER_PRELOAD = 3;
+export function normalizeNextChapterPreload(value, fallback = 2) {
+  const count = Number(value);
+  return Number.isSafeInteger(count) && count >= 0
+    ? Math.min(MAX_NEXT_CHAPTER_PRELOAD, count) : fallback;
+}
+
+export function nextChapterPreloadTargets(chapters = [], current = {}, count = 2) {
+  const { index } = readerChapterPosition(chapters, current);
+  if (index < 0) return [];
+  const targets = [];
+  for (let i = index + 1; i < chapters.length && targets.length < normalizeNextChapterPreload(count); i += 1) {
+    const item = chapters[i];
+    if (readerChapterPosition(chapters, { chapter: item?.chapter, volume: item?.volume ?? null }).index !== i) break;
+    targets.push(readerChapterIdentity(item.chapter, item.volume));
+  }
+  return targets;
+}
+
+// A continued gesture at the bottom of a long strip advances the chapter.
+// Native touch scrolling does not fire wheel events, and scroll events alone
+// may be caused by layout/restore. Require additional downward reading intent.
+export function createReaderChapterAdvanceGate({ now = Date.now, wheelHoldMs = 450, touchDistance = 48 } = {}) {
+  let wheelSince = null;
+  let touchTravel = 0;
+  return {
+    wheel(atBottom, deltaY) {
+      if (!atBottom || deltaY <= 0) { wheelSince = null; return false; }
+      if (wheelSince === null) wheelSince = now();
+      return now() - wheelSince >= wheelHoldMs;
+    },
+    touchStart() { touchTravel = 0; },
+    touchMove(atBottom, dy) {
+      if (!atBottom || dy >= 0) { touchTravel = 0; return false; }
+      touchTravel += -dy;
+      return touchTravel >= touchDistance;
+    },
+    reset() { wheelSince = null; touchTravel = 0; },
+  };
+}
+
 // MangaFox adds a credit strip to the bottom of each page file: on a white band,
 // 2–6 centered lines of 13 px text, 6 px apart, 6 px from the bottom and 10 px
 // below the page (measured on its files: 3 lines add 67 px, 4 lines 86 px, at
@@ -270,7 +311,20 @@ export function normalizeComfort(value = {}) {
     ? Math.max(0, Math.min(100, Math.round(Number(n)))) : fallback;
   const brightness = value?.brightness !== undefined && value?.brightness !== null
     ? clamp(value.brightness, 100) : 100 - clamp(value?.dim, 0);
-  return { brightness, theme: THEMES.includes(value?.theme) ? value.theme : "black" };
+  // A negative temperature cools the page, positive warms it. Older saved
+  // warmth values used 0..100 and retain their meaning when first loaded.
+  const savedTemperature = value?.temperature ?? value?.warm ?? 0;
+  const temperature = Number.isFinite(Number(savedTemperature))
+    ? Math.max(-100, Math.min(100, Math.round(Number(savedTemperature)))) : 0;
+  return { brightness, theme: THEMES.includes(value?.theme) ? value.theme : "black", temperature };
+}
+
+export function colorTemperatureFilter(value = 0) {
+  const amount = Number.isFinite(Number(value)) ? Math.min(1, Math.abs(Number(value)) / 100) : 0;
+  if (!amount) return "";
+  const tint = Number((amount * 0.34).toFixed(3));
+  const saturation = Number((1 + amount * 0.18).toFixed(3));
+  return `sepia(${tint}) saturate(${saturation}) hue-rotate(${Number(value) < 0 ? 165 : -18}deg)`;
 }
 
 export function comfortFilter(value = {}) {
@@ -300,7 +354,7 @@ export function createReaderUnitTransition({
   return {
     get busy() { return pending !== null; },
     get target() { return pending; },
-    async open(targetId) {
+    async open(targetId, options = {}) {
       if (closed || !isCurrentReader()) return false;
       const from = currentUnit(), work = getWorkId();
       if (!validId(targetId) || targetId === from || typeof work !== "string" || !work)
@@ -316,9 +370,11 @@ export function createReaderUnitTransition({
         if (!info || info.workId !== work || info.file?.id !== targetId
             || !(Number.isSafeInteger(Number(info.pages)) && Number(info.pages) > 0))
           return fail(new Error("This chapter is not ready or no longer belongs to this series."), generation);
-        const moved = await navigate(targetId, info, { isCurrent: () =>
-          generation === sequence && !closed && isCurrentReader()
-          && currentUnit() === from && getWorkId() === work });
+        const moved = await navigate(targetId, info, {
+          ...options,
+          isCurrent: () => generation === sequence && !closed && isCurrentReader()
+            && currentUnit() === from && getWorkId() === work,
+        });
         if (generation !== sequence || closed || !isCurrentReader()) return false;
         if (moved === false) return fail(new Error("The selected chapter could not be opened."), generation);
         pending = null;

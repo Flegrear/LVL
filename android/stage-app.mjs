@@ -24,7 +24,10 @@ import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
 import { isSetupSourceFile } from "../scripts/release-inputs.mjs";
-import { checkNativeSources, readAndroidVersion, stampAndroidRuntime } from "./tools/release-check.mjs";
+import { verifyReviewedInputs, readVersionIdentity, hashFile, listOrdinaryFiles,
+  sha256Bytes } from "../scripts/release-provenance.mjs";
+import { checkNativeSources, readAndroidVersion, stampAndroidRuntime,
+  verifyPinnedExtensionSource } from "./tools/release-check.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const STAGE = path.join(ROOT, "build", "android-stage");
@@ -43,6 +46,22 @@ const NATIVE_SOURCES = [
 ];
 const SOURCE_RECIPES = ["Dockerfile", "build-node.sh", "build-ffmpeg.sh", "docker-build.ps1"];
 const nativeSha256 = (buffer) => crypto.createHash("sha256").update(buffer).digest("hex");
+
+// ZIP timestamps and traversal order otherwise depend on the local filesystem.
+// Android's extracted runtime is byte-for-byte reproducible for identical
+// staged inputs, including its post-install adaptations and npm dependencies.
+export function createDeterministicAndroidAppZip(appDir, destination) {
+  const zip = new AdmZip();
+  const fixedTime = new Date(2000, 0, 1);
+  for (const entry of listOrdinaryFiles(appDir)) {
+    const bytes = fs.readFileSync(path.join(appDir, entry.path));
+    if (sha256Bytes(bytes) !== entry.sha256) throw new Error(`Android app changed while archiving: ${entry.path}`);
+    zip.addFile(entry.path, bytes, '', 0o644);
+    zip.getEntry(entry.path).header.time = fixedTime;
+  }
+  zip.writeZip(destination);
+  return hashFile(destination);
+}
 
 export function writeAndroidReleaseNotes(appDir, { version, releaseNotes, date = new Date().toISOString().slice(0, 10) }) {
   if (releaseNotes === undefined) return;
@@ -300,6 +319,10 @@ const abis = argv.flatMap((arg, i) => (arg === "--abi" && argv[i + 1] ? [argv[i 
 if (!abis.length) abis.push("x86_64");
 const skipNpm = argv.includes("--skip-npm");
 const release = argv.includes("--release");
+const reviewedCommitArgs = argv.flatMap((arg, i) => arg === '--reviewed-commit' ? [argv[i + 1]] : []);
+const candidateVersionArgs = argv.flatMap((arg, i) => arg === '--candidate-version' ? [argv[i + 1]] : []);
+const reviewedCommit = reviewedCommitArgs[0] || null;
+const candidateVersion = candidateVersionArgs[0] || null;
 const androidVersion = readAndroidVersion();
 const desktopVersion = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf8")).version;
 if (desktopVersion !== androidVersion.desktopSourceVersion) {
@@ -317,6 +340,15 @@ if (abis.some((abi) => !["x86_64", "arm64-v8a"].includes(abi)) || new Set(abis).
 if (release && (abis.length !== 2 || !abis.includes("x86_64") || !abis.includes("arm64-v8a") || skipNpm || appRootArg || argv.includes("--version"))) {
   throw new Error("Release staging requires both ABIs, fresh dependencies and the current checkout");
 }
+if (reviewedCommitArgs.length > 1 || candidateVersionArgs.length > 1 ||
+    (release && (!reviewedCommit || !candidateVersion || candidateVersion !== androidVersion.version)) ||
+    (!release && (reviewedCommit || candidateVersion))) {
+  throw new Error('Android release requires explicit reviewed commit and matching candidate version; development mode cannot claim release provenance');
+}
+// Fail before fetch, npm, Gradle or any stage deletion. Android has its own
+// release version, but its desktop source and lockfile stay in sync with each other.
+const sourceProof = release ? verifyReviewedInputs({ root: ROOT, reviewedCommit, platform: 'android' }) : null;
+if (release) readVersionIdentity(ROOT, desktopVersion, 'android');
 
 const log = (...parts) => console.log("[stage]", ...parts);
 const inside = (dir, target) => path.resolve(target).startsWith(path.resolve(dir) + path.sep);
@@ -324,20 +356,29 @@ function removeInStage(target) {
   if (!inside(STAGE, target)) throw new Error(`Refusing to remove outside the stage folder: ${target}`);
   fs.rmSync(target, { recursive: true, force: true });
 }
+// A signed release always starts with fresh asset output. Otherwise Gradle
+// could ship a stale loose asset from an earlier stage alongside the newly
+// inventoried app ZIP; an unsuccessful development restage also invalidates
+// any earlier signed-release proof.
+if (release) removeInStage(ASSETS);
+else removeInStage(path.join(ASSETS, 'lvl-stage-provenance.json'));
 
 // 0. The Comics extension API the APK compiles (android/app/build.gradle.kts) comes from
 // the pinned Suwayomi sources, fetched by the extension runner's own script.
-if (!fs.existsSync(path.join(ROOT, "ext-runner", ".vendor", "src", "main", "java", "eu", "kanade", "tachiyomi"))) {
+if (release || !fs.existsSync(path.join(ROOT, "ext-runner", ".vendor", "src", "main", "java", "eu", "kanade", "tachiyomi"))) {
   log("fetching the extension API sources (ext-runner/fetch.mjs)");
   const fetched = spawnSync(process.execPath, [path.join(ROOT, "ext-runner", "fetch.mjs")], { cwd: ROOT, stdio: "inherit" });
   if (fetched.status !== 0) throw new Error(`ext-runner/fetch.mjs failed (exit ${fetched.status})`);
 }
+const pinnedExtension = release ? verifyPinnedExtensionSource(ROOT) : null;
 
-// 1. App files: tracked and new (not ignored) files in the working tree, so a development
-// build has what is being worked on; a release build stages a clean checkout of its tag.
-const listed = execFileSync("git", ["-C", APP_ROOT, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { encoding: "utf8" })
-  .split("\0").filter(Boolean);
-const appFiles = [...new Set(listed)].filter((rel) => isSetupSourceFile(rel) && fs.existsSync(path.join(APP_ROOT, rel))).sort();
+// Development keeps its mutable tracked/new source behavior. A release uses
+// the reviewed commit's exact file set and checks every copied byte.
+const listed = sourceProof ? sourceProof.appFiles : execFileSync("git",
+  ["-C", APP_ROOT, "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { encoding: "utf8" })
+    .split("\0").filter(Boolean);
+const appFiles = sourceProof ? [...sourceProof.appFiles] :
+  [...new Set(listed)].filter((rel) => isSetupSourceFile(rel) && fs.existsSync(path.join(APP_ROOT, rel))).sort();
 if (APP_ROOT !== ROOT) log(`TEST BUILD: LVL's files from ${APP_ROOT}`);
 if (!skipNpm) removeInStage(APP);
 fs.mkdirSync(APP, { recursive: true });
@@ -350,15 +391,26 @@ for (const rel of [...appFiles, "package-lock.json"]) {
   const to = path.join(APP, rel);
   fs.mkdirSync(path.dirname(to), { recursive: true });
   fs.copyFileSync(path.join(APP_ROOT, rel), to);
+  if (sourceProof && hashFile(to) !== sourceProof.inputs.find(entry => entry.path === rel)?.sha256) {
+    throw new Error(`Staged Android source changed during copying: ${rel}`);
+  }
 }
 // Android-only start-up adjustments, loaded before server.js (see the file's comment).
 fs.copyFileSync(path.join(ROOT, "android", "server-preload.cjs"), path.join(APP, "android-preload.cjs"));
+if (sourceProof && hashFile(path.join(APP, "android-preload.cjs")) !==
+    sourceProof.inputs.find(entry => entry.path === 'android/server-preload.cjs')?.sha256) {
+  throw new Error('Android preload changed during staging');
+}
 // In-app updates: the app runs android/update-apply.mjs, which uses the installer's release
 // path rules (runtime/update-apply.mjs). Patches never contain android/ or runtime/ files,
 // so these change only with a new APK.
-for (const rel of ["android/update-apply.mjs", "runtime/update-apply.mjs"]) {
+for (const rel of ["android/update-apply.mjs", "runtime/update-apply.mjs",
+  "runtime/windows-install-transaction.mjs"]) {
   fs.mkdirSync(path.dirname(path.join(APP, rel)), { recursive: true });
   fs.copyFileSync(path.join(ROOT, rel), path.join(APP, rel));
+  if (sourceProof && hashFile(path.join(APP, rel)) !== sourceProof.inputs.find(entry => entry.path === rel)?.sha256) {
+    throw new Error(`Android runtime adaptation changed during staging: ${rel}`);
+  }
 }
 log(`${appFiles.length} app files`);
 
@@ -417,10 +469,7 @@ if (testVersion) log(`TEST BUILD: staged as version ${testVersion}`);
 else log(`ANDROID BUILD: ${version} (APK versionCode ${androidVersion.versionCode}; desktop sources ${desktopVersion})`);
 fs.mkdirSync(ASSETS, { recursive: true });
 const zipPath = path.join(ASSETS, "lvl-app.zip");
-const zip = new AdmZip();
-zip.addLocalFolder(APP);
-zip.writeZip(zipPath);
-const sha256 = crypto.createHash("sha256").update(fs.readFileSync(zipPath)).digest("hex");
+const sha256 = createDeterministicAndroidAppZip(APP, zipPath);
 fs.writeFileSync(path.join(ASSETS, "lvl-app.json"), JSON.stringify({
   version, versionCode: testVersion ? null : androidVersion.versionCode,
   runtimeGeneration: androidVersion.runtimeGeneration,
@@ -454,9 +503,32 @@ removeInStage(path.join(ASSETS, "lvl-native-source"));
 removeInStage(path.join(ASSETS, "lvl-native-licenses"));
 if (release) {
   checkNativeSources(NATIVE);
-  const sourceRef = execFileSync("git", ["rev-parse", "--verify", "HEAD^{commit}"], { cwd: ROOT, encoding: "utf8", windowsHide: true }).trim();
-  const nativeDistribution = await stageNativeReleaseAssets({ sourceRef });
+  const nativeDistribution = await stageNativeReleaseAssets({ sourceRef: sourceProof.reviewedCommit });
   log(`native source/licenses embedded in APK assets: ${nativeDistribution.bytes} bytes`);
+  // Capture all transformed app files, production npm dependencies, pinned
+  // native payloads and release-only generated sources. These hashes are
+  // checked independently from the original reviewed Git blobs at preflight.
+  const afterStage = verifyReviewedInputs({ root: ROOT, reviewedCommit, platform: 'android' });
+  if (JSON.stringify(afterStage.inputs) !== JSON.stringify(sourceProof.inputs)) {
+    throw new Error('Android release sources changed while generating the payload');
+  }
+  const receipt = {
+    schemaVersion: 1, mode: 'release', platform: 'android',
+    reviewedCommit: sourceProof.reviewedCommit, candidateVersion,
+    desktopSourceVersion: desktopVersion, sourceInputs: sourceProof.inputs,
+    suwayomiCommit: pinnedExtension.commit, generatedExtensionApi: pinnedExtension.inventory,
+    app: listOrdinaryFiles(APP), jniLibs: listOrdinaryFiles(JNILIBS),
+    nativeAssets: listOrdinaryFiles(ASSETS)
+      .filter(entry => !['lvl-app.zip', 'lvl-app.json', 'lvl-stage-provenance.json'].includes(entry.path)),
+  };
+  const bytes = Buffer.from(JSON.stringify(receipt, null, 2) + '\n');
+  fs.writeFileSync(path.join(ASSETS, 'lvl-stage-provenance.json'), bytes, { flag: 'wx' });
+  const manifestFile = path.join(ASSETS, 'lvl-app.json');
+  const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  manifest.reviewedCommit = sourceProof.reviewedCommit;
+  manifest.releaseProvenanceSha256 = sha256Bytes(bytes);
+  fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
+  log(`Release provenance: ${sourceProof.reviewedCommit}, ${receipt.app.length} generated app files`);
 }
 }
 

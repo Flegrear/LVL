@@ -54,6 +54,19 @@ if (token) {
   const childProcess = require("node:child_process");
   const NAME = "lvl_access";
   const expected = Buffer.from(token);
+  // A readiness challenge must reach the real /api/health handler *before*
+  // the native shell has trusted a listener or sent it any access token.
+  // Everything else, including ordinary health and upgrades, still requires
+  // the bearer. No challenge, response or private key is copied to logs.
+  const childSecret = String(process.env.LVL_ANDROID_CHILD_SECRET || "");
+  const hasChildProofKey = /^[A-Za-z0-9_-]{43}$/.test(childSecret) &&
+    Buffer.from(childSecret, "base64url").length === 32;
+  const proofChallenge = (req) =>
+    hasChildProofKey &&
+    req?.method === "GET" &&
+    req?.url === "/api/health" &&
+    typeof req.headers?.["x-lvl-android-challenge"] === "string" &&
+    /^[A-Za-z0-9_-]{32,128}$/.test(req.headers["x-lvl-android-challenge"]);
   const same = (value) => {
     const given = Buffer.from(String(value || ""));
     return given.length === expected.length && crypto.timingSafeEqual(given, expected);
@@ -65,7 +78,7 @@ if (token) {
   };
   const emit = http.Server.prototype.emit;
   http.Server.prototype.emit = function emitWithAccessKey(event, req, res) {
-    if (event === "request" && !allowed(req)) {
+    if (event === "request" && !proofChallenge(req) && !allowed(req)) {
       res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "no-store" });
       res.end("Only the LVL app can use this server");
       return true;

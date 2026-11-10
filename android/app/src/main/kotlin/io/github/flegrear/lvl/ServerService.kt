@@ -26,6 +26,9 @@ import kotlin.concurrent.thread
  * the only place an app may run its own programs.
  */
 class ServerService : Service(), AppUpdater.Server {
+    /** Identity-bound handle for one Node process; UI references this exact child type. */
+    class Child(val process: Process, val identity: ServerIdentity, val accessToken: String)
+
     companion object {
         const val PORT = 4273
         private const val CHANNEL = "server"
@@ -39,6 +42,12 @@ class ServerService : Service(), AppUpdater.Server {
         private val lines = ArrayDeque<String>()
         private val readinessLock = Object()
         private var readinessSerial = 0L
+        @Volatile private var activeChild: Child? = null
+
+        fun currentChild(): Child? = activeChild?.takeIf { isCurrentChild(it) }
+
+        fun isCurrentChild(child: Child?): Boolean =
+            child != null && activeChild === child && child.process.isAlive
 
         private fun startup(event: String) {
             Log.i("LVL-Startup", "event=$event t_ms=${SystemClock.elapsedRealtime()}")
@@ -61,13 +70,10 @@ class ServerService : Service(), AppUpdater.Server {
 
         fun logTail(count: Int = 40): String = synchronized(lines) { lines.takeLast(count).joinToString("\n") }
 
-        /**
-         * The key LVL's server asks for on every request (android-preload.cjs): new for each
-         * launch, known only to this app; the WebView gets it as an HttpOnly cookie.
-         */
-        val accessToken: String by lazy {
+        /** A fresh request token per Node generation; dead children cannot reuse it. */
+        private fun newAccessToken(): String {
             val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
-            Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
+            return Base64.encodeToString(bytes, Base64.URL_SAFE or Base64.NO_WRAP or Base64.NO_PADDING)
         }
 
         fun start(context: Context) {
@@ -105,6 +111,7 @@ class ServerService : Service(), AppUpdater.Server {
     }
 
     override fun onDestroy() {
+        synchronized(lifecycle) { activeChild = null }
         process?.destroy()
         runCatching { extensionHost.stop() }
         runCatching { updater.stop() }
@@ -127,6 +134,8 @@ class ServerService : Service(), AppUpdater.Server {
     // asked harder only if it doesn't.
     private fun stopServer(): Boolean {
         val (current, worker) = synchronized(lifecycle) { process to serverThread }
+        synchronized(lifecycle) { if (activeChild?.process === current) activeChild = null }
+        signalReadiness()
         if (current != null) {
             runCatching { current.outputStream.close() }
             if (!current.waitFor(15, TimeUnit.SECONDS)) {
@@ -196,10 +205,60 @@ class ServerService : Service(), AppUpdater.Server {
         return child.exitValue() to synchronized(output) { output.toString() }
     }
 
+    private fun confirmWhenStable(child: Child) {
+        thread(name = "lvl-authenticated-health", isDaemon = true) {
+            val readiness = StartupReadiness()
+            // Startup on slower phones may take time. The deadline is bounded
+            // like the Activity startup wait; confirmation still needs three
+            // consecutive valid proofs over at least three monotonic seconds.
+            val healthDeadline = SystemClock.elapsedRealtime() + 180_000L
+            while (isCurrentChild(child)) {
+                val authenticated = runCatching {
+                    child.identity.probe(PORT)
+                }.getOrDefault(false)
+                val stable = readiness.observe(
+                    SystemClock.elapsedRealtime(), authenticated, isCurrentChild(child)
+                )
+                if (stable) {
+                    synchronized(lifecycle) {
+                        // A stopped/replaced generation cannot retire a newer backup.
+                        if (isCurrentChild(child) && !replacing) {
+                            AppFiles.confirmUpdate(this)
+                            updater.onServerStarted()
+                            state = "Server running"
+                        }
+                    }
+                    signalReadiness()
+                    return@thread
+                }
+                if (SystemClock.elapsedRealtime() >= healthDeadline) {
+                    synchronized(lifecycle) {
+                        if (isCurrentChild(child) && !replacing) {
+                            state = "The server failed authenticated health checks"
+                            // Leaving the child alive indefinitely would strand app.old
+                            // after an invalid banner. Its worker performs rollback only
+                            // once this exact child exits.
+                            child.process.destroy()
+                        }
+                    }
+                    signalReadiness()
+                    if (child.process.isAlive && !child.process.waitFor(2, TimeUnit.SECONDS)) {
+                        synchronized(lifecycle) {
+                            if (isCurrentChild(child) && !replacing) child.process.destroyForcibly()
+                        }
+                    }
+                    return@thread
+                }
+                try { Thread.sleep(450) } catch (_: InterruptedException) { return@thread }
+            }
+        }
+    }
+
     private fun runServer() {
         var relaunch = false
         var listening = false
         var ownedProcess: Process? = null
+        var ownedChild: Child? = null
         var terminalState: String? = null
         startup("server_run_begin")
         try {
@@ -228,6 +287,8 @@ class ServerService : Service(), AppUpdater.Server {
             } else emptyList()
             val builder = ProcessBuilder(listOf(node.path) + debugArgs + listOf("--require", "./android-preload.cjs", "server.js"))
                 .directory(appDir).redirectErrorStream(true)
+            val identity = ServerIdentity.create()
+            val childAccessToken = newAccessToken()
             // Comics extensions run in this app; the server reaches them through this socket.
             val hostSocket = runCatching { extensionHost.start() }
                 .onFailure { Log.e("LVL-Server", "The Comics extension host didn't start", it) }
@@ -242,7 +303,8 @@ class ServerService : Service(), AppUpdater.Server {
                     put("LANGUAGE_VIDEO_LEARNER_LAUNCHER", "1")
                     put("LANGUAGE_VIDEO_LEARNER_UPDATE_BRIDGE", it)
                 }
-                put("LVL_ACCESS_TOKEN", accessToken)
+                put("LVL_ACCESS_TOKEN", childAccessToken)
+                put("LVL_ANDROID_CHILD_SECRET", identity.childEnvironmentKey)
                 put("PORT", PORT.toString())
                 put("LANGUAGE_VIDEO_LEARNER_DATA_ROOT", dataDir.path)
                 put("TMPDIR", tmpDir.path)
@@ -253,12 +315,19 @@ class ServerService : Service(), AppUpdater.Server {
             }
             val started = builder.start()
             ownedProcess = started
+            val child = Child(started, identity, childAccessToken)
+            ownedChild = child
             synchronized(lifecycle) {
                 process = started
+                activeChild = child
                 running = true
             }
             startup("node_spawned")
-            state = "Server running"
+            state = "Waiting for authenticated LVL health…"
+            signalReadiness()
+            // The banner is informational. Authentication controls both update
+            // confirmation and readiness even when the banner is late or absent.
+            confirmWhenStable(child)
             logFile.bufferedWriter().use { log ->
                 started.inputStream.bufferedReader().forEachLine { line ->
                     synchronized(lines) {
@@ -272,15 +341,14 @@ class ServerService : Service(), AppUpdater.Server {
                         listening = true
                         startup("server_listening")
                         signalReadiness()
-                        // A swapped-in update started: the previous version isn't needed any more.
-                        AppFiles.confirmUpdate(this)
-                        updater.onServerStarted()
+                        // A banner cannot retire app.old; the authenticated
+                        // stability watcher already owns that decision.
                     }
                 }
             }
             val code = started.waitFor()
-            // An update that doesn't start goes back to the version before it.
-            if (!listening) relaunch = restoreFailedUpdate()
+            // An early banner followed by a crash is also a failed update.
+            if (AppFiles.updatePending(this)) relaunch = restoreFailedUpdate()
             if (!relaunch) terminalState = "The server stopped (exit $code)"
         } catch (error: Throwable) {
             Log.e("LVL-Server", "start failed", error)
@@ -303,10 +371,11 @@ class ServerService : Service(), AppUpdater.Server {
             }
             // ProcessBuilder failures and malformed staged assets also need rollback,
             // but only after the failed child has actually exited.
-            if (!listening) relaunch = restoreFailedUpdate()
+            if (AppFiles.updatePending(this)) relaunch = restoreFailedUpdate()
             if (!relaunch) terminalState = "The server couldn't start: ${error.message}"
         } finally {
             synchronized(lifecycle) {
+                if (activeChild === ownedChild) activeChild = null
                 if (serverThread === Thread.currentThread()) {
                     // An older worker may never erase a newer worker's process handle.
                     if (process === ownedProcess && ownedProcess?.isAlive != true) process = null

@@ -6,17 +6,20 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { sniffImage } from "../reader/pages.js";
 import { MANGADEX_API } from "./mangadex.js";
+import { discardResponseBody, readBoundedResponse } from "./response-body.js";
 import { normalizeUnitNumber } from "../../shared/reading/units.js";
 
 const MAX_IMAGE = 25 * 1024 * 1024;
 
 async function fetchImage(url, { headers = {}, fetchImpl = globalThis.fetch } = {}) {
-  const response = await fetchImpl(url, { headers, signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw Object.assign(new Error(`Image answered HTTP ${response.status}`), { status: 502 });
-  const length = Number(response.headers?.get?.("content-length")) || 0;
-  if (length > MAX_IMAGE) throw new Error("Image is too large");
-  const buffer = Buffer.from(await response.arrayBuffer());
-  if (buffer.length > MAX_IMAGE) throw new Error("Image is too large");
+  const controller = new AbortController();
+  const response = await fetchImpl(url, { headers,
+    signal: AbortSignal.any([AbortSignal.timeout(30_000), controller.signal]) });
+  if (!response.ok) {
+    await discardResponseBody(response, () => controller.abort());
+    throw Object.assign(new Error(`Image answered HTTP ${response.status}`), { status: 502 });
+  }
+  const buffer = await readBoundedResponse(response, MAX_IMAGE, "Image is too large", () => controller.abort());
   const type = sniffImage(buffer);
   if (!type) throw new Error("Not an image");
   return { buffer, type };

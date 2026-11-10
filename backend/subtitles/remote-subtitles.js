@@ -1,9 +1,9 @@
 // Subtitle files from the web: provider keys, safe download addresses and the downloads kept for a while.
 import crypto from "node:crypto";
-import dns from "node:dns/promises";
-import net from "node:net";
 import { remoteSubtitleDownloads } from "../../server.js";
 import { isPrivateOrReservedIp } from "../app/http-helpers.js";
+import { createPinnedFetch } from "../network/pinned-fetch.js";
+import { isPublicAddress } from "../comics/remote-fetch.js";
 import { normalizeSubtitleLanguage } from "./subtitle-search.js";
 
 export function getSubdlApiKey(req, body = {}) {
@@ -45,35 +45,39 @@ function parseRemoteSubtitleUrl(value) {
   return parsed;
 }
 
-async function assertPublicRemoteSubtitleTarget(url) {
+function assertPublicRemoteSubtitleTarget(url) {
   const parsed = parseRemoteSubtitleUrl(url);
   if (!parsed) throw Object.assign(new Error("Subtitle provider returned an unsafe download URL"), { statusCode: 502 });
-  const hostname = parsed.hostname.replace(/^\[|\]$/g, "");
-  if (net.isIP(hostname)) return parsed;
-  let addresses;
-  try {
-    addresses = await dns.lookup(hostname, { all: true, verbatim: true });
-  } catch {
-    throw Object.assign(new Error("Subtitle download host could not be resolved"), { statusCode: 502 });
-  }
-  if (!addresses.length || addresses.some((record) => isPrivateOrReservedIp(record.address))) {
-    throw Object.assign(new Error("Subtitle download host resolved to a private or reserved address"), { statusCode: 502 });
-  }
+  // The actual HTTP socket uses safeLookup; no separate DNS precheck can
+  // authorize a subsequent connection to a different DNS answer.
   return parsed;
 }
 
-export async function fetchRemoteSubtitleDownload(remote) {
-  const original = await assertPublicRemoteSubtitleTarget(remote.url);
+const pinnedSubtitleFetch = createPinnedFetch({
+  // Subtitle downloads keep their existing stricter reserved-range policy.
+  // The same predicate runs at each real socket lookup, including redirects.
+  isAllowedAddress: (address) => isPublicAddress(address) && !isPrivateOrReservedIp(address),
+});
+
+export async function fetchRemoteSubtitleDownload(remote, { fetchImpl = pinnedSubtitleFetch } = {}) {
+  const original = assertPublicRemoteSubtitleTarget(remote.url);
   const originalOrigin = original.origin;
   let current = original;
   const signal = AbortSignal.timeout(15_000);
   for (let redirects = 0; redirects <= 3; redirects += 1) {
-    current = await assertPublicRemoteSubtitleTarget(current);
-    const response = await fetch(current, {
-      headers: current.origin === originalOrigin ? remote.headers : {},
-      redirect: "manual",
-      signal,
-    });
+    current = assertPublicRemoteSubtitleTarget(current);
+    let response;
+    try {
+      response = await fetchImpl(current, {
+        headers: current.origin === originalOrigin ? remote.headers : {},
+        redirect: "manual",
+        signal,
+      });
+    } catch (error) {
+      if (error?.code === "EPRIVATE" || error?.status === 400)
+        throw Object.assign(new Error("Subtitle download host resolved to a private or reserved address"), { statusCode: 502, cause: error });
+      throw error;
+    }
     if (![301, 302, 303, 307, 308].includes(response.status)) return { response, finalUrl: current };
     const location = response.headers.get("location");
     if (!location) return { response, finalUrl: current };

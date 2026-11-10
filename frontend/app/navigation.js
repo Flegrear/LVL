@@ -13,6 +13,7 @@ import { clearManualFloating, updateFloatingPlayback } from "../player/floating-
 import {
   playLibraryEpisode, stopPlaybackIfHiddenAfterNavigation, watchPendingSelection,
 } from "../player/torrent-playback.js";
+import { playbackIntentOwner } from "../player/playback-intent.js";
 import { clearAutoNext } from "../watch/episode-navigation.js";
 import { libraryEntryById } from "../library/library-data.js";
 import { renderLibrary } from "../library/library-page.js";
@@ -27,7 +28,8 @@ export function viewActive(name) {
 
 const LAST_WATCH_SELECTION_KEY = "lvl-last-watch-selection-v1";
 
-let watchRestoreStarted = false;
+let watchRestoreSucceeded = false;
+let watchRestoreAttempt = null;
 
 export function rememberWatchSelection(libraryId, fileIndex) {
   if (!libraryId || !Number.isInteger(Number(fileIndex))) return;
@@ -58,15 +60,49 @@ function lastWatchSelection() {
 }
 
 export function restoreLastWatchOnVisit() {
-  if ((typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) || !watchRestoreReady || watchRestoreStarted || !viewActive("watch")
-    || state.currentSource?.kind !== "idle" || watchPendingSelection) return;
+  // An old A promise may never settle after manual B superseded it. It no
+  // longer owns selection or restore admission; detach only that stale ref.
+  // Its eventual callback still checks exact identity before touching C.
+  if (watchRestoreAttempt?.intent && !playbackIntentOwner.owns(watchRestoreAttempt.intent))
+    watchRestoreAttempt = null;
+  if ((typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) || !watchRestoreReady
+    || watchRestoreSucceeded || watchRestoreAttempt || !viewActive("watch")
+    || state.currentSource?.kind !== "idle" || watchPendingSelection || playbackIntentOwner.hasPendingSelection()) return;
   const target = lastWatchSelection();
   if (!target) return;
-  watchRestoreStarted = true;
+  // Restore-in-flight and successful one-shot consumption are independent.
+  // A newer manual selection can permanently supersede this token, even when
+  // that manual source is still loading while Watch is hidden.
+  const attempt = { intent: null, loadId: null };
+  watchRestoreAttempt = attempt;
   const progress = target.episode.progress;
   const atMs = !progress?.finished && Number(progress?.positionMs) < Number(progress?.durationMs) * 0.92
     ? Math.max(0, Number(progress?.positionMs) || 0) : 0;
-  void playLibraryEpisode(target.entry.id, Number(target.episode.fileIndex), { resumeAtSeconds: atMs / 1000 });
+  const finish = (accepted) => {
+    if (watchRestoreAttempt !== attempt) return;
+    if (accepted && playbackIntentOwner.owns(attempt.intent)
+      && playbackIntentOwner.current()?.phase === "adopted") watchRestoreSucceeded = true;
+    watchRestoreAttempt = null;
+  };
+  let pending;
+  try {
+    pending = playLibraryEpisode(target.entry.id, Number(target.episode.fileIndex), {
+      resumeAtSeconds: atMs / 1000,
+      onIntentStarted: (intent) => { attempt.intent = intent; },
+      onLoadRequest: (loadId) => { attempt.loadId = loadId; },
+    });
+  } catch (error) {
+    finish(false);
+    console.warn("Could not restore the last Watch selection:", error);
+    return;
+  }
+  void pending.then(
+    (accepted) => { finish(accepted); },
+    (error) => {
+      finish(false);
+      console.warn("Could not restore the last Watch selection:", error);
+    },
+  );
 }
 
 export function viewFromLocation() {

@@ -12,6 +12,76 @@ const applicationEntries = new Set([
 // Feature development sources are kept outside the installed application.
 const excludedRoots = ["frontend/learning/", "backend/learning/"];
 
+// Individually reviewed Android build and preload inputs. These are checked
+// against the reviewed commit before an APK may be assembled. Unlike the
+// installed web app, arbitrary new paths under android/ are not admitted.
+export const reviewedAndroidReleaseFiles = Object.freeze([
+  'android/app-version.json',
+  'android/app/build.gradle.kts',
+  'android/app/src/main/AndroidManifest.xml',
+  'android/app/src/main/kotlin/eu/kanade/tachiyomi/AppInfo.kt',
+  'android/app/src/main/kotlin/eu/kanade/tachiyomi/AppModule.kt',
+  'android/app/src/main/kotlin/eu/kanade/tachiyomi/network/NetworkHelper.kt',
+  'android/app/src/main/kotlin/eu/kanade/tachiyomi/network/interceptor/CloudflareInterceptor.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/AppFiles.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/Downloads.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/LvlApp.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/MainActivity.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/PlaybackControls.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/ServerService.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/SignInActivity.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/Streams.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/WebBridge.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/ChildFirstPathClassLoader.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/CloudflareSolver.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/ExtensionHost.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/ExtensionLoader.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/PublicOnlyDns.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/VerifyActivity.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/WebViewCookieJar.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/ApkInstall.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/AppUpdater.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/ReleaseFeed.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/UpdateBridge.kt',
+  'android/app/src/main/res/drawable/ic_lvl_mark.xml',
+  'android/app/src/main/res/drawable/ic_stat_lvl.xml',
+  'android/app/src/main/res/mipmap-anydpi/ic_launcher.xml',
+  'android/app/src/main/res/values/strings.xml',
+  'android/app/src/main/res/values/themes.xml',
+  'android/app/src/main/res/xml/network_security_config.xml',
+  'android/build.gradle.kts',
+  'android/gradle.properties',
+  'android/native/Dockerfile',
+  'android/native/build-ffmpeg.sh',
+  'android/native/build-node.sh',
+  'android/native/docker-build.ps1',
+  'android/server-preload.cjs',
+  'android/settings.gradle.kts',
+  'android/stage-app.mjs',
+  'android/tools/build-release.ps1',
+  'android/tools/native-artifact.mjs',
+  'android/tools/release-assets.mjs',
+  'android/tools/release-check.mjs',
+  'android/update-apply.mjs',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/SourceOwnership.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/ServerIdentity.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/StartupReadiness.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/TrustedWebBridge.kt',
+]);
+
+const runnerBuildEntries = new Set([
+  'ext-runner/build.gradle.kts', 'ext-runner/settings.gradle.kts',
+  'ext-runner/build.mjs', 'ext-runner/fetch.mjs', 'ext-runner/jdk.mjs',
+  'ext-runner/jdk.json', 'ext-runner/suwayomi.json',
+]);
+export function isRunnerReleaseSourceFile(relativePath) {
+  if (typeof relativePath !== 'string' || relativePath.includes('\\') ||
+      relativePath.split('/').some(part => !part || part === '.' || part === '..' || part.startsWith('.'))) return false;
+  return runnerBuildEntries.has(relativePath) ||
+    /^ext-runner\/src\/main\/(?:kotlin|resources)\/[\w./-]+$/.test(relativePath);
+}
+export const requiredRunnerBuildEntries = Object.freeze([...runnerBuildEntries]);
+
 export function isSetupSourceFile(relativePath) {
   if (typeof relativePath !== "string" || !relativePath) return false;
   const name = relativePath.replaceAll("\\", "/");

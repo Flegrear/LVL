@@ -6,6 +6,7 @@
 // Comics feature stops. Nothing runs when the runner isn't installed or Comics is off.
 // In LVL's Android app the same protocol goes to the app's extension host (connectHost).
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
@@ -69,7 +70,7 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
   let lastError = "";
   const pending = new Map();
   const stderr = [];
-  const loaded = new Map(); // "pkg@version" -> Promise<load result>
+  const loaded = new Map(); // verified package, publisher, content and version -> Promise<load result>
 
   const available = () => Boolean(dataDir && (hostSocket || (home && java)));
 
@@ -138,16 +139,26 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
     });
   }
 
-  // Loads an extension once per version (the runner converts it on first use and keeps the result).
-  // fingerprint: the repository's signing-key fingerprint; the Android host refuses an APK
-  // signed with another key (the Java runner doesn't check signatures).
-  function load(apkPath, key, { fingerprint = "" } = {}) {
-    if (!loaded.has(key)) {
-      const loading = call("load", { apk: apkPath, ...(fingerprint ? { fingerprint } : {}) }, { timeoutMs: 180_000 });
-      loaded.set(key, loading);
-      loading.catch(() => loaded.delete(key));
+  // The desktop JVM verifies the signed APK itself. This cache can only reuse a previous
+  // admission for identical file content and the same explicit repository authority.
+  function load(apkPath, key, { fingerprint = "", packageName = "" } = {}) {
+    const signer = String(fingerprint).replaceAll(":", "").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(signer) || !/^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(packageName))
+      return Promise.reject(failure("The extension's approved package and signing fingerprint are required", 403, "extension-trust"));
+    let contentHash;
+    try {
+      const stat = fs.statSync(apkPath);
+      if (!stat.isFile() || stat.size < 1 || stat.size > 20 * 1024 * 1024) throw new Error("invalid size");
+      contentHash = createHash("sha256").update(fs.readFileSync(apkPath)).digest("hex");
     }
-    return loaded.get(key);
+    catch { return Promise.reject(failure("The extension file could not be read", 403, "extension-trust")); }
+    const cacheKey = JSON.stringify([key, packageName, signer, contentHash]);
+    if (!loaded.has(cacheKey)) {
+      const loading = call("load", { apk: apkPath, packageName, fingerprint: signer }, { timeoutMs: 180_000 });
+      loaded.set(cacheKey, loading);
+      loading.catch(() => { if (loaded.get(cacheKey) === loading) loaded.delete(cacheKey); });
+    }
+    return loaded.get(cacheKey);
   }
 
   function stop() {

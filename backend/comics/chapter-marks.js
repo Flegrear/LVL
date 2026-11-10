@@ -46,10 +46,15 @@ export function createChapterMarks({ db, now = Date.now } = {}) {
     path = COALESCE(excluded.path, comic_chapter_choices.path),
     chapter = COALESCE(excluded.chapter, comic_chapter_choices.chapter),
     volume = COALESCE(excluded.volume, comic_chapter_choices.volume), sync_stamp = NULL`);
-  const progress = db.prepare("SELECT page, pages FROM comic_progress WHERE work_id = ? AND file_id = ?");
+  const progress = db.prepare("SELECT page, pages, updated_at FROM comic_progress WHERE work_id = ? AND file_id = ?");
   const latestChoice = db.prepare("SELECT MAX(changed_at) AS at FROM comic_chapter_choices");
   const nextAt = () => Math.max(now(), Number(latestChoice.get()?.at || 0) + 1);
   const unreadProgress = db.prepare("UPDATE comic_progress SET finished = 0, page = CASE WHEN page >= pages - 1 THEN 0 ELSE page END, updated_at = ? WHERE work_id = ? AND file_id = ?");
+  const hasScopedProgress = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'comic_remote_progress'").get());
+  const scopedProgressAt = hasScopedProgress
+    ? db.prepare("SELECT updated_at FROM comic_remote_progress WHERE work_id = ? AND file_id = ?") : null;
+  const unreadScopedProgress = hasScopedProgress
+    ? db.prepare("UPDATE comic_remote_progress SET finished = 0, page = CASE WHEN page >= pages - 1 THEN 0 ELSE page END, updated_at = ? WHERE work_id = ? AND file_id = ?") : null;
   const unitValid = (item) => (EXT_CHAPTER_ID.test(String(item?.id)) && SOURCE_ID.test(String(item?.sourceId))) || (LOCAL_ID.test(String(item?.id)) && item.sourceId === "local");
 
   return {
@@ -72,11 +77,21 @@ export function createChapterMarks({ db, now = Date.now } = {}) {
           const existing = choice.get(workId, item.id);
           if (existing && existing.read === (read ? 1 : 0) && existing.path === item.path &&
               existing.chapter === normalized(item.chapter) && existing.volume === normalized(item.volume)) continue;
-          const at = nextAt();
+          // A prior per-work page write may have a future/monotonic timestamp
+          // even when the local wall clock moved backwards. An explicit unread
+          // must be newer than the completion it overrides for sync replay.
+          const at = read ? nextAt() : Math.max(nextAt(),
+            Number(progress.get(workId, item.id)?.updated_at || 0) + 1,
+            Number(scopedProgressAt?.get(workId, item.id)?.updated_at || 0) + 1);
           if (read) add.run(workId, item.id, normalized(item.volume), normalized(item.chapter), at);
           else {
             remove.run(workId, item.id);
             if (progress.get(workId, item.id)) unreadProgress.run(at, workId, item.id);
+            // The old progress table only holds the first owner of a source
+            // chapter. Every other owner's read position is authoritative in
+            // the composite table, and must be reset by explicit unread too.
+            if (EXT_CHAPTER_ID.test(String(item.id)))
+              unreadScopedProgress?.run(at, workId, item.id);
           }
           choose.run(workId, item.id, read ? 1 : 0, at, item.source, item.path, normalized(item.chapter), normalized(item.volume));
         }

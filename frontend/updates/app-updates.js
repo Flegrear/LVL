@@ -120,6 +120,8 @@ export function paintAppUpdateCard() {
     writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version, at: Date.now(), active: true });
   else if (view.phase === "ready" && report?.update?.installsWhenIdle && report?.installedVersion && pending?.to !== view.version)
     writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version, at: Date.now(), active: false });
+  else if (view.phase === "ready" && pending?.active && pending.to !== view.version)
+    writeStoredJson(UPDATE_PENDING_KEY, null);
   else if (view.phase === "failed" && pending?.active) writeStoredJson(UPDATE_PENDING_KEY, null);
   if (view.phase === "updated" && pending && !pending.completed)
     writeStoredJson(UPDATE_PENDING_KEY, { ...pending, active: false, completed: true });
@@ -171,6 +173,7 @@ function paintAppUpdateSettings(report) {
   if (check) {
     check.disabled = !installed || checking || appUpdateSettingsBusy;
     check.textContent = view.phase === "downloading" ? "Downloading…"
+      : updating && report?.update?.pendingConfirmation ? "Waiting for confirmation…"
       : updating ? "Installing…" : report?.checking ? "Checking…" : "Check for updates";
   }
   if (install) {
@@ -186,7 +189,9 @@ function paintAppUpdateSettings(report) {
   let failure = false;
   if (installed) {
     if (view.phase === "downloading") message = `Downloading LVL ${view.version}.`;
-    else if (updating) message = "Installing the update. LVL restarts on its own when it's done.";
+    else if (updating) message = report?.update?.pendingConfirmation
+      ? "Waiting for you to confirm the update in Android."
+      : "Installing the update. LVL restarts on its own when it's done.";
     else if (view.phase === "failed") { message = view.detail; failure = true; }
     else if (view.phase === "updated") message = `LVL updated to ${view.version}.`;
     else if (report.checking) message = "Checking the update feed…";

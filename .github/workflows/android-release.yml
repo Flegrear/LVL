@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-release
+  group: lvl-public-release-serialization
   cancel-in-progress: false
 
 jobs:
@@ -98,6 +98,14 @@ jobs:
           "LVL_ANDROID_VERSION=$version" >> $env:GITHUB_ENV
       - name: Install app build dependencies before native metadata verification
         run: npm ci --no-audit --no-fund
+      - name: Reject stale Android release version and versionCode before signing
+        if: github.event_name == 'push'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $config = Get-Content android/app-version.json -Raw | ConvertFrom-Json
+          node scripts/combined-release.mjs android-admit --version $config.version --version-code $config.versionCode
+          if ($LASTEXITCODE -ne 0) { throw 'Android candidate does not advance all published version/code baselines' }
       - name: Verify trusted main native artifact metadata before any download or signing
         shell: pwsh
         run: |
@@ -161,7 +169,9 @@ jobs:
           LVL_ANDROID_CERT_SHA256: ${{ secrets.LVL_ANDROID_CERT_SHA256 }}
         run: |
           $ErrorActionPreference = 'Stop'
-          ./android/tools/build-release.ps1
+          # Source commit and Android candidate version are separate from the
+          # Windows app version. Both are verified by the signing/stage helper.
+          ./android/tools/build-release.ps1 -ReviewedCommit $env:GITHUB_SHA -CandidateVersion $env:LVL_ANDROID_VERSION
           if ($LASTEXITCODE -ne 0) { throw 'Signed Android release build failed' }
           node android/tools/release-assets.mjs --verify-out tmp/android-batch/release/assets --version $env:LVL_ANDROID_VERSION --evidence tmp/android-batch/release/signature-evidence.json
           if ($LASTEXITCODE -ne 0) { throw 'APK-only assets, checksum or signer verification failed' }
@@ -271,6 +281,8 @@ jobs:
               $config.desktopSourceVersion -cne (Get-Content package.json -Raw | ConvertFrom-Json).version) { throw 'Public Android release source identity mismatch' }
           git merge-base --is-ancestor HEAD origin/main
           if ($LASTEXITCODE -ne 0) { throw 'Release commit is not reachable from trusted public main' }
+          node scripts/combined-release.mjs android-admit --version $version --version-code $config.versionCode
+          if ($LASTEXITCODE -ne 0) { throw 'Android candidate version or code is stale' }
           $review = 'build/android-signed-review'
           $local = Join-Path $review 'assets'
           $signature = Join-Path $review 'signature-evidence.json'
@@ -299,6 +311,8 @@ jobs:
             $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $local $name)).Hash.ToLowerInvariant()
             if (!$entry -or $entry.Value -cne $actual) { throw "Signed review bytes differ from source build: $name" }
           }
+          node scripts/release-gates.mjs verify-local --kind android --version $version --tag $tag --local-dir $local
+          if ($LASTEXITCODE -ne 0) { throw 'Android local checksum contents or exact inventory differs' }
           $notes = 'build/android-publish-notes.md'
           [IO.File]::WriteAllText((Join-Path (Get-Location) $notes), [string]$record.releaseNotes, [Text.UTF8Encoding]::new($false))
           $files = @($expected | ForEach-Object { (Resolve-Path -LiteralPath (Join-Path $local $_)).Path })
@@ -311,6 +325,10 @@ jobs:
           if (@(Get-ChildItem -LiteralPath $download -Force).Count -ne 0) { throw 'Remote verification destination not empty' }
           gh release download $tag --repo $env:GITHUB_REPOSITORY --pattern '*' --dir $download
           if ($LASTEXITCODE -ne 0) { throw 'Cannot re-download draft for byte verification' }
+          gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$tag" > build/android-draft-release.json
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot fetch Android draft REST metadata' }
+          node scripts/release-gates.mjs verify-draft --kind android --version $version --tag $tag --local-dir $local --remote-dir $download --release-json build/android-draft-release.json
+          if ($LASTEXITCODE -ne 0) { throw 'Remote draft inventory, bytes, size, API digest or checksum content mismatch' }
           node android/tools/release-assets.mjs --verify-out $download --version $version --evidence $signature
           if ($LASTEXITCODE -ne 0) { throw 'Remote draft bytes or signing evidence mismatch' }
           foreach ($name in $expected) {
@@ -318,6 +336,8 @@ jobs:
             $received = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $download $name)).Hash
             if ($original -cne $received) { throw "Remote draft bytes changed: $name" }
           }
+          node scripts/combined-release.mjs android-admit --version $version --version-code $config.versionCode
+          if ($LASTEXITCODE -ne 0) { throw 'Android version or code became stale before publication' }
           # Failure above leaves a draft, never a partially published Android release.
           gh release edit $tag --repo $env:GITHUB_REPOSITORY --draft=false --latest=false
           if ($LASTEXITCODE -ne 0) { throw 'Verified Android draft could not be published' }

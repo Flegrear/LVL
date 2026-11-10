@@ -3,8 +3,6 @@ package io.github.flegrear.lvl.updates
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
-import android.os.Handler
-import android.os.Looper
 import android.util.Log
 import io.github.flegrear.lvl.AppFiles
 import kotlinx.serialization.json.Json
@@ -49,12 +47,10 @@ class AppUpdater(private val context: Context, private val server: Server) {
         private const val MAX_PATCH = 256L * 1024 * 1024
         private const val MAX_APK = 400L * 1024 * 1024
         private const val AUTO_RETRY_MS = 6 * 60 * 60_000L
-        private const val CONFIRM_WAIT_MS = 15 * 60_000L
     }
 
     private val lock = Any()
     private val work = Executors.newSingleThreadExecutor { Thread(it, "lvl-updates").apply { isDaemon = true } }
-    private val main = Handler(Looper.getMainLooper())
     private val settingsFile = File(context.filesDir, "update-settings.json")
     private val http = OkHttpClient.Builder().connectTimeout(20, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS).build()
     private val feed: ReleaseFeed = debugFeed() ?: ReleaseFeed(http)
@@ -79,6 +75,26 @@ class AppUpdater(private val context: Context, private val server: Server) {
     init {
         load()
         ApkInstall.onResult = ::onApkResult
+        synchronized(lock) { restoreApkStateLocked() }
+        runCatching { ApkInstall.remindPending(context) }
+            .onFailure { Log.w(TAG, "Couldn't offer Android's pending installation", it) }
+    }
+
+    /** Recover the private journal even when Android created only the receiver. */
+    private fun restoreApkStateLocked(): ApkInstall.Attempt? {
+        val attempt = ApkInstall.reconcile(context) ?: return null
+        pendingApkSessionId = attempt.sessionId.takeIf { attempt.pending }
+        pendingApkVersion = attempt.version.takeIf { attempt.pending }
+        if (attempt.failed) {
+            terminalApkFailureVersion = attempt.version
+            error = attempt.message ?: "Android couldn't confirm this update"
+        } else if (attempt.phase == "confirmed") {
+            pendingApkSessionId = null
+            pendingApkVersion = null
+            terminalApkFailureVersion = null
+            error = null
+        }
+        return attempt
     }
 
     fun installedVersion(): String = AppFiles.installedVersion(context) ?: AppFiles.stagedManifest(context).version
@@ -120,7 +136,10 @@ class AppUpdater(private val context: Context, private val server: Server) {
     private fun failure(message: String) = buildJsonObject { put("error", message) }
 
     fun status(): JsonObject = synchronized(lock) {
+        val attempt = ApkInstall.reconcile(context)
         val next = available
+        val failedAttempt = attempt?.takeIf { it.failed && (next == null || next.version == it.version) }
+        val apkError = failedAttempt?.message ?: failedAttempt?.let { "Android couldn't confirm this update" }
         buildJsonObject {
             put("installed", true)
             put("enabled", true)
@@ -132,7 +151,21 @@ class AppUpdater(private val context: Context, private val server: Server) {
             put("availableVersion", next?.version)
             put("checking", checking)
             put("downloading", downloading)
-            put("error", error)
+            put("error", when {
+                attempt?.phase == "confirmed" || attempt?.pending == true -> null
+                apkError != null -> apkError
+                else -> error
+            })
+            put("apkInstall", attempt?.let {
+                buildJsonObject {
+                    put("version", it.version)
+                    put("sessionId", it.sessionId)
+                    put("phase", it.phase)
+                    put("inProgress", it.pending)
+                    put("pendingConfirmation", it.awaitingConfirmation)
+                    put("message", it.message)
+                }
+            } ?: JsonNull)
             put("notice", next?.let { buildJsonObject { put("message", "LVL ${it.version} is available") } } ?: JsonNull)
             put("noticePending", noticePending)
             if (next != null) {
@@ -181,6 +214,7 @@ class AppUpdater(private val context: Context, private val server: Server) {
     private fun startInstall(auto: Boolean, source: String): Boolean {
         val release = synchronized(lock) {
             val release = available ?: return false
+            if (restoreApkStateLocked()?.pending == true) return false
             if (checking || downloading || installing != null || pendingApkSessionId != null) return false
             // A new app version asks the user to confirm, so it waits for Install.
             if (auto && !release.patch) return false
@@ -267,41 +301,37 @@ class AppUpdater(private val context: Context, private val server: Server) {
         if (measuredFree != null && measuredFree < apk.length()) {
             throw IOException("There isn't enough space to stage this APK (APK ${apk.length()} bytes, /data available $measuredFree bytes); Android may require more")
         }
-        ApkInstall.install(context, apk) { id ->
+        ApkInstall.install(context, apk, release.version, info.longVersionCode) { id ->
             synchronized(lock) {
                 pendingApkSessionId = id
                 pendingApkVersion = release.version
+                downloading = false
             }
         }
         Log.i(TAG, "Handed LVL ${release.version} to Android's installer, session=${synchronized(lock) { pendingApkSessionId }}")
-        // The result comes from Android (onApkResult); stop waiting if it never does.
-        val expectedSession = synchronized(lock) { pendingApkSessionId }
-        main.postDelayed({
-            synchronized(lock) {
-                if (downloading && expectedSession != null && pendingApkSessionId == expectedSession) {
-                    downloading = false
-                    error = "The update wasn't confirmed"
-                    terminalApkFailureVersion = release.version
-                    pendingApkSessionId = null
-                    pendingApkVersion = null
-                }
-            }
-        }, CONFIRM_WAIT_MS)
+        // Android may legitimately wait beyond 15 minutes for user action.
+        // Journal status and the package/session reconciliation own the result.
     }
 
     private fun onApkResult(sessionId: Int, installed: Boolean, message: String?) {
         synchronized(lock) {
-            if (sessionId < 0 || sessionId != pendingApkSessionId) {
+            val durable = restoreApkStateLocked()
+            if (sessionId < 0 || sessionId != durable?.sessionId) {
                 Log.w(TAG, "Ignored unrelated/stale APK install result for session $sessionId")
                 return
             }
-            val version = pendingApkVersion
-            Log.i(TAG, "LVL ${version ?: "APK"} install session $sessionId completed: ${if (installed) "success" else "failure"}")
+            val version = durable.version
+            Log.i(TAG, "LVL $version install session $sessionId completed: ${if (installed) "success" else "failure"}")
             pendingApkSessionId = null
             pendingApkVersion = null
             downloading = false
-            error = if (installed) null else message ?: "Android couldn't install the update"
-            terminalApkFailureVersion = if (installed) null else version
+            if (durable.failed) {
+                error = durable.message ?: message ?: "Android couldn't install the update"
+                terminalApkFailureVersion = version
+            } else if (durable.phase == "confirmed") {
+                error = null
+                terminalApkFailureVersion = null
+            }
         }
     }
 

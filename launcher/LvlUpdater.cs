@@ -4,9 +4,11 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -51,6 +53,307 @@ namespace LanguageVideoLearner
         private readonly System.Threading.Timer recurringChecks;
         private System.Threading.Timer leftoverRetry;
         private string activeUpdateFolder;
+        private string currentInstallToken;
+        private bool handoffUncertain;
+        private const string InstallOwnerFormat = "lvl-windows-install-owner-v1";
+
+        [DllImport("kernel32.dll", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool CreateDirectoryNative(string path, IntPtr security);
+
+        [DllImport("kernel32.dll", EntryPoint = "CreateFileW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern IntPtr OpenPhysicalFolder(string path, uint desiredAccess, uint shareMode,
+            IntPtr security, uint creationDisposition, uint flags, IntPtr template);
+
+        [DllImport("kernel32.dll", EntryPoint = "GetFinalPathNameByHandleW", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern uint GetPhysicalPath(IntPtr handle, StringBuilder buffer, uint length, uint flags);
+
+        [DllImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
+        private static extern bool ClosePhysicalHandle(IntPtr handle);
+
+        private static string CanonicalInstallTarget(string target)
+        {
+            string cursor = Path.GetFullPath(target).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            List<string> missing = new List<string>();
+            while (!Directory.Exists(cursor))
+            {
+                string parent = Path.GetDirectoryName(cursor);
+                if (string.IsNullOrEmpty(parent) || string.Equals(cursor, parent, StringComparison.OrdinalIgnoreCase))
+                    throw new IOException("Cannot resolve physical LVL installation parent");
+                missing.Insert(0, Path.GetFileName(cursor));
+                cursor = parent;
+            }
+            IntPtr handle = OpenPhysicalFolder(cursor, 0, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero);
+            if (handle == new IntPtr(-1))
+                throw new IOException("Cannot verify physical LVL installation target");
+            string physical;
+            try
+            {
+                StringBuilder resolved = new StringBuilder(32768);
+                uint size = GetPhysicalPath(handle, resolved, (uint)resolved.Capacity, 0);
+                if (size == 0 || size >= resolved.Capacity)
+                    throw new IOException("Cannot read physical LVL installation target");
+                physical = resolved.ToString();
+                if (physical.StartsWith(@"\\?\UNC\", StringComparison.OrdinalIgnoreCase))
+                    physical = @"\\" + physical.Substring(8);
+                else if (physical.StartsWith(@"\\?\", StringComparison.OrdinalIgnoreCase))
+                    physical = physical.Substring(4);
+            }
+            finally { ClosePhysicalHandle(handle); }
+            foreach (string piece in missing) physical = Path.Combine(physical, piece);
+            return Path.GetFullPath(physical).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar).ToLowerInvariant();
+        }
+
+        private string InstallLeaseDir()
+        {
+            string canonical = CanonicalInstallTarget(root);
+            byte[] digest;
+            using (SHA256 hash = SHA256.Create()) digest = hash.ComputeHash(Encoding.UTF8.GetBytes(canonical));
+            string key = BitConverter.ToString(digest).Replace("-", "").ToLowerInvariant().Substring(0, 32);
+            return Path.Combine(Path.GetDirectoryName(canonical), ".lvl-install-" + key + ".lock");
+        }
+
+        private Dictionary<string, object> ReadOwnerAt(string folder)
+        {
+            string filename = Path.Combine(folder, "owner.json");
+            try
+            {
+                if (!File.Exists(filename) || new FileInfo(filename).Length > 4096) return null;
+                Dictionary<string, object> data = json.Deserialize<Dictionary<string, object>>(File.ReadAllText(filename));
+                string canonical = CanonicalInstallTarget(root);
+                if (Value(data, "format") != InstallOwnerFormat || Value(data, "target") != canonical ||
+                    !Regex.IsMatch(Value(data, "token") ?? "", @"\A[0-9a-f]{32}\z"))
+                    return null;
+                return data;
+            }
+            catch { return null; }
+        }
+
+        private Dictionary<string, object> ReadOwner() { return ReadOwnerAt(InstallLeaseDir()); }
+
+        private static bool OwnerAlive(Dictionary<string, object> owner)
+        {
+            if (owner == null) return true; // incomplete ownership is busy, not disposable
+            object rawPid;
+            int pid;
+            if (!owner.TryGetValue("pid", out rawPid) ||
+                !int.TryParse(Convert.ToString(rawPid), out pid) || pid < 1)
+                return true;
+            try
+            {
+                using (Process process = Process.GetProcessById(pid))
+                {
+                    if (process.HasExited) return false;
+                    // A recycled process ID does not own a previous install.
+                    string started = process.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture);
+                    return started == Value(owner, "startTicks");
+                }
+            }
+            catch (ArgumentException) { return false; }
+            catch (InvalidOperationException) { return false; }
+            catch { return true; } // access denied: fail closed
+        }
+
+        private static void SaveOwner(string folder, Dictionary<string, object> owner)
+        {
+            string filename = Path.Combine(folder, "owner.json");
+            string temporary = Path.Combine(folder, Guid.NewGuid().ToString("N") + ".new");
+            File.WriteAllText(temporary, new JavaScriptSerializer().Serialize(owner) + "\n", new UTF8Encoding(false));
+            try
+            {
+                if (File.Exists(filename)) File.Replace(temporary, filename, null);
+                else File.Move(temporary, filename);
+            }
+            finally { try { if (File.Exists(temporary)) File.Delete(temporary); } catch { } }
+        }
+
+        private bool TryReserveInstall(out string token)
+        {
+            token = null;
+            // A detached worker may have exited immediately after installing
+            // and before the newly restarted launcher acknowledged its files.
+            // Its PID is then stale, but the recoverable journal still owns
+            // the target until verification/rollback finishes.
+            if (HasRecoveryJournal()) return false;
+            string folder = InstallLeaseDir();
+            string cleanup = folder + ".reclaim";
+            for (int retry = 0; retry < 2; retry++)
+            {
+                if (Directory.Exists(cleanup)) return false;
+                if (CreateDirectoryNative(folder, IntPtr.Zero))
+                {
+                    try
+                    {
+                        if (Directory.Exists(cleanup)) throw new IOException("Install reclamation is active");
+                        token = Guid.NewGuid().ToString("N");
+                        using (Process self = Process.GetCurrentProcess())
+                        {
+                            string canonical = CanonicalInstallTarget(root);
+                            SaveOwner(folder, new Dictionary<string, object> {
+                                { "format", InstallOwnerFormat }, { "target", canonical },
+                                { "token", token }, { "pid", self.Id },
+                                { "startTicks", self.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture) },
+                                { "phase", "downloading" }, { "createdAt", DateTime.UtcNow.ToString("o") },
+                            });
+                        }
+                        return true;
+                    }
+                    catch
+                    {
+                        try { Directory.Delete(folder, true); } catch { }
+                        token = null;
+                        return false;
+                    }
+                }
+                if (!Directory.Exists(folder)) return false;
+                Dictionary<string, object> observed = ReadOwner();
+                if (OwnerAlive(observed)) return false;
+                if (!CreateDirectoryNative(cleanup, IntPtr.Zero)) return false;
+                try
+                {
+                    Dictionary<string, object> current = ReadOwner();
+                    if (current == null || Value(current, "token") != Value(observed, "token") || OwnerAlive(current))
+                        return false;
+                    string retired = cleanup + "." + Guid.NewGuid().ToString("N") + ".old";
+                    Directory.Move(folder, retired);
+                    // Preserve a newly acquired owner if another process raced this move.
+                    Dictionary<string, object> moved = ReadOwnerAt(retired);
+                    if (moved == null || Value(moved, "token") != Value(observed, "token"))
+                    {
+                        Directory.Move(retired, folder);
+                        return false;
+                    }
+                    Directory.Delete(retired, true);
+                }
+                catch { return false; }
+                finally { try { Directory.Delete(cleanup); } catch { } }
+            }
+            return false;
+        }
+
+        private void TransferInstallOwner(string token, Process child)
+        {
+            Dictionary<string, object> owner = ReadOwner();
+            if (owner == null || Value(owner, "token") != token)
+                throw new IOException("Install ownership changed before handoff");
+            owner["pid"] = child.Id;
+            owner["startTicks"] = child.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture);
+            owner["phase"] = "detached-child";
+            SaveOwner(InstallLeaseDir(), owner);
+        }
+
+        private void StartOwnedChild(string executable, string arguments, bool shell)
+        {
+            Process child = null;
+            try
+            {
+                child = Process.Start(new ProcessStartInfo(executable, arguments) {
+                    WorkingDirectory = root, UseShellExecute = shell, CreateNoWindow = !shell,
+                });
+                if (child == null) throw new IOException("Detached LVL installer did not start");
+                TransferInstallOwner(currentInstallToken, child);
+            }
+            catch
+            {
+                if (child != null)
+                {
+                    try
+                    {
+                        if (!child.HasExited)
+                        {
+                            child.Kill();
+                            child.WaitForExit(3000);
+                        }
+                    }
+                    catch
+                    {
+                        // The child may still be installing; preserve the
+                        // lease so another request cannot mutate this target.
+                        handoffUncertain = true;
+                        throw new IOException("Installer child ownership could not be verified after handoff failure");
+                    }
+                }
+                throw;
+            }
+            finally { if (child != null) child.Dispose(); }
+        }
+
+        private void ReleaseInstallOwner(string token)
+        {
+            if (string.IsNullOrEmpty(token)) return;
+            Dictionary<string, object> owner = ReadOwner();
+            if (owner == null || Value(owner, "token") != token) return;
+            try { Directory.Delete(InstallLeaseDir(), true); } catch { }
+        }
+
+        private bool InstallOwned()
+        {
+            return HasRecoveryJournal() || (Directory.Exists(InstallLeaseDir()) && OwnerAlive(ReadOwner()));
+        }
+
+        private bool HasRecoveryJournal()
+        {
+            return File.Exists(Path.Combine(root, ".lvl-full-transaction", "journal.json"))
+                || File.Exists(Path.Combine(root, ".lvl-patch-transaction", "journal.json"));
+        }
+
+        private void AcknowledgeRestart()
+        {
+            try
+            {
+                if (!HasRecoveryJournal()) return;
+                string node = Path.Combine(root, "runtime", "node.exe");
+                string helper = Path.Combine(root, "runtime", "windows-install-transaction.mjs");
+                if (!File.Exists(node) || !File.Exists(helper)) return;
+                // A launcher process existing is not proof that the restarted
+                // version serves the UI. Retire backups only after the fresh
+                // local server responds with this same installed version.
+                bool healthy = false;
+                DateTime limit = DateTime.UtcNow.AddSeconds(35);
+                while (DateTime.UtcNow < limit)
+                {
+                    try
+                    {
+                        HttpWebRequest check = (HttpWebRequest)WebRequest.Create(
+                            "http://127.0.0.1:4273/api/app-updates/status");
+                        check.Proxy = null;
+                        check.Timeout = 1200;
+                        check.ReadWriteTimeout = 1200;
+                        using (HttpWebResponse response = (HttpWebResponse)check.GetResponse())
+                        using (StreamReader reader = new StreamReader(response.GetResponseStream()))
+                        {
+                            string body = reader.ReadToEnd();
+                            Dictionary<string, object> status = json.Deserialize<Dictionary<string, object>>(body);
+                            object installed;
+                            if (status != null && status.TryGetValue("installed", out installed)
+                                && installed is bool && (bool)installed
+                                && Value(status, "installedVersion") == installedVersion)
+                            {
+                                healthy = true;
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                    Thread.Sleep(250);
+                }
+                if (!healthy)
+                {
+                    log.Write("updater", "Keeping recovery backup: restarted LVL has not served its expected version");
+                    return;
+                }
+                using (Process ack = Process.Start(new ProcessStartInfo(node,
+                    Quote(helper) + " ack-any --app-root " + Quote(root)
+                    + " --version " + Quote(installedVersion)
+                    + " --launcher-pid " + Process.GetCurrentProcess().Id) {
+                    WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
+                }))
+                {
+                    if (ack != null && ack.WaitForExit(30000) && ack.ExitCode != 0)
+                        log.Write("updater", "Installation restart acknowledgement was deferred");
+                }
+            }
+            catch (Exception issue) { log.Write("updater", "Restart acknowledgement deferred: " + issue.Message); }
+        }
 
         private sealed class Release
         {
@@ -78,6 +381,7 @@ namespace LanguageVideoLearner
             string dataRoot = Path.GetDirectoryName(Path.GetDirectoryName(log.FilePath));
             preferencesFile = Path.Combine(dataRoot, "lvl-update-settings.json");
             LoadSettings();
+            ThreadPool.QueueUserWorkItem(delegate { AcknowledgeRestart(); });
             // A tray app can run for days: re-evaluate the saved automatic
             // cadence hourly instead of checking only at launcher startup.
             recurringChecks = new System.Threading.Timer(delegate { CheckOnStartup(); }, null,
@@ -120,6 +424,7 @@ namespace LanguageVideoLearner
 
         private void CleanUpdateLeftovers()
         {
+            if (InstallOwned()) return; // another controller's detached child may still need its download
             string keep;
             lock (gate) keep = activeUpdateFolder;
             int removed = RemoveUpdateLeftovers(Path.GetTempPath(), keep, DateTime.UtcNow.AddMinutes(-2));
@@ -279,7 +584,9 @@ namespace LanguageVideoLearner
                         && applyRequested is bool && (bool)applyRequested;
                     StartCheck(userRequestedApply);
                     return Status();
-                case "install": return StartInstall(false) ? Status() : new { error = "No verified LVL update is ready to install" };
+                case "install":
+                    if (StartInstall(false)) return Status();
+                    lock (gate) return new { error = error ?? "No verified LVL update is ready to install" };
                 default: return new { error = "Unknown updater action" };
             }
         }
@@ -300,7 +607,7 @@ namespace LanguageVideoLearner
                     installedVersion,
                     available = available != null,
                     availableVersion = available == null ? null : available.Version,
-                    checking, downloading, error,
+                    checking, downloading, installing = InstallOwned(), error,
                     notice = available == null ? null : new { message = "LVL " + available.Version + " is available" },
                     noticePending,
                 };
@@ -311,7 +618,7 @@ namespace LanguageVideoLearner
         {
             lock (gate)
             {
-                if (checking || downloading) return;
+                if (checking || downloading || InstallOwned()) return;
                 checking = true;
                 error = null;
             }
@@ -356,6 +663,14 @@ namespace LanguageVideoLearner
             lock (gate)
             {
                 if (checking || downloading || available == null || string.IsNullOrEmpty(available.ChecksumUrl)) return false;
+                string token;
+                if (!TryReserveInstall(out token))
+                {
+                    error = "Another LVL installation already owns this target";
+                    return false;
+                }
+                currentInstallToken = token;
+                handoffUncertain = false;
                 selected = available;
                 downloading = true;
                 error = null;
@@ -369,6 +684,8 @@ namespace LanguageVideoLearner
 
         private void DownloadAndRun(Release release)
         {
+            string token;
+            lock (gate) token = currentInstallToken;
             string folder = Path.Combine(Path.GetTempPath(), "LVL-update-" + Guid.NewGuid().ToString("N"));
             string setupPath = Path.Combine(folder, release.SetupName);
             lock (gate) activeUpdateFolder = folder;
@@ -405,33 +722,34 @@ namespace LanguageVideoLearner
                                 + " --from " + Quote(installedVersion)
                                 + " --to " + Quote(release.Version)
                                 + " --parent-pid " + Process.GetCurrentProcess().Id
+                                + " --install-token " + Quote(token)
                                 + " --relaunch";
-                            Process.Start(new ProcessStartInfo(node, arguments) {
-                                WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
-                            });
+                            StartOwnedChild(node, arguments, false);
                         }
                         else
                         {
                             // Full setup is only needed for launcher/runtime/
                             // dependency changes. It runs silently, stops only
                             // this public launcher, then restarts the new app.
-                            Process.Start(new ProcessStartInfo(setupPath, SilentSetupArguments) { UseShellExecute = true });
+                            StartOwnedChild(setupPath, SilentSetupArguments + " /LVLInstallToken=" + token, true);
                         }
-                        lock (gate) noticePending = false;
                         log.Write("updater", "Launched verified LVL update " + release.Version);
                     }
                     catch (Exception issue)
                     {
                         lock (gate) { error = "Could not open the verified installer: " + issue.Message; activeUpdateFolder = null; }
+                        if (!handoffUncertain)
+                            ReleaseInstallOwner(token);
                         notify("LVL update could not start. Check the launcher log.");
                         try { Directory.Delete(folder, true); } catch (Exception) { }
                     }
-                    finally { lock (gate) downloading = false; RefreshMenu(); }
+                    finally { lock (gate) { downloading = false; currentInstallToken = null; } RefreshMenu(); }
                 });
             }
             catch (Exception issue)
             {
                 lock (gate) { error = issue.Message; downloading = false; activeUpdateFolder = null; }
+                ReleaseInstallOwner(token);
                 log.Write("updater", "Could not download and validate LVL update: " + issue.Message);
                 OnUi(delegate { notify("LVL update download failed. See the launcher log."); RefreshMenu(); });
                 try { Directory.Delete(folder, true); } catch (Exception) { }
@@ -451,13 +769,13 @@ namespace LanguageVideoLearner
                 {
                     if (checkItem != null)
                     {
-                        checkItem.Enabled = !checking && !downloading;
+                        checkItem.Enabled = !checking && !downloading && !InstallOwned();
                         checkItem.Text = checking ? "Checking for LVL updates…" : "Check for LVL updates";
                     }
                     if (installItem != null)
                     {
                         installItem.Visible = available != null;
-                        installItem.Enabled = available != null && !checking && !downloading && !string.IsNullOrEmpty(available.ChecksumUrl);
+                        installItem.Enabled = available != null && !checking && !downloading && !InstallOwned() && !string.IsNullOrEmpty(available.ChecksumUrl);
                         installItem.Text = available == null ? "Install available LVL update…" : "Install LVL " + available.Version + "…";
                     }
                 }

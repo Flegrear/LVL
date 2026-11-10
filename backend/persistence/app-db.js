@@ -468,13 +468,16 @@ export function createAppDatabase(databasePath) {
     return writeTransaction(() => writeSectionLocked(section, safeValue));
   }
 
-  function compareAndSwapSection(section, value, expectedUpdatedAt) {
+  function compareAndSwapSection(section, value, expectedUpdatedAt, onAccepted = null) {
     if (!APP_STATE_SECTIONS.includes(section)) throw new Error(`Unknown app-state section: ${section}`);
     if (!Number.isSafeInteger(expectedUpdatedAt) || expectedUpdatedAt < 0) throw new Error("Invalid section revision");
     return writeTransaction(() => {
       const currentUpdatedAt = sectionUpdatedAt(section);
       if (currentUpdatedAt !== expectedUpdatedAt) return { ok: false, currentUpdatedAt };
       const updatedAt = writeSectionLocked(section, value);
+      // Sync may record the exact applied Library revision in its own durable
+      // journal as part of this write. Throwing here rolls both changes back.
+      if (onAccepted) onAccepted(updatedAt);
       return { ok: true, updatedAt };
     });
   }

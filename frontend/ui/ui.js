@@ -52,6 +52,8 @@ const ICON_PATHS = Object.freeze({
   pause: '<rect x="6.5" y="5" width="3.6" height="14" rx="1" fill="currentColor" stroke="none"/><rect x="13.9" y="5" width="3.6" height="14" rx="1" fill="currentColor" stroke="none"/>',
   search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
   "chevron-left": '<path d="m14.5 6-6 6 6 6"/>',
+  "arrow-left": '<path d="M19 12H5m6-6-6 6 6 6"/>',
+  "sort": '<path d="M4 7h16M7 12h10m-7 5h4"/>',
   "chevron-right": '<path d="m9.5 6 6 6-6 6"/>',
   "chevron-down": '<path d="m6 9.5 6 6 6-6"/>',
   shuffle: '<path d="M4 17h2.7c1.6 0 3-.8 3.9-2.2l2.8-5.6c.9-1.4 2.3-2.2 3.9-2.2H20"/><path d="m17 4.5 3 2.5-3 2.5"/><path d="M4 7h2.7c1.3 0 2.5.5 3.3 1.5"/><path d="M14 15.5c.8 1 2 1.5 3.3 1.5H20"/><path d="m17 14.5 3 2.5-3 2.5"/>',

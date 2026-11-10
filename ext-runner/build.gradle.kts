@@ -87,7 +87,8 @@ dependencies {
     // Android: stub jar plus AndroidCompat's own classes (which come first on the class path).
     implementation(libs.android.stubs)
     compileOnly(libs.xmlpull)
-    compileOnly(libs.apksig)
+    // Desktop APK admission executes apksig at runtime (v1/v2/v3/v3.1 verification).
+    implementation(libs.apksig)
     compileOnly(libs.android.annotations)
     implementation(libs.bundles.settings)
     implementation(libs.icu4j)

@@ -11,7 +11,23 @@ const KINDS = new Set(["ext"]);
 export function createLinkedSources({ db, now = Date.now } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS comic_work_sources (work_id TEXT NOT NULL, kind TEXT NOT NULL, source_id TEXT NOT NULL, manga_id TEXT NOT NULL,
     name TEXT NOT NULL, title TEXT NOT NULL, lang TEXT NOT NULL DEFAULT '', added_at INTEGER NOT NULL, PRIMARY KEY (work_id, kind, source_id, manga_id))`);
+  // Persistent work-scoped revision: a suspended chapter fetch must not publish
+  // after a link is removed and re-added with the very same source/path.
+  db.exec(`CREATE TABLE IF NOT EXISTS comic_work_source_revisions (work_id TEXT PRIMARY KEY, revision INTEGER NOT NULL DEFAULT 0);
+    CREATE TRIGGER IF NOT EXISTS implicit_link_revision_insert AFTER INSERT ON comic_work_sources BEGIN
+      INSERT INTO comic_work_source_revisions (work_id, revision) VALUES (NEW.work_id, 1)
+        ON CONFLICT(work_id) DO UPDATE SET revision = revision + 1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS implicit_link_revision_update AFTER UPDATE ON comic_work_sources BEGIN
+      INSERT INTO comic_work_source_revisions (work_id, revision) VALUES (NEW.work_id, 1)
+        ON CONFLICT(work_id) DO UPDATE SET revision = revision + 1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS implicit_link_revision_delete AFTER DELETE ON comic_work_sources BEGIN
+      INSERT INTO comic_work_source_revisions (work_id, revision) VALUES (OLD.work_id, 1)
+        ON CONFLICT(work_id) DO UPDATE SET revision = revision + 1;
+    END;`);
   const list = db.prepare("SELECT * FROM comic_work_sources WHERE work_id = ? ORDER BY added_at");
+  const revision = db.prepare("SELECT revision FROM comic_work_source_revisions WHERE work_id = ?");
   const owners = db.prepare("SELECT work_id FROM comic_work_sources WHERE kind = 'ext' AND source_id = ? AND manga_id = ? ORDER BY added_at");
   const insert = db.prepare(`INSERT INTO comic_work_sources (work_id, kind, source_id, manga_id, name, title, lang, added_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(work_id, kind, source_id, manga_id) DO UPDATE SET name = excluded.name, title = excluded.title, lang = excluded.lang`);
@@ -19,6 +35,7 @@ export function createLinkedSources({ db, now = Date.now } = {}) {
   const view = (row) => ({ key: `${row.kind}:${row.source_id}:${row.manga_id}`, kind: row.kind, sourceId: row.source_id, mangaId: row.manga_id, name: row.name, title: row.title, lang: row.lang, addedAt: row.added_at });
   return {
     list: (workId) => list.all(String(workId)).filter((row) => KINDS.has(row.kind)).map(view),
+    revision: (workId) => revision.get(String(workId))?.revision ?? 0,
     owners: (sourceId, mangaId) => owners.all(String(sourceId), String(mangaId)).map((row) => row.work_id),
     link(workId, { kind, sourceId = "", mangaId, name = "", title = "", lang = "" }) {
       if (!KINDS.has(kind)) throw new Error("Unknown source type");
@@ -59,7 +76,7 @@ export function chapterCandidates({ chapter, volume = null, files = [], chapterL
   for (const file of files) {
     const inRange = (from, to, value) => from && Number(value) >= Number(from) && Number(value) <= Number(to || from);
     const hit = file.chapter ? inRange(file.chapter, file.chapterEnd, wanted) : volume && inRange(file.volume, file.volumeEnd, volume);
-    if (hit) out.push({ readerId: file.id, kind: "local", name: file.name, detail: file.chapter ? "" : `Volume ${file.volume}`, lang: "", page: file.progress && !file.progress.finished ? file.progress.page : 0 });
+    if (hit) out.push({ readerId: file.id, kind: "local", sourceId: "local", name: file.name, detail: file.chapter ? "" : `Volume ${file.volume}`, lang: "", page: file.progress && !file.progress.finished ? file.progress.page : 0 });
   }
   for (const { link, chapters } of chapterLists) {
     const matches = chapters.filter((item) => normalizeUnitNumber(item.chapter) === wanted && !item.externalUrl);
@@ -72,7 +89,7 @@ export function chapterCandidates({ chapter, volume = null, files = [], chapterL
       ? matches.filter((item) => !normalizeUnitNumber(item.volume) || normalizeUnitNumber(item.volume) === requestedVolume)
       : matches;
     for (const item of chosen) {
-      out.push({ readerId: item.id, kind: link.kind, name: link.name, detail: [item.group, item.title].filter(Boolean).join(" · "), lang: item.language || link.lang || "", page: 0 });
+      out.push({ readerId: item.id, kind: link.kind, sourceId: link.sourceId, name: link.name, detail: [item.group, item.title].filter(Boolean).join(" · "), lang: item.language || link.lang || "", page: 0 });
     }
   }
   return out;

@@ -68,6 +68,8 @@ function notice() {
     "  (https://mozilla.org/MPL/2.0/). The source of those files is available at the",
     "  commit above; LVL's changed versions are in LVL's ext-runner folder.",
     "- The Tachiyomi source API (eu.kanade.tachiyomi.*), under the Apache License 2.0.",
+    "- Android apksig (com.android.apksig.*), used for real APK signature verification,",
+    "  is included in lib/ under the Apache License 2.0.",
     "The libraries in lib/ keep their own licences. Some jars carry their licence text;",
     "the installed LVL lists every jar in its THIRD_PARTY_NOTICES.txt.",
     "runtime/ is a Java runtime made with jlink from Eclipse Temurin (OpenJDK) "

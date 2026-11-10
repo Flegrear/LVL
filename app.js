@@ -412,6 +412,46 @@ export function renderAll() {
   updateChapterButtons();
 }
 
+// Android pull-to-update refreshes the visible SPA page without navigating
+// the WebView back through its native startup address.
+window.addEventListener("lvl:pull-refresh", (event) => {
+  event.preventDefault();
+  const current = viewFromLocation();
+  const refresh = async () => {
+    if (current === "title") {
+      const route = new URLSearchParams(window.location.search);
+      let comicReload = null;
+      let comicId = "";
+      if (route.get("f") === "comics" && route.get("item")) {
+        comicId = route.get("item");
+        comicReload = await import("./frontend/comics/comics-title-subject.js");
+        comicReload.comicTitles.delete(comicId);
+      }
+      refreshTitlePage();
+      // A title redraw is scheduled on a microtask. Keep the indicator active
+      // until its Comics data request has completed.
+      if (comicReload) {
+        await Promise.resolve();
+        await comicReload.comicTitles.get(comicId)?.pending;
+      }
+    } else if (current === "home") {
+      await loadHomeCatalog({ force: true });
+    } else if (current === "library") {
+      const { loadLibrary } = await import("./frontend/comics/comics-render.js");
+      await loadLibrary({ force: true });
+      renderLibrary();
+    } else if (current === "calendar") {
+      calendarUi.refresh();
+    } else if (current === "settings") {
+      renderSettings();
+    } else {
+      switchView(current, { historyMode: "none", restoreScroll: true });
+    }
+  };
+  void refresh().catch((error) => console.warn("Couldn't refresh the current page:", error))
+    .finally(() => event.detail?.done?.());
+});
+
 export const calendarUi = createCalendarView({
   root: $("#calendar-root"),
   getSeries: () => buildLibrarySeries(),

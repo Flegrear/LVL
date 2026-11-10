@@ -86,7 +86,7 @@ export const comicsApi = Object.freeze({
   setFavorite: (sourceId, favorite) => call("/api/comics/ext/favorites", { method: "POST", body: { sourceId, favorite } }),
   verifyState: () => call("/api/comics/ext/check", { timeoutMs: 8000 }),
   saveSiteSettings: (sourceId, settings) => call("/api/comics/ext/settings", { method: "POST", body: { sourceId, settings } }),
-  extSearch: (id, sourceId) => call(`/api/comics/work/${encodeURIComponent(id)}/ext-search?${new URLSearchParams({ source: sourceId })}`, { timeoutMs: 120_000 }),
+  extSearch: (id, sourceId, { fresh = false } = {}) => call(`/api/comics/work/${encodeURIComponent(id)}/ext-search?${new URLSearchParams({ source: sourceId, ...(fresh ? { fresh: "1" } : {}) })}`, { timeoutMs: 120_000 }),
   openSourceCheck: (sourceId) => call("/api/comics/ext/check", { method: "POST", body: { sourceId } }),
   extPreview: (id, sourceId, path) => call(`/api/comics/work/${encodeURIComponent(id)}/ext-preview?${new URLSearchParams({ source: sourceId, path })}`, { timeoutMs: 120_000 }),
 });

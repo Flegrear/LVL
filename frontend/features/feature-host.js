@@ -166,6 +166,7 @@ export function createClientFeatureHost(features = [], { log = console } = {}) {
     for (const feature of accepted) {
       if (feature.translations) guarded(log, `${feature.id} translations`, () => context.registerTranslations?.(feature.translations));
       for (const href of feature.styles || []) {
+        if ([...doc.head?.querySelectorAll?.('link[rel="stylesheet"]') || []].some((link) => link.getAttribute("href") === href)) continue;
         const link = doc.createElement("link");
         link.rel = "stylesheet";
         link.href = href;

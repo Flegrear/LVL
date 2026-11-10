@@ -6,7 +6,11 @@ import { $ } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { viewActive } from "../app/navigation.js";
 import { revealPlayerControls } from "../player/player-core.js";
-import { playbackLoadRequestId, playLibraryEpisode } from "../player/torrent-playback.js";
+import {
+  claimPlaybackIntent, playbackLoadRequestId, playLibraryEpisode,
+  refinePlaybackMetadataReservation, retirePlaybackMetadataReservation,
+} from "../player/torrent-playback.js";
+import { playbackIntentOwner } from "../player/playback-intent.js";
 import {
   renderWatchChapters, updateChapterButtons, watchEpisodeSourceLookups, watchEpisodeSourcesOpen,
 } from "./watch-page.js";
@@ -254,8 +258,6 @@ export async function playCatalogNeighbor({ entry, list }, chapter) {
   // selection or leaving Watch must win even if that lookup resolves later.
   let expectedLoadId = playbackLoadRequestId;
   const expectedManualSelection = manualCatalogPlaybackId;
-  const stillCurrent = () => viewActive("watch") && playbackLoadRequestId === expectedLoadId
-    && manualCatalogPlaybackId === expectedManualSelection;
   const code = chapterCode(chapter.season, chapter.episode);
   const view = {
     meta: { id: entry.catalogId, type: "series", name: entry.displayTitle || entry.title, poster: entry.coverUrl || "", aliases: entry.aliases || [] },
@@ -263,13 +265,21 @@ export async function playCatalogNeighbor({ entry, list }, chapter) {
   };
   const saved = savedCatalogChapters(view.meta).get(code);
   if (saved) {
-    if (!stillCurrent()) return;
+    if (!viewActive("watch") || manualCatalogPlaybackId !== expectedManualSelection) return;
     await playLibraryEpisode(saved.entry.id, Number(saved.episode.fileIndex));
     return;
   }
-  $("#media-status").textContent = `Finding a source for ${code}…`;
-  toast(`Finding a source for ${code}…`);
+  // Unsaved neighbors must own the selection before asking for providers; a
+  // pending fetch is a real B intent even without a Watch header or media URL.
+  const claimed = claimPlaybackIntent("neighbor");
+  expectedLoadId = claimed.requestId;
+  const stillCurrent = () => playbackIntentOwner.canContinue(claimed.intent)
+    && viewActive("watch") && playbackLoadRequestId === expectedLoadId
+    && manualCatalogPlaybackId === expectedManualSelection;
+  let accepted = false;
   try {
+    $("#media-status").textContent = `Finding a source for ${code}…`;
+    toast(`Finding a source for ${code}…`);
     const data = await fetchJson(`/api/streams?type=series&id=${encodeURIComponent(chapter.id)}`);
     if (!stillCurrent()) return;
     const candidates = chapterPlayOrder(groupChapterSources(data.streams || [], catalogChapterTarget(view, chapter)));
@@ -277,11 +287,13 @@ export async function playCatalogNeighbor({ entry, list }, chapter) {
     let lastError = null;
     for (const stream of candidates) {
       if (!stillCurrent()) return;
+      refinePlaybackMetadataReservation(claimed.metadataReservation, stream.magnet);
       try {
         await addCatalogChapterSource(view, chapter, stream, {
-          play: true, quiet: true, stillCurrent,
+          play: true, quiet: true, stillCurrent, parentIntent: claimed.intent,
           onPlaybackStart: (loadId) => { expectedLoadId = loadId; },
         });
+        accepted = true;
         return;
       } catch (error) {
         if (error?.name === "AbortError") return; // Another selection owns playback now.
@@ -293,6 +305,9 @@ export async function playCatalogNeighbor({ entry, list }, chapter) {
     if (!stillCurrent()) return;
     $("#media-status").textContent = `Couldn't play ${code}`;
     toast(error.message || `Couldn't play ${code}`, { tone: "error" });
+  } finally {
+    playbackIntentOwner.settle(claimed.intent, accepted ? "accepted" : "failed");
+    await retirePlaybackMetadataReservation(claimed.metadataReservation);
   }
 }
 

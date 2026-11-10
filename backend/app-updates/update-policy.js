@@ -29,6 +29,8 @@ export const IDLE_BEFORE_INSTALL_MS = 2 * 60_000;
 export const AUTO_RETRY_MS = 6 * 60 * 60_000;
 const SIZE_RETRY_MS = 5 * 60_000;
 const INSTALL_START_LIMIT_MS = 3 * 60_000;
+const APK_PENDING_PHASES = new Set(["created", "committing", "awaiting-confirmation", "reported-success"]);
+const APK_TERMINAL_PHASES = new Set(["cancelled", "failed", "unknown"]);
 
 export const updateAssetName = (version, patch) => patch ? `LVL-update-v${version}.zip` : "LVL-Setup.exe";
 
@@ -125,41 +127,78 @@ export function createUpdatePolicy({
     return null;
   }
 
+  // Android journals its PackageInstaller attempt before handing off the APK.
+  // It can outlive the server and the release feed, so the journal itself is
+  // authoritative when there is no available version to compare against.
+  // When another version is available, an older journal must not own its card.
+  function matchingApkInstall(native) {
+    const attempt = native?.apkInstall;
+    if (!native?.installed || !attempt || typeof attempt !== "object" || native.autoInstall === true) return null;
+    if (!VERSION.test(String(attempt.version || "")) || !Number.isInteger(attempt.sessionId) || attempt.sessionId < 0) return null;
+    if (native.availableVersion && native.availableVersion !== attempt.version) return null;
+    if (native.available && native.autoInstall !== false) return null;
+    if (native.availableSize && native.availableSize.kind !== "installer") return null;
+    return attempt;
+  }
+
   // Remember transitions the window may poll too slowly to see.
   function observe(native) {
-    // Android may report PackageInstaller's terminal failure between two
-    // browser polls (or after the browser reconnects). It must still show as
-    // FAILED, not "ready", even if we never observed downloading=true.
-    // This only applies to Android's explicit-approval APK (not Windows).
-    if (native?.autoInstall === false && native?.error && native?.availableVersion) {
+    if (native?.availableVersion && download && download.version !== native.availableVersion) download = null;
+    if (native?.availableVersion && launched?.version !== native.availableVersion) launched = null;
+
+    const apk = matchingApkInstall(native);
+    if (apk) {
+      download = null;
+      launched = null;
+      // A new journal (including a fresh retry of the same version) supersedes
+      // any old browser-observed error. Terminal outcomes remain durable in it.
+      failed = null;
+      return;
+    }
+    // Verification and storage failures can happen before PackageInstaller
+    // creates its journal, and a browser may miss the entire download.
+    // Never attribute an older, unrelated journal's error to a newer version.
+    if (native?.autoInstall === false && !native.apkInstall && !native.downloading && native.error && native.availableVersion) {
       failed = { version: native.availableVersion, error: String(native.error) };
       download = null;
       launched = null;
       return;
     }
     if (native?.downloading) {
-      if (!download) download = { version: native.availableVersion, since: now() };
+      if (!download) download = { version: native.availableVersion, since: now(), android: native.autoInstall === false };
       return;
     }
     if (!download) return;
     if (native?.error) failed = { version: download.version, error: String(native.error) };
-    else launched = { version: download.version, at: now() };
+    else if (!download.android && native?.autoInstall !== false) launched = { version: download.version, at: now() };
     download = null;
   }
 
   function phase(native) {
-    if (!native?.installed) return "idle";
-    if (native.downloading) return "downloading";
+    if (!native?.installed) return { name: "idle" };
+    if (native.downloading) return { name: "downloading", version: native.availableVersion };
+    const apk = matchingApkInstall(native);
+    if (apk) {
+      if (APK_PENDING_PHASES.has(apk.phase)) return {
+        name: "installing", version: apk.version,
+        pendingConfirmation: apk.phase === "awaiting-confirmation" && apk.pendingConfirmation === true,
+      };
+      if (APK_TERMINAL_PHASES.has(apk.phase)) return {
+        name: "failed", version: apk.version,
+        error: apk.message || native.error || "Android couldn't confirm this update",
+      };
+    }
+    if (native.autoInstall === false || (native.availableVersion && launched && launched.version !== native.availableVersion)) launched = null;
     // The launcher stops this server when the install starts. Still answering
     // minutes later means the install never got going.
     if (launched && now() - launched.at > INSTALL_START_LIMIT_MS) {
       failed = { version: launched.version, error: "The update didn't start installing." };
       launched = null;
     }
-    if (launched) return "installing";
-    if (failed && failed.version === native.availableVersion) return "failed";
-    if (native.available && native.availableVersion) return "ready";
-    return "idle";
+    if (launched) return { name: "installing", version: launched.version };
+    if (failed && failed.version === native.availableVersion) return { name: "failed", version: failed.version, error: failed.error };
+    if (native.available && native.availableVersion) return { name: "ready", version: native.availableVersion };
+    return { name: "idle" };
   }
 
   function progress(native) {
@@ -190,12 +229,13 @@ export function createUpdatePolicy({
       ...native,
       automatic: automatic ?? Boolean(native?.automatic),
       update: {
-        phase: current,
-        version: current === "installing" ? launched.version : native?.availableVersion || null,
-        progress: current === "downloading" ? progress(native) : null,
-        size: current === "ready" ? readySize(native) : null,
-        error: current === "failed" ? failed.error : null,
-        installsWhenIdle: Boolean(automatic) && current === "ready" && native?.autoInstall !== false,
+        phase: current.name,
+        version: current.version || native?.availableVersion || null,
+        progress: current.name === "downloading" ? progress(native) : null,
+        size: current.name === "ready" ? readySize(native) : null,
+        error: current.name === "failed" ? current.error : null,
+        pendingConfirmation: Boolean(current.pendingConfirmation),
+        installsWhenIdle: Boolean(automatic) && current.name === "ready" && native?.autoInstall !== false,
       },
     };
   }
@@ -208,7 +248,7 @@ export function createUpdatePolicy({
 
   async function install({ auto = false } = {}) {
     const native = await request("install");
-    download = { version: native.availableVersion, since: now() };
+    download = { version: native.availableVersion, since: now(), android: native.autoInstall === false };
     launched = null;
     failed = null;
     if (auto) autoAttempts.set(String(native.availableVersion), now());

@@ -8,6 +8,8 @@
 // Extensions are Android code: LVL reads which theme each one is built on
 // (apk-theme.js) and runs its own version of that theme (source-engines.js).
 import zlib from "node:zlib";
+import { discardResponseBody, readBoundedResponse } from "./response-body.js";
+import { createRemoteFetch } from "./remote-fetch.js";
 
 const MAX_COMPRESSED = 8 * 1024 * 1024;
 const MAX_INDEX = 40 * 1024 * 1024;
@@ -105,38 +107,64 @@ export function fromJsonIndex(list, base) {
   }));
 }
 
-async function download(url, fetchImpl) {
-  const response = await fetchImpl(url, { headers: { "User-Agent": "LVL (local app)" }, signal: AbortSignal.timeout(30_000) });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  const declared = Number(response.headers.get("content-length") || 0);
-  if (declared > MAX_COMPRESSED) throw new Error("The index is too large");
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (bytes.length > MAX_COMPRESSED) throw new Error("The index is too large");
-  return bytes;
+async function download(url, fetchImpl, remote) {
+  if (!fetchImpl) {
+    const response = await remote.request(url, {
+      headers: { "User-Agent": "LVL (local app)" },
+      maxBytes: MAX_COMPRESSED, maxDecodedBytes: MAX_INDEX, timeoutMs: 30_000, httpsOnly: true,
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.buffer;
+  }
+  const controller = new AbortController();
+  const response = await fetchImpl(url, { headers: { "User-Agent": "LVL (local app)" },
+    signal: AbortSignal.any([AbortSignal.timeout(30_000), controller.signal]) });
+  if (!response.ok) {
+    await discardResponseBody(response, () => controller.abort());
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return readBoundedResponse(response, MAX_COMPRESSED, "The index is too large", () => controller.abort());
 }
 
 // url: the repository base (".../repo"), or its repo.json / index.min.json.
-export async function fetchRepository(url, { fetchImpl = globalThis.fetch } = {}) {
+export async function fetchRepository(url, { fetchImpl, remote = createRemoteFetch() } = {}) {
   const base = String(url).replace(/\/(?:repo\.json|index\.min\.json|index\.pb)$/i, "").replace(/\/+$/, "");
+  let repository;
+  try { repository = new URL(base); } catch { throw new Error("Invalid extension repository address"); }
+  if (repository.protocol !== "https:" || repository.username || repository.password)
+    throw new Error("Extension repositories require HTTPS");
   let meta = null;
-  try { meta = JSON.parse(text(await download(`${base}/repo.json`, fetchImpl))); } catch { meta = null; }
+  try { meta = JSON.parse(text(await download(`${base}/repo.json`, fetchImpl, remote))); }
+  catch (error) {
+    // An optional missing repo.json is compatible with old repositories.
+    // Security rejection of its destination/redirect is never optional.
+    if (error?.code === "EPRIVATE" || error?.status === 400) throw error;
+    meta = null;
+  }
   let extensions;
   let fingerprint = meta?.meta?.signingKeyFingerprint || "";
   let indexFingerprint = "";
   if (meta?.index_v2 && /^https:\/\//.test(meta.index_v2)) {
-    const index = decodeIndex(await download(meta.index_v2, fetchImpl));
+    const index = decodeIndex(await download(meta.index_v2, fetchImpl, remote));
     extensions = index.extensions;
     indexFingerprint = index.fingerprint;
     fingerprint ||= index.fingerprint;
   } else {
-    extensions = fromJsonIndex(JSON.parse(text(await download(`${base}/index.min.json`, fetchImpl))), base);
+    extensions = fromJsonIndex(JSON.parse(text(await download(`${base}/index.min.json`, fetchImpl, remote))), base);
   }
+  // A repository is an explicit signing authority. Contradictory repository
+  // identities cannot authorize extension code even if an APK declares a source ID.
+  const normalize = (value) => String(value || "").replaceAll(":", "").toLowerCase();
+  const fingerprintMatches = !indexFingerprint || !meta?.meta?.signingKeyFingerprint
+    || normalize(indexFingerprint) === normalize(meta.meta.signingKeyFingerprint);
   // Placeholder entries that ask old apps to update aren't extensions.
   extensions = extensions.filter((ext) => ext.sources.length || ext.apk);
   return {
-    url: base, name: meta?.meta?.name || "", website: meta?.meta?.website || "", fingerprint,
+    // Preserve repository listing for manual inspection, but a conflicting index
+    // carries no executable signing authority. The runner rejects the missing key.
+    url: base, name: meta?.meta?.name || "", website: meta?.meta?.website || "", fingerprint: fingerprintMatches ? fingerprint : "",
     // repo.json and index.pb should name the same signing key.
-    fingerprintMatches: !indexFingerprint || !meta?.meta?.signingKeyFingerprint || indexFingerprint === meta.meta.signingKeyFingerprint,
+    fingerprintMatches,
     extensions,
   };
 }

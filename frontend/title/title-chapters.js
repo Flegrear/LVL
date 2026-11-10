@@ -13,8 +13,11 @@ import { $, setToolStatus } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { viewActive } from "../app/navigation.js";
 import {
-  playbackLoadRequestId, playLibraryEpisode, releaseTorrentSession, resolveTorrentMagnet,
+  claimPlaybackIntent, invalidatePlaybackIntentForEpisodeEdit, playbackLoadRequestId,
+  observePlaybackMetadataSession, playLibraryEpisode, refinePlaybackMetadataReservation, releaseTorrentSession,
+  resolveTorrentMagnet, retirePlaybackMetadataReservation,
 } from "../player/torrent-playback.js";
+import { playbackIntentOwner, playbackSessionReservationOwner } from "../player/playback-intent.js";
 import { explicitlyUnwatchedChapter, manuallyWatchedChapter } from "../watch/watched-status.js";
 import {
   buildLibrarySeries, catalogMediaKind, groupLibraryChapters, libraryEntryById, librarySourceDetails,
@@ -491,25 +494,43 @@ export let manualCatalogPlaybackId = 0;
 
 // Saves one chapter from one source: resolves torrent metadata, finds the chapter's file, and adds
 // a Library entry that holds only that file (packs included). With play, starts it right away.
-export async function addCatalogChapterSource(view, chapter, stream, { play = false, button = null, quiet = false, stillCurrent = null, onPlaybackStart = null } = {}) {
+export async function addCatalogChapterSource(view, chapter, stream, {
+  play = false, button = null, quiet = false, stillCurrent = null,
+  onPlaybackStart = null, parentIntent = null,
+} = {}) {
   if (!stream?.magnet) throw new Error("This source did not provide a usable torrent hash.");
-  // Direct catalog clicks must claim playback before waiting for torrent metadata.
-  // Automatic Up Next passes its own ownership predicate instead.
-  const manualIntent = play && !stillCurrent ? ++manualCatalogPlaybackId : 0;
+  // A direct source click is a root. A catalog/neighbor candidate must inherit
+  // its caller's token, including while the torrent metadata is still pending.
+  const claimed = play ? parentIntent !== null
+    ? playbackIntentOwner.canContinue(parentIntent)
+      ? { intent: parentIntent, root: false,
+        metadataReservation: playbackSessionReservationOwner.begin(parentIntent, stream.magnet) } : null
+    : claimPlaybackIntent("catalog-source", { magnet: stream.magnet }) : null;
+  if (play && !claimed) throw new DOMException("Playback selection changed", "AbortError");
+  // Adding to Library without playing does not claim a playback selection, but
+  // its metadata POST can still reuse a session owned by another operation.
+  const metadataReservation = claimed?.metadataReservation
+    || (!play ? playbackSessionReservationOwner.begin(null, stream.magnet) : null);
+  const manualIntent = play && parentIntent === null && !stillCurrent ? ++manualCatalogPlaybackId : 0;
   const originView = manualIntent ? (viewActive("watch") ? "watch" : viewActive("title") ? "title" : "") : "";
-  const canContinue = () => (!manualIntent || (manualIntent === manualCatalogPlaybackId
+  const canContinue = () => (!play || playbackIntentOwner.canContinue(claimed.intent))
+    && (!manualIntent || (manualIntent === manualCatalogPlaybackId
     && (!originView || viewActive(originView)))) && (!stillCurrent || stillCurrent());
   const { meta } = view;
   const code = chapterCode(chapter.season, chapter.episode);
   const providerIndex = Number.isInteger(stream.fileIdx) && stream.fileIdx >= 0 ? stream.fileIdx : null;
-  const oldText = buttonText(button);
-  if (button) { button.disabled = true; setButtonText(button, "Opening…"); }
+  let oldText = "";
   let session = null;
-  let keepSession = false;
+  let accepted = false;
   try {
+    oldText = buttonText(button);
+    if (button) { button.disabled = true; setButtonText(button, "Opening…"); }
     session = await resolveTorrentMagnet(stream.magnet, (current, elapsed) => {
       if (!quiet) setToolStatus(TITLE_STATUS, `Opening ${libraryChapterName({ code }) || code}… ${elapsed} s${current.numPeers ? `, ${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}` : ""}`);
-    }, { timeoutMs: 25_000, preferredFileIndex: providerIndex });
+    }, {
+      timeoutMs: 25_000, preferredFileIndex: providerIndex, releaseOnFailure: false,
+      onSession: (created) => observePlaybackMetadataSession(metadataReservation, created),
+    });
     if (!canContinue()) throw new DOMException("Playback selection changed", "AbortError");
     const fileIndex = providerIndex ?? chapterFileIndex(session.files, catalogChapterTarget(view, chapter));
     const file = (session.files || []).find((item) => Number(item.index) === Number(fileIndex));
@@ -544,11 +565,13 @@ export async function addCatalogChapterSource(view, chapter, stream, { play = fa
       if (!canContinue()) throw new DOMException("Playback selection changed", "AbortError");
       const expectedLoadId = playbackLoadRequestId + 1;
       onPlaybackStart?.(expectedLoadId);
-      const started = await playLibraryEpisode(entry.id, Number(file.index));
+      const started = await playLibraryEpisode(entry.id, Number(file.index), { parentIntent: claimed.intent });
       if (!started && playbackLoadRequestId !== expectedLoadId)
         throw new DOMException("Playback selection changed", "AbortError");
       if (!started) throw new Error(`Couldn't start ${code} from that source.`);
-      keepSession = true; // Keep it only after playback accepted this source.
+      // playLibraryEpisode has its own successful POST lease. This metadata
+      // acquisition must be released even when both refer to the same torrent.
+      accepted = true;
       return entry;
     }
     if (button) { setButtonText(button, "Added"); button.dataset.done = "1"; }
@@ -564,14 +587,24 @@ export async function addCatalogChapterSource(view, chapter, stream, { play = fa
     }
     return entry;
   } finally {
-    if (session?.id && !keepSession) await releaseTorrentSession(session.id);
-    if (button && button.dataset.done !== "1") { button.disabled = false; setButtonText(button, oldText); }
+    try {
+      await retirePlaybackMetadataReservation(metadataReservation, {
+        session, releaseIfUnused: true, magnet: stream.magnet,
+      });
+    } finally {
+      if (claimed?.root) playbackIntentOwner.settle(claimed.intent, accepted ? "accepted" : "failed");
+      if (button && button.dataset.done !== "1") { button.disabled = false; setButtonText(button, oldText); }
+    }
   }
 }
 
 // A newer user action (another source, or an episode edit) makes a lookup in flight stale.
 export function invalidateManualCatalogPlayback() {
   manualCatalogPlaybackId += 1;
+  const current = playbackIntentOwner.current();
+  if (current && ["catalog", "catalog-source", "neighbor"].includes(current.token.kind)
+    && playbackIntentOwner.cancelCurrentForNavigation(current.token))
+    invalidatePlaybackIntentForEpisodeEdit(current.token);
 }
 
 function catalogFetchAllLabel(view, shownCount) {
@@ -636,23 +669,37 @@ export async function playCatalogChapter(view, chapter, button) {
     return;
   }
   if (view.busy) return;
+  const claimed = claimPlaybackIntent("catalog");
+  const manualIntent = ++manualCatalogPlaybackId;
+  let candidateStarted = false;
+  const canContinue = () => playbackIntentOwner.canContinue(claimed.intent)
+    && manualIntent === manualCatalogPlaybackId && catalogSeriesView === view
+    && (viewActive("title") || (candidateStarted && viewActive("watch")));
+  let accepted = false;
   view.busy = true;
-  const oldText = buttonText(button) || "Play";
-  if (button) { button.disabled = true; setButtonText(button, "Finding…"); }
+  let oldText = "Play";
   try {
+    oldText = buttonText(button) || "Play";
+    if (button) { button.disabled = true; setButtonText(button, "Finding…"); }
     setToolStatus(TITLE_STATUS, `Finding a source for ${libraryChapterName({ code }) || code}…`);
     const sources = await loadCatalogChapterSources(view, chapter);
-    if (!sources || catalogSeriesView !== view || !viewActive("title")
+    if (!canContinue() || !sources
       || view.sources.get(chapter.id) !== sources) return;
     if (sources.status !== "ready") throw new Error(sources.error || "Source lookup failed.");
     const candidates = chapterPlayOrder(sources.groups);
     if (!candidates.length) throw new Error(`No playable source was found for ${code}.`);
     let lastError = null;
     for (let index = 0; index < candidates.length; index += 1) {
+      if (!canContinue()) return;
       const stream = candidates[index];
+      refinePlaybackMetadataReservation(claimed.metadataReservation, stream.magnet);
       setToolStatus(TITLE_STATUS, `Trying source ${index + 1} of ${candidates.length}: ${catalogKindText(stream.chapterSource.label).toLowerCase()}${stream.quality && stream.quality !== "UNKNOWN" ? `, ${stream.quality}` : ""}, ${stream.peers || 0} peer${stream.peers === 1 ? "" : "s"}`);
       try {
-        await addCatalogChapterSource(view, chapter, stream, { play: true, quiet: true });
+        candidateStarted = true;
+        await addCatalogChapterSource(view, chapter, stream, {
+          play: true, quiet: true, parentIntent: claimed.intent, stillCurrent: canContinue,
+        });
+        accepted = true;
         setToolStatus(TITLE_STATUS, "");
         return;
       } catch (error) {
@@ -662,8 +709,10 @@ export async function playCatalogChapter(view, chapter, button) {
     }
     throw lastError || new Error(`No source for ${code} passed torrent validation.`);
   } catch (error) {
-    setToolStatus(TITLE_STATUS, error.message || "Could not play this chapter", true);
+    if (canContinue()) setToolStatus(TITLE_STATUS, error.message || "Could not play this chapter", true);
   } finally {
+    playbackIntentOwner.settle(claimed.intent, accepted ? "accepted" : "failed");
+    await retirePlaybackMetadataReservation(claimed.metadataReservation);
     view.busy = false;
     if (button?.isConnected) { button.disabled = false; setButtonText(button, oldText); }
   }

@@ -11,6 +11,7 @@ import https from "node:https";
 import dns from "node:dns";
 import net from "node:net";
 import zlib from "node:zlib";
+import { createSiteCookieJar } from "./site-cookie-jar.js";
 
 export const BROWSER_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36";
 // A GET answered with a server error (5xx, Cloudflare's 52x) is tried again
@@ -21,7 +22,9 @@ const RETRY_STATUS = new Set([500, 502, 503, 504, 520, 521, 522, 523, 524]);
 function ipv4Private(address) {
   const [a, b, c] = address.split(".").map(Number);
   return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2)) || (a === 198 && (b === 18 || b === 19)) || a >= 224;
+    || (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2))
+    || (a === 192 && b === 88 && c === 99) || (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100)))
+    || (a === 203 && b === 0 && c === 113) || a >= 224;
 }
 
 // WHATWG URL canonicalization turns dotted IPv4-mapped literals into hex,
@@ -61,7 +64,7 @@ export function isPublicAddress(address) {
   // Preserve the existing loopback/unspecified, ULA, link-local, multicast,
   // NAT64 and documentation-address restrictions, regardless of textual form.
   if (words.slice(0, 7).every((value) => value === 0) && words[7] <= 1) return false;
-  if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xff00) === 0xff00) return false;
+  if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00) return false;
   if (first === 0x64 && words[1] === 0xff9b) return false;
   return !(first === 0x2001 && words[1].toString(16).startsWith("db8"));
 }
@@ -79,13 +82,13 @@ export function checkUrl(value) {
 
 // dns.lookup that refuses non-public answers. Handles { all: true } (used by
 // Node's happy-eyeballs connect) as well as the single-address form.
-export function safeLookup(resolve = dns.lookup) {
+export function safeLookup(resolve = dns.lookup, isAllowed = isPublicAddress) {
   return (hostname, options, callback) => {
     const cb = typeof options === "function" ? options : callback;
     const opts = typeof options === "object" && options ? options : {};
     resolve(hostname, { ...opts, all: true }, (error, addresses) => {
       if (error) return cb(error);
-      const list = (Array.isArray(addresses) ? addresses : [{ address: addresses, family: net.isIP(addresses) }]).filter((item) => isPublicAddress(item.address));
+      const list = (Array.isArray(addresses) ? addresses : [{ address: addresses, family: net.isIP(addresses) }]).filter((item) => isAllowed(item.address));
       if (!list.length) return cb(Object.assign(new Error("The site resolved to a local address"), { code: "EPRIVATE" }));
       if (opts.all) return cb(null, list);
       return cb(null, list[0].address, list[0].family);
@@ -103,51 +106,67 @@ export async function checkHost(value, resolve = dns.lookup) {
   return url;
 }
 
-function cookieJar() {
-  const jars = new Map();
-  const site = (host) => host.split(".").slice(-2).join(".");
-  return {
-    header(url) {
-      const jar = jars.get(site(url.hostname));
-      return jar && jar.size ? [...jar].map(([name, value]) => `${name}=${value}`).join("; ") : "";
-    },
-    store(url, setCookie) {
-      if (!setCookie) return;
-      const key = site(url.hostname);
-      const jar = jars.get(key) || new Map();
-      for (const line of [].concat(setCookie)) {
-        const pair = /^\s*([^=;\s]{1,100})=([^;]{0,2000})/.exec(line);
-        if (!pair) continue;
-        if (/;\s*max-age=0\b|;\s*expires=thu, 01 jan 1970/i.test(line)) jar.delete(pair[1]);
-        else jar.set(pair[1], pair[2]);
-      }
-      if (jar.size > 60) jar.delete(jar.keys().next().value);
-      jars.set(key, jar);
-      if (jars.size > 300) jars.delete(jars.keys().next().value);
-    },
-  };
-}
-
 // Paces requests per host: at most `perHost` at once, `gapMs` between starts.
 // A request can ask for a slower pace for its host (a site's speed setting);
 // later requests to that host (its images) keep it.
 function hostPacer({ gapMs, perHost, now }) {
   const hosts = new Map();
+  const maxHosts = 200;
+  const idleTtlMs = 10 * 60_000;
+  const idle = (state) => state.active === 0 && state.queue.length === 0;
+  const pruneIdle = () => {
+    const stamp = now();
+    for (const [host, state] of hosts) {
+      if (idle(state) && state.idleAt !== null && stamp - state.idleAt >= idleTtlMs)
+        hosts.delete(host);
+    }
+    // Insertion order is the LRU order. Never evict an active or queued
+    // owner, even if that temporarily places the map above the idle cap.
+    for (const [host, state] of hosts) {
+      if (hosts.size <= maxHosts) break;
+      if (idle(state)) hosts.delete(host);
+    }
+  };
   return async function run(host, task, pace = null) {
-    const state = hosts.get(host) || { active: 0, last: 0, queue: [], pace: null };
+    pruneIdle();
+    const state = hosts.get(host) || { active: 0, last: 0, queue: [], pace: null, idleAt: null, startTurn: Promise.resolve() };
+    if (hosts.has(host)) hosts.delete(host);
     hosts.set(host, state);
+    state.idleAt = null;
     if (pace) state.pace = pace;
     const gap = Math.max(gapMs, state.pace?.gapMs || 0);
     const limit = Math.max(1, Math.min(perHost, state.pace?.perHost || perHost));
-    if (state.active >= limit) await new Promise((resolve) => state.queue.push(resolve));
-    state.active += 1;
-    const wait = state.last + gap - now();
-    state.last = Math.max(now(), state.last + gap);
-    if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+    if (state.active >= limit || state.queue.length)
+      await new Promise((resolve) => state.queue.push(resolve));
+    else state.active += 1;
+    // The active permit limits concurrent transfers; this short start-only
+    // baton serializes the *admission timestamp*, not the transfer. Two
+    // overdue timers cannot both claim the same instant after a late wakeup.
+    const priorStart = state.startTurn;
+    let finishStart;
+    state.startTurn = new Promise((resolve) => { finishStart = resolve; });
+    await priorStart;
+    try {
+      for (;;) {
+        const currentGap = Math.max(gapMs, state.pace?.gapMs || gap);
+        const wait = state.last + currentGap - now();
+        if (wait <= 0) break;
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        // Re-read the actual clock and last admitted start after every wake.
+      }
+      state.last = now();
+    } finally {
+      finishStart();
+    }
     try { return await task(); } finally {
       state.active -= 1;
-      state.queue.shift()?.();
-      if (!state.active && !state.queue.length && !state.pace && hosts.size > 200) hosts.delete(host);
+      const currentLimit = Math.max(1, Math.min(perHost, state.pace?.perHost || perHost));
+      while (state.active < currentLimit && state.queue.length) {
+        state.active += 1; // Reserve the permit before resuming its queued owner.
+        state.queue.shift()();
+      }
+      if (idle(state)) state.idleAt = now();
+      pruneIdle();
     }
   };
 }
@@ -161,16 +180,18 @@ function decode(buffer, encoding, maxBytes) {
   return buffer;
 }
 
-export function createRemoteFetch({ lookup = safeLookup(), transport = { http, https }, limits = {}, now = Date.now, userAgent = BROWSER_UA,
+export function createRemoteFetch({ lookup = dns.lookup, transport = { http, https }, limits = {}, now = Date.now, userAgent = BROWSER_UA,
   sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const config = { ...LIMITS, ...limits };
-  const jar = cookieJar();
+  const jar = createSiteCookieJar({ now });
   const pace = hostPacer({ gapMs: config.gapMs, perHost: config.perHost, now });
+  // Validate even injected DNS implementations at the final socket lookup.
+  const checkedLookup = safeLookup(lookup);
 
   function once(url, { method, headers, body, timeoutMs, maxBytes }) {
     return new Promise((resolve, reject) => {
       const lib = url.protocol === "https:" ? transport.https : transport.http;
-      const request = lib.request(url, { method, headers, lookup, timeout: timeoutMs }, (response) => {
+      const request = lib.request(url, { method, headers, lookup: checkedLookup, timeout: timeoutMs }, (response) => {
         const chunks = [];
         let size = 0;
         response.on("data", (chunk) => {
@@ -191,22 +212,40 @@ export function createRemoteFetch({ lookup = safeLookup(), transport = { http, h
   // options: { method, headers, form (object -> urlencoded), referer, lang, accept, maxBytes, timeoutMs }
   async function request(input, options = {}) {
     let url = checkUrl(input);
+    if (options.httpsOnly && url.protocol !== "https:")
+      throw Object.assign(new Error("HTTPS is required for this download"), { status: 400 });
+    const credentialOrigin = url.origin;
     let method = options.method || (options.form || options.json !== undefined ? "POST" : "GET");
     let body = options.form ? new URLSearchParams(options.form).toString() : options.json !== undefined ? JSON.stringify(options.json) : options.body ?? null;
     const bodyType = options.form ? "application/x-www-form-urlencoded; charset=UTF-8" : options.json !== undefined ? "application/json" : options.contentType || "text/plain;charset=UTF-8";
     const maxBytes = Math.min(options.maxBytes || config.maxBytes, 40 * 1024 * 1024);
+    const maxDecodedBytes = Math.min(options.maxDecodedBytes || maxBytes, 40 * 1024 * 1024);
     for (let hop = 0; hop <= config.redirects; hop += 1) {
+      const sameOrigin = url.origin === credentialOrigin;
+      // Header values supplied by a site engine may include its auth tokens.
+      // After a cross-origin redirect, forward only ordinary representation
+      // hints; the destination receives its own host-scoped cookies.
+      const crossOriginHeader = /^(?:accept|accept-language|accept-encoding|content-type|user-agent|cache-control|x-requested-with|range)$/i;
+      const suppliedHeaders = Object.fromEntries(Object.entries(options.headers || {})
+        .filter(([key]) => !/^(?:host|connection|proxy-authorization|transfer-encoding|content-length)$/i.test(key)
+          && (sameOrigin || crossOriginHeader.test(key))));
       const headers = {
         "User-Agent": userAgent,
         Accept: options.accept || "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
         "Accept-Language": options.lang ? `${options.lang},en;q=0.8` : "en-US,en;q=0.9",
         "Accept-Encoding": "gzip, deflate, br",
-        ...(options.referer ? { Referer: options.referer } : {}),
+        ...(options.referer && sameOrigin ? { Referer: options.referer } : {}),
         ...(body !== null ? { "Content-Type": bodyType, "Content-Length": Buffer.byteLength(body) } : {}),
-        ...(options.headers || {}),
+        ...suppliedHeaders,
       };
-      const cookie = [jar.header(url), options.cookies || ""].filter(Boolean).join("; ");
-      if (cookie) headers.Cookie = cookie;
+      const explicitCookie = Object.keys(headers).some((key) => /^cookie$/i.test(key));
+      const cookie = [jar.header(url), sameOrigin ? options.cookies || "" : ""].filter(Boolean).join("; ");
+      if (cookie) {
+        if (explicitCookie) {
+          const previous = Object.keys(headers).find((key) => /^cookie$/i.test(key));
+          headers[previous] = [headers[previous], cookie].filter(Boolean).join("; ");
+        } else headers.Cookie = cookie;
+      }
       const current = url;
       let result;
       for (let attempt = 0; ; attempt += 1) {
@@ -222,13 +261,15 @@ export function createRemoteFetch({ lookup = safeLookup(), transport = { http, h
         jar.store(url, result.headers["set-cookie"]);
         if (!canRetry || !RETRY_STATUS.has(result.status)) break;
         let peek = null;
-        try { peek = decode(result.raw, result.headers["content-encoding"], maxBytes); } catch {}
+        try { peek = decode(result.raw, result.headers["content-encoding"], maxDecodedBytes); } catch {}
         if (peek && isBotCheck({ status: result.status, headers: result.headers, buffer: peek })) break;
         const after = Number(result.headers["retry-after"]);
         await sleep(Number.isFinite(after) && after >= 0 ? Math.min(10_000, after * 1000) : config.retryDelays[attempt]);
       }
       if ([301, 302, 303, 307, 308].includes(result.status) && result.headers.location) {
         const next = checkUrl(new URL(result.headers.location, url).href);
+        if (options.httpsOnly && next.protocol !== "https:")
+          throw Object.assign(new Error("HTTPS is required for this download"), { status: 400 });
         // A site that moved domain (kagane.cx -> kagane.moe) answers every path with the same
         // path on the new host; its API posts must stay posts there. Other 301/302s after a POST
         // turn into a GET, as in browsers.
@@ -238,7 +279,7 @@ export function createRemoteFetch({ lookup = safeLookup(), transport = { http, h
         continue;
       }
       let buffer;
-      try { buffer = decode(result.raw, result.headers["content-encoding"], maxBytes); } catch { throw Object.assign(new Error("The site sent an unreadable answer"), { status: 502 }); }
+      try { buffer = decode(result.raw, result.headers["content-encoding"], maxDecodedBytes); } catch { throw Object.assign(new Error("The site sent an unreadable answer"), { status: 502 }); }
       return {
         status: result.status,
         ok: result.status >= 200 && result.status < 300,

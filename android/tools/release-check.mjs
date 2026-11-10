@@ -3,8 +3,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
+import { assertFileInventory, checkedJson, hashFile, listOrdinaryFiles,
+  readVersionIdentity, verifyReviewedInputs } from "../../scripts/release-provenance.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 export const ABIS = ["arm64-v8a", "x86_64"];
@@ -12,6 +15,28 @@ const ELF_MACHINE = { "arm64-v8a": 183, x86_64: 62 };
 const TOOLS = [["node", "node", "libnode_exec.so"], ["ffmpeg", "ffmpeg", "libffmpeg_exec.so"], ["ffmpeg", "ffprobe", "libffprobe_exec.so"]];
 const sha256 = (file) => crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
 const fail = (message) => { throw new Error(`Android release: ${message}`); };
+
+export function verifyPinnedExtensionSource(projectRoot = ROOT) {
+  const pin = checkedJson(path.join(projectRoot, 'ext-runner', 'suwayomi.json'));
+  if (typeof pin.commit !== 'string' || !/^[0-9a-f]{40}$/.test(pin.commit)) {
+    fail('invalid pinned extension API source commit');
+  }
+  const checkout = path.join(projectRoot, 'ext-runner', '.vendor', 'suwayomi');
+  const vendor = path.join(projectRoot, 'ext-runner', '.vendor', 'src', 'main', 'java');
+  let current, dirty;
+  try {
+    const invoke = (args) => execFileSync('git', ['-C', checkout, ...args], {
+      encoding: 'utf8', windowsHide: true, timeout: 20_000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    current = invoke(['rev-parse', '--verify', 'HEAD^{commit}']);
+    // The source-copy helper traverses the vendor checkout's filesystem; an
+    // untracked Java/Kotlin file would otherwise enter generated Gradle source.
+    dirty = invoke(['status', '--porcelain', '--untracked-files=all']);
+  } catch { fail('pinned extension API checkout is missing or unreadable'); }
+  if (current !== pin.commit || dirty) fail('extension API vendor source differs from its pinned Git commit');
+  return { commit: pin.commit, inventory: listOrdinaryFiles(vendor) };
+}
 export function readAndroidVersion(file = path.join(ROOT, "android/app-version.json")) {
   const value = JSON.parse(fs.readFileSync(file, "utf8"));
   if (!/^\d+\.\d+\.\d+$/.test(value.version || "") ||
@@ -161,7 +186,81 @@ export function checkNativeSources(dir) {
   return result;
 }
 
-export function checkStage(stage, version) {
+export function verifyAndroidStageProvenance(stage, { reviewedCommit, candidateVersion,
+  projectRoot = ROOT, releaseInputPaths = null } = {}) {
+  if (!reviewedCommit || !candidateVersion) fail('explicit reviewed commit and candidate version required');
+  const assets = path.join(stage, 'assets');
+  const app = path.join(stage, 'app');
+  const manifest = checkedJson(path.join(assets, 'lvl-app.json'));
+  const receiptPath = path.join(assets, 'lvl-stage-provenance.json');
+  const receipt = checkedJson(receiptPath);
+  if (receipt.schemaVersion !== 1 || receipt.mode !== 'release' || receipt.platform !== 'android' ||
+      receipt.reviewedCommit !== reviewedCommit || receipt.candidateVersion !== candidateVersion ||
+      manifest.reviewedCommit !== reviewedCommit || manifest.version !== candidateVersion ||
+      manifest.releaseProvenanceSha256 !== hashFile(receiptPath)) {
+    fail('Android staged provenance identity or receipt digest mismatch');
+  }
+  const configured = readAndroidVersion(path.join(projectRoot, 'android', 'app-version.json'));
+  const desktopVersion = checkedJson(path.join(projectRoot, 'package.json')).version;
+  if (configured.version !== candidateVersion ||
+      configured.desktopSourceVersion !== desktopVersion || receipt.desktopSourceVersion !== desktopVersion) {
+    fail('Android candidate and desktop source metadata disagree');
+  }
+  readVersionIdentity(projectRoot, desktopVersion, 'android');
+  const reviewed = verifyReviewedInputs({ root: projectRoot, reviewedCommit,
+    platform: 'android', extraPaths: releaseInputPaths });
+  if (JSON.stringify(receipt.sourceInputs) !== JSON.stringify(reviewed.inputs)) {
+    fail('Android reviewed source inventory differs from staged receipt');
+  }
+  if (releaseInputPaths === null) {
+    const vendor = verifyPinnedExtensionSource(projectRoot);
+    if (receipt.suwayomiCommit !== vendor.commit ||
+        JSON.stringify(receipt.generatedExtensionApi) !== JSON.stringify(vendor.inventory)) {
+      fail('Android generated extension API source inventory differs from staged release');
+    }
+  }
+  assertFileInventory(app, receipt.app);
+  assertFileInventory(path.join(stage, 'jniLibs'), receipt.jniLibs);
+  const generated = listOrdinaryFiles(assets).filter(entry =>
+    !['lvl-app.zip', 'lvl-app.json', 'lvl-stage-provenance.json'].includes(entry.path));
+  if (JSON.stringify(generated) !== JSON.stringify(receipt.nativeAssets)) {
+    fail('Android generated native asset inventory differs from staged receipt');
+  }
+  for (const relative of reviewed.appFiles) {
+    if (relative === 'package.json' || relative === 'CHANGELOG.md') continue;
+    const source = reviewed.inputs.find(item => item.path === relative);
+    if (hashFile(path.join(app, relative)) !== source.sha256) {
+      fail(`Android app source differs from reviewed commit after transformations: ${relative}`);
+    }
+  }
+  for (const [staged, original] of [['android-preload.cjs', 'android/server-preload.cjs'],
+    ['android/update-apply.mjs', 'android/update-apply.mjs'],
+    ['runtime/update-apply.mjs', 'runtime/update-apply.mjs'],
+    ['runtime/windows-install-transaction.mjs', 'runtime/windows-install-transaction.mjs']]) {
+    if (hashFile(path.join(app, staged)) !== reviewed.inputs.find(item => item.path === original)?.sha256) {
+      fail(`Android runtime adaptation differs from reviewed commit: ${staged}`);
+    }
+  }
+  const archive = path.join(assets, 'lvl-app.zip');
+  if (hashFile(archive) !== manifest.sha256) fail('Android staged zip hash differs from app manifest');
+  const zip = new AdmZip(archive);
+  const embedded = zip.getEntries().filter(entry => !entry.isDirectory).map(entry => {
+    const name = entry.entryName.replaceAll('\\', '/');
+    if (name.startsWith('/') || name.split('/').some(part => !part || part === '.' || part === '..')) {
+      fail(`Unsafe Android app ZIP entry: ${name}`);
+    }
+    const contents = entry.getData();
+    return { path: name, sha256: crypto.createHash('sha256').update(contents).digest('hex'), bytes: contents.length };
+  }).sort((a, b) => a.path.localeCompare(b.path, 'en'));
+  if (JSON.stringify(embedded) !== JSON.stringify(receipt.app)) {
+    fail('Embedded Android app ZIP differs from the inventory of staged app files');
+  }
+  return { reviewedCommit, appFiles: receipt.app.length, nativeAssets: generated.length };
+}
+
+export function checkStage(stage, version, { reviewedCommit = null, projectRoot = ROOT } = {}) {
+  const provenance = verifyAndroidStageProvenance(stage,
+    { reviewedCommit, candidateVersion: version, projectRoot });
   const configured = readAndroidVersion();
   const manifest = JSON.parse(fs.readFileSync(path.join(stage, "assets", "lvl-app.json"), "utf8"));
   if (manifest.version !== version || !/^[a-f0-9]{64}$/.test(manifest.sha256)) fail("staged app version or digest is invalid");
@@ -196,16 +295,35 @@ export function checkStage(stage, version) {
   }
   const entries = fs.readdirSync(path.join(stage, "jniLibs"));
   if (entries.some((name) => !ABIS.includes(name))) fail("staged native libraries contain an unexpected ABI");
-  return { version, zipSha256: manifest.sha256, binaries: jni };
+  return { version, zipSha256: manifest.sha256, binaries: jni, provenance };
+}
+
+export function checkApkStageAssets(apk, stage) {
+  ordinaryFile(apk);
+  const packaged = new AdmZip(apk);
+  const assets = path.join(stage, 'assets');
+  const expected = listOrdinaryFiles(assets);
+  if (!expected.some(entry => entry.path === 'lvl-stage-provenance.json') ||
+      !expected.some(entry => entry.path === 'lvl-app.zip')) fail('missing reviewed APK payload inventory');
+  for (const entry of expected) {
+    const embedded = packaged.getEntry(`assets/${entry.path}`);
+    if (!embedded || embedded.isDirectory ||
+        crypto.createHash('sha256').update(embedded.getData()).digest('hex') !== entry.sha256) {
+      fail(`Signed APK does not embed the reviewed stage asset: ${entry.path}`);
+    }
+  }
+  return { apk: path.basename(apk), verifiedAssetCount: expected.length };
 }
 
 function argsToOptions(argv) {
   const o = {};
   for (let i = 0; i < argv.length; i += 2) {
-    if (!["--native-dir", "--stage-dir", "--version"].includes(argv[i]) || !argv[i + 1] || o[argv[i]]) fail("usage: --native-dir <dir> [--stage-dir <dir> --version X.Y.Z]");
+    if (!["--native-dir", "--stage-dir", "--version", "--reviewed-commit", "--apk"].includes(argv[i]) || !argv[i + 1] || o[argv[i]]) fail("usage: --native-dir <dir> [--stage-dir <dir> --version X.Y.Z --reviewed-commit <full-id> --apk <signed.apk>]");
     o[argv[i]] = argv[i + 1];
   }
   if (Boolean(o["--stage-dir"]) !== Boolean(o["--version"])) fail("--stage-dir requires --version, and vice versa");
+  if (Boolean(o["--stage-dir"]) !== Boolean(o["--reviewed-commit"])) fail("staged release requires a reviewed commit");
+  if (o["--apk"] && !o["--stage-dir"]) fail('signed APK verification requires a reviewed stage');
   return o;
 }
 
@@ -213,8 +331,10 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   try {
     const opts = argsToOptions(process.argv.slice(2));
     const native = checkNativeSources(path.resolve(opts["--native-dir"] || path.join(ROOT, "build/android-native")));
-    const stage = opts["--stage-dir"] ? checkStage(path.resolve(opts["--stage-dir"]), opts["--version"]) : null;
-    console.log(JSON.stringify({ ok: true, native, stage }));
+    const stage = opts["--stage-dir"] ? checkStage(path.resolve(opts["--stage-dir"]), opts["--version"],
+      { reviewedCommit: opts["--reviewed-commit"] }) : null;
+    const apk = opts["--apk"] ? checkApkStageAssets(path.resolve(opts["--apk"]), path.resolve(opts["--stage-dir"])) : null;
+    console.log(JSON.stringify({ ok: true, native, stage, apk }));
   } catch (error) {
     console.error(error.message);
     process.exitCode = 1;

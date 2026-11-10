@@ -49,7 +49,6 @@ import java.io.File
 import java.io.InputStreamReader
 import java.io.OutputStreamWriter
 import java.util.Base64
-import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 import io.github.flegrear.lvl.readAtMost
 
@@ -68,16 +67,23 @@ class ExtensionHost(private val context: Context) {
         private const val TAG = "LVL-ExtHost"
     }
 
-    class RequestError(message: String, val status: Int = 400) : Exception(message)
+    class RequestError(message: String, val status: Int = 400, val code: String? = null) : Exception(message)
 
     val socketFile = File(context.filesDir, "run/ext-host.sock")
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val permits = Semaphore(8)
-    private val sources = ConcurrentHashMap<Long, CatalogueSource>()
+    private val sources = SourceOwnership<CatalogueSource>()
+    private val sourceLock = Any()
+    private val sourceOwners = HashMap<Long, Any>()
+    private var stopped = false
+    private data class SourceSession(val source: CatalogueSource, val owner: Any)
     // Extensions on library 1.6 keep data in a manga's or chapter's memo between calls.
-    private val mangaMemo = ConcurrentHashMap<String, JsonObject>()
-    private val chapterMemo = ConcurrentHashMap<String, JsonObject>()
+    // Bound both the number of records and their estimated retained JSON payload.
+    private val mangaMemo = BoundedOwnerMemo<JsonObject>(weightOf = ::memoWeight)
+    private val chapterMemo = BoundedOwnerMemo<JsonObject>(weightOf = ::memoWeight)
+    private fun memoWeight(url: String, memo: JsonObject): Long =
+        512L + 4L * (url.length.toLong() + memo.toString().length.toLong())
     private var server: LocalServerSocket? = null
     private var bound: LocalSocket? = null
 
@@ -109,6 +115,12 @@ class ExtensionHost(private val context: Context) {
 
     @Synchronized
     fun stop() {
+        synchronized(sourceLock) {
+            stopped = true
+            sourceOwners.clear()
+            mangaMemo.clear()
+            chapterMemo.clear()
+        }
         runCatching { server?.close() }
         runCatching { bound?.close() }
         server = null
@@ -161,6 +173,7 @@ class ExtensionHost(private val context: Context) {
                     put("error", message.replace(BROWSER_CHECK_MARK, "").trim().take(500))
                     put("status", status)
                     if (check) put("code", "blocked") else if (code) put("code", "extension-code")
+                    else (error as? RequestError)?.code?.let { put("code", it) }
                 })
             }
         }
@@ -170,9 +183,13 @@ class ExtensionHost(private val context: Context) {
 
     private fun JsonObject.need(name: String): String = text(name)?.takeIf { it.isNotEmpty() } ?: throw RequestError("Missing $name")
 
-    private fun source(request: JsonObject): CatalogueSource {
+    private fun source(request: JsonObject): SourceSession {
         val id = request.need("source").toLongOrNull() ?: throw RequestError("Invalid source id")
-        return sources[id] ?: throw RequestError("This source isn't loaded", 404)
+        return synchronized(sourceLock) {
+            if (stopped) throw RequestError("The extension host has stopped", 503)
+            val current = sources[id] ?: throw RequestError("This source isn't loaded", 404)
+            SourceSession(current, sourceOwners[id] ?: throw RequestError("This source isn't loaded", 404))
+        }
     }
 
     private fun page(request: JsonObject): Int = request["page"]?.jsonPrimitive?.intOrNull?.coerceIn(1, 500) ?: 1
@@ -181,21 +198,30 @@ class ExtensionHost(private val context: Context) {
         when (request.need("op")) {
             "load" -> load(request)
             "sources" -> buildJsonArray { sources.values.forEach { add(describe(it)) } }
-            "search" -> mangasPage(source(request).getSearchManga(page(request), request.text("query") ?: "", FilterList()), request)
-            "popular" -> mangasPage(source(request).getPopularManga(page(request)), request)
-            "latest" -> mangasPage(source(request).getLatestUpdates(page(request)), request)
+            "search" -> {
+                val session = source(request)
+                mangasPage(session.source.getSearchManga(page(request), request.text("query") ?: "", FilterList()), session)
+            }
+            "popular" -> {
+                val session = source(request)
+                mangasPage(session.source.getPopularManga(page(request)), session)
+            }
+            "latest" -> {
+                val session = source(request)
+                mangasPage(session.source.getLatestUpdates(page(request)), session)
+            }
             "details" -> {
-                val source = source(request)
-                manga(source, source.getMangaUpdate(mangaOf(request), emptyList(), fetchDetails = true, fetchChapters = false).manga)
+                val session = source(request)
+                manga(session, session.source.getMangaUpdate(mangaOf(session, request), emptyList(), fetchDetails = true, fetchChapters = false).manga)
             }
             "chapters" -> {
-                val source = source(request)
-                val chapters = source.getMangaUpdate(mangaOf(request), emptyList(), fetchDetails = false, fetchChapters = true).chapters
-                buildJsonArray { chapters.forEach { add(chapter(source, it)) } }
+                val session = source(request)
+                val chapters = session.source.getMangaUpdate(mangaOf(session, request), emptyList(), fetchDetails = false, fetchChapters = true).chapters
+                buildJsonArray { chapters.forEach { add(chapter(session, it)) } }
             }
             "pages" -> {
-                val source = source(request)
-                val pages = source.getPageList(chapterOf(source, request))
+                val session = source(request)
+                val pages = session.source.getPageList(chapterOf(session, request))
                 buildJsonArray {
                     pages.forEach { page ->
                         add(buildJsonObject { put("index", page.index); put("url", page.url); put("imageUrl", page.imageUrl) })
@@ -207,11 +233,27 @@ class ExtensionHost(private val context: Context) {
             // The app as Comics' browser (backend/comics/app-browser.js).
             "browserRequest" -> browserRequest(request)
             "siteCookies" -> siteCookies(request)
-            "openVisible" -> buildJsonObject { put("open", VerifyActivity.start(context, request.need("url"))) }
-            "verifyState" -> buildJsonObject {
-                put("open", VerifyActivity.open)
-                put("passed", VerifyActivity.passed)
-                if (VerifyActivity.finishedAt > 0) put("at", VerifyActivity.finishedAt)
+            "openVisible" -> {
+                val url = request.need("url")
+                val requested = VerifyActivity.start(context, url)
+                val state = VerifyActivity.state
+                buildJsonObject {
+                    put("open", requested && state.open && state.url == url)
+                    put("pending", state.pending)
+                    state.url?.let { put("url", it) }
+                    state.generation?.let { put("generation", it) }
+                }
+            }
+            "verifyState" -> {
+                val state = VerifyActivity.state
+                buildJsonObject {
+                    put("open", state.open)
+                    put("passed", state.passed)
+                    put("pending", state.pending)
+                    state.url?.let { put("url", it) }
+                    state.generation?.let { put("generation", it) }
+                    if (state.finishedAt > 0) put("at", state.finishedAt)
+                }
             }
             else -> throw RequestError("Unknown op")
         }
@@ -221,7 +263,16 @@ class ExtensionHost(private val context: Context) {
         val extension = ExtensionLoader.load(context, File(request.need("apk")), expected)
         Log.i(TAG, "Loaded ${extension.pkg} ${extension.versionName}: ${extension.sources.size} sources, signer ${extension.signer.take(12)}" +
             if (expected.isNullOrBlank()) " (no repository key to check)" else " (matches the repository key)")
-        extension.sources.forEach { sources[it.id] = it }
+        synchronized(sourceLock) {
+            if (stopped) throw RequestError("The extension host has stopped", 503)
+            try { sources.replace(extension.pkg, extension.sources) { it.id } } catch (error: IllegalArgumentException) { throw RequestError(error.message ?: "Source collision", 409) }
+            // A reload creates fresh tokens even when an extension reuses its numeric ID
+            // (or even a source object). Late callbacks hold their retired token.
+            sourceOwners.keys.retainAll(sources.values.map { it.id }.toSet())
+            extension.sources.forEach { sourceOwners[it.id] = Any() }
+            mangaMemo.retainOwners { id, owner -> sourceOwners[id] === owner }
+            chapterMemo.retainOwners { id, owner -> sourceOwners[id] === owner }
+        }
         return buildJsonObject {
             put("pkg", extension.pkg)
             put("version", extension.versionName)
@@ -241,18 +292,31 @@ class ExtensionHost(private val context: Context) {
             if (source is HttpSource) put("baseUrl", source.baseUrl)
         }
 
-    private fun mangasPage(result: MangasPage, request: JsonObject): JsonElement {
-        val source = source(request)
+    private fun mangasPage(result: MangasPage, session: SourceSession): JsonElement {
         return buildJsonObject {
             put("hasNextPage", result.hasNextPage)
-            put("mangas", buildJsonArray { result.mangas.forEach { add(manga(source, it)) } })
+            put("mangas", buildJsonArray { result.mangas.forEach { add(manga(session, it)) } })
         }
     }
 
     private fun memoOf(manga: SManga): JsonObject? = runCatching { manga.memo }.getOrNull()?.takeIf { it.isNotEmpty() }
 
-    private fun manga(source: CatalogueSource, manga: SManga): JsonObject {
-        memoOf(manga)?.let { mangaMemo["${source.id}\n${manga.url}"] = it }
+    private fun memoPut(cache: BoundedOwnerMemo<JsonObject>, session: SourceSession, url: String, value: JsonObject) {
+        synchronized(sourceLock) {
+            if (!stopped && sourceOwners[session.source.id] === session.owner) {
+                cache.put(session.source.id, session.owner, url, value)
+            }
+        }
+    }
+
+    private fun memoGet(cache: BoundedOwnerMemo<JsonObject>, session: SourceSession, url: String): JsonObject? =
+        synchronized(sourceLock) {
+            if (stopped || sourceOwners[session.source.id] !== session.owner) null
+            else cache.get(session.source.id, session.owner, url)
+        }
+
+    private fun manga(session: SourceSession, manga: SManga): JsonObject {
+        memoOf(manga)?.let { memoPut(mangaMemo, session, manga.url, it) }
         return buildJsonObject {
             put("url", manga.url)
             put("title", runCatching { manga.title }.getOrDefault(""))
@@ -265,8 +329,8 @@ class ExtensionHost(private val context: Context) {
         }
     }
 
-    private fun chapter(source: CatalogueSource, chapter: SChapter): JsonObject {
-        runCatching { chapter.memo }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { chapterMemo["${source.id}\n${chapter.url}"] = it }
+    private fun chapter(session: SourceSession, chapter: SChapter): JsonObject {
+        runCatching { chapter.memo }.getOrNull()?.takeIf { it.isNotEmpty() }?.let { memoPut(chapterMemo, session, chapter.url, it) }
         return buildJsonObject {
             put("url", chapter.url)
             put("name", chapter.name)
@@ -276,34 +340,35 @@ class ExtensionHost(private val context: Context) {
         }
     }
 
-    private fun mangaOf(request: JsonObject): SManga {
-        val source = source(request)
+    private fun mangaOf(session: SourceSession, request: JsonObject): SManga {
         val url = request.need("url")
         return SManga.create().apply {
             this.url = url
             title = request.text("title") ?: ""
-            mangaMemo["${source.id}\n$url"]?.let { runCatching { memo = it } }
+            memoGet(mangaMemo, session, url)?.let { runCatching { memo = it } }
         }
     }
 
-    private fun chapterOf(source: CatalogueSource, request: JsonObject): SChapter {
+    private fun chapterOf(session: SourceSession, request: JsonObject): SChapter {
         val url = request.need("url")
         return SChapter.create().apply {
             this.url = url
             name = request.text("name") ?: ""
-            chapterMemo["${source.id}\n$url"]?.let { runCatching { memo = it } }
+            memoGet(chapterMemo, session, url)?.let { runCatching { memo = it } }
         }
     }
 
     // A page's image through the source's own client (some sources unscramble images there).
     private suspend fun image(request: JsonObject): JsonElement {
-        val source = source(request) as? HttpSource ?: throw RequestError("This source has no images to fetch")
+        val source = source(request).source as? HttpSource ?: throw RequestError("This source has no images to fetch")
         val page = Page(request["index"]?.jsonPrimitive?.intOrNull ?: 0, request.text("url") ?: "", request.text("imageUrl")?.takeIf { it.isNotEmpty() })
         if (page.imageUrl == null) page.imageUrl = source.getImageUrl(page)
         source.getImage(page).use { response ->
             val body = response.body
             if (body.contentLength() > MAX_IMAGE_BYTES) throw RequestError("The image is too large", 502)
-            val bytes = body.bytes()
+            // Content-Length is optional and may be false. Stop reading before accepting
+            // an unbounded response body (including chunked and transparently decoded ones).
+            val bytes = body.byteStream().use { it.readAtMost((MAX_IMAGE_BYTES + 1).toInt()) }
             if (bytes.size > MAX_IMAGE_BYTES) throw RequestError("The image is too large", 502)
             return buildJsonObject {
                 put("type", body.contentType()?.toString() ?: "application/octet-stream")
@@ -320,6 +385,7 @@ class ExtensionHost(private val context: Context) {
     private fun browserRequest(request: JsonObject): JsonElement {
         val url = request.need("url").toHttpUrl()
         if (url.scheme != "https" && url.scheme != "http") throw RequestError("Only web addresses can be fetched")
+        if (VerifyActivity.open) throw RequestError("Finish the site verification before trying again", 409, "check-open")
         val method = (request.text("method") ?: "GET").uppercase()
         val maxBytes = (request["maxBytes"]?.jsonPrimitive?.longOrNull ?: (8L * 1024 * 1024)).coerceIn(1, MAX_IMAGE_BYTES)
         val builder = Request.Builder().url(url)
@@ -328,11 +394,14 @@ class ExtensionHost(private val context: Context) {
             val text = (value as? JsonPrimitive)?.contentOrNull ?: return@forEach
             when {
                 // OkHttp decompresses only what it asked for itself.
-                name.equals("Accept-Encoding", ignoreCase = true) || name.equals("Content-Length", ignoreCase = true) -> {}
+                name.equals("Accept-Encoding", ignoreCase = true) || name.equals("Content-Length", ignoreCase = true) || name.equals("User-Agent", ignoreCase = true) -> {}
                 name.equals("Content-Type", ignoreCase = true) -> contentType = text
                 else -> builder.header(name, text)
             }
         }
+        // Clearance cookies are tied to the browser's user agent. Ignore a Node caller's
+        // default agent so both this request and the Verify WebView use the same one.
+        builder.header("User-Agent", Injekt.get<NetworkHelper>().defaultUserAgentProvider())
         request.text("referer")?.takeIf { it.isNotBlank() }?.let { builder.header("Referer", it) }
         val body = request.text("body")?.let { Base64.getDecoder().decode(it) }
         if (method == "GET" || method == "HEAD") builder.method(method, null)
@@ -359,7 +428,10 @@ class ExtensionHost(private val context: Context) {
     // as Set-Cookie strings, with the user agent they belong to.
     private fun siteCookies(request: JsonObject): JsonElement {
         val url = request.need("url").toHttpUrl()
-        pageClient.newCall(Request.Builder().url(url).build()).execute().close()
+        if (VerifyActivity.open) throw RequestError("Finish the site verification before trying again", 409, "check-open")
+        // The extension client and the Verify WebView already use the same CookieManager.
+        // Fetching this URL here would initiate another Cloudflare check before the cookies
+        // could be handed back to the extension, even when the user just passed it.
         val network = Injekt.get<NetworkHelper>()
         val header = android.webkit.CookieManager.getInstance().getCookie(url.toString()).orEmpty()
         return buildJsonObject {
@@ -375,8 +447,97 @@ class ExtensionHost(private val context: Context) {
         val url = request.need("url").toHttpUrl()
         val network = Injekt.get<NetworkHelper>()
         val list = (request["cookies"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
-        val added = network.cookieJar.add(url, list)
+        // A cookie read from the shared WebView jar is already installed with its original
+        // domain/path. Re-applying an inferred host-only copy could replace its scope.
+        val missing = list.filter { text ->
+            val cookie = okhttp3.Cookie.parse(url, text)
+            cookie != null && network.cookieJar.value(url, cookie.name) != cookie.value
+        }
+        val added = network.cookieJar.add(url, missing)
         request.text("userAgent")?.let { network.setUserAgent(it) }
         return buildJsonObject { put("added", added) }
+    }
+}
+
+/** Small synchronized LRU for source-owned extension payloads; never retain unbounded JSON. */
+internal class BoundedOwnerMemo<V : Any>(
+    private val maxEntries: Int = 512,
+    private val maxWeight: Long = 4L * 1024 * 1024,
+    private val ttlMs: Long = 20L * 60 * 1000,
+    private val clockMs: () -> Long = { System.nanoTime() / 1_000_000L },
+    private val weightOf: (String, V) -> Long,
+) {
+    private data class Key(val id: Long, val url: String)
+    private class Entry<V>(val owner: Any, val value: V, val weight: Long, var lastUsedAt: Long)
+    private val values = LinkedHashMap<Key, Entry<V>>(16, 0.75f, true)
+    private var retainedWeight = 0L
+
+    private fun expire(now: Long) {
+        val iterator = values.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next().value
+            if (now - entry.lastUsedAt >= ttlMs) {
+                retainedWeight -= entry.weight
+                iterator.remove()
+            }
+        }
+    }
+
+    @Synchronized
+    fun get(id: Long, owner: Any, url: String): V? {
+        expire(clockMs())
+        val entry = values[Key(id, url)] ?: return null
+        if (entry.owner !== owner) return null
+        entry.lastUsedAt = clockMs()
+        return entry.value
+    }
+
+    @Synchronized
+    fun put(id: Long, owner: Any, url: String, value: V) {
+        val now = clockMs()
+        expire(now)
+        val key = Key(id, url)
+        values.remove(key)?.let { retainedWeight -= it.weight }
+        val weight = weightOf(url, value)
+        if (maxEntries <= 0 || weight <= 0L || weight > maxWeight) return
+        while (values.size >= maxEntries || retainedWeight > maxWeight - weight) {
+            val eldest = values.entries.iterator()
+            if (!eldest.hasNext()) break
+            val entry = eldest.next().value
+            retainedWeight -= entry.weight
+            eldest.remove()
+        }
+        values[key] = Entry(owner, value, weight, now)
+        retainedWeight += weight
+    }
+
+    @Synchronized
+    fun retainOwners(isCurrent: (Long, Any) -> Boolean) {
+        val iterator = values.entries.iterator()
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            if (!isCurrent(entry.key.id, entry.value.owner)) {
+                retainedWeight -= entry.value.weight
+                iterator.remove()
+            }
+        }
+    }
+
+    @Synchronized
+    fun clear() {
+        values.clear()
+        retainedWeight = 0L
+    }
+
+    @Synchronized
+    fun count(): Int {
+        expire(clockMs())
+        return values.size
+    }
+
+    @Synchronized
+    fun weight(): Long {
+        expire(clockMs())
+        return retainedWeight
     }
 }

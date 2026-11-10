@@ -15,6 +15,8 @@ import { pushScore, pushStatus } from "./comics-tracking.js";
 import { mountMangaScore } from "./comics-score.js";
 
 const STATUS_ORDER = ["CURRENT", "PLANNING", "COMPLETED", "PAUSED", "DROPPED", "REPEATING"];
+const STATUS_CHOICES = ["", ...STATUS_ORDER];
+const statusBoundDocuments = new WeakSet();
 // Blocks on screen by work id, so the hero's Continue reading can use the list.
 export const mangaBlocks = new Map();
 
@@ -28,26 +30,128 @@ export function continueReadingFromList(chapterList, { onEmpty = () => {}, onCha
   return chapterList.read(next.chapter, next.volume ?? "");
 }
 
-export function statusSelectMarkup(current, { label = "Library status" } = {}) {
-  const options = [`<option value=""${current ? "" : " selected"}>${escapeHtml(t("Not in Library"))}</option>`]
-    .concat(STATUS_ORDER.map((status) => `<option value="${status}"${status === current ? " selected" : ""}>${escapeHtml(t(STATUS_LABELS[status]))}</option>`));
-  return `<label class="comic-status"><span class="ui-visually-hidden">${escapeHtml(t(label))}</span><select data-comics-status>${options.join("")}</select></label>`;
+const statusLabel = (status) => t(STATUS_LABELS[status] || "Not in Library");
+
+export function statusSelectMarkup(current, { label = "Library status", workId = "" } = {}) {
+  const selected = STATUS_CHOICES.includes(current) ? current : "";
+  const name = statusLabel(selected);
+  const options = STATUS_CHOICES.map((status) => `<button type="button" role="option" tabindex="-1" data-comics-status-choice="${status}" aria-selected="${status === selected}">`
+    + `<span>${escapeHtml(statusLabel(status))}</span>${icon("check")}</button>`).join("");
+  return `<div class="comic-status" data-comics-status-for="${escapeHtml(workId)}" data-comics-status-value="${selected}">`
+    + `<button type="button" class="comic-status__trigger" data-comics-status-trigger aria-haspopup="listbox" aria-expanded="false" aria-label="${escapeHtml(t(label))}: ${escapeHtml(name)}">`
+    + `<span data-comics-status-label>${escapeHtml(name)}</span>${icon("chevron-down")}</button>`
+    + `<div class="comic-status__menu" data-comics-status-menu role="listbox" aria-label="${escapeHtml(t(label))}" hidden>${options}</div></div>`;
 }
 
-// Saving a status from any select on the page; core redraws the Library and the page.
-export async function saveStatus(select, workId, ctx) {
-  select.disabled = true;
-  try {
-    if (select.value) rememberEntry(workId, (await comicsApi.setStatus(workId, select.value)).entry);
-    else { await comicsApi.remove(workId); rememberEntry(workId, null); }
-    if (select.value) void pushStatus(workId, select.value, ctx);
-    for (const other of document.querySelectorAll(`[data-comics-status-for="${CSS.escape(workId)}"]`)) if (other !== select) other.value = select.value;
-    ctx.refreshLibrary?.();
-  } catch (error) {
-    toast(error.message);
-  } finally {
-    select.disabled = false;
+function closeStatusMenu(control, restoreFocus = false) {
+  const menu = control.querySelector("[data-comics-status-menu]");
+  if (!menu || menu.hidden) return;
+  menu.hidden = true;
+  const trigger = control.querySelector("[data-comics-status-trigger]");
+  trigger?.setAttribute("aria-expanded", "false");
+  if (restoreFocus) trigger?.focus();
+}
+
+function openStatusMenu(control, first = "selected") {
+  const trigger = control.querySelector("[data-comics-status-trigger]");
+  const menu = control.querySelector("[data-comics-status-menu]");
+  if (trigger?.disabled || !menu) return;
+  menu.hidden = false;
+  trigger.setAttribute("aria-expanded", "true");
+  const options = [...menu.querySelectorAll("[data-comics-status-choice]")];
+  const index = first === "first" ? 0 : first === "last" ? options.length - 1
+    : Math.max(0, options.findIndex((option) => option.dataset.comicsStatusChoice === control.dataset.comicsStatusValue));
+  options[index]?.focus();
+}
+
+function bindStatusDismissal(doc) {
+  if (statusBoundDocuments.has(doc)) return;
+  statusBoundDocuments.add(doc);
+  for (const eventName of ["pointerdown", "focusin"]) {
+    doc.addEventListener(eventName, (event) => {
+      for (const control of doc.querySelectorAll("[data-comics-status-for]")) {
+        if (!control.contains(event.target)) closeStatusMenu(control);
+      }
+    });
   }
+}
+
+function syncStatusChoice(workId, status) {
+  for (const control of document.querySelectorAll("[data-comics-status-for]")) {
+    if (control.dataset.comicsStatusFor !== workId) continue;
+    control.dataset.comicsStatusValue = status;
+    const trigger = control.querySelector("[data-comics-status-trigger]");
+    const label = control.querySelector("[data-comics-status-label]");
+    if (label) label.textContent = statusLabel(status);
+    if (trigger) trigger.setAttribute("aria-label", `${t("Library status")}: ${statusLabel(status)}`);
+    for (const option of control.querySelectorAll("[data-comics-status-choice]")) {
+      option.setAttribute("aria-selected", String(option.dataset.comicsStatusChoice === status));
+    }
+    const badge = control.parentElement?.querySelector(".comic-block-library");
+    if (badge) badge.hidden = !status;
+  }
+}
+
+// Wait for the local Library write before showing a new status or syncing AniList.
+export async function saveStatus(control, workId, ctx, requestedStatus) {
+  const status = String(requestedStatus ?? "");
+  if (!STATUS_CHOICES.includes(status) || control.dataset.comicsStatusSaving === "true") return false;
+  if (control.dataset.comicsStatusValue === status) return true;
+  control.dataset.comicsStatusSaving = "true";
+  const trigger = control.querySelector("[data-comics-status-trigger]");
+  if (trigger) trigger.disabled = true;
+  control.setAttribute("aria-busy", "true");
+  try {
+    const entry = status ? (await comicsApi.setStatus(workId, status)).entry : (await comicsApi.remove(workId), null);
+    const confirmed = entry?.status && STATUS_CHOICES.includes(entry.status) ? entry.status : status;
+    rememberEntry(workId, entry);
+    syncStatusChoice(workId, confirmed);
+    if (confirmed) void pushStatus(workId, confirmed, ctx);
+    ctx.refreshLibrary?.();
+    return true;
+  } catch (error) {
+    toast(error?.message || t("Couldn't update Library status"));
+    return false;
+  } finally {
+    control.dataset.comicsStatusSaving = "false";
+    control.removeAttribute("aria-busy");
+    if (trigger) trigger.disabled = false;
+  }
+}
+
+export function bindStatusMenu(control, workId, ctx) {
+  if (!control) return;
+  bindStatusDismissal(control.ownerDocument);
+  const trigger = control.querySelector("[data-comics-status-trigger]");
+  const menu = control.querySelector("[data-comics-status-menu]");
+  if (!trigger || !menu) return;
+  trigger.addEventListener("click", () => menu.hidden ? openStatusMenu(control) : closeStatusMenu(control));
+  trigger.addEventListener("keydown", (event) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      openStatusMenu(control, event.key === "ArrowDown" ? "first" : "last");
+    } else if (event.key === "Escape") {
+      closeStatusMenu(control, true);
+    }
+  });
+  menu.addEventListener("keydown", (event) => {
+    const options = [...menu.querySelectorAll("[data-comics-status-choice]")];
+    const index = options.indexOf(control.ownerDocument.activeElement);
+    if (event.key === "Escape") { event.preventDefault(); closeStatusMenu(control, true); }
+    else if (event.key === "Tab") closeStatusMenu(control);
+    else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? options.length - 1
+        : (index + (event.key === "ArrowDown" ? 1 : -1) + options.length) % options.length;
+      options[next]?.focus();
+    }
+  });
+  menu.addEventListener("click", (event) => {
+    const choice = event.target.closest("[data-comics-status-choice]");
+    if (!choice || !menu.contains(choice)) return;
+    closeStatusMenu(control, true);
+    void saveStatus(control, workId, ctx, choice.dataset.comicsStatusChoice);
+  });
 }
 
 const unitLabel = (file) => {
@@ -203,12 +307,15 @@ export function mountMangaBlock(element, ctx, { workId, comic, index, files = []
     ? `<label class="comic-status"><span class="ui-visually-hidden">${escapeHtml(t(label))}</span><select data-manga-switch>${[{ id, title: comic.title }, ...others]
       .map((item) => `<option value="${escapeHtml(keyOf(item))}"${keyOf(item) === id ? " selected" : ""}>${escapeHtml(item.title)}</option>`).join("")}</select></label>` : "";
   // Local files have no Library status; a comic read from sources does.
-  const status = !library || (comic.local && !comic.sourceOnly) ? "" : statusSelectMarkup(entry?.status || "").replace("<select data-comics-status>", `<select data-comics-status data-comics-status-for="${escapeHtml(id)}">`);
+  const hasStatus = library && !(comic.local && !comic.sourceOnly);
+  const status = hasStatus ? statusSelectMarkup(entry?.status || "", { workId: id }) : "";
+  const membership = library && (hasStatus || (comic.local && !comic.sourceOnly))
+    ? `<span class="comic-block-library" title="${escapeHtml(t("In Library"))}"${hasStatus && !entry ? " hidden" : ""}>${icon("check")}<span>${escapeHtml(t("In Library"))}</span></span>` : "";
   const anilist = Number(comic.score) > 0 ? `<span class="title-rating comic-block-score" title="${escapeHtml(t("AniList score for the manga"))}">${icon("star")}<strong>${escapeHtml(Number(comic.score).toFixed(1))}</strong><span>AniList</span></span>` : "";
   const scoreBar = scores && !comic.local ? `<div class="comic-block-scores">${anilist}<div class="comic-manga-score-slot"></div></div>` : "";
   const continueButton = scores ? buttonMarkup({ label: "Continue reading", icon: "play", size: "sm", attrs: { "data-manga-continue": "" } }) : "";
   element.innerHTML = `<div class="comic-block-bar">${tabsMarkup(VIEWS.map((item) => ({ ...item, label: t(item.label) })), { active: view, label: t(label), idPrefix: `manga-${id}` })}`
-    + `<div class="comic-block-bar__end">${switcher}${scoreBar}${status}${continueButton}${actions}</div></div>`
+    + `<div class="comic-block-status">${membership}${status}</div><div class="comic-block-bar__end">${switcher}${scoreBar}${continueButton}${actions}</div></div>`
     + (note ? `<p class="title-note comic-block-note">${escapeHtml(note)}</p>` : "")
     + `<div class="comic-block-view" data-manga-view="chapters"></div><div class="comic-block-view" data-manga-view="sources" hidden></div>`;
   const scoreSlot = element.querySelector(".comic-manga-score-slot");
@@ -255,9 +362,9 @@ export function mountMangaBlock(element, ctx, { workId, comic, index, files = []
   });
   show(view);
   bindTabs(element.querySelector(".ui-tabs"), { onChange: (value) => show(value) });
+  bindStatusMenu(element.querySelector("[data-comics-status-for]"), id, ctx);
   element.querySelector("[data-manga-continue]")?.addEventListener("click", () => { void block.continueReading(); });
   element.addEventListener("change", (event) => {
-    if (event.target.matches("[data-comics-status]")) return void saveStatus(event.target, id, ctx);
     if (event.target.matches("[data-manga-switch]") && event.target.value !== id) onSwitch?.(event.target.value);
     return undefined;
   });

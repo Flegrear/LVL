@@ -76,7 +76,7 @@ class Runner(
     private val json = Json { ignoreUnknownKeys = true }
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val permits = Semaphore(8)
-    private val sources = ConcurrentHashMap<Long, CatalogueSource>()
+    private val sources = SourceOwnership<CatalogueSource>()
 
     // Extensions on library 1.6 keep data in a manga's or chapter's memo between calls.
     private val mangaMemo = ConcurrentHashMap<String, JsonObject>()
@@ -123,7 +123,7 @@ class Runner(
         } catch (error: Throwable) {
             val message = error.message?.takeIf { it.isNotBlank() } ?: error::class.java.simpleName
             val check = message.contains(eu.kanade.tachiyomi.network.interceptor.BROWSER_CHECK_MARK)
-            val status = if (check) 403 else (error as? RequestError)?.status ?: (error as? HttpException)?.code ?: 502
+            val status = if (check || error is ApkTrustException) 403 else (error as? RequestError)?.status ?: (error as? HttpException)?.code ?: 502
             // The extension's code doesn't link or verify here (a broken or unusual build).
             val code = error is LinkageError || error is ClassNotFoundException
             System.err.println("[runner] ${error::class.java.name}: $message")
@@ -131,7 +131,7 @@ class Runner(
                 put("id", id)
                 put("error", message.replace(eu.kanade.tachiyomi.network.interceptor.BROWSER_CHECK_MARK, "").trim().take(500))
                 put("status", status)
-                if (check) put("code", "blocked") else if (code) put("code", "extension-code")
+                if (check) put("code", "blocked") else if (error is ApkTrustException) put("code", "extension-trust") else if (code) put("code", "extension-code")
             })
         }
     }
@@ -179,8 +179,8 @@ class Runner(
 
     private fun load(request: JsonObject): JsonElement {
         val apk = File(request.need("apk"))
-        val extension = Extensions.load(apk, File(dataDir, "jars"))
-        extension.sources.forEach { sources[it.id] = it }
+        val extension = Extensions.load(apk, File(dataDir, "jars"), request.need("packageName"), request.need("fingerprint"))
+        try { sources.replace(extension.pkg, extension.sources) { it.id } } catch (error: IllegalArgumentException) { throw RequestError(error.message ?: "Source collision", 409) }
         return buildJsonObject {
             put("pkg", extension.pkg)
             put("version", extension.versionName)

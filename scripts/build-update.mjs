@@ -22,6 +22,15 @@ const MAX_FILE_COUNT = 2048;
 const MAX_DIFF_BYTES = 8 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 512 * 1024;
 
+// Stable workflow protocol: only an explicitly recognized installed-native
+// incompatibility returns 42. Git, malformed source, environment and other
+// builder failures return 1 and must stop publication without fallback.
+export const NATIVE_INSTALLER_REQUIRED_EXIT = 42;
+export class NativeInstallerRequiredError extends Error {
+  constructor(message) { super(message); this.name = "NativeInstallerRequiredError"; }
+}
+const nativeInstallerRequired = (message) => { throw new NativeInstallerRequiredError(message); };
+
 // An incremental payload never carries an installer, a binary runtime, native
 // modules, generated executables or unreviewed developer fixtures.
 const unsafeFile = /\.(?:exe|dll|sys|node|msi|msp|msix|appx|bat|cmd|ps1|vbs|wsf|com|scr|so|dylib|jar|zip|7z|rar|tar|tgz|gz)$/i;
@@ -99,6 +108,24 @@ function readGitBlob(repoRoot, revision, relative, limit = MAX_FILE_BYTES) {
   return content;
 }
 
+// Native-only changes are excluded from a source patch, but must still be
+// ordinary, complete Git objects. Validate their tracked mode and existence
+// without reading an installed executable (which may exceed patch size caps).
+// A missing object or Git/environment failure is NOT a native fallback.
+function verifyNativeGitBlob(repoRoot, revision, relative) {
+  validatePatchPath(relative);
+  const listed = git(repoRoot, ["ls-tree", "-z", "--full-tree", revision, "--", relative]);
+  const lines = listed.toString("utf8").split("\0").filter(Boolean);
+  if (lines.length !== 1) throw new Error(`Missing or ambiguous tracked native source: ${relative}`);
+  const found = /^(\d{6}) (\w+) ([0-9a-f]{40,64})\t(.+)$/.exec(lines[0]);
+  if (!found || found[4] !== relative || found[2] !== "blob"
+      || !["100644", "100755"].includes(found[1]) || !HASH.test(found[3]))
+    throw new Error(`Unsupported native Git object mode, symlink, or source: ${relative}`);
+  const size = Number(gitText(repoRoot, ["cat-file", "-s", found[3]]));
+  if (!Number.isSafeInteger(size) || size < 0)
+    throw new Error(`Invalid native Git blob size: ${relative}`);
+}
+
 function parsedJson(bytes, label) {
   try {
     const value = JSON.parse(bytes.toString("utf8"));
@@ -107,6 +134,86 @@ function parsedJson(bytes, label) {
     return value;
   } catch (error) {
     throw new Error(`Invalid ${label}: ${error.message}`);
+  }
+}
+
+const record = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
+function stringMap(value) {
+  return record(value) && Object.values(value).every((entry) => typeof entry === "string");
+}
+const stringList = (value) => Array.isArray(value) && value.every((entry) => typeof entry === "string");
+const binMap = (value) => typeof value === "string" || stringMap(value);
+function validateNpmFields(value, label, { legacyLockEngines = false } = {}) {
+  for (const name of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies",
+    "scripts"]) {
+    if (value[name] !== undefined && !stringMap(value[name]))
+      throw new Error(`Invalid ${label} ${name} schema`);
+  }
+  // Some published npm lock entries retain an old upstream engines string
+  // list (e.g. ["node >= 6.0"]); package.json itself still requires the npm
+  // documented object of name-to-range strings. Numeric/object list items
+  // are never accepted as a dependency or script map.
+  if (value.engines !== undefined && !stringMap(value.engines)
+      && !(legacyLockEngines && stringList(value.engines)))
+    throw new Error(`Invalid ${label} engines schema`);
+  for (const name of ["os", "cpu", "libc"]) {
+    if (value[name] !== undefined && !stringList(value[name]))
+      throw new Error(`Invalid ${label} ${name} schema`);
+  }
+  if (value.bin !== undefined && !binMap(value.bin))
+    throw new Error(`Invalid ${label} bin schema`);
+  if (value.packageManager !== undefined && typeof value.packageManager !== "string")
+    throw new Error(`Invalid ${label} packageManager schema`);
+  for (const name of ["bundledDependencies", "bundleDependencies"]) {
+    if (value[name] !== undefined && typeof value[name] !== "boolean" && !stringList(value[name]))
+      throw new Error(`Invalid ${label} ${name} schema`);
+  }
+  if (value.peerDependenciesMeta !== undefined &&
+    (!record(value.peerDependenciesMeta) ||
+      Object.values(value.peerDependenciesMeta).some((entry) =>
+        !record(entry) || (entry.optional !== undefined && typeof entry.optional !== "boolean"))))
+    throw new Error(`Invalid ${label} peerDependenciesMeta schema`);
+}
+function validatePackageMetadata(pkg, label) {
+  if (!record(pkg) || typeof pkg.name !== "string" || !pkg.name.trim() || typeof pkg.version !== "string")
+    throw new Error(`Invalid ${label} package name or version schema`);
+  versionParts(pkg.version);
+  validateNpmFields(pkg, label);
+  if (pkg.type !== undefined && typeof pkg.type !== "string") throw new Error(`Invalid ${label} module type`);
+}
+// npm's lockfile packages keys identify filesystem-relative locations, not
+// URLs or paths outside the project. The empty key denotes the root package;
+// ordinary node_modules nesting and workspace paths are otherwise valid.
+function validLockPackageLocation(location) {
+  if (location === "") return true;
+  if (location.startsWith("/") || /[\\:\x00-\x1f\x7f]/.test(location)) return false;
+  return location.split("/").every((segment) =>
+    segment !== "" && segment !== "." && segment !== "..");
+}
+function validateLockMetadata(lock, pkg, label) {
+  if (!record(lock) || lock.version !== pkg.version || lock.name !== pkg.name ||
+      !Number.isSafeInteger(lock.lockfileVersion) || lock.lockfileVersion < 1 ||
+      !record(lock.packages) || !record(lock.packages[""]) ||
+      lock.packages[""].version !== pkg.version || lock.packages[""].name !== pkg.name)
+    throw new Error(`Invalid ${label} package-lock schema or package identity`);
+  for (const [location, entry] of Object.entries(lock.packages)) {
+    if (!validLockPackageLocation(location))
+      throw new Error(`Invalid ${label} package-lock location: ${JSON.stringify(location)}`);
+    if (!record(entry) || (entry.version !== undefined && typeof entry.version !== "string"))
+      throw new Error(`Invalid ${label} package-lock packages entry ${location}`);
+    if (entry.name !== undefined && typeof entry.name !== "string")
+      throw new Error(`Invalid ${label} package-lock packages entry ${location} name schema`);
+    validateNpmFields(entry, `${label} package-lock packages entry ${location}`,
+      { legacyLockEngines: true });
+    for (const flag of ["dev", "optional", "devOptional", "peer", "peerOptional",
+      "inBundle", "hasInstallScript", "hasShrinkwrap", "link"]) {
+      if (entry[flag] !== undefined && typeof entry[flag] !== "boolean")
+        throw new Error(`Invalid ${label} package-lock packages entry ${location} ${flag} schema`);
+    }
+    for (const name of ["resolved", "integrity"]) {
+      if (entry[name] !== undefined && typeof entry[name] !== "string")
+        throw new Error(`Invalid ${label} package-lock packages entry ${location} ${name} schema`);
+    }
   }
 }
 
@@ -157,17 +264,144 @@ function changedEntries(repoRoot, oldCommit) {
   return changes;
 }
 
+// Native changes justify a full installer only when they are *reviewed*
+// source/build inputs. Unknown children of these directories (and any build/
+// dist/node_modules artifact) must fail closed as ordinary source-review errors.
+const reviewedNativeSources = new Set([
+  "launcher/Launcher.cs", "launcher/LvlUpdater.cs", "launcher/LvlPopup.cs",
+  "installer/build.ps1", "installer/notices.mjs", "installer/setup.iss",
+  "installer/stage.mjs", "installer/verify.mjs",
+  "runtime/update-apply.mjs", "runtime/windows-install-transaction.mjs",
+  "runtime/node.exe", "runtime/ffmpeg.exe", "runtime/ffprobe.exe",
+  "installed-app.json", "THIRD_PARTY_NOTICES.txt",
+]);
+const installedNativeSource = /^(?:(?:launcher|installer|runtime|node_modules|build|dist)\/|installed-app\.json$|THIRD_PARTY_NOTICES\.txt$)/i;
+function nativeIncompatibilityReason(relative, change) {
+  if (installedNativeSource.test(relative))
+    return `Full installer required: ${relative} changed (${change}). Launcher, runtime, packaging and dependencies cannot be patched.`;
+  if (unsafeFile.test(relative))
+    return `Full installer required: binary/runtime file changed: ${relative}`;
+  return null;
+}
+
 function inspectChangedPath(relative, change) {
   if (windowsNotInstalled(relative)) return "ignore";
   if (/^package-lock\.json$/i.test(relative)) return "lockfile";
-  if (/^(?:launcher|installer|runtime|node_modules|build|dist)\//i.test(relative)
-    || /^installed-app\.json$/i.test(relative) || /^THIRD_PARTY_NOTICES\.txt$/i.test(relative))
-    throw new Error(`Full installer required: ${relative} changed (${change}). Launcher, runtime, packaging and dependencies cannot be patched.`);
+  if (installedNativeSource.test(relative)) {
+    if (!reviewedNativeSources.has(relative))
+      throw new Error(`Full installer or source review required: unapproved native/build input ${relative} (${change})`);
+    return "native";
+  }
   if (developerFile.test(relative)) return "ignore";
-  if (unsafeFile.test(relative)) throw new Error(`Full installer required: binary/runtime file changed: ${relative}`);
   if (!isSetupSourceFile(relative) && !(change === "D" && isRetiredSetupSourceFile(relative)))
     throw new Error(`Full installer or source review required: unapproved change ${relative} (${change})`);
+  if (unsafeFile.test(relative)) return "native";
   return "include";
+}
+
+// Patch output has two lifetimes: a genuine native incompatibility must leave
+// no probe/empty folders, and a failed source-only build must roll back *its
+// own* temporary outputs and new folders. Never recursively remove anything.
+// In particular, a destination beneath a junction must not follow it.
+function verifyOutputHasNoLinkedAncestors(destination) {
+  for (let cursor = destination; ; cursor = path.dirname(cursor)) {
+    const stat = fs.lstatSync(cursor, { throwIfNoEntry: false });
+    if (stat?.isSymbolicLink())
+      throw new Error(`Patch output must not traverse a symlink or junction: ${cursor}`);
+    if (path.dirname(cursor) === cursor) break;
+  }
+}
+
+function sameOwnedIdentity(current, original, type) {
+  return current && current.dev === original.dev && current.ino === original.ino
+    && !current.isSymbolicLink() && (type === "dir" ? current.isDirectory() : current.isFile());
+}
+
+function makeOutputDirectories(destination, existingAncestor, created) {
+  let parent = existingAncestor;
+  for (const segment of path.relative(existingAncestor, destination).split(path.sep).filter(Boolean)) {
+    parent = path.join(parent, segment);
+    try {
+      fs.mkdirSync(parent);
+      const stat = fs.lstatSync(parent);
+      if (!stat.isDirectory() || stat.isSymbolicLink())
+        throw new Error(`Patch output created unsafe directory: ${parent}`);
+      created.push({ path: parent, stat });
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+      const stat = fs.lstatSync(parent);
+      if (!stat.isDirectory() || stat.isSymbolicLink())
+        throw new Error(`Patch output path is not an ordinary directory: ${parent}`);
+    }
+  }
+}
+
+// Antivirus/indexers can retain transient Windows handles briefly. Retry only
+// three bounded times; permanent failures are ordinary build errors with the
+// exact owned residue reported, never a successful installer fallback.
+function retryOwnedCleanup(operation) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return operation(); } catch (error) {
+      if (attempt === 2 || !["EPERM", "EACCES", "EBUSY"].includes(error.code)) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25 * (attempt + 1));
+    }
+  }
+}
+
+function cleanupOwnedOutput(files, directories) {
+  const failures = [];
+  for (const item of [...files].reverse()) {
+    try {
+      retryOwnedCleanup(() => {
+        const current = fs.lstatSync(item.path, { throwIfNoEntry: false });
+        if (!current) return;
+        if (!sameOwnedIdentity(current, item.stat, "file"))
+          throw new Error(`Refusing to delete replaced patch temporary file: ${item.path}`);
+        fs.unlinkSync(item.path);
+      });
+    } catch (error) {
+      failures.push(`${item.path}: ${error.message}`);
+    }
+  }
+  for (const item of [...directories].reverse()) {
+    try {
+      retryOwnedCleanup(() => {
+        const current = fs.lstatSync(item.path, { throwIfNoEntry: false });
+        if (!current) return;
+        if (!sameOwnedIdentity(current, item.stat, "dir"))
+          throw new Error(`Refusing to remove replaced patch directory: ${item.path}`);
+        fs.rmdirSync(item.path); // Must be empty; never delete unrelated content.
+      });
+    } catch (error) {
+      failures.push(`${item.path}: ${error.message}`);
+    }
+  }
+  if (failures.length)
+    throw new Error(`Patch output cleanup incomplete (owned residue may remain): ${failures.join("; ")}`);
+}
+
+function openOwnedTemporaryFile(filename, files) {
+  const fd = fs.openSync(filename, "wx", 0o600);
+  try {
+    files.push({ path: filename, stat: fs.fstatSync(fd) });
+    return fd;
+  } catch (error) {
+    fs.closeSync(fd);
+    throw error;
+  }
+}
+
+function preflightNativeOutputDestination(destination, existingAncestor) {
+  const directories = [];
+  const files = [];
+  try {
+    makeOutputDirectories(destination, existingAncestor, directories);
+    const fd = openOwnedTemporaryFile(
+      path.join(destination, `.lvl-patch-preflight-${randomUUID()}.tmp`), files);
+    fs.closeSync(fd);
+  } finally {
+    cleanupOwnedOutput(files, directories);
+  }
 }
 
 /** Build one patch from an existing release tag to committed HEAD.
@@ -202,14 +436,34 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, fromRef = nu
   const oldPackage = parsedJson(readGitBlob(root, oldCommit, "package.json", 1024 * 1024), "tagged package.json");
   const newPackageBytes = readGitBlob(root, headCommit, "package.json", 1024 * 1024);
   const newPackage = parsedJson(newPackageBytes, "HEAD package.json");
+  validatePackageMetadata(oldPackage, "tagged");
+  validatePackageMetadata(newPackage, "HEAD");
+  if (oldPackage.name !== newPackage.name) throw new Error("Package identity changed; source review is required");
   if (oldPackage.version !== from) throw new Error(`Old version mismatch: tag ${sourceTag} contains package.json ${oldPackage.version}`);
   const to = versionParts(newPackage.version).value;
   if (newPackage.version !== to || compareVersions(to, from) <= 0)
     throw new Error(`Candidate HEAD package version ${newPackage.version} must be newer than ${from}`);
   if (toVersion !== null && versionParts(toVersion).value !== to)
     throw new Error(`Target version mismatch: requested ${toVersion} but HEAD package.json is ${to}`);
-  if (!onlyVersionChanged(oldPackage, newPackage, from, to))
-    throw new Error("Full installer required: package.json changed beyond version (dependencies, Node/runtime, scripts or metadata)");
+  // Validate both committed lockfile structures before deciding whether any
+  // dependency change genuinely requires native/bootstrap rebuilding. An
+  // invalid packages:null (or mismatched root identity) is an ordinary source
+  // error, never the special installer fallback exit 42.
+  const oldLock = parsedJson(readGitBlob(root, oldCommit, "package-lock.json", 16 * 1024 * 1024), "tagged package-lock.json");
+  const newLock = parsedJson(readGitBlob(root, headCommit, "package-lock.json", 16 * 1024 * 1024), "HEAD package-lock.json");
+  validateLockMetadata(oldLock, oldPackage, "tagged");
+  validateLockMetadata(newLock, newPackage, "HEAD");
+  // Collect native reasons, but defer the special exit-42 classification until
+  // *every* changed source, its Git object and all ordinary builder constraints
+  // have been validated. Never let diff iteration order mask a rejected source.
+  const nativeReasons = [];
+  if (!onlyVersionChanged(oldPackage, newPackage, from, to)) {
+    const nativePackageFields = ["dependencies", "optionalDependencies", "peerDependencies", "bundledDependencies", "bundleDependencies",
+      "engines", "scripts", "os", "cpu", "bin", "type", "packageManager"];
+    if (nativePackageFields.some((field) => stableJson(oldPackage[field]) !== stableJson(newPackage[field])))
+      nativeReasons.push("Full installer required: package.json changed installed dependencies, runtime or scripts");
+    else throw new Error("Package metadata changed outside the reviewed version-only patch contract");
+  }
 
   const changed = changedEntries(root, oldCommit);
   const files = new Map();
@@ -224,6 +478,11 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, fromRef = nu
     const kind = inspectChangedPath(source, "D");
     if (kind === "ignore") return;
     if (kind === "lockfile" || TOP_LEVEL_FILES.has(source)) throw new Error(`Full installer required: ${source} can't be deleted by a patch`);
+    if (kind === "native") {
+      verifyNativeGitBlob(root, oldCommit, source);
+      nativeReasons.push(nativeIncompatibilityReason(source, "D"));
+      return;
+    }
     deletes.add(source);
   };
   // A rename or copy is a deleted source (rename only) and an added destination.
@@ -238,16 +497,19 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, fromRef = nu
     if (change.status === "D") { removeSource(source); continue; }
     const kind = inspectChangedPath(source, change.status);
     if (kind === "ignore") continue;
-    if (kind === "lockfile") {
-      if (change.status !== "M") throw new Error("Full installer required: package-lock.json was added/deleted/replaced");
-      const prior = parsedJson(readGitBlob(root, oldCommit, source, 16 * 1024 * 1024), "tagged package-lock.json");
-      const after = parsedJson(readGitBlob(root, headCommit, source, 16 * 1024 * 1024), "HEAD package-lock.json");
-      if (!onlyVersionChanged(prior, after, from, to, true))
-        throw new Error("Full installer required: package-lock.json dependency tree changed");
-      continue; // Installer has runtime node_modules, never ships lockfile.
-    }
     if (change.status !== "A" && change.status !== "M")
       throw new Error(`Full installer required: unsupported Git change ${change.status} on ${source}`);
+    if (kind === "lockfile") {
+      if (change.status !== "M") nativeReasons.push("Full installer required: package-lock.json was added/deleted/replaced");
+      if (!onlyVersionChanged(oldLock, newLock, from, to, true))
+        nativeReasons.push("Full installer required: package-lock.json dependency tree changed");
+      continue; // Installer has runtime node_modules, never ships lockfile.
+    }
+    if (kind === "native") {
+      verifyNativeGitBlob(root, headCommit, source);
+      nativeReasons.push(nativeIncompatibilityReason(source, change.status));
+      continue;
+    }
     if (files.size >= MAX_FILE_COUNT) throw new Error(`Patch exceeds ${MAX_FILE_COUNT} files`);
     const folded = source.normalize("NFC").toLowerCase();
     if (casefold.has(folded)) throw new Error(`Case-insensitive archive path collision: ${source} and ${casefold.get(folded)}`);
@@ -284,27 +546,52 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, fromRef = nu
   if (!withinRepo || (withinRepo !== ".." && !withinRepo.startsWith("../")
     && /^(?:assets|backend|frontend|learning|shared|launcher|installer|runtime|node_modules|scripts|tests)(?:\/|$)/i.test(withinRepo)))
     throw new Error("Patch output cannot overwrite the repository root or application/installer source directories");
+  verifyOutputHasNoLinkedAncestors(destination);
+  // Check the existing output ancestor without creating directories. A file
+  // where an output directory is expected (or an inaccessible parent) is an
+  // ordinary filesystem/environment error, even if a native change is present.
+  let existingOutputAncestor = destination;
+  let outputAncestorStat = fs.lstatSync(existingOutputAncestor, { throwIfNoEntry: false });
+  while (!outputAncestorStat) {
+    const parent = path.dirname(existingOutputAncestor);
+    if (parent === existingOutputAncestor) throw new Error("Cannot resolve a usable patch output parent directory");
+    existingOutputAncestor = parent;
+    outputAncestorStat = fs.lstatSync(existingOutputAncestor, { throwIfNoEntry: false });
+  }
+  if (!outputAncestorStat.isDirectory())
+    throw new Error(`Patch output ancestor is not a directory: ${existingOutputAncestor}`);
+  fs.accessSync(existingOutputAncestor, fs.constants.W_OK);
   const archivePath = path.join(destination, filename);
   const checksumPath = `${archivePath}.sha256`;
   if (fs.existsSync(archivePath) || fs.existsSync(checksumPath))
     throw new Error(`Release asset already exists; refusing to overwrite: ${filename}`);
-  fs.mkdirSync(destination, { recursive: true });
+  // A native-only candidate still has to prove that the real output path is
+  // usable. The temporary probe leaves no destination behind on fallback.
+  if (nativeReasons.length > 0) {
+    preflightNativeOutputDestination(destination, existingOutputAncestor);
+    nativeInstallerRequired(nativeReasons[0]);
+  }
   const nonce = randomUUID();
   const tempArchive = path.join(destination, `.${filename}.${nonce}.tmp`);
   const tempChecksum = `${tempArchive}.sha256`;
-  let wroteArchive = false;
-  let wroteChecksum = false;
+  const newDirectories = [];
+  const ownedFiles = [];
+  let published = false;
   try {
-    fs.writeFileSync(tempArchive, zipBytes, { flag: "wx" });
-    fs.writeFileSync(tempChecksum, `${checksum} *${filename}\n`, { flag: "wx" });
-    fs.renameSync(tempArchive, archivePath); wroteArchive = true;
-    fs.renameSync(tempChecksum, checksumPath); wroteChecksum = true;
-  } catch (error) {
-    if (wroteArchive && !wroteChecksum) fs.rmSync(archivePath, { force: true });
-    throw error;
+    makeOutputDirectories(destination, existingOutputAncestor, newDirectories);
+    const archiveFd = openOwnedTemporaryFile(tempArchive, ownedFiles);
+    try { fs.writeFileSync(archiveFd, zipBytes); } finally { fs.closeSync(archiveFd); }
+    const checksumFd = openOwnedTemporaryFile(tempChecksum, ownedFiles);
+    try { fs.writeFileSync(checksumFd, `${checksum} *${filename}\n`); } finally { fs.closeSync(checksumFd); }
+    if (fs.existsSync(archivePath) || fs.existsSync(checksumPath))
+      throw new Error(`Release asset already exists; refusing to overwrite: ${filename}`);
+    fs.renameSync(tempArchive, archivePath);
+    ownedFiles[0].path = archivePath;
+    fs.renameSync(tempChecksum, checksumPath);
+    ownedFiles[1].path = checksumPath;
+    published = true;
   } finally {
-    fs.rmSync(tempArchive, { force: true });
-    fs.rmSync(tempChecksum, { force: true });
+    if (!published) cleanupOwnedOutput(ownedFiles, newDirectories);
   }
   return { archivePath, checksumPath, checksum, manifest };
 }
@@ -325,5 +612,8 @@ function cli() {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  try { cli(); } catch (error) { console.error(`LVL patch build rejected: ${error.message}`); process.exitCode = 1; }
+  try { cli(); } catch (error) {
+    console.error(`LVL patch build rejected: ${error.message}`);
+    process.exitCode = error instanceof NativeInstallerRequiredError ? NATIVE_INSTALLER_REQUIRED_EXIT : 1;
+  }
 }

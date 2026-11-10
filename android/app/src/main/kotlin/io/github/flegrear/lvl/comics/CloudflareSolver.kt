@@ -25,9 +25,13 @@ object CloudflareSolver {
     fun solve(context: Context, url: String, userAgent: String, oldClearance: String?): Boolean {
         check(Looper.myLooper() != Looper.getMainLooper()) { "CloudflareSolver.solve can't run on the main thread" }
         synchronized(lock) {
+            // An interactive check owns the site's verification session while it is open.
+            // Do not launch a competing hidden browser that might retrigger the challenge.
+            if (VerifyActivity.open) return false
             val cookies = runCatching { CookieManager.getInstance() }.getOrNull() ?: return false
             var view: WebView? = null
             main.post {
+                if (VerifyActivity.open) return@post
                 view = WebView(context.applicationContext).apply {
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
@@ -41,6 +45,7 @@ object CloudflareSolver {
             var solved = false
             try {
                 while (SystemClock.uptimeMillis() - started < TIMEOUT_MS) {
+                    if (VerifyActivity.open) break
                     Thread.sleep(500)
                     val clearance = cookieValue(cookies.getCookie(url), "cf_clearance")
                     if (clearance != null && clearance != oldClearance) {

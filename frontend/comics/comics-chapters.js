@@ -80,20 +80,17 @@ export function chapterPresentation(items, { grouped = true, descending = false 
   return groups;
 }
 
-// A chapter row: number, title and facts, then Read and Sources. No images
-//: chapters read as a list.
-export function chapterRowMarkup(item, { read, readPending = false, available, onDisk, flat = false, selectable = false, selected = false, selecting = false, key = "" } = {}) {
+// The whole chapter row opens the selected chapter; only its Sources control
+// uses a separate action. Read state is reflected in the chapter typography.
+export function chapterRowMarkup(item, { read, available, onDisk, flat = false, selectable = false, selected = false, selecting = false, key = "" } = {}) {
   const label = t("Chapter {number}", { number: item.chapter });
-  // The number is on the left and the volume in its heading; the facts say only what's not shown.
-  const unknown = read === null || read === undefined ? t(readPending ? "Checking…" : "Status unknown") : "";
-  const details = [...(flat && item.volume ? [t("Volume {number}", { number: item.volume })] : []),
-    ...(read ? [t("Read")] : []), ...(unknown ? [unknown] : [])];
+  const details = flat && item.volume ? [t("Volume {number}", { number: item.volume })] : [];
   const facts = details.length ? metaMarkup(details) : "";
   const sourcesLabel = available === 1 ? t("1 source") : available ? t("{count} sources", { count: available }) : t("Sources");
-  return `<li class="catalog-chapter comic-chapter-row${read ? " is-watched" : ""}${onDisk ? " is-saved" : ""}" data-chapter="${escapeHtml(item.chapter)}" data-volume="${escapeHtml(item.volume || "")}"${selecting ? ` data-chapter-key="${escapeHtml(key)}"` : ""}>`
-    + `<div class="catalog-chapter-row">${selecting ? `<input type="checkbox" data-chapter-select aria-label="${escapeHtml(t("Select chapter {number}", { number: item.chapter }))}"${selected ? " checked" : ""}${selectable ? "" : " disabled"} />` : ""}<span class="comic-chapter-number" aria-hidden="true">${escapeHtml(item.chapter)}</span>`
+  return `<li class="catalog-chapter comic-chapter-row${read ? " is-watched" : ""}${onDisk ? " is-saved" : ""}" data-chapter="${escapeHtml(item.chapter)}" data-volume="${escapeHtml(item.volume || "")}" data-chapter-key="${escapeHtml(key)}">`
+    + `<div class="catalog-chapter-row">${selecting ? `<button class="comic-chapter-open" type="button" data-comic-select-chapter aria-label="${escapeHtml(t("Select chapter {number}", { number: item.chapter }))}" aria-pressed="${selected}"${selectable ? "" : " disabled"}></button><input type="checkbox" data-chapter-select aria-label="${escapeHtml(t("Select chapter {number}", { number: item.chapter }))}"${selected ? " checked" : ""}${selectable ? "" : " disabled"} />` : `<button class="comic-chapter-open" type="button" data-comic-open-chapter aria-label="${escapeHtml(t("Read") + " " + (item.title || label) + (read ? " · " + t("Read") : ""))}"></button>`}<span class="comic-chapter-number" aria-hidden="true">${escapeHtml(item.chapter)}</span>`
     + `<div class="catalog-chapter-copy"><strong>${escapeHtml(item.title || label)}</strong>${facts ? `<span class="catalog-chapter-code">${facts}</span>` : ""}</div>`
-    + `<div class="catalog-chapter-actions"><button class="ui-btn ui-btn--primary ui-btn--sm" type="button" data-comic-read-chapter="${escapeHtml(item.chapter)}">${icon("play")}<span>${escapeHtml(t("Read"))}</span></button>`
+    + `<div class="catalog-chapter-actions">`
     + `<button class="ui-btn ui-btn--ghost ui-btn--sm catalog-chapter-toggle" type="button" data-comic-chapter-sources aria-expanded="false"><span>${escapeHtml(sourcesLabel)}</span>${icon("chevron-down")}</button></div></div>`
     + `<div class="catalog-chapter-sources" hidden></div></li>`;
 }
@@ -107,10 +104,14 @@ function candidatesMarkup(candidates, canChoose) {
     + buttonMarkup({ label: "Read", size: "sm", attrs: { "data-comics-pick": item.readerId, "data-page": String(item.page || 0) } }) + "</li>").join("")}</ol>`;
 }
 
-const toolsMarkup = () => `<div class="comic-chapter-tools"><input class="ui-search__input" type="search" placeholder="${escapeHtml(t("Search chapters"))}" aria-label="${escapeHtml(t("Search chapters"))}" data-chapter-search />`
-  + `<select class="comic-chapter-sort" data-chapter-sort aria-label="${escapeHtml(t("Order"))}"><option value="asc">${escapeHtml(t("Ascending"))}</option><option value="desc">${escapeHtml(t("Descending"))}</option></select></div>`;
-
 const GROUP_STORAGE_PREFIX = "lvl-comics-group-volumes-v1:";
+const SORT_STORAGE_PREFIX = "lvl-comics-chapter-sort-v1:";
+export function chapterSortPreference(workId, store = globalThis.localStorage) {
+  try { return store?.getItem(SORT_STORAGE_PREFIX + workId) === "desc" ? "desc" : "asc"; } catch { return "asc"; }
+}
+export function saveChapterSortPreference(workId, order, store = globalThis.localStorage) {
+  try { store?.setItem(SORT_STORAGE_PREFIX + workId, order === "desc" ? "desc" : "asc"); } catch {}
+}
 export function groupPreference(workId, { store, phone = false } = {}) {
   try {
     const saved = (store === undefined ? globalThis.localStorage : store)?.getItem(GROUP_STORAGE_PREFIX + workId);
@@ -120,15 +121,13 @@ export function groupPreference(workId, { store, phone = false } = {}) {
 export function saveGroupPreference(workId, grouped, store) {
   try { (store === undefined ? globalThis.localStorage : store)?.setItem(GROUP_STORAGE_PREFIX + workId, grouped ? "1" : "0"); } catch {}
 }
-const groupMarkup = (grouped) => `<label class="comic-chapter-group" data-chapter-group-field><input type="checkbox" data-chapter-group${grouped ? " checked" : ""} />`
-  + `<span>${escapeHtml(t("Group by volume"))}</span></label>`;
-const selectionMarkup = () => `<div class="comic-chapter-selection" data-chapter-selection-toolbar>
-  ${buttonMarkup({ label: "Select chapters", size: "sm", variant: "ghost", attrs: { "data-chapter-select-mode": "" } })}
-  <span class="comic-chapter-selection__actions" data-chapter-selection-actions hidden>
+const selectionMarkup = () => `<div class="comic-chapter-selection" data-chapter-selection-toolbar hidden>
+  <span class="comic-chapter-selection__actions" data-chapter-selection-actions>
   <span data-chapter-selection-count aria-live="polite"></span>
   ${buttonMarkup({ label: "Select shown", size: "sm", variant: "ghost", attrs: { "data-chapter-select-shown": "" } })}
   ${buttonMarkup({ label: "Mark read", size: "sm", variant: "secondary", attrs: { "data-chapter-mark": "read" } })}
   ${buttonMarkup({ label: "Mark unread", size: "sm", variant: "secondary", attrs: { "data-chapter-mark": "unread" } })}
+  ${buttonMarkup({ label: "Cancel", size: "sm", variant: "ghost", attrs: { "data-chapter-selection-cancel": "" } })}
   </span></div>`;
 
 // Whether a volume's chapters are hidden: volumes start closed, "Not in a volume yet"
@@ -190,7 +189,7 @@ export function mountChapterList(container, options) {
   // chapters) starts open. What the user opens or closes is kept per comic.
   const volumesKey = `lvl-comics-volumes-v2:${workId}`;
   const savedVolumes = (() => { try { const value = JSON.parse(localStorage.getItem(volumesKey) || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; } })();
-  const state = { query: "", sort: "asc", shown: PAGE, read: new Set(), volumesRead: new Set(), unitStates: new Map(), exactRead: false,
+  const state = { sort: chapterSortPreference(workId), shown: PAGE, read: new Set(), volumesRead: new Set(), unitStates: new Map(), exactRead: false,
     readConfirmed: false, readPending: true, readError: "", units: [],
     selecting: false, selected: new Set(), saving: false, available: {},
     availabilityError: "", failedSources: [], opened: new Map(Object.entries(savedVolumes).map(([key, open]) => [String(key), open === true])) };
@@ -205,16 +204,14 @@ export function mountChapterList(container, options) {
   }
   const volumesOnDisk = new Set(files.filter((file) => !file.chapter && file.volume).map((file) => String(file.volume)));
   const note = `<p class="catalog-chapters-note" data-chapter-note></p>`;
-  if (head) head.innerHTML = note + groupMarkup(groupByVolume) + selectionMarkup() + (all.length > 12 ? toolsMarkup() : "");
-  container.innerHTML = (head ? "" : `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("Chapters"))}</h2>${note}${groupMarkup(groupByVolume)}${selectionMarkup()}${all.length > 12 ? toolsMarkup() : ""}</div>`)
-    + `<div class="comic-chapter-body"></div>`;
+  if (head) head.innerHTML = note;
+  container.innerHTML = (head ? "" : `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("Chapters"))}</h2>${note}</div>`)
+    + selectionMarkup() + `<div class="comic-chapter-body"></div>`;
   const scope = head || container;
   const body = container.querySelector(".comic-chapter-body");
 
   function list() {
-    const needle = state.query.trim().toLowerCase().replace(/^(?:ch\.?|chapter|cap[ií]tulo)\s*/, "");
-    const filtered = all.filter((item) => !needle || item.chapter === needle || item.title.toLowerCase().includes(needle));
-    return chapterPresentation(filtered, { grouped: grouped(), descending: state.sort === "desc" }).flatMap((group) => group.items);
+    return chapterPresentation(all, { grouped: grouped(), descending: state.sort === "desc" }).flatMap((group) => group.items);
   }
 
   const keyOf = (item) => `${item.chapter}\n${item.volume ?? ""}`;
@@ -244,23 +241,23 @@ export function mountChapterList(container, options) {
       + (readCount ? `<span>${escapeHtml(t("{count} read", { count: readCount }))}</span>` : "")
       + (!state.readConfirmed && state.readPending ? `<span role="status">${escapeHtml(t("Checking reading progress…"))}</span>` : "");
     const isRead = chapterRead;
-    const actions = scope.querySelector("[data-chapter-selection-actions]");
-    if (actions) {
-      actions.hidden = !state.selecting;
-      const counter = actions.querySelector("[data-chapter-selection-count]");
+    const toolbar = container.querySelector("[data-chapter-selection-toolbar]");
+    if (toolbar) {
+      toolbar.hidden = !state.selecting;
+      const counter = toolbar.querySelector("[data-chapter-selection-count]");
       if (counter) counter.textContent = t("{count} selected", { count: state.selected.size });
-      for (const button of actions.querySelectorAll("[data-chapter-mark]")) button.disabled = !state.selected.size || state.saving;
+      for (const button of toolbar.querySelectorAll("[data-chapter-mark]")) button.disabled = !state.selected.size || state.saving;
     }
-    const selectButton = scope.querySelector("[data-chapter-select-mode]");
-    if (selectButton) selectButton.querySelector("span").textContent = t(state.selecting ? "Cancel selection" : "Select chapters");
     // Explicit flat mode never makes volume headings, even when metadata has
     // conflicting or missing numbers. Desktop retains its previous grouping.
-    const groups = chapterPresentation(items, { grouped: grouped() });
-    const searching = Boolean(state.query.trim());
+    // 'items' is already ordered. Re-sorting it here forced flat lists back to
+    // ascending every time the title bar requested descending order.
+    const groups = grouped() ? chapterPresentation(items, { grouped: true })
+      : [{ key: "", volume: null, title: "", items }];
     let budget = state.shown;
     let hidden = 0;
     const rows = groups.map((group) => {
-      const collapsed = grouped() && !searching && isCollapsed(group.key);
+      const collapsed = grouped() && isCollapsed(group.key);
       const read = group.items.filter(isRead).length;
       const heading = grouped() && volumeCount ? `<li class="comic-volume-head"><button type="button" data-volume-toggle="${escapeHtml(group.key)}" aria-expanded="${!collapsed}">${icon("chevron-down")}`
         + `<span class="comic-volume-head__name">${escapeHtml(group.volume ? t("Volume {number}", { number: group.volume }) : t("Not in a volume yet"))}</span>`
@@ -301,7 +298,7 @@ export function mountChapterList(container, options) {
 
   async function candidatesFor(row) {
     const { candidates } = await comicsApi.candidates(workId, row.dataset.chapter, row.dataset.volume, langs);
-    for (const item of candidates) readerNames.set(item.readerId, { label: `${comic.title} · ${t("Chapter {number}", { number: row.dataset.chapter })}`, chapter: row.dataset.chapter, volume: row.dataset.volume || null, source: item.name });
+    for (const item of candidates) readerNames.set(item.readerId, { label: `${comic.title} · ${t("Chapter {number}", { number: row.dataset.chapter })}`, chapter: row.dataset.chapter, volume: row.dataset.volume || null, source: item.name, sourceId: item.sourceId || "" });
     return candidates;
   }
 
@@ -318,12 +315,19 @@ export function mountChapterList(container, options) {
     try { panel.innerHTML = candidatesMarkup(candidates || await candidatesFor(row), Boolean(onChooseSources)); } catch (error) { panel.innerHTML = `<p class="comic-source__error">${escapeHtml(error.message)}</p>`; }
   }
 
-  scope.addEventListener("input", (event) => {
-    if (!event.target.matches("[data-chapter-search]")) return;
-    state.query = event.target.value;
+  const setSort = (order) => {
+    state.sort = order === "desc" ? "desc" : "asc";
+    saveChapterSortPreference(workId, state.sort);
     state.shown = PAGE;
     paint();
-  });
+  };
+  const setGrouping = (enabled) => {
+    if (groupByVolume === Boolean(enabled)) return;
+    groupByVolume = Boolean(enabled);
+    saveGroupPreference(workId, groupByVolume);
+    state.shown = PAGE;
+    paint();
+  };
   container.addEventListener("change", (event) => {
     if (!event.target.matches("[data-chapter-select]")) return;
     const key = event.target.closest("[data-chapter-key]")?.dataset.chapterKey;
@@ -333,31 +337,29 @@ export function mountChapterList(container, options) {
     const next = [...body.querySelectorAll("[data-chapter-key]")].find((row) => row.dataset.chapterKey === key);
     next?.querySelector("[data-chapter-select]")?.focus();
   });
-  scope.addEventListener("change", (event) => {
-    if (event.target.matches("[data-chapter-group]")) {
-      // Keep the chapter whose Sources panel is open visible across a layout
-      // change, even when its volume would normally start collapsed.
-      const current = body.querySelector(".comic-chapter-row.is-open");
-      const selected = current ? { chapter: current.dataset.chapter, volume: current.dataset.volume } : null;
-      groupByVolume = Boolean(event.target.checked);
-      saveGroupPreference(workId, groupByVolume);
-      if (grouped() && selected?.volume) setVolumeOpen(selected.volume, true);
-      state.shown = PAGE;
-      paint();
-      if (selected) {
-        const target = [...body.querySelectorAll(".comic-chapter-row")]
-          .find((row) => row.dataset.chapter === selected.chapter && row.dataset.volume === selected.volume);
-        if (target) { target.scrollIntoView({ block: "nearest" }); void openPanel(target); }
-      }
-      return;
-    }
-    if (!event.target.matches("[data-chapter-sort]")) return;
-    state.sort = event.target.value;
+  async function markUnits(ids, read) {
+    if (state.saving || !ids.length) return false;
+    state.saving = true;
     paint();
-  });
+    try {
+      // Server verifies unit IDs against the current sources and returns the
+      // authoritative read summary. A failed request leaves the old mark intact.
+      const response = await comicsApi.markChapters(workId, ids, read);
+      if (!container.isConnected) return false;
+      readSummary.apply(response);
+      return true;
+    } catch (error) {
+      toast(error.message);
+      return false;
+    } finally {
+      state.saving = false;
+      if (container.isConnected) paint();
+    }
+  }
+
   const selectionClick = async (event) => {
-    if (event.target.closest("[data-chapter-select-mode]")) {
-      state.selecting = !state.selecting;
+    if (event.target.closest("[data-chapter-selection-cancel]")) {
+      state.selecting = false;
       state.selected.clear();
       return paint();
     }
@@ -371,25 +373,68 @@ export function mountChapterList(container, options) {
     const mark = event.target.closest("[data-chapter-mark]");
     if (mark && state.selected.size && !state.saving) {
       const ids = [...new Set(all.filter((item) => state.selected.has(keyOf(item))).flatMap((item) => unitsFor(item).map((unit) => unit.id)))];
-      if (!ids.length) return;
-      state.saving = true;
-      paint();
-      try {
-        // Server verifies every requested unit against this comic's live linked
-        // sources before changing anything.
-        const response = await comicsApi.markChapters(workId, ids, mark.dataset.chapterMark === "read");
-        readSummary.apply(response);
+      if (await markUnits(ids, mark.dataset.chapterMark === "read")) {
         state.selected.clear();
         state.selecting = false;
-      } catch (error) { toast(error.message); }
-      finally { state.saving = false; paint(); }
+        paint();
+      }
       return;
     }
     return undefined;
   };
-  scope.addEventListener("click", selectionClick);
+  container.addEventListener("click", selectionClick);
+  // Holding a chapter selects it. Cancel the timer as soon as the gesture
+  // becomes a scroll so a slow swipe never enters selection mode.
+  let press = null;
+  let suppressClickUntil = 0;
+  const cancelPress = () => {
+    if (press?.timer !== undefined) clearTimeout(press.timer);
+    press = null;
+  };
+  const startSelection = (key) => {
+    const item = all.find((candidate) => keyOf(candidate) === key);
+    if (!item || state.saving) return;
+    state.selecting = true;
+    state.selected.clear();
+    if (unitsFor(item).length) state.selected.add(key);
+    suppressClickUntil = Date.now() + 900;
+    paint();
+  };
+  container.addEventListener("pointerdown", (event) => {
+    cancelPress();
+    if (state.selecting || event.isPrimary === false || (event.pointerType === "mouse" && event.button !== 0)) return;
+    const opener = event.target.closest?.("[data-comic-open-chapter]");
+    const row = opener?.closest(".comic-chapter-row");
+    if (!row) return;
+    const key = row.dataset.chapterKey;
+    const x = event.clientX, y = event.clientY;
+    const timer = setTimeout(() => {
+      press = null;
+      if (container.isConnected) startSelection(key);
+    }, 470);
+    press = { pointerId: event.pointerId, x, y, timer };
+  });
+  container.addEventListener("pointermove", (event) => {
+    if (press && event.pointerId === press.pointerId &&
+        (Math.abs(event.clientX - press.x) > 12 || Math.abs(event.clientY - press.y) > 12)) cancelPress();
+  });
+  for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"])
+    container.addEventListener(eventName, cancelPress);
+  container.addEventListener("contextmenu", (event) => {
+    if (event.target.closest?.("[data-comic-open-chapter]")) {
+      const key = event.target.closest(".comic-chapter-row")?.dataset.chapterKey;
+      if (key) { event.preventDefault(); cancelPress(); startSelection(key); }
+    }
+  });
+  container.addEventListener("click", (event) => {
+    if (Date.now() < suppressClickUntil && event.target.closest?.(".comic-chapter-row")) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      suppressClickUntil = 0;
+    }
+  }, true);
   container.addEventListener("click", async (event) => {
-    if (scope === container && event.target.closest("[data-chapter-selection-toolbar]")) return;
+    if (event.target.closest("[data-chapter-selection-toolbar]")) return;
     if (event.target.closest("[data-chapter-read-retry]")) return void readSummary.load();
     if (event.target.closest("[data-chapter-retry]")) return void loadAvailability();
     if (event.target.closest("[data-chapters-more]")) { state.shown += PAGE; return paint(); }
@@ -401,7 +446,13 @@ export function mountChapterList(container, options) {
     const pick = event.target.closest("[data-comics-pick]");
     if (pick) return onRead(pick.dataset.comicsPick, Number(pick.dataset.page) || 0, row.dataset.chapter);
     if (event.target.closest("[data-comic-chapter-sources]")) return row.classList.contains("is-open") ? setOpen(row, false) : openPanel(row);
-    const read = event.target.closest("[data-comic-read-chapter]");
+    if (event.target.closest("[data-comic-select-chapter]")) {
+      const key = row.dataset.chapterKey;
+      if (state.selected.has(key)) state.selected.delete(key);
+      else if (unitsFor(all.find((item) => keyOf(item) === key) || {}).length) state.selected.add(key);
+      return paint();
+    }
+    const read = event.target.closest("[data-comic-open-chapter]");
     if (!read) return undefined;
     read.disabled = true;
     try {
@@ -424,7 +475,6 @@ export function mountChapterList(container, options) {
       all = mergeSourceChapters(indexItems, result.chapters || []);
       state.units = result.units || [];
       volumeCount = countVolumes();
-      if (all.length > 12 && !scope.querySelector("[data-chapter-search]")) scope.querySelector("[data-chapter-group-field]")?.insertAdjacentHTML("afterend", toolsMarkup());
       if (container.isConnected) paint();
       return { ok: true, chapters: all.length, failedSources: [...state.failedSources] };
     } catch (error) {
@@ -440,23 +490,21 @@ export function mountChapterList(container, options) {
   return {
     get chapters() { return all; },
     get readingOrder() { return chapterPresentation(all, { grouped: grouped() }).flatMap((group) => group.items); },
+    get sort() { return state.sort; },
+    get groupByVolume() { return groupByVolume; },
+    setSort,
+    setGrouping,
+    cancelSelection() { state.selecting = false; state.selected.clear(); paint(); },
     refresh: loadAvailability,
     retryReadSummary: readSummary.load,
     get readStatus() { return { confirmed: state.readConfirmed, pending: state.readPending, error: state.readError }; },
     readChapters: () => state.read,
     isRead: chapterRead,
-    // Opens a chapter as a click on its Read button would.
+    // Opens the chapter using the same control as tapping its row.
     async read(chapter, volume = null) {
       const target = all.find((item) => item.chapter === chapter && (volume === null || String(item.volume ?? "") === String(volume)))
         || all.find((item) => item.chapter === chapter);
       if (!target) return;
-      // Continue reading and programmatic chapter navigation must not fail
-      // just because an old chapter-search query currently hides the target.
-      if (!list().some((item) => item.chapter === target.chapter && String(item.volume ?? "") === String(target.volume ?? ""))) {
-        state.query = "";
-        const search = scope.querySelector("[data-chapter-search]");
-        if (search) search.value = "";
-      }
       const key = target?.volume ?? "";
       if (grouped() && isCollapsed(key)) setVolumeOpen(key, true);
       const at = list().filter((item) => !grouped() || !isCollapsed(item.volume ?? ""))
@@ -466,7 +514,7 @@ export function mountChapterList(container, options) {
       const row = [...body.querySelectorAll(".comic-chapter-row")]
         .find((item) => item.dataset.chapter === target.chapter && item.dataset.volume === String(target.volume ?? ""));
       row?.scrollIntoView({ block: "nearest" });
-      row?.querySelector("[data-comic-read-chapter]")?.click();
+      row?.querySelector("[data-comic-open-chapter]")?.click();
     },
   };
 }

@@ -17,6 +17,98 @@ import { invalidateSpeechWindowSession } from "../media/speech-activity.js";
 
 const MAX_MAGNET_LENGTH = 16 * 1024;
 const MAX_TORRENT_SESSIONS = 4;
+// Each POST receives an independent authority. Only the backend can determine
+// when the final borrower has gone; bounded by a session's existing idle TTL.
+const MAX_SESSION_LEASES = 256;
+// A decoder may play buffered media between short Range requests. Keep a
+// bounded grace period after a real stream reader closes, even if the original
+// acquisition has reached its abandonment deadline.
+const ACTIVE_STREAM_GAP_MS = 5 * 60_000;
+const pendingTorrentDisposals = new Map();
+
+// Optional newer-client acquisition identities: legacy token-based leases
+// remain supported. One ID represents exactly one source/index and its one
+// backend-issued lease, even if a browser aborts before receiving the POST body.
+// Entries and cancellation tombstones are ephemeral, bounded and lazily pruned.
+const MAX_TORRENT_ACQUISITIONS = 1024;
+// Match the existing 30-minute session lease TTL without reading a circular
+// server.js binding during module initialization.
+const TORRENT_ACQUISITION_RETENTION_MS = 30 * 60_000;
+const torrentAcquisitions = new Map();
+const TORRENT_ACQUISITION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function validTorrentAcquisitionId(id) {
+  return typeof id === "string" && id.length === 36 && TORRENT_ACQUISITION_ID.test(id);
+}
+
+function pruneTorrentAcquisitions(now = Date.now()) {
+  for (const [id, record] of torrentAcquisitions) {
+    if (record.expiresAt > now || record.state === "pending") continue;
+    const session = record.sessionId && torrentSessions.get(record.sessionId);
+    if (session && !session.closing && session.incarnation === record.incarnation)
+      pruneExpiredTorrentLeases(session, now);
+    // Never evict a live authority simply to make room for another request.
+    if (session && !session.closing && session.incarnation === record.incarnation &&
+        session.leases?.has(record.leaseToken)) continue;
+    torrentAcquisitions.delete(id);
+  }
+}
+
+function beginTorrentAcquisition(rawId, resource, preferredFileIndex) {
+  if (rawId === undefined) return { mode: "legacy" };
+  if (!validTorrentAcquisitionId(rawId)) return { mode: "error", status: 400, error: "invalid_torrent_acquisition_id" };
+  const id = rawId.toLowerCase();
+  pruneTorrentAcquisitions();
+  const existing = torrentAcquisitions.get(id);
+  if (existing) {
+    // A cancel arriving before the POST has no source metadata, but still
+    // fences every later POST carrying this exact acquisition ID.
+    if (existing.resource !== null &&
+        (existing.resource !== resource || existing.preferredFileIndex !== preferredFileIndex))
+      return { mode: "error", status: 409, error: "torrent_acquisition_source_mismatch" };
+    return { mode: "existing", record: existing };
+  }
+  if (torrentAcquisitions.size >= MAX_TORRENT_ACQUISITIONS)
+    return { mode: "error", status: 429, error: "torrent_acquisition_capacity" };
+  let resolveReady;
+  const ready = new Promise((resolve) => { resolveReady = resolve; });
+  const record = {
+    resource, preferredFileIndex, state: "pending", ready, resolveReady,
+    status: null, payload: null, sessionId: null, leaseToken: null, incarnation: null,
+    expiresAt: Date.now() + TORRENT_ACQUISITION_RETENTION_MS,
+  };
+  torrentAcquisitions.set(id, record);
+  return { mode: "new", record };
+}
+
+function finishTorrentAcquisition(record, status, payload) {
+  if (!record || record.state !== "pending") return;
+  record.status = status;
+  record.payload = payload;
+  if ((status === 200 || status === 202) && payload?.id && payload.leaseToken && payload.incarnation) {
+    record.state = "active";
+    record.sessionId = payload.id;
+    record.leaseToken = payload.leaseToken;
+    record.incarnation = payload.incarnation;
+  } else {
+    record.state = "failed";
+  }
+  record.expiresAt = Date.now() + TORRENT_ACQUISITION_RETENTION_MS;
+  record.resolveReady?.();
+  record.resolveReady = null;
+}
+
+function activeTorrentAcquisitionPayload(record) {
+  if (record.state === "pending") return null;
+  if (record.state !== "active") return { status: 410, payload: { error: "torrent_acquisition_retired" } };
+  const session = torrentSessions.get(record.sessionId);
+  if (session && !session.closing && session.incarnation === record.incarnation)
+    pruneExpiredTorrentLeases(session);
+  if (!session || session.closing || session.incarnation !== record.incarnation ||
+      !session.leases?.has(record.leaseToken))
+    return { status: 410, payload: { error: "torrent_acquisition_retired" } };
+  return { status: record.status, payload: record.payload };
+}
 
 const MAX_TORRENT_VIDEO_FILES = 64;
 const MAX_TORRENT_TOTAL_BYTES = 80 * 1024 * 1024 * 1024;
@@ -220,10 +312,16 @@ function validateTorrentManifest(torrent, { preferredFileIndex = null } = {}) {
   return { ok: true, fileCount: files.length, videoFiles, sidecarFiles, totalBytes };
 }
 
-export async function removeTorrentSession(id) {
+export async function removeTorrentSession(id, { deleteFiles = false } = {}) {
   const session = torrentSessions.get(id);
   if (!session) return;
+  if (session.closing) return session.disposalPromise;
+  session.closing = true;
   torrentSessions.delete(id);
+  const pendingHash = String(session.infoHash || session.torrent?.infoHash || "").toLowerCase();
+  // Publish the disposal fence before the first await. A new POST for the
+  // same infohash must not reuse a half-destroyed WebTorrent instance.
+  const finished = (async () => {
   // Stop only the background conversion for this session; it may still be
   // reading selected pieces through an internal local HTTP stream.
   await indexedVideoCache.stopSession(id);
@@ -255,14 +353,112 @@ export async function removeTorrentSession(id) {
   } catch (error) {
     console.warn(`Failed to destroy torrent session ${id}:`, error.message);
   }
+  // Storage eviction on Android must remove persistent files while the hash
+  // disposal fence still blocks a fresh POST from reusing this directory.
+  if (deleteFiles) await fs.promises.rm(path.join(torrentRoot, id), {
+    recursive: true, force: true, maxRetries: 2,
+  }).catch((error) => console.warn(`Failed to evict torrent files ${id}:`, error.message));
+  })();
+  session.disposalPromise = finished;
+  if (pendingHash) pendingTorrentDisposals.set(pendingHash, finished);
+  try { await finished; }
+  finally {
+    if (pendingTorrentDisposals.get(pendingHash) === finished) pendingTorrentDisposals.delete(pendingHash);
+  }
+}
+
+// A release names an immutable acquisition AND the incarnation it came from.
+// Duplicate/stale tokens never acquire authority over a later session with
+// the same ID. When the last lease leaves, removal is decided synchronously
+// before awaiting any cache/WebTorrent cleanup.
+function pruneExpiredTorrentLeases(session, now = Date.now()) {
+  if (!(session?.leases instanceof Map)) return 0;
+  for (const [token, expiresAt] of session.leases) {
+    if (!Number.isFinite(expiresAt) || expiresAt <= now) session.leases.delete(token);
+  }
+  return session.leases.size;
+}
+
+export function torrentSessionHasActiveBorrower(session, now = Date.now()) {
+  if (!session || session.closing) return false;
+  const streamAge = now - Number(session.lastStreamAt || 0);
+  return (Number(session.openStreams) || 0) > 0 || pruneExpiredTorrentLeases(session, now) > 0
+    || (Number(session.lastStreamAt) > 0 && streamAge >= 0 && streamAge < ACTIVE_STREAM_GAP_MS);
+}
+
+// Called by storage as the final, synchronous authority check. It fences the
+// exact session incarnation before its first await, so POST cannot race a stale
+// storage snapshot or remove the files for a replacement Android session.
+export async function evictTorrentSessionIfIdle(id, expectedIncarnation = null) {
+  const session = torrentSessions.get(id);
+  if (!session || session.closing || (expectedIncarnation && session.incarnation !== expectedIncarnation)
+    || torrentSessionHasActiveBorrower(session)) return false;
+  await removeTorrentSession(id, { deleteFiles: KEEP_DOWNLOADS });
+  return true;
+}
+
+export async function releaseTorrentSessionLease(id, leaseToken, incarnation) {
+  const session = torrentSessions.get(id);
+  if (!session || session.closing) return { status: 204 };
+  if (typeof leaseToken !== "string" || typeof incarnation !== "string" ||
+      !/^[0-9a-f-]{36}$/i.test(leaseToken) || !/^[0-9a-f-]{36}$/i.test(incarnation)) {
+    return { status: 409, error: "torrent_lease_required" };
+  }
+  pruneExpiredTorrentLeases(session);
+  if (incarnation !== session.incarnation || !session.leases?.has(leaseToken))
+    return { status: 204 };
+  if (session.leases.size === 1 && (Number(session.openStreams) || 0) > 0)
+    return { status: 409, error: "torrent_session_in_use" };
+  session.leases.delete(leaseToken);
+  if (session.leases.size > 0) return { status: 204 };
+  await removeTorrentSession(id);
+  return { status: 204 };
+}
+
+// A POST can fail after granting a private lease but before sending its token.
+// Roll back only that exact, unreported authority. Unlike a public DELETE, a
+// failed acquisition has no surviving client to retry a 409: discard its token
+// while preserving any other borrower or already-open media reader.
+function rollbackUnreportedTorrentLease(lease) {
+  const session = torrentSessions.get(lease.id);
+  if (!session || session.closing || session.incarnation !== lease.incarnation ||
+      !session.leases?.has(lease.leaseToken)) return null;
+  session.leases.delete(lease.leaseToken);
+  if (torrentSessionHasActiveBorrower(session)) {
+    if (session.leases.size === 0) scheduleSessionExpiry(session);
+    return null;
+  }
+  // removeTorrentSession publishes the exact disposal fence before its first
+  // await; a new POST may not reuse this incarnation while it is shutting down.
+  return removeTorrentSession(lease.id);
+}
+
+function acquireTorrentSessionLease(session) {
+  if (session.closing) return null;
+  session.incarnation ||= crypto.randomUUID();
+  session.leases ||= new Map();
+  pruneExpiredTorrentLeases(session);
+  if (session.leases.size >= MAX_SESSION_LEASES) return null;
+  const leaseToken = crypto.randomUUID();
+  session.leases.set(leaseToken, Date.now() + TORRENT_SESSION_TTL_MS);
+  // Storage's idle policy uses lastUsedAt. A POST has already acquired a real
+  // borrower before the first status GET, so it must not appear idle since 1970.
+  session.lastUsedAt = Date.now();
+  return { leaseToken, incarnation: session.incarnation };
 }
 
 export function scheduleSessionExpiry(session) {
   clearTimeout(session.expiryTimer);
   session.expiryTimer = setTimeout(() => {
-    // A slow stream/transcode may run longer than the inactivity TTL without
-    // issuing another status request. Do not tear down an actively playing file.
-    if ((Number(session.openStreams) || 0) > 0) {
+    // A recycled Android download ID may now name another incarnation.
+    // Only the timer of the still-owned object may expire that incarnation.
+    if (torrentSessions.get(session.id) !== session || session.closing) return;
+    // Streaming may use a sequence of short Range requests. Do not retire a
+    // playing episode in the gap between two verified media readers just
+    // because its original POST lease has reached its finite abandonment TTL.
+    const recentMediaRead = Number(session.lastStreamAt) > 0
+      && Date.now() - session.lastStreamAt < TORRENT_SESSION_TTL_MS;
+    if ((Number(session.openStreams) || 0) > 0 || recentMediaRead) {
       scheduleSessionExpiry(session);
       return;
     }
@@ -382,25 +578,66 @@ export async function createTorrentSession(req, res) {
     : null;
 
   const infoHash = magnetInfoHash(magnet);
+  const acquisition = beginTorrentAcquisition(body.acquisitionId, infoHash, preferredFileIndex);
+  if (acquisition.mode === "error") {
+    json(res, acquisition.status, { error: acquisition.error });
+    return;
+  }
+  if (acquisition.mode === "existing") {
+    if (acquisition.record.state === "pending") await acquisition.record.ready;
+    const outcome = activeTorrentAcquisitionPayload(acquisition.record);
+    json(res, outcome?.status || 503, outcome?.payload || { error: "torrent_acquisition_unavailable" });
+    return;
+  }
+  const acquisitionRecord = acquisition.record || null;
+  let grantedLease = null;
+  let responseCommitted = false;
+  const rememberLease = (session, acquired) => {
+    if (acquired) grantedLease = Object.freeze({
+      id: session.id, leaseToken: acquired.leaseToken, incarnation: acquired.incarnation,
+    });
+    return acquired;
+  };
+  const canceled = () => acquisitionRecord && acquisitionRecord.state !== "pending";
+  const send = (status, payload) => {
+    // Only a completed response can commit its lease. If serialization or the
+    // response write throws, finally still owns rollback of the unreported ID.
+    json(res, status, payload);
+    finishTorrentAcquisition(acquisitionRecord, status, payload);
+    if (status === 200 || status === 202) responseCommitted = true;
+  };
+  try {
+  // A concurrent last-lease release may already have removed the old Map
+  // entry but still be destroying its underlying WebTorrent instance.
+  const pendingDisposal = pendingTorrentDisposals.get(infoHash);
+  if (pendingDisposal) await pendingDisposal;
+  if (canceled()) { send(410, { error: "torrent_acquisition_cancelled" }); return; }
   let existingSession = [...torrentSessions.values()].find((session) =>
     session.infoHash === infoHash || session.torrent?.infoHash?.toLowerCase() === infoHash,
   );
   // Retry transient tracker/network failures even for magnet-only playback.
   // Keep deterministic safety rejections cached unless a different file was requested.
-  if (shouldRetryErroredTorrentSession(existingSession, preferredFileIndex)) {
+  if (shouldRetryErroredTorrentSession(existingSession, preferredFileIndex)
+      && !existingSession?.leases?.size) {
     await removeTorrentSession(existingSession.id);
     existingSession = null;
   }
+  if (canceled()) { send(410, { error: "torrent_acquisition_cancelled" }); return; }
   if (existingSession) {
+    const acquired = rememberLease(existingSession, acquireTorrentSessionLease(existingSession));
+    if (!acquired) {
+      send(429, { error: "This torrent has too many active acquisitions; close old views or retry later" });
+      return;
+    }
     if (preferredFileIndex !== null) existingSession.preferredFileIndex = preferredFileIndex;
     selectPreferredTorrentDownload(existingSession);
     scheduleSessionExpiry(existingSession);
-    json(res, 200, { ...sessionPayload(existingSession), reused: true });
+    send(200, { ...sessionPayload(existingSession), ...acquired, reused: true });
     return;
   }
 
   if (torrentSessions.size >= MAX_TORRENT_SESSIONS) {
-    json(res, 429, { error: `Maximum of ${MAX_TORRENT_SESSIONS} active torrent sessions reached` });
+    send(429, { error: `Maximum of ${MAX_TORRENT_SESSIONS} active torrent sessions reached` });
     return;
   }
 
@@ -413,6 +650,7 @@ export async function createTorrentSession(req, res) {
       await orphan.destroy({ destroyStore: !KEEP_DOWNLOADS });
     } catch {}
   }
+  if (canceled()) { send(410, { error: "torrent_acquisition_cancelled" }); return; }
 
   const id = KEEP_DOWNLOADS && /^[0-9a-f]{40}$/.test(infoHash) ? downloadSessionId(infoHash) : crypto.randomUUID();
   fs.mkdirSync(torrentRoot, { recursive: true });
@@ -430,7 +668,7 @@ export async function createTorrentSession(req, res) {
     });
   } catch (error) {
     if (resume) forgetDownloadResume(id);
-    json(res, 500, { error: error.message || "Unable to create torrent session" });
+    send(500, { error: error.message || "Unable to create torrent session" });
     return;
   }
   if (resume && torrent.infoHash && String(torrent.infoHash).toLowerCase() !== infoHash) {
@@ -438,7 +676,12 @@ export async function createTorrentSession(req, res) {
     // pieces into this infohash-derived directory.
     forgetDownloadResume(id);
     await torrent.destroy({ destroyStore: false }).catch(() => {});
-    json(res, 409, { error: "Saved torrent details didn't match; try again" });
+    send(409, { error: "Saved torrent details didn't match; try again" });
+    return;
+  }
+  if (canceled()) {
+    await torrent.destroy({ destroyStore: !KEEP_DOWNLOADS }).catch(() => {});
+    send(410, { error: "torrent_acquisition_cancelled" });
     return;
   }
 
@@ -452,6 +695,8 @@ export async function createTorrentSession(req, res) {
     displayName,
     state: "resolving",
     error: null,
+    incarnation: crypto.randomUUID(),
+    leases: new Map(),
     preferredFileIndex,
     expiryTimer: null,
     slowTimer: null,
@@ -459,6 +704,7 @@ export async function createTorrentSession(req, res) {
     peerManager: attachPeerManager(torrent, { maxConns: () => torrentClient.maxConns }),
   };
   torrentSessions.set(id, session);
+  const acquired = rememberLease(session, acquireTorrentSessionLease(session));
   scheduleSessionExpiry(session);
 
   const markReady = () => {
@@ -510,20 +756,79 @@ export async function createTorrentSession(req, res) {
   // the listeners above are attached.
   if ((torrent.files || []).length) markReady();
 
-  json(res, 202, { ...sessionPayload(session), reused: false });
+  send(202, { ...sessionPayload(session), ...acquired, reused: false });
+  } finally {
+    // Drop the exact token synchronously before settling duplicate waiters.
+    // Physical disposal may await caches; never mask the original POST error.
+    let cleanup = null;
+    if (grantedLease && !responseCommitted) {
+      try { cleanup = rollbackUnreportedTorrentLease(grantedLease); }
+      catch (error) { console.warn("Failed to roll back unreported torrent lease:", error); }
+    }
+    finishTorrentAcquisition(acquisitionRecord, 503, { error: "torrent_acquisition_unavailable" });
+    if (cleanup) {
+      try { await cleanup; }
+      catch (error) { console.warn("Failed to finish unreported torrent disposal:", error); }
+    }
+  }
+}
+
+// Cancellations use an ID the client knew *before* sending its POST. The
+// cancel path never needs the lost response body's token, but it still retires
+// only the one server-issued token bound to this ID and incarnation.
+export async function cancelTorrentAcquisition(rawId) {
+  if (!validTorrentAcquisitionId(rawId))
+    return { status: 400, error: "invalid_torrent_acquisition_id" };
+  pruneTorrentAcquisitions();
+  const id = rawId.toLowerCase();
+  let record = torrentAcquisitions.get(id);
+  if (!record) {
+    if (torrentAcquisitions.size >= MAX_TORRENT_ACQUISITIONS)
+      return { status: 429, error: "torrent_acquisition_capacity" };
+    record = {
+      resource: null, preferredFileIndex: null, state: "cancelled",
+      ready: Promise.resolve(), resolveReady: null, status: null, payload: null,
+      sessionId: null, leaseToken: null, incarnation: null,
+      expiresAt: Date.now() + TORRENT_ACQUISITION_RETENTION_MS,
+    };
+    torrentAcquisitions.set(id, record);
+    return { status: 204 };
+  }
+  if (record.state === "cancelled" || record.state === "failed") return { status: 204 };
+  if (record.state === "pending") {
+    record.state = "cancelled";
+    record.expiresAt = Date.now() + TORRENT_ACQUISITION_RETENTION_MS;
+    record.resolveReady?.();
+    record.resolveReady = null;
+    return { status: 204 };
+  }
+  // Mark before the first await: any concurrent/duplicate POST cannot revive
+  // this record, and an overlapping DELETE remains bound to the exact token.
+  record.state = "cancelling";
+  record.expiresAt = Date.now() + TORRENT_ACQUISITION_RETENTION_MS;
+  const outcome = await releaseTorrentSessionLease(
+    record.sessionId, record.leaseToken, record.incarnation);
+  if (outcome.status === 204) {
+    record.state = "cancelled";
+    record.leaseToken = null;
+  }
+  return outcome;
 }
 
 export function getTorrentSession(id) {
   const session = torrentSessions.get(id);
   if (!session) return null;
   session.lastUsedAt = Date.now();
-  scheduleSessionExpiry(session);
+  // Generic status/file reads have no ownership authority. Only a new
+  // acquisition can extend the finite lease deadline; a live stream defers
+  // session expiry. Anonymous GET polls cannot pin abandoned borrowers.
   return session;
 }
 
 // While a stream or conversion is open, the session counts as playing (never evicted for space).
 export function trackOpenStream(session, res, fileIndex = null) {
   session.openStreams = (Number(session.openStreams) || 0) + 1;
+  session.lastStreamAt = Date.now();
   const tracksFile = Number.isSafeInteger(fileIndex) && fileIndex >= 0;
   if (tracksFile) {
     session.activeStreamFiles ||= new Map();
@@ -537,6 +842,9 @@ export function trackOpenStream(session, res, fileIndex = null) {
       else session.activeStreamFiles?.delete(fileIndex);
     }
     session.lastUsedAt = Date.now();
+    session.lastStreamAt = session.lastUsedAt;
+    if (torrentSessions.get(session.id) === session && !session.closing)
+      scheduleSessionExpiry(session);
   });
 }
 

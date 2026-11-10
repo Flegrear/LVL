@@ -369,8 +369,67 @@ function rebasePersistentPlayback(base, local, remote) {
     if (Object.hasOwn(local, key)) expected[key] = local[key];
     else delete expected[key];
   }
-  // Only playback or the proven episode edits moved locally. Metadata and
-  // episode identity retain the strict rule; no removed title is recreated.
+  // A Library title can be renamed while a different device watches or
+  // unwatches a chapter. Compare field ownership to the *confirmed* base:
+  // preserve remote fields we never edited, and never select a winner for a
+  // genuinely competing edit to the same field. Episode identity/structure
+  // remains strict; watched flags, their timestamps and author are one unit.
+  const sameField = (a, b, key) => Object.hasOwn(a, key) === Object.hasOwn(b, key)
+    && (!Object.hasOwn(a, key) || equal(a[key], b[key]));
+  const applyOwned = (keys) => {
+    if (!keys.some(key => !sameField(base, local, key))) return true;
+    const remoteChanged = keys.some(key => !sameField(base, remote, key));
+    if (remoteChanged && keys.some(key => !sameField(local, remote, key))) return false;
+    for (const key of keys) {
+      if (Object.hasOwn(local, key)) {
+        expected[key] = local[key];
+        next[key] = local[key];
+      } else {
+        delete expected[key];
+        delete next[key];
+      }
+    }
+    return true;
+  };
+  // Names and their stable series grouping describe one semantic rename.
+  // A competing partial rename is not two safe independent edits.
+  const titleFields = ["title", "displayTitle", "seriesKey"];
+  if (!applyOwned(titleFields)) return null;
+  // A poster pin selects a particular image, not just a boolean. Changes to
+  // its URL, source, index and pinned state must be compared as one selection.
+  const artworkFields = ["coverUrl", "artworkSource", "artworkIndex", "artworkPinned"];
+  if (!applyOwned(artworkFields)) return null;
+  // A catalog rematch can keep the same torrent infoHash but change which
+  // title the Library represents. A verified AniList link is authorized for
+  // the catalog that was visible when the association was made; never attach
+  // an independently added old-catalog link to a new catalog identity.
+  const identityFields = ["catalogId", "catalogType", "mediaKind", "magnet", "rawName",
+    "sourceMeta", "externalSource", "externalId"];
+  const mappingFields = ["anilist", "anilistSync", "anilistManualLinks",
+    "anilistAutoLinks", "anilistImported"];
+  const edited = (a, b, keys) => keys.some(key => !sameField(a, b, key));
+  if ((edited(base, local, identityFields) && edited(base, remote, mappingFields))
+    || (edited(base, remote, identityFields) && edited(base, local, mappingFields))) return null;
+  if (!applyOwned(identityFields) || !applyOwned(mappingFields)) return null;
+  // Only understood, independent presentation fields may be rebased one at a
+  // time. Any other local metadata edit remains subject to the old strict
+  // comparison below, rather than inventing field independence for it.
+  for (const key of ["description", "releaseInfo"]) if (!applyOwned([key])) return null;
+  // updatedAt is the entry's modification clock, not authorization to win a
+  // conflict. Concurrent disjoint edits may both advance it; retain the newer
+  // clock only after the semantic fields have independently passed comparison.
+  if (!sameField(base, local, "updatedAt")) {
+    if (!sameField(base, remote, "updatedAt") && !sameField(local, remote, "updatedAt")) {
+      if (!Number.isSafeInteger(local.updatedAt) || !Number.isSafeInteger(remote.updatedAt)
+        || local.updatedAt < 0 || remote.updatedAt < 0) return null;
+      next.updatedAt = Math.max(local.updatedAt, remote.updatedAt);
+    } else if (Object.hasOwn(local, "updatedAt")) next.updatedAt = local.updatedAt;
+    else delete next.updatedAt;
+    if (Object.hasOwn(local, "updatedAt")) expected.updatedAt = local.updatedAt;
+    else delete expected.updatedAt;
+  }
+  // No unrecognized local episode identity mutation or structural rewrite may
+  // slip through the explicit field and per-chapter ownership checks above.
   if (!equal(expected, local)) return null;
   if (Number(local.lastPlayedAt || 0) >= Number(remote.lastPlayedAt || 0))
     for (const key of ["lastPlayedAt", "lastPlayedFileIndex"])
@@ -618,6 +677,12 @@ export function persistAppSection(section, value, { immediate = false, merge = f
             clearPendingLibraryForTab();
             if (typeof renderLibrary === "function" && typeof viewActive === "function" && viewActive("library"))
               renderLibrary();
+            // A successful revision-bound retry may have merged a remote
+            // watched change into this tab's local title edit. The visible
+            // Library state is now current, so repaint whichever chapter view
+            // is open rather than leaving its pre-ACK watched marks stale.
+            if (viewActive("title")) refreshTitlePage();
+            if (viewActive("watch")) renderWatchChapters();
           }
           setPersistentSectionDirty(section, false);
         }

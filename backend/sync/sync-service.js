@@ -14,10 +14,11 @@
 // the sync is encrypted (never the passphrase), the clock and which files were read.
 // sync_items: the current change for every synced item, and a hash of what LVL had for it.
 import crypto from "node:crypto";
-import { createClock, newDeviceId } from "../../shared/sync/clock.js";
+import { createClock, newDeviceId, parseStamp } from "../../shared/sync/clock.js";
 import { records } from "../../shared/sync/records.js";
 import { deriveKeyBytes, fromBase64, importKeyBytes, newKdfSettings, passphraseMatches, toBase64 } from "../../shared/sync/crypto.js";
 import { SETTINGS_FILE, createSyncLog, newSettingsFile, readSettingsFile } from "../../shared/sync/log.js";
+import { createSyncJournal } from "./journal.js";
 
 const META_KEY = "sync";
 const SYNC_REPO = "lvl-sync";
@@ -40,6 +41,46 @@ const itemHash = (type, value) => {
   const { updatedAt, updatedBy, ...content } = value;
   return hashOf(content);
 };
+// The watched/progress wire records include descriptive context from their
+// parent title. Renaming that title must not make an *unchanged* playback item
+// locally authoritative over a newer remote watch/unwatch or seek. The title's
+// own video.title record carries its metadata change. Keep the full hashes and
+// wire context for real item edits; compare only intent when deciding whether
+// a mismatch was caused solely by this derived presentation context.
+const playbackIntent = (type, value) => {
+  if (!value) return null;
+  if (type === "video.progress") {
+    const { context, updatedAt, updatedBy, ...intent } = value;
+    return intent;
+  }
+  if (type === "video.watched" || type === "video.imported-watched") {
+    const { context, updatedBy, ...intent } = value;
+    return intent; // Include watched, explicit action time and account provenance.
+  }
+  return null;
+};
+const contextOnlyPlaybackDifference = (type, current, acceptedChange) => {
+  const local = playbackIntent(type, current);
+  const accepted = acceptedChange?.value;
+  let previous = playbackIntent(type, accepted);
+  // Older devices may send watched.updatedAt without updatedBy. applyLibrary
+  // then stores the trusted HLC timestamp, not the untrusted claimed time.
+  // Compare against that same normalized accepted projection, or a later title
+  // rename would falsely look like a new local watched action on legacy data.
+  if (previous && (type === "video.watched" || type === "video.imported-watched")) {
+    if (accepted.updatedAt === 0) {
+      // applyLibrary drops a zero watchedChapterUpdatedAt on import. Its
+      // subsequent export therefore omits updatedAt; this is not a new watch.
+      const { updatedAt, ...storedProjection } = previous;
+      previous = storedProjection;
+    } else if (Number(accepted.updatedAt) > 0) {
+      const stamp = parseStamp(acceptedChange.at);
+      if (stamp && !(accepted.updatedBy === stamp.device && Number(accepted.updatedAt) <= stamp.ms))
+        previous = { ...previous, updatedAt: stamp.ms };
+    }
+  }
+  return local !== null && previous !== null && hashOf(local) === hashOf(previous);
+};
 const legacyItemHash = (type, value) => {
   if (!value) return hashOf(value);
   if (type === "video.progress") return hashOf({ positionMs: value.positionMs, durationMs: value.durationMs, finished: value.finished });
@@ -53,11 +94,13 @@ const legacyItemHash = (type, value) => {
 
 export function createSyncService({ db, getMeta, setMeta, github, local, app = {}, repoName = SYNC_REPO, now = Date.now, log = console, timers = { setTimeout, clearTimeout } } = {}) {
   db.exec("CREATE TABLE IF NOT EXISTS sync_items (item_key TEXT PRIMARY KEY, change_json TEXT NOT NULL, local_hash TEXT)");
+  const journal = createSyncJournal(db);
   const read = () => { try { return JSON.parse(getMeta(META_KEY) || "{}") || {}; } catch { return {}; } };
   let settings = read();
-  if (!settings.device) settings.device = newDeviceId();
+  const needsDevice = !settings.device;
+  if (needsDevice) settings.device = newDeviceId();
   const save = () => setMeta(META_KEY, JSON.stringify(settings));
-  save();
+  if (needsDevice) save();
   let device = null; // the device sign-in in progress
   let running = null;
   let runningOptions = null;
@@ -73,6 +116,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   let lastCheckAt = 0;
   let retryAt = 0;
   let storageCache = null;
+  const scope = () => `${settings.device}:${settings.repo?.owner || ""}/${settings.repo?.name || ""}:${settings.encrypted ? "encrypted" : "plain"}`;
 
   const step = () => {
     if (device) return "device";
@@ -91,6 +135,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   function activate(keyBytes) {
     Object.assign(settings, { active: true, key: keyBytes ? toBase64(keyBytes) : "", seen: {}, nextSeq: 1, joining: false, remoteHead: "" });
     db.exec("DELETE FROM sync_items");
+    journal.clear();
     comparedMark = null;
     lastFullAt = 0;
     stopped = false;
@@ -115,13 +160,13 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     const own = (path) => path.startsWith(`changes/${settings.device}/`) || path === `snapshots/${settings.device}.json`;
     const mine = Object.keys(settings.seen || {}).filter(own);
-    if (!mine.length || mine.some((path) => pulled.paths.has(path))) return;
+    if (!mine.length || mine.some((path) => pulled.paths.has(path))) return false;
     for (const path of mine) delete pulled.seen[path];
     pulled.nextSeq = 1;
-    settings.nextSeq = 1;
-    settings.snapshotVersion = undefined;
-    db.exec("DELETE FROM sync_items");
-    log.warn?.("Sync: lvl-sync no longer has this device's files; sending everything again");
+    // This remote observation may already be stale when an awaited GitHub
+    // call resolves. The actual item reset belongs inside journal admission's
+    // locked checkpoint comparison, never here before ownership is checked.
+    return true;
   }
 
   function keepToken(answer) {
@@ -143,37 +188,159 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   const putItem = db.prepare(`INSERT INTO sync_items (item_key, change_json, local_hash) VALUES (?, ?, ?)
     ON CONFLICT(item_key) DO UPDATE SET change_json = excluded.change_json, local_hash = excluded.local_hash`);
 
+  async function publishPrepared(plan, syncLog) {
+    if (plan.scope !== scope()) throw new Error("An unfinished sync belongs to a different repository or device; reconnect to the original sync to recover it");
+    if (plan.baseCheckpoint !== undefined && getMeta(META_KEY) !== plan.baseCheckpoint)
+      throw Object.assign(new Error("Sync checkpoint advanced in another process; retry with its current state"), { code: "sync_generation_changed" });
+    let seq = plan.seq;
+    for (let offset = plan.nextChunk * 2000; offset < plan.outgoing.length; offset += 2000) {
+      if (plan.scope !== scope()) throw new Error("The sync account or repository changed before publication completed");
+      const pushed = await syncLog.push(plan.outgoing.slice(offset, offset + 2000), seq);
+      plan.seen[pushed.path] = pushed.version;
+      if (seq % SNAPSHOT_EVERY === 0)
+        plan.snapshotVersion = await syncLog.snapshot(plan.state.map(([, change]) => change), seq, plan.snapshotVersion);
+      seq += 1;
+      plan.seq = seq;
+      plan.nextChunk += 1;
+      journal.save(plan, plan.baseCheckpoint);
+    }
+    if (plan.scope !== scope()) throw new Error("The sync account or repository changed before its checkpoint");
+    const nextSettings = { ...settings, seen: plan.seen, nextSeq: seq, clock: plan.clock, hashVersion: 2,
+      lastSyncAt: now(), sent: (settings.sent || 0) + plan.outgoing.length,
+      received: (settings.received || 0) + plan.received,
+      skippedFiles: (settings.skippedFiles || 0) + plan.skipped.length,
+      refused: (settings.refused || 0) + plan.refused,
+      ...(plan.remoteChanged && plan.remoteHead ? { remoteHead: plan.remoteHead } : {}),
+      ...(plan.snapshotVersion ? { snapshotVersion: plan.snapshotVersion } : {}) };
+    // SQLite rolls back all item rows and the checkpoint if any individual row
+    // fails. The outbox remains recoverable until that same commit deletes it.
+    journal.commit(plan.operationId, () => {
+      for (const [itemKey, json, hash] of plan.updates) putItem.run(itemKey, json, hash);
+      setMeta(META_KEY, JSON.stringify(nextSettings));
+    }, plan.baseCheckpoint);
+    settings = nextSettings;
+    reloadNeeded += plan.appliedVideo;
+    lastCheckAt = now();
+    if (plan.sendLocal) comparedMark = plan.mark;
+    if (plan.full) lastFullAt = plan.startedAt;
+    return { sent: plan.outgoing.length, received: plan.received, skippedFiles: plan.skipped, refused: settings.refused };
+  }
+
   // full: read the repository's file list and compare all local data, whatever the marks say.
   // compareLocal: send this device's changes (false for an incoming-only check).
-  async function syncOnce({ full = true, compareLocal = true } = {}) {
+  async function syncOnce({ full = true, compareLocal = true } = {}, generationRetries = 0) {
     if (step() !== "ready") return { skipped: true };
     await ensureToken();
+    const baseCheckpoint = getMeta(META_KEY);
+    if (baseCheckpoint !== JSON.stringify(settings)) {
+      if (generationRetries >= 2) throw Object.assign(new Error("Sync checkpoint keeps changing; retry this operation"), { code: "sync_generation_changed" });
+      settings = read();
+      storageCache = null;
+      comparedMark = null;
+      return syncOnce({ full, compareLocal }, generationRetries + 1);
+    }
     const storage = storageFor();
-    const startedAt = now();
+    const prior = journal.load();
+    if (prior && prior.scope !== scope())
+      throw new Error("An unfinished sync belongs to another device or repository; reconnect to that sync before continuing");
+    const key = settings.key ? await importKeyBytes(fromBase64(settings.key)) : null;
+    const syncLog = createSyncLog({ storage, device: settings.device, key });
+    if (prior?.phase === "prepared") return publishPrepared(prior, syncLog);
+    const restoring = prior?.phase === "preapply";
+    const operationId = restoring ? prior.operationId : crypto.randomUUID();
+    const startedAt = restoring ? prior.startedAt : now();
     // The storage's version (GitHub: the branch's commit; "not changed" costs no quota) and this device's mark.
-    const head = typeof storage.head === "function" ? await storage.head() : null;
-    lastRemoteAt = startedAt;
-    const remoteChanged = full || !head || head.version !== settings.remoteHead;
-    const mark = local.mark?.() ?? null;
-    const sendLocal = full || (compareLocal && (mark === null || mark !== comparedMark));
+    const head = restoring ? (prior.remoteHead ? { version: prior.remoteHead } : null)
+      : typeof storage.head === "function" ? await storage.head() : null;
+    lastRemoteAt = now();
+    const remoteChanged = restoring ? prior.remoteChanged : full || !head || head.version !== settings.remoteHead;
+    let mark = restoring ? prior.mark : local.mark?.() ?? null;
+    let sendLocal = restoring ? prior.sendLocal : full || (compareLocal && (mark === null || mark !== comparedMark));
+    const checkedFull = restoring ? prior.full : full;
     if (!remoteChanged && !sendLocal) {
       lastCheckAt = now();
       return { sent: 0, received: 0, skippedFiles: [], refused: settings.refused || 0, idle: true };
     }
-    const key = settings.key ? await importKeyBytes(fromBase64(settings.key)) : null;
-    const syncLog = createSyncLog({ storage, device: settings.device, key });
     const clock = createClock({ device: settings.device, last: settings.clock, now });
-    const pulled = remoteChanged ? await syncLog.pull(settings.seen || {})
+    const pulled = restoring ? prior.pulled : remoteChanged ? await syncLog.pull(settings.seen || {})
       : { changes: [], seen: settings.seen || {}, skipped: [], nextSeq: settings.nextSeq || 1 };
-    if (pulled.paths) await recoverStorage(storage, pulled);
+    const resetOwnFiles = restoring ? Boolean(prior.resetOwnFiles)
+      : pulled.paths ? await recoverStorage(storage, pulled) : false;
     for (const change of pulled.changes) clock.observe(change.at);
-    const { state, hashes } = loadItems();
-    const before = new Map(state);
+    const localProjection = () => local.export().map((item) =>
+      [`${item.type} ${item.id}`, records.clean(item.type, item.value)]);
     // Capture pending local edits before a pull can replace them. An unchanged
     // cached value is not an edit; only a difference from the last accepted hash
     // protects a record. The next send stamps that genuine edit after the pull.
-    const pending = new Map((remoteChanged || settings.hashVersion !== 2 ? local.export() : []).map(item =>
-      [`${item.type} ${item.id}`, records.clean(item.type, item.value)]));
+    const pending = restoring ? new Map(prior.pending)
+      : new Map((remoteChanged || settings.hashVersion !== 2 ? local.export() : []).map(item =>
+        [`${item.type} ${item.id}`, records.clean(item.type, item.value)]));
+    // The expected projection is journaled atomically at admission and again
+    // alongside each local-apply transaction. This covers Comics/ratings and
+    // the preapply-before-video-CAS gap, not only a committed video Library.
+    const intervening = new Map();
+    if (restoring && Array.isArray(prior.expectedLocal)) {
+      const after = new Map(prior.expectedLocal);
+      const current = new Map(localProjection());
+      for (const itemKey of new Set([...after.keys(), ...current.keys()])) {
+        const oldValue = after.get(itemKey) ?? null;
+        const newValue = current.get(itemKey) ?? null;
+        if (stable(oldValue) !== stable(newValue)) {
+          intervening.set(itemKey, newValue);
+          pending.set(itemKey, newValue);
+        }
+      }
+      if (intervening.size) sendLocal = true;
+    } else if (restoring && Array.isArray(prior.appliedLibrary) && typeof local.exportLibrarySnapshot === "function") {
+      // Accept unfinished journals saved by older builds without assuming the
+      // pre-CAS baseline for non-video records was captured durably.
+      const after = new Map(local.exportLibrarySnapshot(prior.appliedLibrary)
+        .map((item) => [`${item.type} ${item.id}`, records.clean(item.type, item.value)]));
+      const current = new Map(local.exportLibrarySnapshot()
+        .map((item) => [`${item.type} ${item.id}`, records.clean(item.type, item.value)]));
+      for (const itemKey of new Set([...after.keys(), ...current.keys()])) {
+        const oldValue = after.get(itemKey) ?? null;
+        const newValue = current.get(itemKey) ?? null;
+        if (stable(oldValue) !== stable(newValue)) {
+          intervening.set(itemKey, newValue);
+          pending.set(itemKey, newValue);
+        }
+      }
+      if (intervening.size) sendLocal = true;
+    }
+    // Recover the exact pulled records and original local baseline after any
+    // interruption during local application, before another remote read.
+    if (!restoring) {
+      try { journal.save({ phase: "preapply", operationId, scope: scope(), startedAt,
+      remoteChanged, remoteHead: head?.version || null, mark, sendLocal, full: checkedFull,
+      pulled: { changes: pulled.changes, seen: pulled.seen, skipped: pulled.skipped, nextSeq: pulled.nextSeq },
+      pending: [...pending], baseCheckpoint, resetOwnFiles }, baseCheckpoint, (operation) => {
+        if (resetOwnFiles) db.exec("DELETE FROM sync_items");
+        const captured = localProjection();
+        operation.expectedLocal = captured;
+        if (remoteChanged || settings.hashVersion !== 2) {
+          pending.clear();
+          for (const [key, value] of captured) pending.set(key, value);
+          operation.pending = captured;
+        }
+        mark = local.mark?.() ?? null;
+        operation.mark = mark;
+      }); }
+      catch (error) {
+        if (error.code !== "sync_generation_changed" || generationRetries >= 2) throw error;
+        settings = read();
+        storageCache = null;
+        comparedMark = null;
+        return syncOnce({ full, compareLocal }, generationRetries + 1);
+      }
+    }
+    if (resetOwnFiles) {
+      settings.nextSeq = 1;
+      settings.snapshotVersion = undefined;
+      if (!restoring) log.warn?.("Sync: lvl-sync no longer has this device's files; sending everything again");
+    }
+    const { state, hashes } = loadItems();
+    const before = new Map(state);
     // Enriching the format is not a user edit. Upgrade confirmed, unchanged
     // hashes before deciding whether this older installation has pending edits.
     const rehashed = new Set();
@@ -196,17 +363,26 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       const prior = value && { ...value };
       if (prior && !Object.hasOwn(previous.value || {}, "anilistSync")) delete prior.anilistSync;
       if (prior && !Object.hasOwn(previous.value || {}, "provenance")) delete prior.provenance;
-      if (itemHash(previous.type, prior) !== hash) dirty.add(itemKey);
+      if (itemHash(previous.type, prior) !== hash
+        && !contextOnlyPlaybackDifference(previous.type, prior, previous)) dirty.add(itemKey);
     }
     const arrived = records.merge(state, pulled.changes);
     const touched = new Set(arrived.map((change) => `${change.type} ${change.id}`));
+    for (const itemKey of intervening.keys()) {
+      dirty.add(itemKey);
+      const accepted = state.get(itemKey);
+      if (accepted && !hashes.has(itemKey)) hashes.set(itemKey, itemHash(accepted.type, accepted.value));
+    }
     // Changes for LVL's data that couldn't be applied before (an episode before its title) are tried again.
     const toApply = [...state.entries()].filter(([itemKey, change]) => local.types.includes(change.type)
       && !dirty.has(itemKey)
       && !(change.type.startsWith("video.") && dirty.has(`video.title ${change.id.split("/")[0]}`)
         && !pending.has(`video.title ${change.id.split("/")[0]}`))
       && (touched.has(itemKey) || !hashes.has(itemKey))).map(([, change]) => change);
-    const applied = toApply.length ? local.apply(toApply, before) : new Set();
+    const applied = toApply.length ? local.apply(toApply, before, {
+      onLibraryApplied: (result) => journal.recordAppliedLibrary(operationId, result, localProjection),
+      applyOtherAtomically: (apply) => journal.applyAndRecord(operationId, apply, localProjection),
+    }) : new Set();
     // What LVL has now, after applying. A received item counts as in sync with its local form
     // (LVL may add its own fields, like when it was added), so it isn't sent back.
     const current = sendLocal || applied.size ? local.export().map((item) => ({ ...item, key: `${item.type} ${item.id}`, value: records.clean(item.type, item.value) })) : [];
@@ -214,7 +390,6 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     for (const change of applied) {
       const itemKey = `${change.type} ${change.id}`;
       hashes.set(itemKey, itemHash(change.type, byKey.has(itemKey) ? byKey.get(itemKey).value : null));
-      if (change.type.startsWith("video.")) reloadNeeded += 1;
     }
     // This device's changes: what differs from the last synced value, and what was removed.
     const outgoing = [];
@@ -224,6 +399,14 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       exported.add(itemKey);
       const value = item.value;
       if (hashes.get(itemKey) === itemHash(item.type, value)) continue;
+      // Preserve this projection's new full hash locally without issuing a new
+      // watched/progress event. Otherwise a title-only edit would publish a
+      // fabricated, newer watch intent (and override a genuine remote unwatch).
+      if (contextOnlyPlaybackDifference(item.type, value, state.get(itemKey))) {
+        hashes.set(itemKey, itemHash(item.type, value));
+        rehashed.add(itemKey);
+        continue;
+      }
       const authored = value.updatedAt ? { ...value, updatedBy: settings.device } : value;
       let change;
       try { change = records.make({ type: item.type, id: item.id, value: authored, at: clock.tick(), previous: state.get(itemKey) }); } catch (error) {
@@ -244,29 +427,38 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       hashes.set(itemKey, hashOf(null));
       touched.add(itemKey);
     }
-    const seen = { ...pulled.seen };
-    let seq = Math.max(pulled.nextSeq, settings.nextSeq || 1);
-    // Up to 2000 changes per file, so a first sync of a big Library is several small files.
-    for (let at = 0; at < outgoing.length; at += 2000) {
-      const pushed = await syncLog.push(outgoing.slice(at, at + 2000), seq);
-      seen[pushed.path] = pushed.version;
-      if (seq % SNAPSHOT_EVERY === 0) settings.snapshotVersion = await syncLog.snapshot([...state.values()], seq, settings.snapshotVersion);
-      seq += 1;
+    // A repository reset can have cleared the acknowledged item table under
+    // a durable preapply journal. If the user removes a locally present item
+    // after that admission, there is no former state row from which the normal
+    // removal loop can build a tombstone. Keep that explicit user intent in
+    // the append-only log so a later peer snapshot cannot resurrect it.
+    for (const [itemKey, value] of intervening) {
+      if (value !== null || state.has(itemKey)) continue;
+      const separator = itemKey.indexOf(" ");
+      if (separator < 1) continue;
+      const type = itemKey.slice(0, separator), id = itemKey.slice(separator + 1);
+      if (!local.types.includes(type)) continue;
+      const removal = records.make({ type, id, value: null, at: clock.tick() });
+      outgoing.push(removal);
+      state.set(itemKey, removal);
+      hashes.set(itemKey, hashOf(null));
+      touched.add(itemKey);
     }
-    for (const itemKey of new Set([...touched, ...rehashed, ...[...state.keys()].filter((k) => state.get(k) !== before.get(k))]))
-      putItem.run(itemKey, JSON.stringify(state.get(itemKey)), hashes.get(itemKey) || null);
-    for (const change of applied) putItem.run(`${change.type} ${change.id}`, JSON.stringify(state.get(`${change.type} ${change.id}`)), hashes.get(`${change.type} ${change.id}`));
-    Object.assign(settings, { seen, nextSeq: seq, clock: clock.last(), hashVersion: 2, lastSyncAt: now(), sent: (settings.sent || 0) + outgoing.length,
-      received: (settings.received || 0) + applied.size,
-      skippedFiles: (settings.skippedFiles || 0) + pulled.skipped.length,
-      refused: (settings.refused || 0) + pulled.changes.filter((change) => records.read(change).status === "invalid").length,
-      // The version seen before reading: a file another device wrote since is read next time.
-      ...(remoteChanged && head ? { remoteHead: head.version } : {}) });
-    save();
-    lastCheckAt = now();
-    if (sendLocal) comparedMark = mark;
-    if (full) lastFullAt = startedAt;
-    return { sent: outgoing.length, received: applied.size, skippedFiles: pulled.skipped, refused: settings.refused };
+    const keys = new Set([...touched, ...rehashed,
+      ...[...state.keys()].filter((itemKey) => state.get(itemKey) !== before.get(itemKey)),
+      ...[...applied].map((change) => `${change.type} ${change.id}`)]);
+    const plan = { phase: "prepared", schema: 1, operationId, scope: scope(), startedAt, full: checkedFull,
+      baseCheckpoint: restoring ? prior.baseCheckpoint : baseCheckpoint,
+      remoteChanged, remoteHead: head?.version || null, mark, sendLocal,
+      state: [...state], updates: [...keys].filter((itemKey) => state.has(itemKey)).map((itemKey) =>
+        [itemKey, JSON.stringify(state.get(itemKey)), hashes.get(itemKey) || null]),
+      outgoing, nextChunk: 0, seq: Math.max(pulled.nextSeq, settings.nextSeq || 1),
+      seen: { ...pulled.seen }, snapshotVersion: settings.snapshotVersion || null,
+      received: applied.size, appliedVideo: [...applied].filter((change) => change.type.startsWith("video.")).length,
+      skipped: pulled.skipped, refused: pulled.changes.filter((change) => records.read(change).status === "invalid").length,
+      clock: clock.last() };
+    journal.save(plan, plan.baseCheckpoint);
+    return publishPrepared(plan, syncLog);
   }
 
   // Every 5 s: send local edits, or ask GitHub for news when the remote check is due.
@@ -464,6 +656,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       this.cancelDevice();
       timers.clearTimeout(timer);
       settings = { device: settings.device, clock: settings.clock };
+      journal.clear();
       db.exec("DELETE FROM sync_items");
       comparedMark = null;
       lastCheckAt = 0;

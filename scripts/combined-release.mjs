@@ -117,11 +117,55 @@ function compare(left, right) {
   return 0;
 }
 export function validatePlatformAdvance(platform, entry, published, fresh) {
+  if (!["windows", "android"].includes(platform)) fail("invalid platform admission request");
+  version(entry.version, platform === "android");
+  if (platform === "android" && (!Number.isSafeInteger(entry.versionCode) || entry.versionCode < 205 || entry.versionCode > 2147483647))
+    fail("Android admission requires a valid versionCode");
+  // Public Android names and installation codes must describe a single
+  // monotone history. A conflicting public history cannot be resolved merely
+  // by retaining an older signed APK or choosing a new calendar release tag.
+  if (platform === "android") {
+    for (let i = 0; i < published.length; i++) {
+      const earlier = published[i];
+      version(earlier.version, true);
+      if (!Number.isSafeInteger(earlier.versionCode) || earlier.versionCode < 205 || earlier.versionCode > 2147483647)
+        fail("published Android release has an invalid versionCode");
+      for (let j = 0; j < i; j++) {
+        const other = published[j];
+        const order = compare(earlier.version, other.version);
+        const codeOrder = Math.sign(earlier.versionCode - other.versionCode);
+        if (order !== codeOrder) fail("conflicting published Android version/code history");
+      }
+    }
+  }
   for (const previous of published) {
     const difference = compare(entry.version, previous.version);
     if (difference < 0 || (fresh && difference === 0)) fail(`${platform} version must ${fresh ? "advance" : "not regress"} relative to published releases`);
-    if (fresh && platform === "android" && previous.versionCode && entry.versionCode <= previous.versionCode) fail("Android versionCode must advance");
+    if (platform === "android") {
+      if (fresh && entry.versionCode <= previous.versionCode) fail("Android versionCode must advance");
+      if (!fresh && entry.versionCode < previous.versionCode) fail("retained Android versionCode would regress below a published installation code");
+      if (!fresh && difference === 0 && entry.versionCode !== previous.versionCode) fail("retained Android versionCode differs from published version");
+    }
   }
+}
+
+/** Recheck the prepared independent platform manifest before public transition.
+ * Release workflows hold the shared repository-wide publication concurrency
+ * authority while calling this and making the subsequent GitHub draft public.
+ */
+export function validatePreparedReleaseAdmission(manifest, published) {
+  validateManifest(manifest);
+  if (!isObject(published) || !Array.isArray(published.windows) || !Array.isArray(published.android))
+    fail("invalid published platform admission inventory");
+  for (const platform of ["windows", "android"]) {
+    const entry = manifest.platforms[platform];
+    const sources = platformAssets(platform, entry).map((record) => record.url.slice(PREFIX.length).split("/")[0]);
+    const attachedCount = sources.filter((source) => source === manifest.tag).length;
+    if (attachedCount && attachedCount !== sources.length)
+      fail(`${platform} mixes retained and fresh asset sources`);
+    validatePlatformAdvance(platform, entry, published[platform], attachedCount === sources.length);
+  }
+  return manifest;
 }
 export function selectWindowsBase(candidates, target) {
   version(target);
@@ -145,18 +189,25 @@ export function latestWindowsInstaller(candidates) {
   if (!selected) fail("no published full Windows installer is available");
   return selected.installerUrl;
 }
-async function publishedPlatforms() {
+// Injected readers permit offline fixture coverage of the same complete
+// combined+legacy inventory scanned by the legacy publication workflows.
+export async function publishedPlatforms({
+  getPage = (page) => api(`releases?per_page=20&page=${page}`),
+  getManifest = async (record) => validateManifest(JSON.parse((await downloadSmall(recordFromApi(record))).toString("utf8"))),
+  readAndroidTag = (tag) => JSON.parse(execFileSync("git", ["show", `${tag}:android/app-version.json`], { encoding: "utf8", windowsHide: true })),
+} = {}) {
   const candidates = { windows: [], android: [] };
   for (let page = 1; page <= 10; page++) {
-    const releases = api(`releases?per_page=20&page=${page}`);
+    const releases = await getPage(page);
     if (!Array.isArray(releases) || releases.length > 20) fail("invalid published release page");
     for (const release of releases) {
       if (release.draft || release.prerelease) continue;
       const tag = release.tag_name;
       if (TAG.test(tag)) {
+        if (!Array.isArray(release.assets)) fail("invalid combined release assets");
         const rows = release.assets.filter((asset) => asset.name === "LVL-release.json");
         if (rows.length !== 1) fail("published combined manifest missing");
-        const manifest = validateManifest(JSON.parse((await downloadSmall(recordFromApi(rows[0]))).toString("utf8")));
+        const manifest = await getManifest(rows[0]);
         if (manifest.tag !== tag) fail("published combined manifest tag mismatch");
         for (const platform of ["windows", "android"]) {
           const entry = manifest.platforms[platform];
@@ -166,12 +217,14 @@ async function publishedPlatforms() {
         }
       } else if (/^v\d+\.\d+\.\d+$/.test(tag)) {
         const value = version(tag.slice(1));
+        if (!Array.isArray(release.assets)) fail("invalid legacy Windows release assets");
         if (release.assets.some((asset) => ["LVL-Setup.exe", `LVL-update-v${value}.zip`].includes(asset.name))) candidates.windows.push({ version: value, ref: tag,
           ...(release.assets.some((asset) => asset.name === "LVL-Setup.exe" && asset.browser_download_url === `${PREFIX}${tag}/LVL-Setup.exe`) ? { installerUrl: `${PREFIX}${tag}/LVL-Setup.exe` } : {}) });
       } else if (/^android-v\d+\.\d+\.\d+$/.test(tag)) {
         const value = version(tag.slice(9), true);
+        if (!Array.isArray(release.assets)) fail("invalid legacy Android release assets");
         if (release.assets.some((asset) => asset.name === `LVL-${value}-arm64.apk`)) {
-          const config = JSON.parse(execFileSync("git", ["show", `${tag}:android/app-version.json`], { encoding: "utf8", windowsHide: true }));
+          const config = await readAndroidTag(tag);
           if (config.version !== value || !Number.isInteger(config.versionCode) || config.versionCode < 205 || config.versionCode > 2147483647) fail("published Android source version/code mismatch");
           candidates.android.push({ version: value, ref: tag, versionCode: config.versionCode });
         }
@@ -357,13 +410,29 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     }
     if (command === "prepare") console.log(JSON.stringify(await prepare(opts)));
     else if (command === "verify" && opts.dir) console.log(JSON.stringify(verifyCombinedDirectory(opts.dir)));
-    else if (command === "windows-base" && opts.version) {
-      const selected = selectWindowsBase((await publishedPlatforms()).windows, opts.version);
-      if (selected) {
-        const source = JSON.parse(execFileSync("git", ["show", `${selected.ref}:package.json`], { encoding: "utf8", windowsHide: true }));
-        if (source.version !== selected.version) fail("published Windows payload source version mismatch");
+    else if (command === "admit" && opts.dir) {
+      const manifest = verifyCombinedDirectory(opts.dir);
+      validatePreparedReleaseAdmission(manifest, await publishedPlatforms());
+      console.log(JSON.stringify({ admitted: true, tag: manifest.tag }));
+    }
+    else if (["windows-base", "windows-admit", "android-admit"].includes(command) && opts.version) {
+      const published = await publishedPlatforms();
+      const platform = command === "android-admit" ? "android" : "windows";
+      if (platform === "android" && (!/^[1-9]\d*$/.test(opts["version-code"] || "") || Number(opts["version-code"]) > 2147483647)) fail("Android admission needs --version-code");
+      // windows-base also serves trusted manual build-only dispatches. A
+      // previously published version may be rebuilt for review, but only an
+      // explicit publication admission may require advancing it.
+      if (command !== "windows-base") validatePlatformAdvance(platform, { version: opts.version,
+        ...(platform === "android" ? { versionCode: Number(opts["version-code"]) } : {}) }, published[platform], true);
+      if (command !== "windows-base") { console.log(JSON.stringify({ admitted: true, version: opts.version })); }
+      else {
+        const selected = selectWindowsBase(published.windows, opts.version);
+        if (selected) {
+          const source = JSON.parse(execFileSync("git", ["show", `${selected.ref}:package.json`], { encoding: "utf8", windowsHide: true }));
+          if (source.version !== selected.version) fail("published Windows payload source version mismatch");
+        }
+        console.log(JSON.stringify(selected));
       }
-      console.log(JSON.stringify(selected));
-    } else fail("expected prepare, verify --dir or windows-base --version");
+    } else fail("expected prepare, verify, admit, windows-base, windows-admit or android-admit");
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

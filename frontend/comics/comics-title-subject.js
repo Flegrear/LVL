@@ -5,7 +5,8 @@ import { escapeHtml, toast } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
 import { comicKey, formatLabel, libraryEntry, loadLibrary } from "./comics-render.js";
-import { bindComicAbout, comicAboutMarkup, mangaBlocks, saveStatus, statusSelectMarkup } from "./comics-manga.js";
+import { bindComicAbout, comicAboutMarkup, mangaBlocks } from "./comics-manga.js";
+import { chapterSortPreference, groupPreference, saveChapterSortPreference, saveGroupPreference } from "./comics-chapters.js";
 import { pushScore } from "./comics-tracking.js";
 import { mountMangaScore } from "./comics-score.js";
 import { comicsEnabled } from "./comics-enabled.js";
@@ -39,18 +40,22 @@ export function loadComicTitle(id, ctx) {
 export function describeComic(comic, { index = null, inLibrary = false } = {}) {
   const chapters = index?.chapterCount || comic.chapters || 0;
   const volumes = (index?.volumes || []).filter((group) => group.volume).length || comic.volumes || 0;
+  const credits = (comic.staff || []).filter((person) => /^(?:story|art|story & art|original (?:story|creator))\b/i.test(person.role || ""))
+    .map((person) => person.name).filter(Boolean).slice(0, 2);
   return {
+    comicsHero: true,
     kind: t(formatLabel(comic)),
     name: comic.title,
     subtitle: comic.aliases?.[0] && comic.aliases[0] !== comic.title ? comic.aliases[0] : "",
     poster: comic.cover || "",
-    backdrop: comic.banner || "",
+    backdrop: comic.banner || comic.cover || "",
     description: String(comic.description || "").split(/\n{2,}/).filter(Boolean).join(" "),
     genres: (comic.genres || []).slice(0, 6).map((genre) => t(genre)),
-    facts: [t(formatLabel(comic)), comic.year ? String(comic.year) : "", STATUS_TEXT[comic.status] ? t(STATUS_TEXT[comic.status]) : "",
-      volumes ? t("{count} volumes", { count: volumes }) : "", chapters ? t("{count} chapters", { count: chapters }) : ""].filter(Boolean),
+    facts: [credits.join(", "), STATUS_TEXT[comic.status] ? t(STATUS_TEXT[comic.status]) : "",
+      t(formatLabel(comic)), comic.year ? String(comic.year) : "",
+      chapters ? t("{count} chapters", { count: chapters }) : volumes ? t("{count} volumes", { count: volumes }) : ""].filter(Boolean),
     scores: Number.isFinite(comic.score) && comic.score > 0 ? [{ provider: "AniList", value: comic.score }] : [],
-    actions: [{ label: t("Continue reading"), icon: "play", attrs: { "data-comic-continue": comicKey(comic.local ? comic.id : comic) }, i18n: false }],
+    actions: [{ label: t("Resume"), icon: "play", attrs: { "data-comic-continue": comicKey(comic.local ? comic.id : comic) }, i18n: false }],
     inLibrary,
   };
 }
@@ -67,36 +72,55 @@ export const comicTitleSubject = {
     return { ...describeComic(known.comic, { index: known.index, inLibrary: Boolean(libraryEntry(id)) || known.comic.local }),
       aboutHtml: comicAboutMarkup(known.comic, known.files, known.index) };
   },
-  // The hero's controls: Library status next to Continue reading, LVL's score
-  // (opens the volume ratings, like seasons on a video title); the About area's controls.
+  // The hero's floating Resume control and LVL score. Library status now
+  // belongs beside the Chapters / Sources tabs in the Manga section.
   mount(parts, item, ctx) {
     const id = comicKey(item);
     const known = comicTitles.get(id);
     if (!known?.comic || !parts.hero) return;
     aboutFor = { id, comic: known.comic };
     if (parts.about) bindComicAbout(parts.about, () => aboutFor, ctx);
-    const slot = parts.hero.querySelector("#title-feature-actions");
-    if (slot && !slot.dataset.comicsMounted && !known.comic.local) {
-      slot.dataset.comicsMounted = "1";
-      slot.innerHTML = statusSelectMarkup(libraryEntry(id)?.status || "").replace("<select data-comics-status>", `<select data-comics-status data-comics-status-for="${escapeHtml(id)}">`);
-      slot.querySelector("select").addEventListener("change", async (event) => {
-        await saveStatus(event.target, id, ctx);
-        ctx.refreshTitlePage?.();
-      });
-    }
     const rating = parts.hero.querySelector("#title-lvl-rating-slot");
     // Core's video rating renderer empties this slot on each draw; fill it again.
     if (rating && !rating.querySelector(".comic-manga-score") && !known.comic.local) {
       mountMangaScore(rating, { id, title: known.comic.title, index: known.index, volumeCount: Number(known.comic.volumes) || null }, { onSaved: (overall) => pushScore(id, overall, ctx) });
     }
+    const menu = parts.hero.querySelector("[data-comic-title-sort]");
+    if (menu) {
+      const list = mangaBlocks.get(id)?.chapterList;
+      const sort = list?.sort || chapterSortPreference(id);
+      const grouped = list?.groupByVolume ?? groupPreference(id, { phone: window.matchMedia?.("(max-width:680px)")?.matches === true });
+      for (const button of menu.querySelectorAll("[data-comic-sort-order]")) button.setAttribute("aria-pressed", String(button.dataset.comicSortOrder === sort));
+      const toggle = menu.querySelector("[data-comic-group-volumes]");
+      if (toggle) toggle.checked = grouped;
+    }
     if (!parts.hero.dataset.comicsBound) {
       parts.hero.dataset.comicsBound = "1";
       parts.hero.addEventListener("click", (event) => {
+        const order = event.target.closest("[data-comic-sort-order]");
+        if (order) {
+          const targetId = aboutFor.id;
+          const value = order.dataset.comicSortOrder;
+          saveChapterSortPreference(targetId, value);
+          const block = mangaBlocks.get(targetId);
+          if (block?.element.isConnected) block.chapterList?.setSort(value);
+          for (const button of order.closest("[data-comic-title-sort]").querySelectorAll("[data-comic-sort-order]"))
+            button.setAttribute("aria-pressed", String(button === order));
+          order.closest("details").open = false;
+          return;
+        }
         const button = event.target.closest("[data-comic-continue]");
         if (!button) return;
         const block = mangaBlocks.get(button.dataset.comicContinue);
         if (block?.element.isConnected) { block.element.scrollIntoView({ block: "start", behavior: "smooth" }); void block.continueReading(); }
         else toast(t("The chapter list is still loading."));
+      });
+      parts.hero.addEventListener("change", (event) => {
+        if (!event.target.matches("[data-comic-group-volumes]")) return;
+        const targetId = aboutFor.id;
+        saveGroupPreference(targetId, event.target.checked);
+        const block = mangaBlocks.get(targetId);
+        if (block?.element.isConnected) block.chapterList?.setGrouping(event.target.checked);
       });
     }
   },

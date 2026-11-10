@@ -215,10 +215,75 @@ export function renderAniListAutoSettings() {
 }
 
 export function anilistStoredQueue() {
-  return readStorageArray(ANILIST_SYNC_QUEUE).slice(-5000);
+  const id = readAniListAccount(localStorage)?.userId;
+  if (!Number.isSafeInteger(id) || id <= 0) return [];
+  // The generic saved-state reader treats an inaccessible storage key as an
+  // empty array. That is unsafe for a durable outbox: a later gather would
+  // persist [] over thousands of unsent records. Read and parse exactly once,
+  // propagating storage/JSON errors before ANY queue mutation.
+  if (typeof localStorage.getItem !== "function") return readStorageArray(ANILIST_SYNC_QUEUE);
+  const queueFrom = (text) => {
+    if (text == null) return [];
+    let parsed;
+    try { parsed = JSON.parse(text); } catch { throw new Error("AniList pending queue cannot be read; unsent records were preserved."); }
+    if (!Array.isArray(parsed)) throw new Error("AniList pending queue is invalid; unsent records were preserved.");
+    return parsed;
+  };
+  const canonical = anilistQueueAccountKey(id);
+  const canonicalText = localStorage.getItem(canonical);
+  if (canonicalText != null) return queueFrom(canonicalText);
+  const owner = Number(localStorage.getItem(ANILIST_QUEUE_OWNER_KEY)) || null;
+  // A primary value is legacy-only; ownership cannot follow a partially
+  // switched account. In particular, another account's archived entries must
+  // never be selected by the current OAuth identity.
+  return owner && owner !== id ? [] : queueFrom(localStorage.getItem(ANILIST_SYNC_QUEUE));
 }
 export function persistAniListQueue(queue) {
-  localStorage.setItem(ANILIST_SYNC_QUEUE, JSON.stringify((queue || []).slice(-5000)));
+  const id = readAniListAccount(localStorage)?.userId;
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error("AniList account is required to save pending work.");
+  const content = JSON.stringify(Array.isArray(queue) ? queue : []);
+  if (content.length > 4 * 1024 * 1024)
+    throw new Error(`AniList queue capacity exceeded (${queue.length} records); previous pending work remains saved.`);
+  const owner = Number(localStorage.getItem?.(ANILIST_QUEUE_OWNER_KEY)) || null;
+  if (owner && owner !== id) switchAniListQueueAccount(id, owner);
+  const canonical = anilistQueueAccountKey(id);
+  if (localStorage.getItem?.(canonical) != null) {
+    // Newer queues live solely under their authenticated user id. Do not copy
+    // foreign data into the shared primary during an account transition.
+    saveAniListQueueText(canonical, content);
+  } else {
+    // Existing same-account primary queues stay in place until a switch moves
+    // them, avoiding a second full copy for a >5,000-row legacy queue.
+    saveAniListQueueText(ANILIST_SYNC_QUEUE, content);
+    saveAniListQueueText(ANILIST_QUEUE_OWNER_KEY, String(id));
+  }
+}
+
+const ANILIST_QUEUE_OWNER_KEY = `${ANILIST_SYNC_QUEUE}-owner`;
+const anilistQueueAccountKey = (id) => `${ANILIST_SYNC_QUEUE}-account-${id}`;
+
+function saveAniListQueueText(key, text) {
+  try {
+    localStorage.setItem(key, text);
+  } catch (error) {
+    throw new Error(`AniList pending queue exceeds available local storage; previous unsent items remain saved. ${error?.message || "Storage full"}`);
+  }
+}
+
+// The legacy key remains readable for older installations. The owner marker
+// prevents its records being sent after a different-account authorization.
+function switchAniListQueueAccount(nextId, previousId = null) {
+  const owner = Number(localStorage.getItem?.(ANILIST_QUEUE_OWNER_KEY)) || Number(previousId) || null;
+  const oldText = localStorage.getItem?.(ANILIST_SYNC_QUEUE);
+  if (oldText && owner && owner !== nextId && localStorage.getItem?.(anilistQueueAccountKey(owner)) == null)
+    saveAniListQueueText(anilistQueueAccountKey(owner), oldText);
+  if (oldText && !owner) saveAniListQueueText(`${ANILIST_SYNC_QUEUE}-unowned`, oldText);
+  // The target's own canonical key must exist before moving the marker. An
+  // interrupted marker write leaves the original account's archive readable;
+  // an interrupted OAuth write cannot reveal foreign pending entries.
+  if (owner !== nextId && localStorage.getItem?.(anilistQueueAccountKey(nextId)) == null)
+    saveAniListQueueText(anilistQueueAccountKey(nextId), "[]");
+  saveAniListQueueText(ANILIST_QUEUE_OWNER_KEY, String(nextId));
 }
 
 const anilistAutoLinkAttempts = new Map();
@@ -502,12 +567,16 @@ async function syncAniListAuto({ manual = false } = {}) {
   const options = readAniListPreference(localStorage);
   if (!account || (!manual && !options.enabled)) return;
   if (!manual && Date.now() < anilistAutoRetryAfter) return;
+  const stillConnected = () => {
+    const active = readAniListAccount(localStorage);
+    return active?.userId === account.userId && active?.token === account.token;
+  };
+  const mayContinue = () => stillConnected() && (manual || readAniListPreference(localStorage).enabled);
   anilistAutoRun = (async () => {
     // Unlisted shows can obtain exact, account-scoped season identities via
     // public metadata before the normal authenticated list reconciliation.
     await autoLinkAniListWatchedSeries(account);
-    if (readAniListAccount(localStorage)?.token !== account.token) return;
-    if (!manual && !readAniListPreference(localStorage).enabled) return;
+    if (!mayContinue()) return;
     // Ordinary Library saves happen periodically while watching. Re-read
     // AniList after new completed episodes or for hourly reconciliation.
     const before = gatherAniListWatchedQueue();
@@ -517,8 +586,7 @@ async function syncAniListAuto({ manual = false } = {}) {
     showAniListAutoStatus("Checking AniList and reconciling watched episodes…");
     renderAniListAutoSettings();
     const data = await anilistGraphql(account.token, ANILIST_LIST_QUERY, { id: account.userId });
-    if (readAniListAccount(localStorage)?.token !== account.token) return; // disconnected or reauthorized
-    if (!manual && !readAniListPreference(localStorage).enabled) return;
+    if (!mayContinue()) return; // disconnected, reauthorized or disabled
     if (Number(data?.Viewer?.id) !== account.userId
       || (data.MediaListCollection !== null && !Array.isArray(data?.MediaListCollection?.lists)))
       throw new Error("AniList did not return a complete watch list; no changes were sent.");
@@ -547,19 +615,23 @@ async function syncAniListAuto({ manual = false } = {}) {
     persistAniListQueue([...planned.queue, ...watched.blocked]);
     writeAniListPreference(localStorage, { lastPull: Date.now() });
     let sent = 0;
-    const outgoing = planned.updates.slice(0, 15);
-    for (const [index, update] of outgoing.entries()) {
-      if (readAniListAccount(localStorage)?.token !== account.token) break;
-      if (!manual && !readAniListPreference(localStorage).enabled) break;
+    const outgoing = planned.updates.slice(0, 8);
+    for (const update of outgoing) {
+      if (!mayContinue()) break;
       if (blockedAniListForwardMedia(account.userId).has(update.mediaId)) continue;
+      // Store the pacing slot on this private runner so a second invocation
+      // cannot immediately spend another batch of the provider's quota.
+      const pacingDelay = Math.max(0, (syncAniListAuto.nextWriteSlot || 0) - Date.now());
+      if (pacingDelay) await new Promise((resolve) => setTimeout(resolve, pacingDelay));
+      if (!mayContinue() || blockedAniListForwardMedia(account.userId).has(update.mediaId)) break;
+      syncAniListAuto.nextWriteSlot = Date.now() + 8500;
       // Read this exact user/media again immediately before each write. Other
       // AniList clients may have advanced progress since the initial list pull.
       // AniList has no conditional/max-progress mutation, so this narrows (but
       // cannot eliminate) the external read-to-write race.
       const freshData = await anilistGraphql(account.token, ANILIST_SINGLE_PROGRESS_QUERY,
         { id: account.userId, mediaId: update.mediaId });
-      if (readAniListAccount(localStorage)?.token !== account.token) return;
-      if (!manual && !readAniListPreference(localStorage).enabled) return;
+      if (!mayContinue()) return;
       if (!Object.hasOwn(freshData, "MediaList")) throw new Error("AniList returned an incomplete episode status; no update was sent.");
       if (freshData.MediaList === null) {
         // If an existing entry vanished since the initial pull, treat the
@@ -584,28 +656,74 @@ async function syncAniListAuto({ manual = false } = {}) {
         persistAniListQueue([...planned.queue, ...currentWatched.blocked]);
         continue;
       }
-      if (readAniListAccount(localStorage)?.token !== account.token) return;
-      if (!manual && !readAniListPreference(localStorage).enabled) return;
+      if (!mayContinue()) return;
       if (blockedAniListForwardMedia(account.userId).has(freshUpdate.mediaId)) continue;
       const actual = await anilistGraphql(account.token, ANILIST_SAVE_PROGRESS, freshUpdate);
       // A disconnect or reauthorization may have happened while AniList was
       // processing this request. Never restore a previous session's queue.
       if (readAniListAccount(localStorage)?.token !== account.token) return;
+      if (!stillConnected()) return;
       const confirmed = actual?.SaveMediaListEntry;
       if (Number(confirmed?.mediaId) !== freshUpdate.mediaId || Number(confirmed?.progress) < freshUpdate.progress)
         throw new Error("AniList did not confirm the episode progress update.");
-      remote.set(update.mediaId, { ...remote.get(update.mediaId),
-        progress: Number(confirmed.progress), status: confirmed.status || remote.get(update.mediaId)?.status });
-      planned = reconcileAniListProgressQueue({ queue: planned.queue,
-        remote: [...remote.values()].map((entry) => ({ ...entry, anilistId: entry.mediaId })) });
-      persistAniListQueue([...planned.queue, ...currentWatched.blocked]);
+      // Mutation responses are not an authoritative view: another device can
+      // race the preflight or change this entry after the write. A failed or
+      // mismatched third read keeps the local intent queued for later review.
+      let verified;
+      try {
+        verified = await anilistGraphql(account.token, ANILIST_SINGLE_PROGRESS_QUERY,
+          { id: account.userId, mediaId: freshUpdate.mediaId });
+      } catch (error) {
+        throw Object.assign(new Error("AniList could not verify the episode after sending it. Pending progress was preserved for retry."),
+          { retryAfter: Math.max(5 * 60_000, Number(error?.retryAfter) || 0) });
+      }
+      if (!stillConnected()) return;
+      if (!manual && !readAniListPreference(localStorage).enabled) return;
+      const rechecked = gatherAniListWatchedQueue();
+      if (blockedAniListForwardMedia(account.userId).has(freshUpdate.mediaId)
+        || !rechecked.queue.some((row) => row.mediaId === freshUpdate.mediaId)) {
+        // An explicit local unwatch or changed media association supersedes
+        // this automatic push, even after a successful remote mutation. The
+        // current local queue is authoritative for all future attempts.
+        planned = reconcileAniListProgressQueue({ queue: rechecked.queue,
+          remote: [...remote.values()].map((entry) => ({ ...entry, anilistId: entry.mediaId })) });
+        persistAniListQueue([...planned.queue, ...rechecked.blocked]);
+        continue;
+      }
+      const readEntry = Object.hasOwn(verified || {}, "MediaList") ? verified.MediaList : undefined;
+      const readRemote = readEntry && Number(readEntry.mediaId) === freshUpdate.mediaId
+        ? remoteAniListEntries({ MediaListCollection: { lists: [{ entries: [readEntry] }] } }).get(freshUpdate.mediaId)
+        : null;
+      if (!readRemote || readRemote.progressKnown === false
+        || !Number.isSafeInteger(readRemote.progress) || readRemote.progress < freshUpdate.progress
+        || (readRemote.episodes !== null && readRemote.progress > readRemote.episodes)
+        || rechecked.queue.some((row) => row.mediaId === freshUpdate.mediaId
+          && Number.isSafeInteger(row.episodeCount) && row.episodeCount > 0
+          && readRemote.episodes !== null && row.episodeCount !== readRemote.episodes))
+        throw Object.assign(new Error("AniList's authoritative readback did not confirm this episode. Local progress remains queued; LVL will retry after a delay."),
+          { retryAfter: 5 * 60_000 });
+      // Adopt a higher authoritative progress conservatively for reconciliation;
+      // never overwrite another client's higher count or its score/status.
+      const nextRemote = new Map(remote);
+      nextRemote.set(update.mediaId, { ...readRemote, existing: true });
+      const reconciled = reconcileAniListProgressQueue({ queue: rechecked.queue,
+        remote: [...nextRemote.values()].map((entry) => ({ ...entry, anilistId: entry.mediaId })) });
+      if (rechecked.queue.some((row) => row.mediaId === freshUpdate.mediaId
+        && row.episode <= readRemote.progress && reconciled.queue.some((remaining) =>
+          remaining.mediaId === row.mediaId && remaining.seriesKey === row.seriesKey && remaining.code === row.code)))
+        throw Object.assign(new Error("AniList readback conflicts with the verified episode mapping. Local progress remains queued."),
+          { retryAfter: 5 * 60_000 });
+      remote.set(update.mediaId, { ...readRemote, existing: true });
+      // The ordinary remote history importer respects explicit local unwatch
+      // markers and account-owned episode mappings. It can now reflect a
+      // concurrent advance without changing playback resume positions.
+      applyAniListRemoteWatchHistory(new Map([[update.mediaId, readRemote]]), account.userId);
+      planned = reconciled;
+      persistAniListQueue([...planned.queue, ...rechecked.blocked]);
       writeAniListPreference(localStorage, { lastPush: Date.now() });
       sent++;
-      // Each update now performs a fresh read plus a mutation (two requests).
-      // Keep under AniList's degraded 30-request/minute limit.
-      if (index < outgoing.length - 1) await new Promise((resolve) => setTimeout(resolve, 4500));
     }
-    if (readAniListAccount(localStorage)?.token !== account.token) return;
+    if (!mayContinue()) return;
     if (Date.now() - (Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) || 0) >= 60 * 60_000) {
       try { await syncAniListLibrary({ quiet: true }); }
       catch (error) {
@@ -618,7 +736,7 @@ async function syncAniListAuto({ manual = false } = {}) {
     // writes: previously confirmed episodes remain watched in the Library.
     anilistAutoLastQueueSnapshot = snapshot;
     anilistAutoRetryAfter = 0;
-    showAniListAutoStatus(`Synced ${account.username}: ${sent} update${sent === 1 ? "" : "s"} sent; ${pending} episode${pending === 1 ? "" : "s"} queued.${watched.unmapped ? ` ${watched.unmapped} episode(s) skipped: no safe AniList season match.` : ""}${anilistAutoImportWarning ? ` ${anilistAutoImportWarning}` : ""}`);
+    showAniListAutoStatus(`Synced ${account.username}: ${sent} update${sent === 1 ? "" : "s"} sent and verified; ${pending} episode${pending === 1 ? "" : "s"} queued.${watched.unmapped ? ` ${watched.unmapped} episode(s) skipped: no safe AniList season match.` : ""}${anilistAutoImportWarning ? ` ${anilistAutoImportWarning}` : ""}`);
     if (manual) toast(`AniList sync complete: ${sent} update${sent === 1 ? "" : "s"}`);
     return { ok: true, sent, pending };
   })().catch((error) => {
@@ -657,17 +775,22 @@ async function connectVerifiedAniListAccount(auth, generation) {
     const priorStored = readStorageObject(ANILIST_OAUTH_STORAGE);
     const oldUserId = Number(priorStored.userId) || null;
     const switchedAccount = oldUserId !== null && oldUserId !== viewer.id;
+    const previousQueueOwner = Number(localStorage.getItem(ANILIST_QUEUE_OWNER_KEY)) || oldUserId;
+    const changedKnownOwner = previousQueueOwner != null && previousQueueOwner !== viewer.id;
     // Preserve unsent watches on a same-account reauthorization; some may
     // outlive their original local video source and exist only in the queue.
+    switchAniListQueueAccount(viewer.id, oldUserId);
     if (oldUserId !== viewer.id) localStorage.removeItem(ANILIST_SYNC_QUEUE);
     invalidateAniListUnwatchApprovals();
+    // A failed preference write must leave the original OAuth identity active.
+    // An account change stays paused even when the prior token had expired.
+    writeAniListPreference(localStorage, {
+      enabled: !switchedAccount && !changedKnownOwner,
+      lastPull: 0, lastPush: 0,
+    });
     localStorage.setItem(ANILIST_OAUTH_STORAGE, JSON.stringify({
       ...auth, userId: viewer.id, username: viewer.name,
     }));
-    writeAniListPreference(localStorage, {
-      enabled: !switchedAccount,
-      lastPull: 0, lastPush: 0,
-    });
     anilistAutoLastQueueSnapshot = null;
     anilistAutoImportWarning = "";
     showAniListAutoStatus(switchedAccount
@@ -810,9 +933,23 @@ export function wireAniListAutoSettings() {
   });
     $("#anilist-auto-disconnect")?.addEventListener("click", () => {
     ++anilistAutoAuthGeneration; // invalidate pending Viewer verification
-    localStorage.removeItem(ANILIST_OAUTH_STORAGE);
-    localStorage.removeItem(ANILIST_SCORE_SYNC_KEY);
-    localStorage.removeItem(ANILIST_SYNC_QUEUE);
+    const oldUserId = Number(readStorageObject(ANILIST_OAUTH_STORAGE).userId)
+      || Number(localStorage.getItem(ANILIST_QUEUE_OWNER_KEY)) || null;
+    try {
+      if (oldUserId) {
+        const owner = Number(localStorage.getItem(ANILIST_QUEUE_OWNER_KEY)) || oldUserId;
+        if (owner === oldUserId && localStorage.getItem(ANILIST_SYNC_QUEUE)
+          && localStorage.getItem(anilistQueueAccountKey(oldUserId)) == null)
+          saveAniListQueueText(anilistQueueAccountKey(oldUserId), localStorage.getItem(ANILIST_SYNC_QUEUE));
+      }
+      localStorage.removeItem(ANILIST_OAUTH_STORAGE);
+      localStorage.removeItem(ANILIST_SCORE_SYNC_KEY);
+      localStorage.removeItem(ANILIST_SYNC_QUEUE);
+      localStorage.removeItem(ANILIST_QUEUE_OWNER_KEY);
+    } catch (error) {
+      showAniListAutoStatus(error.message, true);
+      return;
+    }
     invalidateAniListUnwatchApprovals();
     clearTimeout(anilistAutoTimer);
     anilistAutoLastQueueSnapshot = null;

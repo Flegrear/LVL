@@ -122,6 +122,7 @@ export function addBuiltInAssets() {
     "frontend/player/player-tracks.js",
     "frontend/player/phone-seek-input.js",
     "frontend/player/phone-seek-lifecycle.js",
+    "frontend/player/playback-intent.js",
     "frontend/player/video-conversion-capability.js",
     "frontend/player/fast-seek-state.js",
     "frontend/player/subtitle-display.js",

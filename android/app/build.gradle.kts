@@ -105,9 +105,14 @@ android {
     }
 }
 
-// A direct Gradle invocation must fail before it can package an unsigned release.
+// Compile and resource prerequisites may run without release credentials.
+// Only tasks that can produce a final unsigned release APK/AAB require signing.
+val finalReleaseArtifactTasks = setOf(
+    "assembleRelease", "packageRelease", "bundleRelease", "signReleaseBundle",
+    "packageReleaseBundle", "packageReleaseUniversalApk", "packageReleaseSplitApk",
+)
 gradle.taskGraph.whenReady {
-    if (allTasks.any { it.name == "assembleRelease" || it.name.startsWith("packageRelease") }) {
+    if (allTasks.any { it.name in finalReleaseArtifactTasks }) {
         require(hasReleaseSigning) { "Android release signing requires all LVL_ANDROID_KEY* environment variables and LVL_ANDROID_KEYSTORE" }
         require(file(releaseSigningValues[0]!!).isFile) { "Android release keystore file is missing" }
     }
@@ -178,6 +183,7 @@ dependencies {
     implementation("com.github.null2264:injekt-koin:ee267b2e27")
     implementation("com.github.gpanther:java-nat-sort:natural-comparator-1.1")
     implementation("androidx.preference:preference:1.2.1")
+    implementation("androidx.webkit:webkit:1.18.0")
     // QuickJS, for the few extensions that run a site's script.
     implementation("app.cash.quickjs:quickjs-android:0.9.2")
 }

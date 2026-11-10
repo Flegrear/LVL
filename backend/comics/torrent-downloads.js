@@ -1,6 +1,7 @@
 // Comic torrent downloads. A separate WebTorrent client
 // (the video player's client and its rules stay untouched) downloads only the
-// readable comic files of a torrent into <comics folder>/Downloads/<name>.
+// readable comic files of a torrent into a separate, owned attempt folder under
+// <comics folder>/Downloads/. Display names never own the storage identity.
 // Files are kept; sharing stops when the download completes.
 // While it downloads, LVL uploads like any
 // other peer, without a cap: peers favour those who upload to them, and a
@@ -34,14 +35,31 @@ export function planTorrentFiles(files) {
 
 export function createComicDownloads({ folder, onComplete = () => {}, createClient, now = Date.now, log = console } = {}) {
   let client = null;
+  let clientInit = null;
+  let lifecycle = 0;
   const jobs = new Map();
-  const getClient = async () => {
-    if (!client) {
+  const getClient = () => {
+    if (client) return Promise.resolve(client);
+    if (clientInit) return clientInit.promise;
+    const owner = { lifecycle, promise: null };
+    owner.promise = (async () => {
       const WebTorrent = createClient ? null : (await import("webtorrent")).default;
-      client = createClient ? createClient(CLIENT_OPTIONS) : new WebTorrent({ ...CLIENT_OPTIONS });
-      client.on?.("error", (error) => log.warn?.("Comic download client:", error?.message));
-    }
-    return client;
+      if (owner.lifecycle !== lifecycle) return null;
+      // Stop may retire this initialization while the import or factory waits.
+      // Its eventual client must never be adopted by a newer lifecycle.
+      const candidate = createClient ? await createClient(CLIENT_OPTIONS) : new WebTorrent({ ...CLIENT_OPTIONS });
+      candidate.on?.("error", (error) => log.warn?.("Comic download client:", error?.message));
+      if (owner.lifecycle !== lifecycle) {
+        if (candidate !== client) candidate.destroy?.();
+        return null;
+      }
+      client = candidate;
+      return candidate;
+    })().finally(() => {
+      if (clientInit === owner) clientInit = null;
+    });
+    clientInit = owner;
+    return owner.promise;
   };
   const view = (job) => ({
     id: job.id, name: job.name, workId: job.workId, state: job.state, error: job.error, bytes: job.bytes,
@@ -49,11 +67,27 @@ export function createComicDownloads({ folder, onComplete = () => {}, createClie
     speed: job.torrent?.downloadSpeed || 0, peers: job.torrent?.numPeers || 0, startedAt: job.startedAt, folder: job.dir,
   });
   function finish(job, state, error = null) {
+    clearTimeout(job.metadataTimeout);
     job.state = state;
     job.error = error;
     const torrent = job.torrent;
     job.torrent = null;
     torrent?.destroy?.({ destroyStore: state !== "done" });
+  }
+  function cleanCancelledAttempt(job) {
+    if (!job.ownedDirectory || job.cleanupStarted) return;
+    job.cleanupStarted = true;
+    const target = path.resolve(job.dir);
+    // The path must be the exact single directory created exclusively for
+    // this attempt, never an arbitrary name or a completed download folder.
+    if (path.dirname(target) !== job.downloadsRoot) return;
+    fs.lstat(target, (error, stat) => {
+      if (error || !stat.isDirectory() || stat.isSymbolicLink()
+        || stat.dev !== job.directoryDev || stat.ino !== job.directoryIno) return;
+      fs.rm(target, { recursive: true, force: true }, (removeError) => {
+        if (removeError) log.warn?.("Could not remove cancelled comic download:", removeError.message);
+      });
+    });
   }
 
   return {
@@ -64,17 +98,50 @@ export function createComicDownloads({ folder, onComplete = () => {}, createClie
       const id = crypto.createHash("sha1").update(magnet).digest("hex").slice(0, 12);
       const existing = jobs.get(id);
       if (existing && ["metadata", "downloading", "done"].includes(existing.state)) return view(existing);
-      const dir = path.join(folder, "Downloads", safeFolderName(name));
-      const createdDir = !fs.existsSync(dir);
-      fs.mkdirSync(dir, { recursive: true });
-      const job = { id, name: String(name || "").slice(0, 200), workId: workId || null, dir, createdDir, state: "metadata", error: null, bytes: 0, startedAt: now(), torrent: null };
+      const downloadsRoot = path.resolve(folder, "Downloads");
+      fs.mkdirSync(downloadsRoot, { recursive: true });
+      const parent = fs.realpathSync(downloadsRoot);
+      let dir = null;
+      // mkdir without recursive:true exclusively claims a new directory on
+      // disk (across processes). Never reuse a prior attempt of the same ID.
+      for (let n = 0; n < 8; n++) {
+        const candidate = path.resolve(parent, `${safeFolderName(name)} [${id}]-${crypto.randomBytes(8).toString("hex")}`);
+        if (path.dirname(candidate) !== parent) throw new Error("Unsafe comic download directory");
+        try { fs.mkdirSync(candidate); dir = candidate; break; }
+        catch (error) { if (error.code !== "EEXIST") throw error; }
+      }
+      if (!dir) throw new Error("Could not reserve a comic download directory");
+      const directory = fs.lstatSync(dir);
+      const job = { id, name: String(name || "").slice(0, 200), workId: workId || null,
+        dir, downloadsRoot: parent, ownedDirectory: true, directoryDev: directory.dev, directoryIno: directory.ino,
+        cleanupStarted: false, metadataTimeout: null, state: "metadata", error: null,
+        bytes: 0, startedAt: now(), torrent: null };
       jobs.set(id, job);
-      const torrentClient = await getClient();
-      const torrent = torrentClient.add(magnet, { path: dir, deselect: true, destroyStoreOnDestroy: false });
+      const startedLifecycle = lifecycle;
+      let torrentClient;
+      try { torrentClient = await getClient(); }
+      catch (error) {
+        if (startedLifecycle !== lifecycle || jobs.get(id) !== job || job.state !== "metadata") return view(job);
+        jobs.delete(id);
+        cleanCancelledAttempt(job);
+        throw error;
+      }
+      if (startedLifecycle !== lifecycle || jobs.get(id) !== job || job.state !== "metadata"
+        || !torrentClient || torrentClient !== client) return view(job);
+      let torrent;
+      try { torrent = torrentClient.add(magnet, { path: dir, deselect: true, destroyStoreOnDestroy: false }); }
+      catch (error) {
+        if (jobs.get(id) === job) { jobs.delete(id); cleanCancelledAttempt(job); }
+        throw error;
+      }
       job.torrent = torrent;
-      const timeout = setTimeout(() => { if (job.state === "metadata") finish(job, "failed", "No peers sent the torrent's details within 2 minutes"); }, 120_000);
+      const timeout = setTimeout(() => {
+        if (jobs.get(id) === job && job.state === "metadata") finish(job, "failed", "No peers sent the torrent's details within 2 minutes");
+      }, 120_000);
+      job.metadataTimeout = timeout;
       timeout.unref?.();
       torrent.once("metadata", () => {
+        if (jobs.get(id) !== job || job.state !== "metadata") return;
         clearTimeout(timeout);
         const plan = planTorrentFiles(torrent.files);
         if (plan.error) return finish(job, "failed", plan.error);
@@ -85,11 +152,14 @@ export function createComicDownloads({ folder, onComplete = () => {}, createClie
         return undefined;
       });
       torrent.once("done", () => {
-        if (job.state !== "downloading") return;
+        if (jobs.get(id) !== job || job.state !== "downloading") return;
         finish(job, "done");
         Promise.resolve(onComplete(view(job))).catch((error) => log.warn?.("Comic download follow-up failed:", error?.message));
       });
-      torrent.once("error", (error) => finish(job, "failed", String(error?.message || error).slice(0, 200)));
+      torrent.once("error", (error) => {
+        if (jobs.get(id) === job && (job.state === "metadata" || job.state === "downloading"))
+          finish(job, "failed", String(error?.message || error).slice(0, 200));
+      });
       return view(job);
     },
     cancel(id) {
@@ -97,16 +167,25 @@ export function createComicDownloads({ folder, onComplete = () => {}, createClie
       if (!job) return false;
       if (job.state === "metadata" || job.state === "downloading") {
         finish(job, "cancelled");
-        // Only the folder this download created; an existing folder with the same name is left alone.
-        if (job.createdDir) fs.rm(job.dir, { recursive: true, force: true }, () => {});
-      }
+        cleanCancelledAttempt(job);
+      } else if (job.state === "failed") cleanCancelledAttempt(job);
       jobs.delete(job.id);
       return true;
     },
     stop() {
-      for (const job of jobs.values()) if (job.torrent) finish(job, "cancelled");
-      client?.destroy?.();
+      lifecycle += 1;
+      // Retire pending initialization as well as already-added torrents. A new
+      // start can initialize its own client without waiting for the old one.
+      clientInit = null;
+      for (const job of jobs.values()) {
+        if (job.state === "metadata" || job.state === "downloading") {
+          finish(job, "cancelled");
+          cleanCancelledAttempt(job);
+        }
+      }
+      const retiredClient = client;
       client = null;
+      retiredClient?.destroy?.();
     },
   };
 }

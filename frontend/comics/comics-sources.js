@@ -38,7 +38,14 @@ export function sourceFilterMarkup(favorites = [], selected = "") {
   const options = sourceChoices(favorites);
   if (!options.length) return "";
   const choice = sourceChoice(selected, options);
-  return `<label class="comic-source-filter"><span>${escapeHtml(t("Source"))}</span><select data-comics-source-filter aria-label="${escapeHtml(t("Filter by source"))}">${sourceOptionsMarkup(options, choice)}</select></label>`;
+  const current = options.find((item) => String(item.id) === choice);
+  const selectedLabel = current ? [current.name, languageName(current.lang), current.host].filter(Boolean).join(" · ") : t("All sources");
+  const radio = (id, label) => `<button type="button" role="radio" data-comics-source-choice="${escapeHtml(id)}" aria-checked="${id === choice}"><span>${escapeHtml(label)}</span><span class="comic-source-filter__radio" aria-hidden="true"></span></button>`;
+  return `<details class="comic-source-filter" data-comics-source-filter><summary aria-label="${escapeHtml(t("Filter by source"))}"><span>${escapeHtml(t("Source"))}</span><strong>${escapeHtml(selectedLabel)}</strong>${icon("chevron-down")}</summary>`
+    + `<div class="comic-source-filter__menu" role="radiogroup" aria-label="${escapeHtml(t("Filter by source"))}">`
+    + radio("", t("All sources"))
+    + options.map((source) => radio(String(source.id), [source.name, languageName(source.lang), source.host].filter(Boolean).join(" · "))).join("")
+    + `</div></details>`;
 }
 
 export function sourceOptionsMarkup(sources = [], selected = "") {
@@ -162,9 +169,20 @@ async function verifyFlow(source, searchAgain) {
   }
   if (!state.open) {
     const passed = Boolean(state.passed);
-    if (!cancelled) paintBox(passed ? t("Done. Searching {source} again…", { source: source.name }) : t("The window closed. Searching {source} again…", { source: source.name }), { done: true });
-    await searchAgain(source);
-    if (box.open) setTimeout(() => box.open && box.close(), passed ? 600 : 1500);
+    if (cancelled) return;
+    paintBox(t("Checking whether {source} can be read now…", { source: source.name }), { done: true });
+    const result = await searchAgain(source).catch((error) => ({ status: "error", error: error.message }));
+    if (cancelled || !box.open) return;
+    if (result?.status === "ok") {
+      // The successful source request proves that its session works; pressing
+      // Done, or the native screen merely loading a non-challenge title, does not.
+      paintBox(t("{source} is verified and its chapters can be searched.", { source: source.name }), { done: true });
+      setTimeout(() => box.open && box.close(), 1100);
+    } else {
+      paintBox(result?.status === "blocked" || !passed
+        ? t("The site is still asking for verification. Finish the check in its window, then try Verify again.")
+        : t("The check was completed, but the site rejected the next request. Try verification again."), { done: true });
+    }
   }
 }
 
@@ -228,7 +246,9 @@ export async function comicSourcesSection(holder, data, ctx) {
     }
   };
   // Verify a protected site, then search it again.
-  const verifyAndSearch = (source) => verifyFlow(source, searchOne);
+  // Always ask the site again after verification. A cached search hit could
+  // otherwise claim success for hours while Cloudflare still rejects requests.
+  const verifyAndSearch = (source) => verifyFlow(source, (item) => searchOne(item, { fresh: true }));
   async function loadCounts(source, result) {
     if (result?.status !== "ok") return;
     const items = result.items.slice(0, COUNTED);
@@ -244,16 +264,17 @@ export async function comicSourcesSection(holder, data, ctx) {
       repaintSource(source);
     }
   }
-  const searchOne = async (source) => {
+  const searchOne = async (source, { fresh = false } = {}) => {
     const revision = (revisions.get(source.id) || 0) + 1;
     revisions.set(source.id, revision);
     results.delete(source.id);
     repaintSource(source);
-    const result = await comicsApi.extSearch(id, source.id).catch((error) => ({ status: "error", error: error.message, items: [] }));
-    if (revisions.get(source.id) !== revision) return;
+    const result = await comicsApi.extSearch(id, source.id, { fresh }).catch((error) => ({ status: "error", error: error.message, items: [] }));
+    if (revisions.get(source.id) !== revision) return null;
     results.set(source.id, result);
     repaintSource(source);
     void loadCounts(source, result);
+    return result;
   };
   const searchFavorites = async () => {
     for (const source of filterSources(favorites, selectedSource)) results.delete(source.id);
@@ -425,12 +446,32 @@ export async function comicSourcesSection(holder, data, ctx) {
     }
   }
   section.addEventListener("click", (event) => { void handleClick(event); });
-  section.addEventListener("change", (event) => {
-    if (!event.target.matches("[data-comics-source-filter]")) return;
-    selectedSource = sourceChoice(event.target.value, favorites);
+  section.addEventListener("click", (event) => {
+    const item = event.target.closest("[data-comics-source-choice]");
+    if (!item) return;
+    selectedSource = sourceChoice(item.dataset.comicsSourceChoice, favorites);
     saveSourceChoice(selectedSource);
+    // Rebuild only the filter and results: preserve linked work and pack panels.
+    const filter = section.querySelector("[data-comics-source-filter]");
+    filter?.insertAdjacentHTML("beforebegin", sourceFilterMarkup(favorites, selectedSource));
+    filter?.remove();
     paintFavorites();
     void Promise.all(filterSources(favorites, selectedSource).filter((source) => !results.has(source.id)).map(searchOne));
+    section.querySelector("[data-comics-source-filter] summary")?.focus({ preventScroll: true });
+  });
+  section.addEventListener("keydown", (event) => {
+    const filter = event.target.closest("[data-comics-source-filter]");
+    if (!filter) return;
+    if (event.key === "Escape" && filter.open) {
+      filter.open = false;
+      filter.querySelector("summary")?.focus();
+      event.preventDefault();
+    } else if (["ArrowDown", "ArrowUp"].includes(event.key) && event.target.matches("[data-comics-source-choice]")) {
+      const buttons = [...filter.querySelectorAll("[data-comics-source-choice]")];
+      const at = buttons.indexOf(event.target);
+      buttons[(at + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+      event.preventDefault();
+    }
   });
 }
 

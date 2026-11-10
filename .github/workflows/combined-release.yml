@@ -25,7 +25,7 @@ permissions:
   actions: read
 
 concurrency:
-  group: combined-release
+  group: lvl-public-release-serialization
   cancel-in-progress: false
 
 jobs:
@@ -145,5 +145,11 @@ jobs:
           }
           $release = gh release view $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --json isDraft,isPrerelease,assets | ConvertFrom-Json
           if (!$release.isDraft -or $release.isPrerelease -or $release.assets.Count -ne $files.Count) { throw 'Combined draft state differs' }
+          # Run final admission while holding the same repository-wide release
+          # authority as the Windows and Android legacy publication workflows.
+          # Retained platforms must still satisfy all currently installed
+          # published version/code baselines, even after draft verification.
+          node scripts/combined-release.mjs admit --dir build/combined/assets
+          if ($LASTEXITCODE -ne 0) { throw 'Combined platforms are stale against the current published baseline' }
           gh release edit $env:RELEASE_TAG --repo $env:GITHUB_REPOSITORY --draft=false --latest
           if ($LASTEXITCODE -ne 0) { throw 'Could not publish verified combined release' }

@@ -7,7 +7,7 @@ import { compareUnitNumbers } from "../../shared/reading/units.js";
 import { mainAnimeRelation } from "../../shared/reading/franchise.js";
 import { createLocalLibrary } from "../reader/local-library.js";
 import { closeAllArchives } from "../reader/pages.js";
-import { handleLocalRoutes, localTitleEntry } from "./local-routes.js";
+import { createUploadMaintenance, handleLocalRoutes, localTitleEntry } from "./local-routes.js";
 import { mangaForAnime } from "./anime-links.js";
 import { createSourcesStore } from "./sources-store.js";
 import { createComicDownloads } from "./torrent-downloads.js";
@@ -51,6 +51,7 @@ export const COMICS_ASSETS = Object.freeze([
   asset("frontend/comics/comics-title-subject.js"),
   asset("frontend/comics/comics-score.js"),
   asset("frontend/comics/comics-chapters.js"),
+  asset("frontend/comics/comics-chapter-preload.js"),
   asset("frontend/comics/comics.css"),
   asset("frontend/comics/comics-settings.js"),
   asset("frontend/comics/comics-i18n.js"),
@@ -167,18 +168,23 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
         return (data?.Page?.media || []).map(normalizeComic).filter(Boolean);
       };
       // Adds an AniList title to the Library (keeps an existing entry's status unless one is given).
-      async function ensureEntry(id, status = null) {
+      async function ensureEntry(id, status = null, { isCurrent = () => true } = {}) {
+        if (!isCurrent()) return null;
         const existing = store.libraryGet(id);
         if (existing && !status && String(existing.work?.title || "").trim()) return existing;
         const comic = (await details(id)).value;
         if (comic?.hidden || comic?.anilistId !== id || !String(comic?.title || "").trim() || comic.title === "Untitled")
           throw Object.assign(new Error("This title isn't available"), { status: 404 });
+        // Folder removal/scan generation retirement can occur while details
+        // is awaited. No newly verified card may outlive its pending file.
+        if (!isCurrent()) return null;
         return store.librarySet(id, status || existing?.status || "PLANNING", cardSnapshot(comic));
       }
       // A rejected/hidden metadata fetch must reach the matcher: treating it as
       // a fulfilled null would claim AniList ownership without a usable card.
-      const matchOptions = { search: searchTitles, ensureLibrary: async (id) => {
-        const entry = await ensureEntry(id);
+      const matchOptions = { search: searchTitles, ensureLibrary: async (id, { isCurrent = () => true } = {}) => {
+        const entry = await ensureEntry(id, null, { isCurrent });
+        if (!isCurrent()) return null;
         if (entry?.id !== `anilist-${id}` || !String(entry.work?.title || "").trim())
           throw new Error("Comic Library metadata is incomplete");
         return entry;
@@ -321,7 +327,17 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       // Settings › Comics › Enable Comics. Off: every route but the settings answers 409, and
       // the folder scans, comic downloads, the source browser and the extension runner stop.
       const comicsOn = () => store.settings().enabled;
-      function pause() { local.stop(); closeAllArchives(); downloads.stop(); remote.stop?.(); sourceDeps.runner?.stop?.(); }
+      let uploadMaintenance = null;
+      function startLocal() {
+        local.start(matchOptions);
+        uploadMaintenance = createUploadMaintenance(local.defaultFolder);
+        void uploadMaintenance.start().catch(() => {});
+      }
+      function pause() {
+        if (uploadMaintenance) void uploadMaintenance.stop().catch(() => {});
+        uploadMaintenance = null;
+        local.stop(); closeAllArchives(); downloads.stop(); remote.stop?.(); sourceDeps.runner?.stop?.();
+      }
 
       async function handle(req, res, url) {
         const path = url.pathname;
@@ -441,7 +457,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
           const wasOn = comicsOn();
           const saved = store.saveSettings(input || {});
           if (wasOn && !saved.enabled) pause();
-          else if (!wasOn && saved.enabled) local.start(matchOptions);
+          else if (!wasOn && saved.enabled) startLocal();
           return ctx.json(res, 200, saved), true;
         }
         const cover = /^\/api\/comics\/work\/([^/]+)\/cover\/(\d{1,5}(?:\.\d{1,2})?)$/.exec(path);
@@ -526,7 +542,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
 
       return {
         handle,
-        start: () => { if (comicsOn()) local.start(matchOptions); },
+        start: () => { if (comicsOn()) startLocal(); },
         stop: () => pause(),
         local,
         rescan,

@@ -102,7 +102,11 @@ export function recommendedLimits({ playerFreeBytes = null, playerUsedBytes = 0,
 /**
  * appDatabase: getMeta/setMeta. sessionsRoot: this server's session folders (one per torrent
  * session). sharedRoot: the parent temp folder, where older versions and other ports keep theirs.
- * sessions(): [{ id, lastUsedAt, busy }] for live sessions; removeSession(id) frees one.
+ * sessions(): [{ id, incarnation, lastUsedAt, busy }] for live sessions.
+ * busy includes unexpired acquisition leases as well as active/recent streams.
+ * removeSession(id, incarnation) is an atomic backend authority check: return
+ * false if a new borrower entered; persistent file deletion stays behind its
+ * per-infohash disposal fence before the same Android directory can be reused.
  */
 // defaults: other starting limits (LVL's Android app has less room). remuxCacheAvailable: false
 // keeps the seek cache off whatever was saved (its conversions need an H.264 encoder).
@@ -142,7 +146,8 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
       const usage = await folderUsage(path.join(sessionsRoot, name));
       usedBytes += usage.bytes;
       const session = live.get(name);
-      rows.push({ id: name, bytes: usage.bytes, live: Boolean(session), busy: Boolean(session?.busy), name: session?.name || "", lastUsedAt: session?.lastUsedAt || usage.newest });
+      rows.push({ id: name, bytes: usage.bytes, live: Boolean(session), busy: Boolean(session?.busy),
+        incarnation: session?.incarnation || null, name: session?.name || "", lastUsedAt: session?.lastUsedAt || usage.newest });
     }
     return { usedBytes, sessions: rows };
   }
@@ -222,7 +227,7 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     try { names = await fs.readdir(sessionsRoot); } catch {}
     let removed = 0;
     for (const name of names) {
-      if (live.has(name)) continue;
+      if (live.has(name) || sessions().some((session) => session.id === name)) continue;
       try {
         await fs.rm(path.join(sessionsRoot, name), { recursive: true, force: true, maxRetries: 2 });
         removed += 1;
@@ -246,10 +251,18 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
       .sort((a, b) => Number(a.lastUsedAt || 0) - Number(b.lastUsedAt || 0));
     for (const row of idle) {
       if (usedBytes <= limit) break;
-      // Where a session keeps its files when it ends (keepsSessionFiles: LVL's Android app),
-      // its folder is removed here too.
-      if (row.live) await removeSession(row.id);
-      if (!row.live || keepsSessionFiles) await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      // Snapshot data can be stale after an awaited disk scan. Re-read the
+      // live borrower and incarnation immediately before calling removal.
+      const current = sessions().find((session) => session.id === row.id);
+      if (current?.busy || (!row.live && current)
+        || (row.live && (current?.incarnation || null) !== row.incarnation)
+        || (current && now - Number(current.lastUsedAt || 0) <= 60_000)) continue;
+      if (row.live && !current) continue; // Gone or being replaced; never delete its new folder.
+      if (row.live && await removeSession(row.id, row.incarnation) === false) continue;
+      // For persistent Android sessions, the backend removes files inside
+      // its disposal fence, before a new session may use the same directory.
+      if (!row.live && !sessions().some((session) => session.id === row.id))
+        await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
       // An abandoned store or locked file may survive the attempted deletion.
       // Count only disk bytes actually gone; otherwise a failed eviction
       // falsely reports the cache as within its configured limit.
@@ -264,8 +277,14 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     const usage = await playerUsage();
     for (const row of usage.sessions) {
       if (row.busy || (row.live && Date.now() - Number(row.lastUsedAt || 0) < 60_000)) continue;
-      if (row.live) await removeSession(row.id);
-      if (!row.live || keepsSessionFiles) await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      const current = sessions().find((session) => session.id === row.id);
+      if (current?.busy || (!row.live && current)
+        || (row.live && (current?.incarnation || null) !== row.incarnation)
+        || (current && Date.now() - Number(current.lastUsedAt || 0) < 60_000)) continue;
+      if (row.live && !current) continue;
+      if (row.live && await removeSession(row.id, row.incarnation) === false) continue;
+      if (!row.live && !sessions().some((session) => session.id === row.id))
+        await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
     }
     // Report bytes actually gone, not an assumed sum when deletion fails.
     return { freedBytes: Math.max(0, usage.usedBytes - (await playerUsage()).usedBytes) };
