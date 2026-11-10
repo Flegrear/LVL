@@ -9,7 +9,7 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import AdmZip from "adm-zip";
-import { isRetiredSetupSourceFile, isSetupSourceFile } from "./release-inputs.mjs";
+import { isRetiredSetupSourceFile, isRunnerReleaseSourceFile, isSetupSourceFile } from "./release-inputs.mjs";
 
 const DEFAULT_ROOT = path.resolve(fileURLToPath(new URL("../", import.meta.url)));
 const VERSION = /^(?:v)?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -275,7 +275,7 @@ const reviewedNativeSources = new Set([
   "runtime/node.exe", "runtime/ffmpeg.exe", "runtime/ffprobe.exe",
   "installed-app.json", "THIRD_PARTY_NOTICES.txt",
 ]);
-const installedNativeSource = /^(?:(?:launcher|installer|runtime|node_modules|build|dist)\/|installed-app\.json$|THIRD_PARTY_NOTICES\.txt$)/i;
+const installedNativeSource = /^(?:(?:launcher|installer|runtime|ext-runner|node_modules|build|dist)\/|installed-app\.json$|THIRD_PARTY_NOTICES\.txt$)/i;
 function nativeIncompatibilityReason(relative, change) {
   if (installedNativeSource.test(relative))
     return `Full installer required: ${relative} changed (${change}). Launcher, runtime, packaging and dependencies cannot be patched.`;
@@ -288,7 +288,7 @@ function inspectChangedPath(relative, change) {
   if (windowsNotInstalled(relative)) return "ignore";
   if (/^package-lock\.json$/i.test(relative)) return "lockfile";
   if (installedNativeSource.test(relative)) {
-    if (!reviewedNativeSources.has(relative))
+    if (!reviewedNativeSources.has(relative) && !isRunnerReleaseSourceFile(relative))
       throw new Error(`Full installer or source review required: unapproved native/build input ${relative} (${change})`);
     return "native";
   }
