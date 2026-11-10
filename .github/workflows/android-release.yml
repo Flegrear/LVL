@@ -154,8 +154,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Android command-line tools provisioning failed' }
           $manager = Join-Path $env:ANDROID_HOME 'cmdline-tools/23.0/bin/sdkmanager.bat'
           if (-not (Test-Path $manager)) { throw 'Android command-line tools 23 unavailable' }
-          & $manager 'platforms;android-37.0' 'build-tools;37.0.0'
+          & $manager 'platforms/android-37.0' 'build-tools/37.0.0'
           if ($LASTEXITCODE -ne 0) { throw 'Android SDK provisioning failed' }
+          if (-not (Test-Path (Join-Path $env:ANDROID_HOME 'platforms/android-37.0/android.jar')) -or
+              -not (Test-Path (Join-Path $env:ANDROID_HOME 'build-tools/37.0.0/apksigner.bat'))) { throw 'Requested Android SDK platform or build tools not installed' }
           New-Item -ItemType Directory -Force -Path build/keys | Out-Null
           node android/tools/native-artifact.mjs verify-bundle --bundle-dir build/native-download --sha $env:LVL_ANDROID_NATIVE_SHA256.ToLowerInvariant() --source-sha $env:LVL_NATIVE_SOURCE_SHA --extract-dir build/android-native
           if ($LASTEXITCODE -ne 0) { throw 'Native ZIP, recipe versions, provenance or exact input hash mismatch' }
