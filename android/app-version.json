@@ -4,11 +4,11 @@
   "desktopSourceVersion": "0.3.0",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Browse Popular and Latest titles directly from your selected source.",
-    "Mark selected comic chapters read or unread together and continue from the next unread chapter.",
-    "Open long-press menus where you press and keep them within the screen.",
-    "Improve playback recovery after backward seeks and buffering.",
-    "Keep source searches and subtitle alignment attached to your current selection.",
-    "Fix separate episode edits conflicting during sync and make saved records easier to read."
+    "Browse Comics through Popular, Latest and Search, mark chapters read or unread together, and continue from the next unread.",
+    "Use refined reader controls and long-press menus that stay near your touch and inside the screen.",
+    "Improve playback recovery and remember your selected audio language when episode tracks change.",
+    "Keep source searches, subtitle alignment and canceled download or import work from affecting newer selections.",
+    "Protect Library and reading progress during sync, and keep Calendar and recommendations current after refreshes.",
+    "Make app updates safer by preventing overlapping attempts and handling interruptions more clearly."
   ]
 }

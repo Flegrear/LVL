@@ -1,12 +1,14 @@
 # LVL Changelog
 
-## 0.3.0 — 2026-11-08
+## 0.3.0 — 2026-11-10
 
-- Improve recovery after backward seeks and stalled video.
-- Preserve watched history when refreshing a title's playback source.
-- Keep source searches consistent when retrying or returning to a title.
-- Prevent older subtitle alignment results from changing current playback.
-- Add source browsing and bulk chapter read and unread controls for Comics.
+- Improve seeking, buffering recovery and source switching while keeping your chosen audio language across episodes.
+- Keep source searches and subtitle alignment tied to the current selection, even when earlier requests finish later.
+- Protect Library, watched and reading progress during source refreshes, sync and simultaneous edits on different devices.
+- Make canceled downloads, imports and Comics tasks stop outdated work instead of changing newer selections.
+- Keep Calendar, recommendations and navigation consistent after refreshing titles or quickly switching views.
+- Improve Windows and Android update safety by avoiding overlapping attempts and handling interrupted updates more carefully.
+- Expand Android Comics with Popular and Latest browsing, bulk chapter read/unread, next-unread continuation and improved phone menus.
 
 ## 0.2.6 — 2026-11-07
 
