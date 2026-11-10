@@ -30,6 +30,11 @@ jobs:
       LVL_ANDROID_NATIVE_ARTIFACT_ID: ${{ vars.LVL_ANDROID_NATIVE_ARTIFACT_ID }}
       LVL_ANDROID_NATIVE_SHA256: ${{ vars.LVL_ANDROID_NATIVE_SHA256 }}
     steps:
+      - name: Preserve reviewed source bytes
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -249,6 +254,11 @@ jobs:
       LVL_ANDROID_NATIVE_ARTIFACT_ID: ${{ vars.LVL_ANDROID_NATIVE_ARTIFACT_ID }}
       LVL_ANDROID_NATIVE_SHA256: ${{ vars.LVL_ANDROID_NATIVE_SHA256 }}
     steps:
+      - name: Preserve reviewed source bytes
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0

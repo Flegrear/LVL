@@ -46,6 +46,11 @@ jobs:
       ANDROID_RUN: ${{ inputs.android_run }}
       ANDROID_RELEASE: ${{ inputs.android_release }}
     steps:
+      - name: Preserve reviewed source bytes
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -105,6 +110,11 @@ jobs:
       LVL_ANDROID_PROVENANCE_APPROVED: ${{ vars.LVL_ANDROID_PROVENANCE_APPROVED }}
       ANDROID_RUN: ${{ inputs.android_run }}
     steps:
+      - name: Preserve reviewed source bytes
+        shell: pwsh
+        run: |
+          git config --global core.autocrlf false
+          git config --global core.eol lf
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
