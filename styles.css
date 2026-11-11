@@ -119,9 +119,6 @@ section { scroll-margin-top: 0; }
 .advanced-download:hover { opacity: .7; }
 .download-note { max-width: 740px; margin-inline: auto; text-align: center; color: var(--muted); }
 .download-note a { text-decoration: underline; text-underline-offset: 4px; color: var(--white); }
-.privacy-section { display: grid; grid-template-columns: 1fr 3fr; gap: var(--s700); padding: var(--s700) 0; border-bottom: 1px solid var(--line); }
-.privacy-section p { max-width: 800px; color: var(--muted); }
-.privacy-section a { text-decoration: underline; text-underline-offset: 4px; color: var(--white); }
 .footer { padding: var(--s700) 0 var(--s400); }
 .footer-top { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--s300); }
 .footer-top img { width: 92px; height: 42px; object-fit: contain; }
@@ -182,7 +179,6 @@ section { scroll-margin-top: 0; }
   .faq-section { padding: var(--s900) 0; }.faq-list summary { font-size: 18px; line-height: 28px; }
   .download-wrap { padding: var(--s900) 0 var(--s700); }
   .download-grid { grid-template-columns: 1fr; margin-top: var(--s500); }.download-choice { min-height: 310px; padding: var(--s300); }
-  .privacy-section { grid-template-columns: 1fr; gap: var(--s200); }
   .footer-top { flex-direction: column; gap: var(--s400); }.footer-top nav { gap: var(--s200); }
 }
 @media (max-width: 370px) {
