@@ -629,6 +629,9 @@ function preparePlayerForLibraryLoad(entry, episode, { resumeAtSeconds = 0, onPr
   setPlayerLoading(4, "Connecting");
   switchView("watch");
   renderWatchChapters();
+  // The outgoing decoder is intentionally detached while the next episode is
+  // resolved. Display its selected resume point (and unknown total) immediately.
+  updateCompatControls();
   return pendingSelection;
 }
 

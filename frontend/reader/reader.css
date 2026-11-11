@@ -103,10 +103,32 @@
 .reader[data-layout="vertical"] .reader__page { display:block; width:min(100%, 900px); min-height:200px; margin:0 auto; }
 .reader[data-layout="vertical"] .reader__page[src] { min-height:0; }
 .reader[data-layout="vertical"][data-fit="original"] .reader__page { width:auto; max-width:none; }
+/* Keep a single unresolved page at the end of the accepted strip. Later
+   decoded pages are revealed in story order; future slots occupy no height. */
+.reader[data-layout="vertical"] .reader__page[data-reader-state="future"] { display:none; }
+.reader[data-layout="vertical"] .reader__page-placeholder { width:min(100%,900px); background:var(--reader-field); box-sizing:border-box; }
+.reader[data-layout="vertical"] .reader__page-placeholder[data-reader-state="pending"] { display:grid; place-items:center; min-height:100dvh; }
+.reader[data-layout="vertical"] .reader__page-placeholder[data-reader-state="pending"]::after { content:"…"; color:var(--reader-muted); font-size:22px; }
+.reader[data-layout="vertical"] .reader__page-placeholder[data-reader-state="evicted"] { background:var(--reader-bg); }
+.reader__spread .reader__page-placeholder[data-reader-state="failed"] { box-sizing:border-box; width:min(100%,600px); height:100%; max-width:100%; }
+.reader__spread .reader__page-placeholder[data-reader-state="pending"] {
+  box-sizing:border-box; flex:0 1 50%; width:50%; height:100%; min-height:120px;
+  background:var(--reader-field);
+}
+.reader[data-layout="single"] .reader__spread .reader__page-placeholder[data-reader-state="pending"],
+.reader__spread .reader__page-placeholder[data-reader-state="pending"]:only-child { flex-basis:100%; width:100%; }
+.reader[data-fit="width"] .reader__spread .reader__page-placeholder[data-reader-state="pending"] { height:auto; aspect-ratio:2 / 3; }
+.reader[data-fit="height"] .reader__spread .reader__page-placeholder[data-reader-state="pending"] { width:50%; }
+.reader[data-fit="height"] .reader__spread .reader__page-placeholder[data-reader-state="pending"]:only-child { width:100%; }
+.reader[data-layout="vertical"] .reader__page-placeholder[data-reader-state="failed"] { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; min-height:100dvh; padding:24px 12px; text-align:center; }
+.reader__spread .reader__page-placeholder[data-reader-state="failed"] { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:20px 12px; text-align:center; }
+.reader__page-placeholder[data-reader-state="failed"] p { margin:0; color:var(--reader-muted); font-size:13px; }
+.reader__page-placeholder[data-reader-state="failed"] button { min-height:44px; padding:8px 20px; border:1px solid var(--reader-fg); border-radius:999px; background:transparent; color:var(--reader-fg); font:600 13px/1.3 var(--ui-font-sans); cursor:pointer; }
 /* A chapter boundary is part of cascade reading, not a popup that replaces
    the last image. Keep scrolling past this marker to enter the next chapter. */
 .reader__chapter-boundary,
 .reader__chapter-start { box-sizing:border-box; width:min(100%,900px); margin:0 auto; color:var(--reader-fg); background:var(--reader-bg); text-align:center; }
+.reader__chapter-boundary[hidden] { display:none; }
 .reader__chapter-boundary { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; min-height:clamp(174px,30dvh,265px); padding:36px 20px; border-top:1px solid var(--reader-line); }
 .reader__chapter-start { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:9px; min-height:clamp(126px,22dvh,200px); padding:28px 20px; border-bottom:1px solid var(--reader-line); }
 .reader__chapter-boundary__end { color:var(--reader-muted); font-size:12px; }

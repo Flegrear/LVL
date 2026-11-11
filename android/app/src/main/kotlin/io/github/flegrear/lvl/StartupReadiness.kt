@@ -54,3 +54,41 @@ class FreshChildProof(private val maximumAgeMs: Long = 2_000L) {
 
     fun revoke() { witness = null }
 }
+
+/**
+ * Page recovery decisions, independent of the short bearer/bridge proof lease.
+ * Every failed probe immediately revokes native authority. A live child's
+ * unanswered HTTP request is given a small recovery window before covering
+ * the current page. An actual wrong proof never receives that grace.
+ */
+class ActiveConnectionHealth(
+    private val coverDelayMs: Long = 4_500L,
+    private val terminalDelayMs: Long = 30_000L,
+) {
+    enum class Decision { RESTORED, WAITING, SUSPEND, TERMINAL }
+    private var firstFailureAt = -1L
+    private var previousSampleAt = -1L
+
+    /** Duration of this consecutive unauthenticated episode; no proof extension. */
+    fun unauthenticatedForMs(nowMs: Long): Long =
+        if (firstFailureAt < 0L || nowMs < firstFailureAt) 0L else nowMs - firstFailureAt
+
+    fun observe(nowMs: Long, sample: ServerIdentity.ProbeStatus, currentChildAlive: Boolean): Decision {
+        if (!currentChildAlive) return Decision.TERMINAL
+        if (sample == ServerIdentity.ProbeStatus.VERIFIED) {
+            firstFailureAt = -1L
+            previousSampleAt = nowMs
+            return Decision.RESTORED
+        }
+        if (nowMs < previousSampleAt) firstFailureAt = -1L
+        previousSampleAt = nowMs
+        if (firstFailureAt < 0L) firstFailureAt = nowMs
+        val elapsed = nowMs - firstFailureAt
+        // A live process can stop answering forever. Give the user a reachable
+        // Retry after the bounded recovery window without describing it as dead.
+        if (elapsed >= terminalDelayMs) return Decision.TERMINAL
+        if (sample == ServerIdentity.ProbeStatus.REJECTED || elapsed >= coverDelayMs)
+            return Decision.SUSPEND
+        return Decision.WAITING
+    }
+}

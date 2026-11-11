@@ -21,6 +21,8 @@ import javax.crypto.spec.SecretKeySpec
  * and revokes them on failure, without claiming to close that OS-level race.
  */
 class ServerIdentity private constructor(private val key: ByteArray) {
+    enum class ProbeStatus { VERIFIED, UNAVAILABLE, REJECTED }
+
     val childEnvironmentKey: String = encoder.encodeToString(key)
 
     fun newChallenge(): String = encoder.encodeToString(ByteArray(24).also { random.nextBytes(it) })
@@ -36,12 +38,14 @@ class ServerIdentity private constructor(private val key: ByteArray) {
     }
 
     /** A fresh challenge for *each* HTTP attempt; no secret or proof is logged/persisted. */
-    fun probe(port: Int): Boolean {
+    fun probe(port: Int): Boolean = probeStatus(port) == ProbeStatus.VERIFIED
+
+    fun probeStatus(port: Int): ProbeStatus {
         val challenge = newChallenge()
         val connection = try {
             URI("http://127.0.0.1:$port/api/health").toURL().openConnection() as HttpURLConnection
         } catch (_: Exception) {
-            return false
+            return ProbeStatus.UNAVAILABLE
         }
         connection.apply {
             connectTimeout = 1000
@@ -54,9 +58,13 @@ class ServerIdentity private constructor(private val key: ByteArray) {
             setRequestProperty("X-LVL-Android-Challenge", challenge)
         }
         return try {
-            connection.responseCode == 200 && verify(challenge, connection.getHeaderField("X-LVL-Android-Proof"))
+            if (connection.responseCode == 200 && verify(challenge, connection.getHeaderField("X-LVL-Android-Proof")))
+                ProbeStatus.VERIFIED
+            else ProbeStatus.REJECTED
         } catch (_: Exception) {
-            false
+            // A timeout or refused connection is not a forged health response.
+            // Both are unauthenticated; callers may distinguish their recovery UX.
+            ProbeStatus.UNAVAILABLE
         } finally {
             connection.disconnect()
         }

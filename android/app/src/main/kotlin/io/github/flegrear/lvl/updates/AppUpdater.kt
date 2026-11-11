@@ -136,7 +136,9 @@ class AppUpdater(private val context: Context, private val server: Server) {
     private fun failure(message: String) = buildJsonObject { put("error", message) }
 
     fun status(): JsonObject = synchronized(lock) {
-        val attempt = ApkInstall.reconcile(context)
+        // Reconcile the durable package/session journal before presenting
+        // in-memory failure flags left by a terminated installer process.
+        val attempt = restoreApkStateLocked()
         val next = available
         val failedAttempt = attempt?.takeIf { it.failed && (next == null || next.version == it.version) }
         val apkError = failedAttempt?.message ?: failedAttempt?.let { "Android couldn't confirm this update" }
@@ -331,6 +333,10 @@ class AppUpdater(private val context: Context, private val server: Server) {
             } else if (durable.phase == "confirmed") {
                 error = null
                 terminalApkFailureVersion = null
+                if (available?.version == version) {
+                    available = null
+                    noticePending = false
+                }
             }
         }
     }

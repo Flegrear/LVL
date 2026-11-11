@@ -14,7 +14,7 @@ import { parseStamp } from "../../shared/sync/clock.js";
 import { COMIC_TYPES, createComicsData, present } from "./comics-data.js";
 
 const TITLE_FIELDS = ["title", "displayTitle", "rawName", "seriesKey", "magnet", "coverUrl", "catalogId", "catalogType", "mediaKind", "aliases", "sourceMeta",
-  "addedAt", "trackingStatus", "artworkIndex", "artworkSource", "artworkPinned", "chapterFileIndexes", "chapterLabels", "catalogOnly", "externalSource", "externalId"];
+  "addedAt", "trackingStatus", "watchedTitleAt", "artworkIndex", "artworkSource", "artworkPinned", "chapterFileIndexes", "chapterLabels", "catalogOnly", "externalSource", "externalId"];
 const HASH_ID = /^[0-9a-f]{40}$/i;
 // Catalog cards have no torrent hash. A deterministic alias keeps their wire identity
 // compatible with older devices; libraryId preserves the original local identity.

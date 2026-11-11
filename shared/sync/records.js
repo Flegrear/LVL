@@ -58,7 +58,7 @@ export const RECORD_TYPES = Object.freeze({
   "video.title": { schema: 1, id: /^[0-9a-f]{40}$/, fields: {
     title: "string", displayTitle: "string", rawName: "string", seriesKey: "string", magnet: "text", coverUrl: "string",
     catalogId: "string", catalogType: "string", mediaKind: "string", aliases: "list", sourceMeta: "object", addedAt: time,
-    trackingStatus: "string", artworkIndex: count, artworkSource: "string", artworkPinned: "boolean",
+    trackingStatus: "string", watchedTitleAt: time, artworkIndex: count, artworkSource: "string", artworkPinned: "boolean",
     chapterFileIndexes: "list", chapterLabels: "object", episodes: "list", libraryId: "string",
     catalogOnly: "boolean", externalSource: "string", externalId: "string", anilistSync: "object" } },
   // Where you are in one file of a title: resume at positionMs; progress is positionMs / durationMs.

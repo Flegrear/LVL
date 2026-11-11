@@ -329,13 +329,24 @@ class ServerService : Service(), AppUpdater.Server {
             // confirmation and readiness even when the banner is late or absent.
             confirmWhenStable(child)
             logFile.bufferedWriter().use { log ->
+                var bufferedLines = 0
+                var lastFlushAt = SystemClock.elapsedRealtime()
                 started.inputStream.bufferedReader().forEachLine { line ->
                     synchronized(lines) {
                         lines.addLast(line)
                         while (lines.size > MAX_LINES) lines.removeFirst()
                     }
                     log.appendLine(line)
-                    log.flush()
+                    bufferedLines += 1
+                    val now = SystemClock.elapsedRealtime()
+                    // BufferedWriter.flush forwards characters to the file,
+                    // not an fd.sync. Batching reduces write/flush overhead
+                    // when a burst of Node output arrives.
+                    if (bufferedLines >= 32 || now - lastFlushAt >= 2_000L) {
+                        log.flush()
+                        bufferedLines = 0
+                        lastFlushAt = now
+                    }
                     Log.i("LVL-Server", line)
                     if (!listening && line.startsWith("LVL running at")) {
                         listening = true

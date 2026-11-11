@@ -7,7 +7,8 @@ import { $ } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
 import { switchView, viewActive } from "../app/navigation.js";
 import {
-  absolutePlaybackSeconds, playerIsPlaying, playerWantsMuted, resetRecoveryDisplay, resumePlayback,
+  absolutePlaybackSeconds, playerDisplaySeconds, playerDurationMs, playerIsPlaying, playerWantsMuted,
+  resetRecoveryDisplay, resumePlayback,
   setPlayerMutePreference, stopPlayerLoadingAnimation, suspendPlayerForPopup, togglePlayback,
   updateCompatControls,
 } from "./player-core.js";
@@ -91,11 +92,16 @@ export function updateFloatingControls() {
   const volume = $("#floating-player-volume");
   if (volume) volume.value = String(playerWantsMuted() ? 0 : video.volume);
   const progress = $("#floating-player-progress");
-  const durationMs = state.mediaDurationMs || (Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0);
-  const elapsed = Math.max(0, absolutePlaybackSeconds());
+  const durationMs = playerDurationMs();
+  const elapsed = playerDisplaySeconds();
+  const durationKnown = durationMs > 0;
   if (progress) {
-    progress.max = String(Math.max(1, durationMs / 1000));
-    if (!floatingSeekScrubbing) progress.value = String(Math.min(elapsed, durationMs / 1000 || elapsed));
+    const max = String(durationKnown ? durationMs / 1000 : 1);
+    if (progress.max !== max) progress.max = max;
+    if (progress.disabled !== !durationKnown) progress.disabled = !durationKnown;
+    if (!durationKnown) floatingSeekScrubbing = false;
+    const value = String(durationKnown ? Math.min(elapsed, durationMs / 1000) : 0);
+    if (!floatingSeekScrubbing && progress.value !== value) progress.value = value;
   }
   const time = $("#floating-player-time");
   if (time) time.textContent = `${formatTime((floatingSeekScrubbing ? Number(progress?.value) || 0 : elapsed) * 1000)} / ${durationMs ? formatTime(durationMs) : "--:--"}`;
@@ -516,7 +522,7 @@ export function wireFloatingPlayer() {
   floatingProgress?.addEventListener("change", (event) => {
     const seconds = Number(event.target.value);
     floatingSeekScrubbing = false;
-    if (Number.isFinite(seconds)) seekTo(Math.max(0, seconds) * 1000);
+    if (playerDurationMs() > 0 && Number.isFinite(seconds)) seekTo(Math.max(0, seconds) * 1000);
     updateFloatingControls();
   });
   floatingProgress?.addEventListener("pointercancel", () => { floatingSeekScrubbing = false; updateFloatingControls(); });

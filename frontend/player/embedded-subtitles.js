@@ -9,7 +9,7 @@ import {
 import { defaultEmbeddedSubtitleTrack } from "./embedded-subtitle-default.js";
 import { frame, renderSubtitleWorkspace, state, video } from "../../app.js";
 import { $ } from "../app/dom.js";
-import { absolutePlaybackSeconds, presentedSubtitleSeconds, updatePlayerPreferenceButtons } from "./player-core.js";
+import { absolutePlaybackSeconds, playerSubtitleSeconds, presentedSubtitleSeconds, updatePlayerPreferenceButtons } from "./player-core.js";
 import {
   currentSourceTracks, normalizeTrackLanguage, preferredLanguagePair, syncSelectedTrackForSource,
 } from "./player-tracks.js";
@@ -191,7 +191,8 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
     subtitleRenderMemo.key = ""; // Cue text can grow under an unchanged cue ID.
     // A fetch can deliver cues between video events. Use the presented frame
     // when known: currentTime can run ahead of the displayed frame on resume.
-    state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
+    state.currentMs = (typeof playerSubtitleSeconds === "function"
+      ? playerSubtitleSeconds() : (presentedSubtitleSeconds() ?? absolutePlaybackSeconds())) * 1000;
     renderSubtitles();
     if (force || Date.now() - renderAt > 1500) {
       renderAt = Date.now();

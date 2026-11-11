@@ -476,6 +476,7 @@ export function setPlayerLoadingTitle(entry = null, fallbackTitle = "") {
 let playerLoadingHideTimer = 0;
 let playerLoadingVisualProgress = 0;
 let playerLoadingVisualFrame = 0;
+let playerLoadingVisualTimer = 0;
 let playerLoadingVisualTime = 0;
 function drawPlayerLoadingProgress(value) {
   const overlay = $("#video-loading");
@@ -485,8 +486,23 @@ function drawPlayerLoadingProgress(value) {
 export function stopPlayerLoadingAnimation() {
   if (playerLoadingVisualFrame && typeof window.cancelAnimationFrame === "function")
     window.cancelAnimationFrame(playerLoadingVisualFrame);
+  if (playerLoadingVisualTimer) window.clearTimeout(playerLoadingVisualTimer);
   playerLoadingVisualFrame = 0;
+  playerLoadingVisualTimer = 0;
   playerLoadingVisualTime = 0;
+}
+function queuePlayerLoadingAnimation() {
+  // A torrent can wait for peers for minutes. Android WebView need not repaint
+  // the indeterminate logo at 60 FPS throughout that wait; 20Hz keeps motion
+  // visible while reducing style updates and layout competition with decoding.
+  if (window.LvlAndroid && typeof window.setTimeout === "function") {
+    playerLoadingVisualTimer = window.setTimeout(() => {
+      playerLoadingVisualTimer = 0;
+      animatePlayerLoadingProgress(performance.now());
+    }, 50);
+  } else if (typeof window.requestAnimationFrame === "function") {
+    playerLoadingVisualFrame = window.requestAnimationFrame(animatePlayerLoadingProgress);
+  }
 }
 function animatePlayerLoadingProgress(time) {
   playerLoadingVisualFrame = 0;
@@ -512,9 +528,8 @@ function animatePlayerLoadingProgress(time) {
       : (playerLoadingColorProgress + 16 * delta) % 100;
   }
   drawPlayerLoadingProgress(playerLoadingVisualProgress);
-  if ((playerLoadingVisualProgress < 100 || (reported >= 100 && playerLoadingColorProgress < 100))
-    && typeof window.requestAnimationFrame === "function")
-    playerLoadingVisualFrame = window.requestAnimationFrame(animatePlayerLoadingProgress);
+  if (playerLoadingVisualProgress < 100 || (reported >= 100 && playerLoadingColorProgress < 100))
+    queuePlayerLoadingAnimation();
 }
 function updatePlayerLoadingAnimation({ reset = false, error = false } = {}) {
   if (reset || error) stopPlayerLoadingAnimation();
@@ -528,8 +543,8 @@ function updatePlayerLoadingAnimation({ reset = false, error = false } = {}) {
     return;
   }
   if (reset || error) drawPlayerLoadingProgress(playerLoadingVisualProgress);
-  if (!error && !playerLoadingVisualFrame)
-    playerLoadingVisualFrame = window.requestAnimationFrame(animatePlayerLoadingProgress);
+  if (!error && !playerLoadingVisualFrame && !playerLoadingVisualTimer)
+    queuePlayerLoadingAnimation();
 }
 export function setPlayerLoading(percent, title = "Loading", detail = "", { error = false } = {}) {
   if (!error && Date.now() < quietSwitchUntil && $("#video-loading")?.hidden) {
@@ -598,6 +613,12 @@ function updateLoadingTransferDetail(payload) {
 // the branded loader already shows the NEW episode's artwork. Unload it before
 // any asynchronous metadata work; release visibility only for the new decoder.
 let sourceFrameGate = null;
+// The decoder may retain the previous episode's clock during startup.
+// Hold the selected resume/seek target until this source has usable media.
+let playerTimelineAwaitingFrame = null;
+// The UI's last trustworthy elapsed time is not the subtitle cue timestamp:
+// during a stalled decoder, a frozen frame can lag currentTime by seconds.
+let playerDisplayAnchor = null;
 function preserveCurrentFrameForTranscodeSeek() {
   const canvas = typeof document !== "undefined" ? document.getElementById("video-seek-freeze") : null;
   if (!canvas || !canvas.hidden || video.readyState < 2 || !video.videoWidth || !video.videoHeight
@@ -1326,6 +1347,62 @@ function hideLoadingForBufferedSeek() {
   stopPlayerLoadingAnimation();
 }
 
+export function playerDisplaySeconds() {
+  if (state.pendingSeek && Number.isFinite(Number(state.pendingSeek.target)))
+    return rememberPlayerDisplaySeconds(state.pendingSeek.target);
+  const previous = playerDisplayAnchor?.src === video.src
+    && playerDisplayAnchor?.generation === video.__lvlLoadGeneration
+    ? playerDisplayAnchor.seconds : Math.max(0, Number(state.currentMs) || 0) / 1000;
+  // Buffered-end/durationchange/previous decoder events are not presented media.
+  if (isNewSourceFramePending() || video.seeking || video.readyState < 2) return previous;
+  const now = absolutePlaybackSeconds();
+  if (!Number.isFinite(now) || now < 0) return previous;
+  const awaiting = playerTimelineAwaitingFrame;
+  const presented = presentedSubtitleSeconds();
+  if (awaiting && awaiting.src === video.src && awaiting.generation === video.__lvlLoadGeneration) {
+    if (now + 1.0 < awaiting.targetSeconds) return previous;
+    // A paused/slow decoder can report currentTime=2:15 while still showing
+    // preroll frame 0. On rVFC-capable browsers only the actual frame at the
+    // requested movie time may end this source-owned resume guard.
+    if (typeof video.requestVideoFrameCallback === "function"
+      && (presented === null || !Number.isFinite(presented)
+        || presented + 1.0 < awaiting.targetSeconds)) return previous;
+    playerTimelineAwaitingFrame = null;
+  }
+  return rememberPlayerDisplaySeconds(presented !== null && Number.isFinite(presented)
+    && Math.abs(presented - now) <= 1.25 ? presented : now);
+}
+
+function rememberPlayerDisplaySeconds(seconds) {
+  const at = Math.max(0, Number(seconds) || 0);
+  playerDisplayAnchor = { src: video.src, generation: video.__lvlLoadGeneration, seconds: at };
+  return at;
+}
+
+// The visible elapsed-time label may follow the native clock after a long
+// decoder stall, but captions must stay on the last *presented* frame. Keep
+// these clocks separate so a timeupdate or late cue import cannot advance
+// subtitles seven seconds past a frozen picture. Seek/source guards still own
+// the selected target until this exact decoder is ready for its first frame.
+export function playerSubtitleSeconds() {
+  const display = playerDisplaySeconds();
+  if (state.pendingSeek || video.seeking || isNewSourceFramePending()) return display;
+  const awaiting = playerTimelineAwaitingFrame;
+  if (awaiting && awaiting.src === video.src && awaiting.generation === video.__lvlLoadGeneration) return display;
+  const presented = presentedSubtitleSeconds();
+  return presented !== null && Number.isFinite(presented) && presented >= 0 ? presented : display;
+}
+
+export function playerDurationMs() {
+  const known = Number(state.mediaDurationMs);
+  if (Number.isFinite(known) && known > 0) return known;
+  // Local files have stable native metadata; torrents may report only the
+  // currently downloaded or converted window, including in direct mode.
+  if (video.dataset.mode !== "local" || isNewSourceFramePending()
+    || video.readyState < 1 || !video.src || video.currentSrc !== video.src) return 0;
+  return Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0;
+}
+
 // Downloaded parts of the playing file, drawn faintly under the timeline (bytes ≈ time).
 function drawPlayerDownloadMap(fileMap) {
   const canvas = $("#player-progress-map");
@@ -1463,6 +1540,9 @@ export function startTransferStats(sessionId) {
 }
 
 export function setMediaSource({ src, title, status, objectUrl = null, mode = "local", durationMs = 0, startAtSeconds = 0 }, { preserveTranscodeStart = false } = {}) {
+  if (video.__lvlResumeMetadataHandler)
+    video.removeEventListener("loadedmetadata", video.__lvlResumeMetadataHandler);
+  video.__lvlResumeMetadataHandler = null;
   if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
   progressiveSeekController?.cancel();
   progressiveContinueController?.abort();
@@ -1513,14 +1593,14 @@ export function setMediaSource({ src, title, status, objectUrl = null, mode = "l
     state.transcodeRequestedStartSeconds = 0;
     state.transcodeContext = null;
   }
-  state.mediaDurationMs = Number(durationMs) > 0 ? Number(durationMs) : 0;
+  state.mediaDurationMs = Number.isFinite(Number(durationMs)) && Number(durationMs) > 0 ? Number(durationMs) : 0;
   video.controls = false;
   $("#compat-controls").hidden = false;
-  $("#compat-progress").max = String(Math.max(1, state.mediaDurationMs / 1000));
-  $("#compat-progress").value = "0";
-  $("#compat-time").textContent = `00:00 / ${state.mediaDurationMs ? formatTime(state.mediaDurationMs) : "--:--"}`;
   video.src = src;
   if (typeof expectNewVideoFrame === "function") expectNewVideoFrame();
+  const initialSeconds = Number.isFinite(Number(startAtSeconds)) ? Math.max(0, Number(startAtSeconds)) : 0;
+  playerTimelineAwaitingFrame = { src: video.src, generation: loadGeneration, targetSeconds: initialSeconds };
+  rememberPlayerDisplaySeconds(initialSeconds);
   if (objectUrl) video.dataset.objectUrl = objectUrl;
   frame.classList.add("has-video");
   revealPlayerControls();
@@ -1529,15 +1609,27 @@ export function setMediaSource({ src, title, status, objectUrl = null, mode = "l
   if (mode === "transcode") setPlayerLoading(Math.max(82, state.loadingProgress), "Starting stream");
   else if (mode === "torrent-direct") setPlayerLoading(Math.max(78, state.loadingProgress), "Buffering");
   else $("#video-loading").hidden = true;
-  state.currentMs = Math.max(0, Number(startAtSeconds) || 0) * 1000;
+  state.currentMs = initialSeconds * 1000;
   state.lastCueId = null;
   video.load();
+  updateCompatControls();
   if (mode !== "transcode" && startAtSeconds > 0) {
     const expectedSrc = video.src;
-    video.addEventListener("loadedmetadata", () => {
-      if (video.src !== expectedSrc || video.__lvlLoadGeneration !== loadGeneration) return;
+    const handleResumeMetadata = () => {
+      if (video.src !== expectedSrc || video.__lvlLoadGeneration !== loadGeneration) {
+        video.removeEventListener("loadedmetadata", handleResumeMetadata);
+        if (video.__lvlResumeMetadataHandler === handleResumeMetadata) video.__lvlResumeMetadataHandler = null;
+        return;
+      }
+      // A queued loadedmetadata from the outgoing decoder must not consume
+      // our resume listener before this selected source actually loads.
+      if (video.currentSrc !== expectedSrc) return;
+      video.removeEventListener("loadedmetadata", handleResumeMetadata);
+      if (video.__lvlResumeMetadataHandler === handleResumeMetadata) video.__lvlResumeMetadataHandler = null;
       try { video.currentTime = Math.max(0, Number(startAtSeconds) || 0); } catch {}
-    }, { once: true });
+    };
+    video.__lvlResumeMetadataHandler = handleResumeMetadata;
+    video.addEventListener("loadedmetadata", handleResumeMetadata);
   }
   updateChapterButtons();
   updatePlayerPreferenceButtons();
@@ -1547,38 +1639,63 @@ export function setMediaSource({ src, title, status, objectUrl = null, mode = "l
 export function updateCompatControls() {
   if (typeof checkProgressiveSeekCache === "function") checkProgressiveSeekCache();
   if (typeof checkIndexedSeekCache === "function") checkIndexedSeekCache();
-  const currentMs = Math.max(0, absolutePlaybackSeconds() * 1000);
-  const nativeDurationMs = Number.isFinite(video.duration) && video.duration > 0 ? video.duration * 1000 : 0;
-  if (video.dataset.mode !== "transcode" && nativeDurationMs && Math.abs(state.mediaDurationMs - nativeDurationMs) > 250) {
+  const currentMs = Math.max(0, (typeof playerDisplaySeconds === "function"
+    ? playerDisplaySeconds() : absolutePlaybackSeconds()) * 1000);
+  const nativeDurationMs = typeof playerDurationMs === "function"
+    ? playerDurationMs() : Math.max(0, Number(state.mediaDurationMs) || 0);
+  if (video.dataset.mode === "local" && nativeDurationMs && Math.abs(state.mediaDurationMs - nativeDurationMs) > 250) {
     state.mediaDurationMs = nativeDurationMs;
     refreshSubtitleTimelineFits();
   }
-  // FFmpeg's currently streamed fragment can report a tiny 13s duration for
-  // a 24-minute movie before FFprobe metadata arrives. Never present that
-  // fragment length as the actual episode or compress its entire timeline.
-  const durationMs = state.mediaDurationMs || (video.dataset.mode === "transcode" ? 0 : nativeDurationMs);
+  // The native duration of a torrent stream can be a growing partial window.
+  const durationMs = nativeDurationMs;
   renderEpisodeTimelineSegments();
   const progress = $("#compat-progress");
-  progress.max = String(Math.max(1, durationMs / 1000 || 1));
+  const durationKnown = durationMs > 0;
+  const progressMax = String(durationKnown ? durationMs / 1000 : 1);
+  if (progress.max !== progressMax) progress.max = progressMax;
+  // A 2:15 resume against max=1 becomes a full/100%-looking range in Chromium.
+  // Keep the elapsed text, but never suggest a playable fraction without a
+  // verified whole-episode duration. Keyboard/arrows remain separate seeks.
+  if (progress.disabled !== !durationKnown) progress.disabled = !durationKnown;
+  if (!durationKnown && state.scrubbing) {
+    state.scrubbing = false;
+    const bubble = $("#player-scrub-time");
+    if (bubble) bubble.hidden = true;
+  }
   const playing = playerIsPlaying();
-  $("#compat-play")?.classList.toggle("is-playing", playing);
-  $("#compat-play")?.setAttribute("aria-label", playing ? "Pause" : "Play");
-  $("#compat-play")?.setAttribute("data-tooltip", playing ? "Pause" : "Play");
+  const play = $("#compat-play");
+  if (play?.classList?.contains?.("is-playing") !== playing) play?.classList.toggle("is-playing", playing);
+  const playLabel = playing ? "Pause" : "Play";
+  if (play?.getAttribute?.("aria-label") !== playLabel) play?.setAttribute("aria-label", playLabel);
+  if (play?.getAttribute?.("data-tooltip") !== playLabel) play?.setAttribute("data-tooltip", playLabel);
   // While the thumb is held, playback must not pull it back (that was the seek "ping-pong").
   const shownMs = state.scrubbing ? Number(progress.value) * 1000 : currentMs;
-  if (!state.scrubbing) progress.value = String(Math.min(currentMs / 1000, durationMs / 1000 || currentMs / 1000));
-  $("#compat-time").textContent = `${formatTime(shownMs)} / ${durationMs ? formatTime(durationMs) : "--:--"}`;
+  const progressValue = String(durationKnown ? Math.min(currentMs / 1000, durationMs / 1000) : 0);
+  if (!state.scrubbing && progress.value !== progressValue) progress.value = progressValue;
+  const timeText = `${formatTime(shownMs)} / ${durationMs ? formatTime(durationMs) : "--:--"}`;
+  const time = $("#compat-time");
+  if (time.textContent !== timeText) time.textContent = timeText;
   const readyRange = playerReadyRangeSeconds();
   const percent = (seconds) => (durationMs ? Math.max(0, Math.min(100, (seconds * 1000 * 100) / durationMs)) : 0);
-  $("#player-progress-played").style.width = `${percent(shownMs / 1000)}%`;
-  $("#player-progress-ready").style.left = `${readyRange ? percent(readyRange.start) : 0}%`;
-  $("#player-progress-ready").style.width = `${readyRange ? Math.max(0, percent(readyRange.end) - percent(readyRange.start)) : 0}%`;
+  const played = $("#player-progress-played");
+  const playedWidth = `${percent(shownMs / 1000)}%`;
+  if (played.style.width !== playedWidth) played.style.width = playedWidth;
+  const ready = $("#player-progress-ready");
+  const readyLeft = `${readyRange ? percent(readyRange.start) : 0}%`;
+  const readyWidth = `${readyRange ? Math.max(0, percent(readyRange.end) - percent(readyRange.start)) : 0}%`;
+  if (ready.style.left !== readyLeft) ready.style.left = readyLeft;
+  if (ready.style.width !== readyWidth) ready.style.width = readyWidth;
   renderProgressiveSeekableRanges();
   const muted = (transcodeStartAttempt?.mutedForPreroll ? transcodeStartAttempt.wantedMuted : video.muted) || video.volume === 0;
-  $("#player-mute")?.classList.toggle("is-muted", muted);
-  $("#player-mute")?.setAttribute("aria-label", muted ? "Unmute" : "Mute");
-  $("#player-mute")?.setAttribute("data-tooltip", muted ? "Unmute" : "Mute");
-  $("#player-volume").value = String(muted ? 0 : video.volume);
+  const mute = $("#player-mute");
+  if (mute?.classList?.contains?.("is-muted") !== muted) mute?.classList.toggle("is-muted", muted);
+  const muteLabel = muted ? "Unmute" : "Mute";
+  if (mute?.getAttribute?.("aria-label") !== muteLabel) mute?.setAttribute("aria-label", muteLabel);
+  if (mute?.getAttribute?.("data-tooltip") !== muteLabel) mute?.setAttribute("data-tooltip", muteLabel);
+  const volume = $("#player-volume");
+  const volumeValue = String(muted ? 0 : video.volume);
+  if (volume.value !== volumeValue) volume.value = volumeValue;
 }
 
 export function updatePlayerPreferenceButtons() {
@@ -2139,7 +2256,8 @@ function visibleSubtitleClockSeconds() {
   return presented !== null && Math.abs(presented - playing) <= 1.25 ? presented : playing;
 }
 export function refreshSubtitleClockForInteraction() {
-  state.currentMs = visibleSubtitleClockSeconds() * 1000;
+  state.currentMs = (typeof playerDisplaySeconds === "function"
+    ? playerDisplaySeconds() : visibleSubtitleClockSeconds()) * 1000;
   subtitleRenderMemo.key = "";
 }
 function schedulePresentedSubtitleFrame() {
@@ -2831,7 +2949,9 @@ export function togglePlayback() {
 }
 
 export function seekPlayerTo(seconds) {
-  const durationSeconds = state.mediaDurationMs > 0 ? state.mediaDurationMs / 1000 : (Number.isFinite(video.duration) ? video.duration : 0);
+  // Native torrent duration may be only the 13s/65s conversion window. Never
+  // clamp an actual movie seek to it when the episode's total is unknown.
+  const durationSeconds = playerDurationMs() / 1000;
   const target = Math.max(0, durationSeconds ? Math.min(seconds, durationSeconds) : seconds);
   if (video.dataset.indexed === "1" && !remuxMseCacheAllowed) {
     delete video.dataset.indexed;
@@ -2844,6 +2964,7 @@ export function seekPlayerTo(seconds) {
       // outside video.buffered; the browser fetches the needed moov/mdat.
       video.currentTime = target;
       state.currentMs = target * 1000;
+      rememberPlayerDisplaySeconds(target);
       loadMoreEmbeddedSubtitles({ seeked: true });
       renderSubtitles();
       updateCompatControls();
@@ -2855,6 +2976,7 @@ export function seekPlayerTo(seconds) {
     hideLoadingForBufferedSeek();
     video.currentTime = target;
     state.currentMs = target * 1000;
+    rememberPlayerDisplaySeconds(target);
     loadMoreEmbeddedSubtitles({ seeked: true });
     renderSubtitles();
     updateCompatControls();
@@ -2917,6 +3039,7 @@ export function seekPlayerTo(seconds) {
   }
   video.currentTime = video.dataset.mode === "transcode" ? Math.max(0, target - state.transcodeBaseOffsetSeconds) : target;
   state.currentMs = target * 1000;
+  rememberPlayerDisplaySeconds(target);
   renderSubtitles();
   updateCompatControls();
   return true;
@@ -2966,6 +3089,7 @@ export function wirePlayerVideoEvents() {
     // Native seeking while paused can dispatch no timeupdate. The subtitle
     // timeline must jump to the new playhead immediately.
     state.currentMs = absolutePlaybackSeconds() * 1000;
+    rememberPlayerDisplaySeconds(state.currentMs / 1000);
     if (!state.pendingSeek?.priming) loadMoreEmbeddedSubtitles({ seeked: true });
     clearAutoNext();
     recoveryWaitingSince = null;
@@ -3180,12 +3304,17 @@ export function wirePlayerVideoEvents() {
 }
 
 export function progressTimeAt(clientX) {
+  if (typeof playerDurationMs === "function" && !playerDurationMs()) return 0;
   const rect = compatProgress.getBoundingClientRect();
   const ratio = rect.width ? Math.max(0, Math.min(1, (clientX - rect.left) / rect.width)) : 0;
   return ratio * (Number(compatProgress.max) || 0);
 }
 export function showScrubTime(seconds) {
   const bubble = $("#player-scrub-time");
+  if (typeof playerDurationMs === "function" && !playerDurationMs()) {
+    if (bubble) bubble.hidden = true;
+    return;
+  }
   const max = Number(compatProgress.max) || 0;
   if (!bubble || !max) return;
   bubble.hidden = false;

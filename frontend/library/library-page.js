@@ -19,7 +19,7 @@ import { explicitUnwatchCompletionArmed } from "../player/audio-sync.js";
 import { playLibraryEpisode } from "../player/torrent-playback.js";
 import { watchTrackingStatus } from "../watch/watch-page.js";
 import {
-  explicitlyUnwatchedChapter, manuallyWatchedChapter, pendingAniListUnwatches,
+  explicitlyUnwatchedChapter, manuallyWatchedChapter, resolveChapterManualIntent, pendingAniListUnwatches,
   savePendingAniListUnwatches,
 } from "../watch/watched-status.js";
 import { catalogChapterList, catalogChapterLists, libraryArtCached } from "../watch/episode-navigation.js";
@@ -313,12 +313,24 @@ function librarySeasonChapterCodes(series) {
     seasons.get(season).add(normalized);
   };
   const list = catalogChapterLists.get(series.catalogId)?.list;
-  for (const season of list?.seasons || []) {
+  // The chapter list may omit an upcoming or unpaged season although the
+  // catalog's title metadata already knows its count. Include both views.
+  const catalogSeasons = [
+    ...(typeof libraryArtCached === "function" ? libraryArtCached(series)?.seasons || [] : []),
+    ...(list?.seasons || []),
+  ];
+  for (const season of catalogSeasons) {
     if (!Number.isInteger(season.season) || season.season < 1) continue;
     for (const chapter of season.episodes || []) {
       if (Number.isInteger(chapter.episode) && chapter.episode > 0)
         add(season.season, chapterCode(season.season, chapter.episode));
     }
+    // A catalog can report the season's complete count while returning only
+    // the initial episode page. Mark all known episodes, including unsaved ones.
+    const count = Number(season.count);
+    if (Number.isInteger(count) && count > 0 && count <= 1000)
+      for (let episode = 1; episode <= count; episode += 1)
+        add(season.season, chapterCode(season.season, episode));
   }
   for (const [season, refs] of series.seasons || []) {
     for (const ref of refs) add(season, ref.episode?.code);
@@ -372,8 +384,12 @@ export function setLibrarySeasonWatched(series, season, watched) {
     ...Object.fromEntries([...codes].map(code => [code, { source: "local", updatedAt: now }])) };
   savePendingAniListUnwatches(pendingAniListUnwatches().filter((row) =>
     row.seriesKey !== series.key || !codes.has(row.code)));
-  if (!watched) persistAniListQueue(anilistStoredQueue().filter((row) =>
-    row.seriesKey !== series.key || !codes.has(row.code)));
+  if (!watched) {
+    const pending = anilistStoredQueue();
+    if (pending.some((row) => row.seriesKey === series.key && codes.has(row.code)))
+      persistAniListQueue(pending.filter((row) =>
+        row.seriesKey !== series.key || !codes.has(row.code)));
+  }
   saveLibrary();
   renderLibrary();
   refreshTitlePage();
@@ -399,8 +415,59 @@ export function setLibraryTitleWatched(series, watched) {
   return changed;
 }
 
-function libraryProgressRatio(series) {
+// A manually watched chapter can have no downloadable video and therefore no
+// playback progress. The Library card must still show that synced watch mark.
+// Only calculate a percentage when the catalog supplies the complete season
+// count; otherwise show the exact watched count without inventing a total.
+function libraryWatchedSummary(series) {
+  if (series?.type !== "series") return { watched: 0, progress: null };
+  const progressByCode = new Map();
+  const valid = code => /^S(?!00)\d{2}E\d{2,4}$/.test(code);
+  for (const entry of series.sources || []) {
+    for (const [rawCode, mark] of Object.entries(entry.watchedChapters || {})) {
+      const code = rawCode.toUpperCase();
+      if (!valid(code)) continue;
+      if (mark === false || mark === true || (typeof mark === "number" && mark > 0))
+        if (!progressByCode.has(code)) progressByCode.set(code, 0);
+    }
+    for (const episode of entry.episodes || []) {
+      const code = String(episode.code || "").toUpperCase();
+      if (!valid(code) || !episode.progress) continue;
+      const progress = episode.progress;
+      const amount = progress.finished ? 1 : Number(progress.durationMs) > 0
+        ? Math.max(0, Math.min(1, Number(progress.positionMs || 0) / Number(progress.durationMs))) : 0;
+      progressByCode.set(code, Math.max(progressByCode.get(code) || 0, amount));
+    }
+  }
+  for (const code of progressByCode.keys()) {
+    const manual = resolveChapterManualIntent(series.sources, code);
+    if (manual !== null) progressByCode.set(code, manual ? 1 : 0);
+  }
+  const watched = [...progressByCode.values()].filter(value => value === 1).length;
+  const catalogSeasons = [...(libraryArtCached(series)?.seasons || []),
+    ...(catalogChapterLists.get(series.catalogId)?.list?.seasons || [])];
+  const counts = new Map();
+  for (const season of catalogSeasons) {
+    const count = Number(season?.count);
+    if (Number.isInteger(season?.season) && season.season > 0
+      && Number.isInteger(count) && count > 0 && count <= 1000)
+      counts.set(season.season, Math.max(counts.get(season.season) || 0, count));
+  }
+  const presentSeasons = new Set([...catalogSeasons.map(part => part?.season),
+    ...[...(series.seasons || new Map()).keys()],
+    ...[...progressByCode.keys()].map(code => Number(code.slice(1, 3)))].filter(season => Number.isInteger(season) && season > 0));
+  if (!counts.size || [...presentSeasons].some(season => !counts.has(season)))
+    return { watched, progress: null };
+  const known = new Set([...librarySeasonChapterCodes(series).values()].flatMap(codes => [...codes]));
+  if (!known.size) return { watched, progress: null };
+  return { watched, progress: [...known].reduce((total, code) =>
+    total + (progressByCode.get(code) || 0), 0) / known.size };
+}
+
+function libraryProgressRatio(series, summary = null) {
   if (isLibraryTitleMarkedWatched(series)) return 1;
+  const synced = summary || libraryWatchedSummary(series);
+  if (synced.progress !== null) return synced.progress;
   const chapters = series.type === "series" ? libraryOrderedChapters(series) : [];
   if (chapters.length) return chapters.reduce((total, chapter) => {
     if (explicitlyUnwatchedChapter(series, chapter.code)) return total;
@@ -434,12 +501,13 @@ export function libraryCardImage(series, art = null) {
   return { image: selected.image, imageSrcset: selected.srcset, imageFallback: selected.fallback };
 }
 
-function libraryCardItem(series, category = null) {
+function libraryCardItem(series, category = null, summary = null) {
   const chapters = librarySeriesChapterCount(series);
   const point = seriesResumePoint(series);
   const art = libraryArtCached(series);
   const videos = chapters + series.extras.length;
   const progress = point && !point.progress.finished ? Math.min(1, point.progress.positionMs / point.progress.durationMs) : 0;
+  const watchedSummary = summary || libraryWatchedSummary(series);
   const anilist = seriesAniList(series);
   const listStatus = ANILIST_STATUS_LABELS[watchTrackingStatus(series)] || "";
   // AniList list scores are the user's own rating. Don't mislabel them as the
@@ -461,8 +529,9 @@ function libraryCardItem(series, category = null) {
       count,
       communityScore,
     ],
-    badge: isLibraryTitleMarkedWatched(series) ? "Watched" : videos ? "" : listStatus || "No sources",
-    progress: isLibraryTitleMarkedWatched(series) ? 1 : progress,
+    badge: isLibraryTitleMarkedWatched(series) ? "Watched"
+      : watchedSummary.watched ? `${watchedSummary.watched} watched` : videos ? "" : listStatus || "No sources",
+    progress: isLibraryTitleMarkedWatched(series) ? 1 : watchedSummary.progress ?? progress,
   };
 }
 
@@ -511,6 +580,19 @@ export function renderLibrary() {
   const list = $("#library-list");
   if (!list) return;
   const all = buildLibrarySeries();
+  // Progress sorting compares the same title many times. Cache each expensive
+  // catalog-wide chapter expansion and ratio once for this render only.
+  const watchedSummaryCache = new WeakMap();
+  const progressRatioCache = new WeakMap();
+  const cachedWatchedSummary = (series) => {
+    if (!watchedSummaryCache.has(series)) watchedSummaryCache.set(series, libraryWatchedSummary(series));
+    return watchedSummaryCache.get(series);
+  };
+  const cachedProgressRatio = (series) => {
+    if (!progressRatioCache.has(series))
+      progressRatioCache.set(series, libraryProgressRatio(series, cachedWatchedSummary(series)));
+    return progressRatioCache.get(series);
+  };
   updateLibrarySummary(all.length);
   renderLibraryRecommendations(all);
   const animeIds = new Set((state.homeCatalog.anime || []).map((meta) => meta.id).filter(Boolean));
@@ -584,8 +666,8 @@ export function renderLibrary() {
       if (libraryView.sort === "title-desc") return -alpha;
       if (libraryView.sort === "added") return seriesAddedAt(b) - seriesAddedAt(a) || alpha;
       if (libraryView.sort === "watched") return libraryWatchedAt(b) - libraryWatchedAt(a) || alpha;
-      if (libraryView.sort === "progress") return libraryProgressRatio(b) - libraryProgressRatio(a) || alpha;
-      if (libraryView.sort === "unfinished") return libraryProgressRatio(a) - libraryProgressRatio(b) || alpha;
+      if (libraryView.sort === "progress") return cachedProgressRatio(b) - cachedProgressRatio(a) || alpha;
+      if (libraryView.sort === "unfinished") return cachedProgressRatio(a) - cachedProgressRatio(b) || alpha;
       return seriesActivityAt(b) - seriesActivityAt(a) || alpha;
     });
   // The Continue shelf belongs to the current Library view. Do not show
@@ -606,7 +688,7 @@ export function renderLibrary() {
     list.innerHTML = emptyMarkup({ compact: true, icon: "search", title: "No matches", text: libraryView.query ? `Nothing in your Library matches "${libraryView.query}".` : status !== "any" ? `No titles match ${ANILIST_STATUS_LABELS[status]?.toLowerCase() || "this status"}.` : "Nothing here yet." });
     return;
   }
-  const card = (series) => cardMarkup(libraryCardItem(series, categories.get(series.key)), { primaryAction: "library", actionsMarkup: libraryMoreButton(series) });
+  const card = (series) => cardMarkup(libraryCardItem(series, categories.get(series.key), cachedWatchedSummary(series)), { primaryAction: "library", actionsMarkup: libraryMoreButton(series) });
   const grouped = libraryView.filter === "all";
   list.classList.toggle("is-grouped", grouped);
   if (grouped) {

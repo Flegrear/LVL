@@ -16,7 +16,8 @@ import { installUiI18n, registerUiTranslations, t } from "./frontend/ui/ui-i18n.
 import { createClientFeatureHost } from "./frontend/features/feature-host.js";
 import { CLIENT_FEATURES } from "./frontend/features/registry.js";
 import {
-  hydratePersistentAppState, localCopyMissing, persistentAppStateReady, persistPreferences, refreshPersistentLibrary,
+  flushLibraryPersistenceBeforeSync, hydratePersistentAppState, localCopyMissing, persistentAppStateReady,
+  persistPreferences, refreshPersistentLibrary,
   readStorageArray, readStorageObject,
 } from "./frontend/app/saved-state.js";
 import { $, $$, setToolStatus } from "./frontend/app/dom.js";
@@ -38,8 +39,8 @@ import {
 import {
   absolutePlaybackSeconds, cancelTranscodeStart, clearPlayerControlsHideTimer,
   continueProgressiveOrRecover, endScrub, fallbackActiveRemuxMseToNative, hidePlayerControls,
-  isNewSourceFramePending, markPlaybackMotion, openTranscodeAt, playerArrowSeek, playerWantsMuted,
-  presentedSubtitleSeconds, progressiveBufferEndAroundCurrent, progressTimeAt, recoverPlayback,
+  isNewSourceFramePending, markPlaybackMotion, openTranscodeAt, playerArrowSeek, playerDurationMs, playerSubtitleSeconds,
+  playerWantsMuted, presentedSubtitleSeconds, progressiveBufferEndAroundCurrent, progressTimeAt, recoverPlayback,
   refreshSubtitleClockForInteraction, resumePlayback, revealPlayerControls,
   schedulePlayerControlsHide, seekPlayerBy, seekPlayerTo, setPlayerLoading, setPlayerMutePreference,
   showScrubTime, stopRecoveryWatch, syncPlayerSpeed, togglePlayback, transcodeStartAttempt,
@@ -163,6 +164,9 @@ clientFeatures.install(document, {
   }),
   refreshLibrary: () => { if (viewActive("library")) renderLibrary(); },
   refreshSyncedLibrary: (revision) => refreshPersistentLibrary({ revision }),
+  // Sync's feature import must remain side-effect-free. The actual Library
+  // CAS barrier is supplied by the already bootstrapped core at action time.
+  flushLibraryPersistenceBeforeSync: () => flushLibraryPersistenceBeforeSync(),
   // Feature chips changed (a section became available): series redraw their chapter area;
   // movie pages redraw the main part (unchanged markup isn't touched).
   refreshTitle: () => {
@@ -1187,7 +1191,8 @@ video.addEventListener("timeupdate", () => {
   if (typeof isNewSourceFramePending === "function" && isNewSourceFramePending()) return;
   // Preserve frame-accurate subtitles during decoder stalls; recover from a
   // stale frame only on explicit pause/resume and caption interactions.
-  state.currentMs = (presentedSubtitleSeconds() ?? absolutePlaybackSeconds()) * 1000;
+  state.currentMs = (typeof playerSubtitleSeconds === "function"
+    ? playerSubtitleSeconds() : (presentedSubtitleSeconds() ?? absolutePlaybackSeconds())) * 1000;
   if (state.pendingSeek?.priming) {
     updateCompatControls();
     return;
@@ -1275,7 +1280,7 @@ if (window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches) {
       $("#player-scrub-time").hidden = true;
       updateCompatControls();
     },
-    onCommit: (target) => seekPlayerTo(target),
+    onCommit: (target) => { if (playerDurationMs() > 0) seekPlayerTo(target); },
   });
 } else {
   compatProgress.addEventListener("pointerdown", () => { state.scrubbing = true; });
@@ -1290,7 +1295,7 @@ if (window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches) {
     const target = Number(event.target.value) || 0;
     state.scrubbing = false;
     $("#player-scrub-time").hidden = true;
-    seekPlayerTo(target);
+    if (playerDurationMs() > 0) seekPlayerTo(target);
   });
   // A press without a move fires no change event; release the thumb anyway.
   window.addEventListener("pointerup", () => window.setTimeout(endScrub, 60));

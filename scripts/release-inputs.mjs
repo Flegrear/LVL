@@ -41,6 +41,8 @@ export const reviewedAndroidReleaseFiles = Object.freeze([
   'android/app/src/main/kotlin/io/github/flegrear/lvl/comics/WebViewCookieJar.kt',
   'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/ApkInstall.kt',
   'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/AppUpdater.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/InstallSessionReconciliation.kt',
+  'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/InstallVersionAttestation.kt',
   'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/ReleaseFeed.kt',
   'android/app/src/main/kotlin/io/github/flegrear/lvl/updates/UpdateBridge.kt',
   'android/app/src/main/res/drawable/ic_lvl_mark.xml',

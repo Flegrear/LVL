@@ -5,6 +5,7 @@
 import { escapeHtml } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { atEnd, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
+import { createOrderedReaderPages, readerPageAtOffset } from "./reader-page-window.js";
 
 const COMFORT_KEY = "lvl-reader-comfort-v1";
 const DISPLAY_KEY = "lvl-reader-display-v1";
@@ -161,6 +162,12 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   let observeNative = null;
   let thumbObserver = null;
   const trimmed = new Map();
+  let verticalLoader = null;
+  let pagedLoader = null;
+  let pagedPageOrder = [];
+  let verticalPages = [];
+  let verticalAnchor = 0;
+  let scrollFrame = 0;
   let scrollIntent = null;
   let unitTransition = null;
   let chapterTransitionGeneration = 0;
@@ -334,29 +341,49 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     if (!trim || closed || trimmed.has(n) || img.src.startsWith("blob:")) return;
     if (!trimming.has(n)) {
       trimming.set(n, cropStrip(img).catch(() => null).then((objectUrl) => {
-        if (objectUrl && closed) { URL.revokeObjectURL(objectUrl); return null; }
+        if (objectUrl && (closed || !stage.contains(img) || img.dataset.readerState === "evicted")) {
+          URL.revokeObjectURL(objectUrl);
+          return null;
+        }
         if (objectUrl) trimmed.set(n, objectUrl);
         return objectUrl;
-      }));
+      }).finally(() => trimming.delete(n)));
     }
     void trimming.get(n).then((objectUrl) => {
       if (!objectUrl || closed) return;
-      for (const page of stage.querySelectorAll(`.reader__page[data-page="${n}"]`)) if (!page.src.startsWith("blob:")) page.src = objectUrl;
+      for (const page of stage.querySelectorAll(`img.reader__page[data-page="${n}"]`))
+        if (!page.src.startsWith("blob:") && page.dataset.readerState !== "evicted") page.src = objectUrl;
       const thumb = thumbs.querySelector(`[data-reader-page="${n}"] img`);
       if (thumb) { thumb.dataset.src = objectUrl; if (thumb.getAttribute("src")) thumb.src = objectUrl; }
     });
   }
   const watchPage = (img) => { if (trim) img.addEventListener("load", () => trimPage(Number(img.dataset.page), img)); };
+  let pagedPrefetch = [];
+  const clearPagedPrefetch = () => {
+    for (const img of pagedPrefetch) img.removeAttribute("src");
+    pagedPrefetch = [];
+  };
   const preload = (from) => {
+    clearPagedPrefetch();
     for (let n = from + 1; n <= from + 3 && n < pages; n += 1) {
       if (trimmed.has(n)) continue;
       const img = new Image();
-      if (trim) img.addEventListener("load", () => trimPage(n, img), { once: true });
+      pagedPrefetch.push(img);
       img.src = url(n);
     }
   };
   thumbs.innerHTML = Array.from({ length: pages }, (_v, n) => `<button class="reader__thumb" type="button" role="listitem" data-reader-page="${n}" aria-label="${escapeHtml(t("Page {number}", { number: n + 1 }))}">`
     + `<img data-src="${escapeHtml(url(n))}" alt="" decoding="async" /><span>${n + 1}</span></button>`).join("");
+  const thumbCache = new Set();
+  const evictThumb = (n) => {
+    const thumb = thumbs.children[n];
+    const img = thumb?.querySelector("img");
+    if (!img) return;
+    img.removeAttribute("src");
+    img.dataset.src = src(n);
+    thumbCache.delete(n);
+    if (previews && thumbObserver) thumbObserver.observe(thumb);
+  };
   // Thumbnails are the pages themselves: load only the ones the strip shows,
   // and none while previews are off.
   let previews = read(PREVIEWS_KEY, onAndroidPhone() ? false : true) !== false;
@@ -364,11 +391,20 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     if (!previews) return;
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
+      const number = Number(entry.target.dataset.readerPage);
+      if (mode.layout === "vertical" && verticalLoader && number > verticalLoader.visibleThrough) {
+        thumbObserver.unobserve(entry.target);
+        continue; // a preview must not reveal an unresolved later page
+      }
       const img = entry.target.querySelector("img[data-src]");
       if (img) {
         img.addEventListener("load", () => noteSize(Number(entry.target.dataset.readerPage), img), { once: true });
         img.src = img.dataset.src;
         img.removeAttribute("data-src");
+        const n = Number(entry.target.dataset.readerPage);
+        thumbCache.delete(n);
+        thumbCache.add(n);
+        while (thumbCache.size > 12) evictThumb(thumbCache.values().next().value);
       }
       thumbObserver.unobserve(entry.target);
     }
@@ -377,7 +413,13 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     for (const thumb of thumbs.children) {
       const img = thumb.querySelector("img[data-src]");
       if (!img) continue;
-      if (thumbObserver) { thumbObserver.unobserve(thumb); thumbObserver.observe(thumb); } else if (previews) { img.src = img.dataset.src; img.removeAttribute("data-src"); }
+      if (thumbObserver) { thumbObserver.unobserve(thumb); thumbObserver.observe(thumb); }
+      else if (previews && thumbCache.size < 12
+        && (mode.layout !== "vertical" || Number(thumb.dataset.readerPage) <= (verticalLoader?.visibleThrough ?? current))) {
+        img.src = img.dataset.src;
+        img.removeAttribute("data-src");
+        thumbCache.add(Number(thumb.dataset.readerPage));
+      }
     }
   };
   const applyPreviews = () => {
@@ -386,6 +428,10 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     toggle.setAttribute("aria-pressed", String(previews));
     toggle.querySelector("[data-previews-label]").textContent = t(previews ? "Hide pages" : "Show pages");
     if (previews) watchThumbs();
+    else {
+      thumbObserver?.disconnect();
+      for (const n of [...thumbCache]) evictThumb(n);
+    }
     syncSheet();
   };
   // The wheel scrolls the strip sideways.
@@ -471,6 +517,9 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       + `<strong>${escapeHtml(cascadeChapterLabel(next))}</strong>`
       + `<span class="reader__chapter-boundary__hint" role="status" aria-live="polite">${escapeHtml(t("Keep scrolling to continue"))}</span>`
       + `<button type="button" class="reader__chapter-boundary__fallback" data-reader="nextChapter" hidden>${escapeHtml(t("Next chapter"))}</button>`;
+    // A boundary must not appear while the chapter's earlier pages are still
+    // unresolved; it is part of the accepted, completed strip.
+    boundary.hidden = Boolean(verticalLoader && verticalLoader.visibleThrough < pages - 1);
     stage.append(boundary);
   }
 
@@ -487,6 +536,8 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     preloadController = null;
     if (!preloadingStarted || closed || !root.isConnected || !preloadChapters
         || typeof onPreloadChapters !== "function") return;
+    // Network capacity belongs to the current chapter's first page first.
+    if (mode.layout === "vertical" && verticalLoader && verticalLoader.visibleThrough < verticalAnchor) return;
     // Keep chapter identity exact. Do not guess at duplicate chapter numbers
     // across volumes, and let the owner resolve this reader's source.
     const targets = nextChapterPreloadTargets(chapterList, { chapter, volume }, preloadChapters);
@@ -522,9 +573,61 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     renderCascadeMarkers();
   }
 
+  function pagePlaceholder(n, state = "future", previous = null) {
+    const placeholder = document.createElement("div");
+    placeholder.className = "reader__page reader__page-placeholder";
+    placeholder.dataset.page = String(n);
+    placeholder.dataset.readerState = state;
+    placeholder.setAttribute("role", "img");
+    placeholder.setAttribute("aria-label", t("Page {number}", { number: n + 1 }));
+    if (previous?.naturalWidth && previous?.naturalHeight) {
+      placeholder.style.aspectRatio = `${previous.naturalWidth} / ${previous.naturalHeight}`;
+      placeholder.style.minHeight = "0";
+      if (mode.fit === "original") placeholder.style.width = `${previous.naturalWidth}px`;
+    }
+    return placeholder;
+  }
+
+  function loadDecodedPage(n, signal) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.className = "reader__page";
+      img.dataset.page = String(n);
+      img.alt = t("Page {number}", { number: n + 1 });
+      img.decoding = "async";
+      const cleanup = () => {
+        img.removeEventListener("load", complete);
+        img.removeEventListener("error", failed);
+        signal.removeEventListener("abort", abort);
+      };
+      const fail = (error) => { cleanup(); reject(error); };
+      const complete = () => {
+        Promise.resolve(typeof img.decode === "function" ? img.decode() : undefined)
+          .then(() => { cleanup(); resolve(img); }, fail);
+      };
+      const failed = () => fail(new Error(t("Couldn't load page {number}.", { number: n + 1 })));
+      const abort = () => { cleanup(); img.removeAttribute("src"); reject(new Error("Page request cancelled")); };
+      if (signal.aborted) { abort(); return; }
+      signal.addEventListener("abort", abort, { once: true });
+      img.addEventListener("load", complete, { once: true });
+      img.addEventListener("error", failed, { once: true });
+      img.src = src(n);
+    });
+  }
+
   function render() {
     // Render and scrollIntoView never arm immersive intent. The stage listener
     // only responds to fresh wheel/touch/keyboard/scrollbar navigation.
+    verticalLoader?.close();
+    verticalLoader = null;
+    pagedLoader?.close();
+    pagedLoader = null;
+    pagedPageOrder = [];
+    clearPagedPrefetch();
+    verticalPages = [];
+    if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = 0; }
+    for (const objectUrl of trimmed.values()) URL.revokeObjectURL(objectUrl);
+    trimmed.clear();
     root.dataset.layout = mode.layout;
     root.dataset.direction = mode.direction;
     root.dataset.fit = mode.fit;
@@ -539,16 +642,111 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     syncSheet();
     zoom = 1;
     if (mode.layout === "vertical") {
-      stage.innerHTML = Array.from({ length: pages }, (_v, n) => `<img class="reader__page" data-page="${n}" src="${escapeHtml(src(n))}" alt="${escapeHtml(t("Page {number}", { number: n + 1 }))}" loading="lazy" decoding="async" />`).join("");
-      for (const img of stage.querySelectorAll(".reader__page")) watchPage(img);
+      verticalAnchor = current;
+      stage.innerHTML = Array.from({ length: pages }, (_v, n) => `<div class="reader__page reader__page-placeholder" data-page="${n}" data-reader-state="future" role="img" aria-label="${escapeHtml(t("Page {number}", { number: n + 1 }))}"></div>`).join("");
+      verticalPages = [...stage.children];
+      if (pages) verticalLoader = createOrderedReaderPages({
+        pages, start: current,
+        load: loadDecodedPage,
+        onReveal: (n, img) => {
+          if (closed || mode.layout !== "vertical") return;
+          const old = verticalPages[n];
+          if (!old || !stage.contains(old)) return;
+          img.dataset.readerState = "ready";
+          old.replaceWith(img);
+          verticalPages[n] = img;
+          if (n === verticalAnchor) stage.scrollTop = 0;
+          if (trim) trimPage(n, img); // decoded before mount, so load already fired
+          noteSize(n, img);
+          if (previews) {
+            const thumb = thumbs.children[n];
+            if (thumb?.querySelector("img[data-src]")) {
+              if (thumbObserver) thumbObserver.observe(thumb);
+              else if (thumbCache.size < 12) {
+                const preview = thumb.querySelector("img[data-src]");
+                preview.src = preview.dataset.src;
+                preview.removeAttribute("data-src");
+                thumbCache.add(n);
+              }
+            }
+          }
+          if (n === verticalAnchor) scheduleChapterPreloads();
+          if (n === pages - 1) {
+            const boundary = stage.querySelector(".reader__chapter-boundary");
+            if (boundary) boundary.hidden = false;
+          }
+        },
+        onBlocked: (n, error) => {
+          if (closed || mode.layout !== "vertical") return;
+          let placeholder = verticalPages[n];
+          if (!placeholder || !stage.contains(placeholder)) return;
+          if (placeholder.tagName === "IMG" || placeholder.dataset.readerState === "failed") {
+            const next = pagePlaceholder(n);
+            placeholder.replaceWith(next);
+            verticalPages[n] = placeholder = next;
+          }
+          placeholder.dataset.readerState = error ? "failed" : "pending";
+          if (error) {
+            placeholder.removeAttribute("role");
+            placeholder.innerHTML = `<p role="alert">${escapeHtml(t("Couldn't load page {number}.", { number: n + 1 }))}</p>`
+              + `<button type="button" data-reader-retry-page="${n}">${escapeHtml(t("Try again"))}</button>`;
+          }
+        },
+        onRelease: (n, img) => {
+          if (verticalPages[n] === img && stage.contains(img)) {
+            const placeholder = pagePlaceholder(n, "evicted", img);
+            img.replaceWith(placeholder);
+            verticalPages[n] = placeholder;
+            const objectUrl = trimmed.get(n);
+            if (objectUrl) { URL.revokeObjectURL(objectUrl); trimmed.delete(n); }
+          }
+          img.removeAttribute("src");
+        },
+      });
       renderCascadeMarkers();
-      if (showCascadeStart && current === 0) stage.scrollTop = 0;
-      else stage.querySelector(`[data-page="${current}"]`)?.scrollIntoView({ block: "start" });
+      // The restored/explicit start page is the first slot in this window;
+      // earlier pages have no layout height, so late image loads cannot move it.
+      stage.scrollTop = 0;
     } else {
       const shown = mode.layout === "double" ? spreadOf(current, pages, pairing()) : [current];
       const ordered = mode.direction === "rtl" ? [...shown].reverse() : shown;
-      stage.innerHTML = `<div class="reader__spread">${ordered.map((n) => `<img class="reader__page" data-page="${n}" src="${escapeHtml(src(n))}" alt="${escapeHtml(t("Page {number}", { number: n + 1 }))}" decoding="async" />`).join("")}</div>`;
-      for (const img of stage.querySelectorAll(".reader__page")) { img.addEventListener("load", () => noteSize(Number(img.dataset.page), img), { once: true }); watchPage(img); }
+      pagedPageOrder = [...shown];
+      stage.innerHTML = `<div class="reader__spread">${ordered.map((n) => `<div class="reader__page reader__page-placeholder" data-page="${n}" data-reader-state="pending" role="img" aria-label="${escapeHtml(t("Page {number}", { number: n + 1 }))}"></div>`).join("")}</div>`;
+      const slots = new Map([...stage.querySelectorAll(".reader__spread .reader__page")].map((part) => [Number(part.dataset.page), part]));
+      // Keep the RTL spread reversed visually. Request/accept page identities
+      // in chronological order so the later logical page never appears first.
+      pagedLoader = createOrderedReaderPages({
+        pages: pagedPageOrder.length, start: 0, ahead: 1, behind: 1,
+        load: (index, signal) => loadDecodedPage(pagedPageOrder[index], signal),
+        onReveal: (index, img) => {
+          const n = pagedPageOrder[index];
+          const slot = slots.get(n);
+          if (closed || mode.layout === "vertical" || !slot || !stage.contains(slot)) return;
+          img.dataset.readerState = "ready";
+          slot.replaceWith(img);
+          slots.set(n, img);
+          if (trim) trimPage(n, img);
+          noteSize(n, img);
+        },
+        onBlocked: (index, error) => {
+          const n = pagedPageOrder[index];
+          let slot = slots.get(n);
+          if (closed || !slot || !stage.contains(slot)) return;
+          if (slot.tagName === "IMG" || slot.dataset.readerState === "failed") {
+            const replacement = pagePlaceholder(n, "pending");
+            slot.replaceWith(replacement);
+            slots.set(n, replacement);
+            slot = replacement;
+          }
+          slot.dataset.readerState = error ? "failed" : "pending";
+          if (error) {
+            slot.removeAttribute("role");
+            slot.innerHTML = `<p role="alert">${escapeHtml(t("Couldn't load page {number}.", { number: n + 1 }))}</p>`
+              + `<button type="button" data-reader-retry-page="${n}">${escapeHtml(t("Try again"))}</button>`;
+          }
+        },
+        onRelease: (_index, img) => img.removeAttribute("src"),
+      });
       stage.scrollTop = 0;
       preload(Math.max(...shown));
     }
@@ -574,7 +772,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     for (const thumb of thumbs.querySelectorAll('[aria-current="true"]')) thumb.removeAttribute("aria-current");
     for (const n of shown) thumbs.children[n]?.setAttribute("aria-current", "true");
     const active = thumbs.children[shown[0]];
-    if (active) thumbs.scrollLeft += active.getBoundingClientRect().left - thumbs.getBoundingClientRect().left - (thumbs.clientWidth - active.offsetWidth) / 2;
+    if (active && previews) thumbs.scrollLeft += active.getBoundingClientRect().left - thumbs.getBoundingClientRect().left - (thumbs.clientWidth - active.offsetWidth) / 2;
     // Detached atomic staging readers have no accepted route yet; C will set
     // the initial URL once it mounts. Do not announce a page from a failed or
     // still-unmounted candidate reader.
@@ -582,6 +780,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   }
 
   function showEnd({ failed = false } = {}) {
+    if (mode.layout === "vertical" && verticalLoader && verticalLoader.visibleThrough < pages - 1) return;
     if (mode.layout === "vertical" && chapterTargets().next && stage.querySelector(".reader__chapter-boundary")) {
       if (failed) {
         cascadeBoundaryHint(t("Couldn't open the next chapter. Choose Next chapter to try another source."), "error");
@@ -615,7 +814,12 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   // next image's top, which skipped whatever was between. The page count follows the scroll.
   function scrollStrip(direction) {
     const by = stripStep(stage, direction);
-    if (by === "end") return direction > 0 ? openAutoNext() : showEnd();
+    if (by === 0 && direction < 0 && verticalAnchor > 0 && current === verticalAnchor)
+      return go(current - 1);
+    if (by === "end") {
+      if (verticalLoader && verticalLoader.visibleThrough < pages - 1) return undefined;
+      return direction > 0 ? openAutoNext() : showEnd();
+    }
     if (by) { enterImmersive(); stage.scrollBy({ top: by, behavior: "smooth" }); }
     return undefined;
   }
@@ -818,6 +1022,12 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       const currentIndex = readerChapterPosition(chapterList, { chapter, volume }).index;
       return index === currentIndex ? undefined : openTarget(identity);
     }
+    const retryPage = event.target.closest("[data-reader-retry-page]");
+    if (retryPage) {
+      if (mode.layout === "vertical") verticalLoader?.retry(Number(retryPage.dataset.readerRetryPage));
+      else pagedLoader?.retry(pagedPageOrder.indexOf(Number(retryPage.dataset.readerRetryPage)));
+      return undefined;
+    }
     const thumb = event.target.closest("[data-reader-page]");
     if (thumb) return go(Number(thumb.dataset.readerPage));
     const control = event.target.closest("button[data-reader]");
@@ -899,9 +1109,16 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     // Pinch-to-zoom (Ctrl+wheel) is not reading scroll intent.
     scrollIntent?.wheel();
     if (mode.layout === "vertical") {
+      if (event.deltaY < 0 && stage.scrollTop <= 2 && current === verticalAnchor && current > 0) {
+        // Restored chapters start at the saved page. An explicit upward
+        // gesture can open an earlier page without decoding the entire prefix.
+        if (Date.now() - wheelAt >= 250) { wheelAt = Date.now(); go(current - 1); }
+        return;
+      }
       // Cascade: only a deliberate continuation at the bottom changes chapters.
       const atBottom = stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2;
-      if (chapterAdvance.wheel(atBottom, event.deltaY) && !autoAdvancing) void openAutoNext();
+      if (chapterAdvance.wheel(atBottom && (verticalLoader?.visibleThrough ?? -1) >= pages - 1, event.deltaY)
+          && !autoAdvancing) void openAutoNext();
       return;
     }
     if (zoom > 1) return;
@@ -939,7 +1156,8 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     }
     if (mode.layout === "vertical" && Math.abs(dy) > Math.abs(dx)) {
       const atBottom = stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2;
-      if (chapterAdvance.touchMove(atBottom, deltaY)) touch.advance = true;
+      if (chapterAdvance.touchMove(atBottom && (verticalLoader?.visibleThrough ?? -1) >= pages - 1, deltaY))
+        touch.advance = true;
     }
   }, { passive: true, signal: listeners.signal });
   stage.addEventListener("touchend", (event) => {
@@ -948,7 +1166,13 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     touch = null;
     if (started.moved) suppressStageClickUntil = Date.now() + 350;
     if (mode.layout === "vertical") {
-      if (started.advance && stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2)
+      if (started.y - started.lastY < -70 && stage.scrollTop <= 2
+          && current === verticalAnchor && current > 0) {
+        go(current - 1);
+        return;
+      }
+      if (started.advance && (verticalLoader?.visibleThrough ?? -1) >= pages - 1
+          && stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2)
         void openAutoNext();
       return;
     }
@@ -976,19 +1200,30 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       suppressStageClickUntil = Date.now() + 350;
     }
   }, { passive: true, signal: listeners.signal });
+  // One frame per group of scroll events; binary search only the accepted
+  // visible strip. A 400-page chapter needs ~9 geometry checks instead of
+  // scanning and measuring hundreds of page rectangles per touch event.
+  function updateVerticalPosition() {
+    scrollFrame = 0;
+    if (closed || mode.layout !== "vertical" || !verticalLoader) return;
+    const last = Math.min(pages - 1, verticalLoader.visibleThrough);
+    if (last < verticalAnchor) return;
+    const y = stage.scrollTop + 40;
+    const low = readerPageAtOffset(verticalAnchor, last, y, (n) => {
+      const page = verticalPages[n];
+      return page ? page.offsetTop + page.offsetHeight : Infinity;
+    });
+    const page = verticalPages[low];
+    if (!page || !["ready", "evicted"].includes(page.dataset.readerState) || low === current) return;
+    current = low;
+    verticalLoader.progress(low);
+    updateCount();
+    saveSoon();
+    if (low >= pages - 1 && !chapterTargets().next) showEnd();
+  }
   scrollIntent = createReaderScrollIntentController(stage, { enterImmersive, onScroll: () => {
-    if (mode.layout !== "vertical") return;
-    const top = stage.getBoundingClientRect().top;
-    const visible = [...stage.querySelectorAll(".reader__page")].find((img) => img.getBoundingClientRect().bottom > top + 40);
-    const n = Number(visible?.dataset.page);
-    if (Number.isInteger(n) && n !== current) {
-      current = n;
-      updateCount();
-      saveSoon();
-      // Reserve the end card for chapters with no neighbour or a failed
-      // transition. It must not interrupt normal continued reading.
-      if (n >= pages - 1 && !chapterTargets().next) showEnd();
-    }
+    if (mode.layout !== "vertical" || scrollFrame) return;
+    scrollFrame = requestAnimationFrame(updateVerticalPosition);
   } });
 
   function close({ keepUrl = false } = {}) {
@@ -1007,6 +1242,12 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     scrollIntent?.disconnect();
     observeNative?.disconnect();
     listeners.abort();
+    if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = 0; }
+    verticalLoader?.close();
+    verticalLoader = null;
+    pagedLoader?.close();
+    pagedLoader = null;
+    clearPagedPrefetch();
     document.removeEventListener("fullscreenchange", onFullscreenChange);
     if (releaseOwnedNative) nativeImmersive(false);
     thumbObserver?.disconnect();
@@ -1063,7 +1304,14 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       if (mode.layout === "vertical" && ["ArrowDown", "ArrowUp", "PageDown", "PageUp", " "].includes(event.key)) {
         scrollIntent?.keyboard();
         enterImmersive();
+        if (["ArrowUp", "PageUp"].includes(event.key) && stage.scrollTop <= 2
+            && current === verticalAnchor && current > 0) {
+          event.preventDefault();
+          go(current - 1);
+          return true;
+        }
         if (["ArrowDown", "PageDown", " "].includes(event.key) && !event.shiftKey
+            && (verticalLoader?.visibleThrough ?? -1) >= pages - 1
             && stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2) {
           event.preventDefault();
           void openAutoNext();
@@ -1091,6 +1339,9 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     try { scrollIntent?.disconnect(); } catch {}
     try { observeNative?.disconnect(); } catch {}
     try { thumbObserver?.disconnect(); } catch {}
+    try { if (scrollFrame) cancelAnimationFrame(scrollFrame); } catch {}
+    try { verticalLoader?.close(); } catch {}
+    try { pagedLoader?.close(); } catch {}
     try { listeners.abort(); } catch {}
     try { clearTimeout(saveTimer); } catch {}
     for (const objectUrl of trimmed.values()) {

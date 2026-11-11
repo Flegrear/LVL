@@ -1,5 +1,15 @@
 # LVL Changelog
 
+## 0.3.1 — 2026-11-11
+
+- Fix loading timelines showing a buffered fragment as the full episode.
+- Keep captions aligned with the displayed frame during buffering and resume.
+- Load comic pages in order and reduce scrolling work in long chapters.
+- Keep watched titles and episodes consistent across Library, sources and synced devices.
+- Include all known episodes when marking a season watched and keep Android actions in long-press menus.
+- Prevent an Android video startup check from blocking the local server connection.
+- Improve Android update recovery when installation finishes before its status notification.
+
 ## 0.3.0 — 2026-11-10
 
 - Improve seeking, buffering recovery and source switching while keeping your chosen audio language across episodes.

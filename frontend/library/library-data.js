@@ -128,6 +128,8 @@ export function upsertLibrarySession(session, magnet = "", {
     ...(existing?.externalId ? { externalId: existing.externalId } : {}),
     // Watched flags, their author and timestamp belong together. Source refresh
     // must preserve the recorded origin; absent legacy provenance stays unknown.
+    watchedTitleAt: Number(existing?.watchedTitleAt
+      ?? anchorSeries?.sources?.find((source) => Number(source?.watchedTitleAt) > 0)?.watchedTitleAt) || 0,
     watchedChapters: existing?.watchedChapters || {},
     ...(existing?.watchedChapterOrigins ? { watchedChapterOrigins: existing.watchedChapterOrigins } : {}),
     ...(existing?.watchedChapterUpdatedAt ? { watchedChapterUpdatedAt: existing.watchedChapterUpdatedAt } : {}),

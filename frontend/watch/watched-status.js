@@ -82,23 +82,53 @@ export function recordWatchProgress({ force = false, positionSeconds = null, pla
 // Manual watched marks belong to the Library series, not a torrent file: a
 // catalog-only chapter remains watched even before a playable source is saved.
 export function manuallyWatchedChapter(series, code) {
-  if (!series || !/^S\d{2}E\d{2,4}$/.test(String(code))) return false;
-  return state.library.some((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key
-    && Boolean(item.watchedChapters?.[code]));
+  return librarySeriesManualIntent(series, code) === true;
 }
+
+// A chapter can have multiple torrent sources. Resolve their explicit choices
+// as one user intent: the latest LOCAL edit wins, regardless of which source
+// holds it. An imported AniList flag (or automatic playback) must not undo a
+// local unwatch. Unattributed legacy flags rank between local and imported;
+// unknown/tied timestamps conservatively prefer an explicit unwatch.
+export function resolveChapterManualIntent(entries, rawCode) {
+  const code = String(rawCode || "").toUpperCase();
+  if (!/^S\d{2}E\d{2,4}$/.test(code)) return null;
+  let selected = null;
+  for (const entry of entries || []) {
+    const marks = entry?.watchedChapters || {};
+    if (!Object.hasOwn(marks, code)) continue;
+    const mark = marks[code];
+    if (mark !== false && mark !== true && !(typeof mark === "number" && mark > 0)) continue;
+    const origin = entry?.watchedChapterOrigins?.[code];
+    const priority = origin?.source === "local" ? 2 : !origin?.source ? 1 : 0;
+    const timestamp = Math.max(0, Number(entry?.watchedChapterUpdatedAt?.[code]) || 0,
+      Number(origin?.updatedAt) || 0, typeof mark === "number" ? mark : 0);
+    const choice = { watched: mark !== false, priority, timestamp };
+    if (!selected || choice.priority > selected.priority
+      || (choice.priority === selected.priority && (choice.timestamp > selected.timestamp
+        || (choice.timestamp === selected.timestamp && !choice.watched && selected.watched))))
+      selected = choice;
+  }
+  return selected ? selected.watched : null;
+}
+
+function librarySeriesManualIntent(series, code) {
+  if (!series?.key) return null;
+  return resolveChapterManualIntent(state.library.filter((item) =>
+    (item.seriesKey || librarySeriesKey(item.title)) === series.key), code);
+}
+
 export function explicitlyUnwatchedChapter(series, code) {
-  return Boolean(series) && state.library.some((item) =>
-    (item.seriesKey || librarySeriesKey(item.title)) === series.key
-    && Object.hasOwn(item.watchedChapters || {}, code) && item.watchedChapters[code] === false);
+  return librarySeriesManualIntent(series, code) === false;
 }
 
 export function watchEpisodeStatus(series, chapter) {
-  if (explicitlyUnwatchedChapter(series, String(chapter.code || "").toUpperCase()))
-    return { ...chapterWatchStatus(chapter.stored?.sources || []), watched: false, percent: 0, resume: null };
+  const code = String(chapter.code || "").toUpperCase();
   const status = chapterWatchStatus(chapter.stored?.sources || []);
-  return manuallyWatchedChapter(series, String(chapter.code || "").toUpperCase())
-    ? { ...status, watched: true, percent: 100, resume: null }
-    : status;
+  if (explicitlyUnwatchedChapter(series, code))
+    return { ...status, watched: false, percent: 0, resume: null };
+  return manuallyWatchedChapter(series, code)
+    ? { ...status, watched: true, percent: 100, resume: null } : status;
 }
 function markWatchEpisodeUnwatched(series, code) {
   const normalized = String(code || "").toUpperCase();
@@ -126,8 +156,12 @@ function markWatchEpisodeUnwatched(series, code) {
   anchor.watchedChapters = { ...anchor.watchedChapters, [normalized]: false };
   anchor.watchedChapterUpdatedAt = { ...(anchor.watchedChapterUpdatedAt || {}), [normalized]: Date.now() };
   anchor.watchedChapterOrigins = { ...(anchor.watchedChapterOrigins || {}), [normalized]: { source: "local", updatedAt: Date.now() } };
-  persistAniListQueue(anilistStoredQueue().filter((row) =>
-    !(row.seriesKey === series.key && row.code === normalized)));
+  // With no connected AniList account there is no account-owned pending
+  // work to cancel. Never try to persist a queue without its owner.
+  const pending = anilistStoredQueue();
+  if (pending.some((row) => row.seriesKey === series.key && row.code === normalized))
+    persistAniListQueue(pending.filter((row) =>
+      !(row.seriesKey === series.key && row.code === normalized)));
   saveLibrary();
   const current = state.currentSource;
   const selected = entries.find((entry) => entry.id === current?.libraryId)

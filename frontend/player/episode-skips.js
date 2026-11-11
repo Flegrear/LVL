@@ -112,7 +112,9 @@ export function renderEpisodeTimelineSegments() {
   const summary = $("#player-timeline-summary");
   if (!layer) return;
   const ranges = episodeTimelineRanges();
-  const duration = Math.round((state.mediaDurationMs || (Number(video.duration) || 0) * 1000) / 1000);
+  // Chapter markers share the episode clock. A direct torrent's native
+  // duration can grow with the partial download and is not a valid total.
+  const duration = Math.round((Number(state.mediaDurationMs) || 0) / 1000);
   const renderKey = JSON.stringify([duration, ranges]);
   if (renderKey === episodeTimelineRenderKey) return;
   episodeTimelineRenderKey = renderKey;

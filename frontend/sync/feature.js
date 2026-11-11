@@ -125,7 +125,7 @@ async function call(path, body) {
   return data;
 }
 
-function mount(card) {
+function mount(card, ctx) {
   card.dataset.syncMounted = "1";
   card.querySelector(".settings-card__head")?.insertAdjacentHTML("beforeend", '<span class="ui-badge ui-badge--outline settings-sync-badge" hidden></span>');
   card.insertAdjacentHTML("beforeend", '<div class="settings-sync-body"></div>');
@@ -238,7 +238,16 @@ function mount(card) {
       else if (name === "cancel") return call("github/cancel", {});
       else if (name === "copy") { await navigator.clipboard?.writeText(status.device?.userCode || ""); toast("Code copied"); }
       else if (name === "find") return call("github/find", {});
-      else if (name === "now") return (await call("now", {})).status;
+      else if (name === "now") {
+        // The core app owns the SQLite CAS queue. Resolve that dependency only
+        // through the feature host at click time: importing saved-state here
+        // eagerly pulls in app.js and its browser bootstrap during registry
+        // imports, including in headless feature-host consumers.
+        if (typeof ctx?.flushLibraryPersistenceBeforeSync !== "function")
+          throw new Error("Library persistence is unavailable. Sync now was not started.");
+        await ctx.flushLibraryPersistenceBeforeSync();
+        return (await call("now", {})).status;
+      }
       else if (name === "reload") { await call("reload-shown", {}); window.location.reload(); }
       else if (name === "disconnect") {
         const sure = await confirmDialog({ title: "Disconnect sync on this device?", confirmLabel: "Disconnect",
@@ -279,10 +288,10 @@ export const syncFeature = {
   },
   hooks: {
     // Settings › Library was shown: the Sync card at its top.
-    "settings:library"({ panel }) {
+    "settings:library"({ panel }, ctx) {
       const card = panel?.querySelector("#settings-sync");
       if (!card) return;
-      if (card.dataset.syncMounted !== "1") card.syncLoop = mount(card);
+      if (card.dataset.syncMounted !== "1") card.syncLoop = mount(card, ctx);
       else card.syncLoop?.();
     },
   },

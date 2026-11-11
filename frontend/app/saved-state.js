@@ -395,6 +395,10 @@ function rebasePersistentPlayback(base, local, remote) {
   // A competing partial rename is not two safe independent edits.
   const titleFields = ["title", "displayTitle", "seriesKey"];
   if (!applyOwned(titleFields)) return null;
+  // Title-level watched state is an explicit user choice. A different tab
+  // may update the poster or chapter while this tab marks the title watched.
+  // Preserve both when independent, but refuse competing changes to the mark.
+  if (!applyOwned(["watchedTitleAt"])) return null;
   // A poster pin selects a particular image, not just a boolean. Changes to
   // its URL, source, index and pinned state must be compared as one selection.
   const artworkFields = ["coverUrl", "artworkSource", "artworkIndex", "artworkPinned"];
@@ -1013,6 +1017,31 @@ export async function refreshPersistentLibrary({ revision } = {}) {
   refreshTitlePage();
   if (viewActive("watch")) renderWatchChapters();
   return true;
+}
+
+// The Settings "Sync now" action must not snapshot SQLite while a watched
+// edit is still in the browser's pending CAS write. It would publish the old
+// Library and make a second device look as though the watched change vanished.
+export async function flushLibraryPersistenceBeforeSync() {
+  const deadline = Date.now() + 8_000;
+  while (persistentAppWriteChains.has("library")) {
+    const pending = persistentAppWriteChains.get("library");
+    let timeout = null;
+    try {
+      await Promise.race([
+        pending,
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("Library changes are still saving. Please retry Sync now.")),
+            Math.max(1, deadline - Date.now()));
+        }),
+      ]);
+    } finally { if (timeout !== null) clearTimeout(timeout); }
+    if (Date.now() >= deadline) break;
+  }
+  if (!persistentAppStateReady || persistentAppWriteChains.has("library")
+    || persistentAppWriteTimers.has("library") || persistentDirtySections().has("library")
+    || persistentAppUnresolvedConflicts.has("library"))
+    throw new Error("Library changes are still saving or require conflict resolution before Sync now.");
 }
 
 export function saveLibrary() {

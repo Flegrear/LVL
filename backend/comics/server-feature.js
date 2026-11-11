@@ -62,6 +62,7 @@ export const COMICS_ASSETS = Object.freeze([
   asset("frontend/comics/comics-tracking.js"),
   asset("frontend/reader/reader.js"),
   asset("frontend/reader/reader-core.js"),
+  asset("frontend/reader/reader-page-window.js"),
   asset("frontend/reader/reader.css"),
   asset("shared/reading/units.js"),
   asset("shared/reading/ids.js"),

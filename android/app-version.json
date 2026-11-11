@@ -1,11 +1,14 @@
 {
-  "version": "0.2.1",
-  "versionCode": 209,
-  "desktopSourceVersion": "0.3.0",
+  "version": "0.2.2",
+  "versionCode": 210,
+  "desktopSourceVersion": "0.3.1",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Recover automatically when a busy video briefly interrupts the local server connection.",
-    "Keep the current page and pending local changes while reconnecting instead of returning to the Retry screen.",
-    "Keep Retry available when the local server has stopped or cannot reconnect."
+    "Prevent a video startup check from blocking the local server connection.",
+    "Fix loading timelines showing a buffered fragment as the full episode.",
+    "Load comic pages in order and reduce scrolling work in long chapters.",
+    "Keep watched titles and episodes consistent across Library, sources and synced devices.",
+    "Keep season and episode watched actions in Android long-press menus.",
+    "Improve interrupted update recovery and recognize an update that has already installed."
   ]
 }

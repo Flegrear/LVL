@@ -93,6 +93,10 @@ class MainActivity : Activity() {
     private var pendingSignInRequestCode: Int? = null
     private var pendingSignInChild: ServerService.Child? = null
     private var pendingSignInGeneration = 0
+    private var failedMainFrameUrl: String? = null
+    private var lastFailedMainFrameUrl: String? = null
+    private var lastMainFrameFailureAt = 0L
+    private var failedMainFrameRetries = 0
 
     private fun startup(event: String) {
         Log.i("LVL-Startup", "event=$event t_ms=${SystemClock.elapsedRealtime()}")
@@ -231,35 +235,62 @@ class MainActivity : Activity() {
 
     private fun monitorAuthenticatedChild(child: ServerService.Child, generation: Int) {
         thread(name = "lvl-proof-renewal", isDaemon = true) {
-            var missingProofSince = 0L
+            val health = ActiveConnectionHealth()
+            var lastDecision = ActiveConnectionHealth.Decision.RESTORED
             while (generation == waitGeneration && !isDestroyed && !isFinishing &&
                 ServerService.isCurrentChild(child)) {
                 try { Thread.sleep(450) } catch (_: InterruptedException) { return@thread }
                 if (generation != waitGeneration || !ServerService.isCurrentChild(child)) break
-                val authenticated = runCatching { child.identity.probe(ServerService.PORT) }.getOrDefault(false)
+                val probeStartedAt = SystemClock.elapsedRealtime()
+                val sample = runCatching { child.identity.probeStatus(ServerService.PORT) }
+                    .getOrDefault(ServerIdentity.ProbeStatus.UNAVAILABLE)
                 if (generation != waitGeneration || !ServerService.isCurrentChild(child)) break
+                val authenticated = sample == ServerIdentity.ProbeStatus.VERIFIED
                 freshProof.record(child, generation, SystemClock.elapsedRealtime(), authenticated)
-                if (!authenticated) {
-                    val now = SystemClock.elapsedRealtime()
-                    if (missingProofSince == 0L) missingProofSince = now
-                    val expired = now - missingProofSince >= 30_000L
+                val now = SystemClock.elapsedRealtime()
+                val childAlive = ServerService.isCurrentChild(child)
+                val decision = health.observe(now, sample, childAlive)
+                val changed = decision != lastDecision
+                if (changed) {
+                    // Transition-only diagnostics: neither the bearer nor the
+                    // per-child challenge, proof, URL or media details are logged.
+                    Log.w("LVL-Connection",
+                        "phase=${decision.name} sample=${sample.name} elapsed_ms=${health.unauthenticatedForMs(now)} " +
+                            "probe_elapsed_ms=${now - probeStartedAt} child_alive=$childAlive")
+                    lastDecision = decision
+                }
+                if (decision != ActiveConnectionHealth.Decision.RESTORED) {
+                    val queuedAt = SystemClock.elapsedRealtime()
                     main.post {
                         if (generation == waitGeneration && authenticatedChild === child &&
                             !isDestroyed && !isFinishing) {
-                            if (expired) showStartupFailure()
-                            else suspendAuthenticatedPage(child, generation)
+                            val mainDelay = SystemClock.elapsedRealtime() - queuedAt
+                            if (changed && mainDelay >= 1_000L)
+                                Log.w("LVL-Connection", "phase=${decision.name} main_delay_ms=$mainDelay")
+                            when (decision) {
+                                ActiveConnectionHealth.Decision.WAITING ->
+                                    suspendAuthenticatedPage(child, generation, showOverlay = false)
+                                ActiveConnectionHealth.Decision.SUSPEND ->
+                                    suspendAuthenticatedPage(child, generation, showOverlay = true)
+                                ActiveConnectionHealth.Decision.TERMINAL -> showStartupFailure()
+                                else -> Unit
+                            }
                         }
                     }
-                    if (expired) return@thread
+                    if (decision == ActiveConnectionHealth.Decision.TERMINAL) return@thread
                     continue
                 }
-                missingProofSince = 0L
+                val queuedAt = SystemClock.elapsedRealtime()
                 main.post {
                     if (generation == waitGeneration && authenticatedChild === child &&
                         !isDestroyed && !isFinishing) {
+                        val mainDelay = SystemClock.elapsedRealtime() - queuedAt
+                        if (changed && mainDelay >= 1_000L)
+                            Log.w("LVL-Connection", "phase=RESTORED main_delay_ms=$mainDelay")
                         if (!cookieReady && !cookiePending && !cookieFailed)
                             installAuthenticatedCookie(child)
                         maybeNavigate()
+                        retryFailedMainFrame(child)
                         maybeRevealWeb()
                     }
                 }
@@ -274,23 +305,33 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun suspendAuthenticatedPage(child: ServerService.Child, generation: Int) {
+    private fun suspendAuthenticatedPage(child: ServerService.Child, generation: Int, showOverlay: Boolean = true) {
         if (generation != waitGeneration || authenticatedChild !== child ||
             isDestroyed || isFinishing || currentlyAuthenticated(child)) return
         if (!ServerService.isCurrentChild(child)) {
             showStartupFailure()
             return
         }
-        if (connectionSuspended) return
+        if (connectionSuspended) {
+            if (showOverlay) {
+                web.visibility = View.INVISIBLE
+                statusBox.visibility = View.VISIBLE
+                status.text = getString(R.string.reconnecting)
+                retryStartupButton.visibility = View.GONE
+            }
+            return
+        }
         connectionSuspended = true
         freshProof.revoke()
         cookieReady = false
         cookiePending = true
         val mutation = ++cookieMutation
-        web.visibility = View.INVISIBLE
-        statusBox.visibility = View.VISIBLE
-        status.text = getString(R.string.reconnecting)
-        retryStartupButton.visibility = View.GONE
+        if (showOverlay) {
+            web.visibility = View.INVISIBLE
+            statusBox.visibility = View.VISIBLE
+            status.text = getString(R.string.reconnecting)
+            retryStartupButton.visibility = View.GONE
+        }
         startup("connection_suspended")
         // Keep this document and its local edits mounted. Neither its native
         // bridge nor a new bearer is admitted until fresh child proof returns.
@@ -334,9 +375,27 @@ class MainActivity : Activity() {
                 connectionSuspended = false
                 startup("cookie_ready")
                 maybeNavigate()
+                retryFailedMainFrame(child)
                 maybeRevealWeb()
             }
         }
+    }
+
+    private fun retryFailedMainFrame(child: ServerService.Child) {
+        val url = failedMainFrameUrl ?: return
+        if (!currentlyAuthenticated(child) || !cookieReady || authenticatedChild !== child) return
+        if (!isLocalUri(Uri.parse(url))) {
+            showStartupFailure()
+            return
+        }
+        failedMainFrameUrl = null
+        localNavigationIntent += 1
+        // A failed Chromium main-frame request can have replaced the document
+        // with an error page. Never reveal that page as the recovered route.
+        web.visibility = View.INVISIBLE
+        statusBox.visibility = View.VISIBLE
+        status.text = getString(R.string.reconnecting)
+        web.loadUrl(url)
     }
 
     private fun maybeNavigate() {
@@ -349,7 +408,7 @@ class MainActivity : Activity() {
     }
 
     private fun maybeRevealWeb() {
-        if (!navigationStarted || !currentlyAuthenticated() || !cookieReady ||
+        if (!navigationStarted || !currentlyAuthenticated() || !cookieReady || failedMainFrameUrl != null ||
             !isLocalUri(Uri.parse(web.url.orEmpty())) || web.progress != 100 ||
             web.visibility == View.VISIBLE) return
         web.visibility = View.VISIBLE
@@ -361,13 +420,15 @@ class MainActivity : Activity() {
         super.onStart()
         stopped = false
         visible = true
-        // Android may suspend the activity while the proof renewal is paused.
-        // Keep its page mounted but hidden until the background verifier
-        // renews the lease; it will reveal the existing route again.
+        // Proof expiry already disables the native bridge/navigation. The
+        // verifier distinguishes a slow live child from an exited generation
+        // and owns any page-covering decision.
         if (navigationStarted && !currentlyAuthenticated()) {
-            web.visibility = View.INVISIBLE
-            statusBox.visibility = View.VISIBLE
-            status.text = getString(R.string.starting)
+            val child = authenticatedChild
+            if (child != null && ServerService.isCurrentChild(child)) {
+                Log.w("LVL-Connection", "phase=FOREGROUND_EXPIRED child_alive=true")
+                suspendAuthenticatedPage(child, waitGeneration, showOverlay = false)
+            } else showStartupFailure()
         }
     }
 
@@ -635,6 +696,10 @@ class MainActivity : Activity() {
         localNavigationIntent += 1
         pendingSignInRequestCode = null
         pendingSignInChild = null
+        failedMainFrameUrl = null
+        lastFailedMainFrameUrl = null
+        lastMainFrameFailureAt = 0L
+        failedMainFrameRetries = 0
         freshProof.revoke()
         serverReady = false
         cookieReady = false
@@ -659,6 +724,10 @@ class MainActivity : Activity() {
         localNavigationIntent += 1
         pendingSignInRequestCode = null
         pendingSignInChild = null
+        failedMainFrameUrl = null
+        lastFailedMainFrameUrl = null
+        lastMainFrameFailureAt = 0L
+        failedMainFrameRetries = 0
         retryStartupButton.visibility = View.GONE
         status.text = getString(R.string.starting)
         serverReady = false
@@ -750,7 +819,21 @@ class MainActivity : Activity() {
             val uri = request.url
             if (request.isForMainFrame && uri.scheme == "http" && uri.host == "127.0.0.1" && uri.port == ServerService.PORT) {
                 Log.w("LVL", "Local page unavailable: ${error.errorCode}")
-                showStartupFailure()
+                val child = authenticatedChild
+                Log.w("LVL-Connection", "phase=MAIN_FRAME_ERROR child_alive=${ServerService.isCurrentChild(child)} code=${error.errorCode}")
+                if (child != null && ServerService.isCurrentChild(child) && navigationStarted) {
+                    val attemptedUrl = uri.toString()
+                    val now = SystemClock.elapsedRealtime()
+                    failedMainFrameRetries = if (lastFailedMainFrameUrl == attemptedUrl &&
+                        now - lastMainFrameFailureAt in 0..60_000L) failedMainFrameRetries + 1 else 1
+                    lastFailedMainFrameUrl = attemptedUrl
+                    lastMainFrameFailureAt = now
+                    if (failedMainFrameRetries > 2) showStartupFailure()
+                    else {
+                        failedMainFrameUrl = attemptedUrl
+                        suspendAuthenticatedPage(child, waitGeneration, showOverlay = true)
+                    }
+                } else showStartupFailure()
             }
         }
 
@@ -760,7 +843,7 @@ class MainActivity : Activity() {
                 if (!currentlyAuthenticated()) {
                     val child = authenticatedChild
                     if (child != null && ServerService.isCurrentChild(child))
-                        suspendAuthenticatedPage(child, waitGeneration)
+                        suspendAuthenticatedPage(child, waitGeneration, showOverlay = false)
                     else showStartupFailure()
                     return
                 }

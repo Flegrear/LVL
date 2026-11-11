@@ -111,31 +111,75 @@ if (token) {
 // (android/native/build-ffmpeg.sh), and FFmpeg refuses a whole command when one filter is
 // missing. Builds before 2026-11-01 lack lowpass, which the speech band of every remux uses
 // (server.js: highpass=f=120,lowpass=f=4000 on a second output), so every remux failed.
-// There the band's top is cut by resampling to 8 kHz and back instead, which removes the
-// same sounds above 4 kHz. Checked once against the bundled FFmpeg; a build that has
-// lowpass gets the command unchanged.
+// The band's top can be cut by resampling to 8 kHz and back instead. Filter discovery
+// must NEVER run synchronously from spawn(): an Android cold FFmpeg can take seconds,
+// starving the same Node event loop responsible for time-limited authenticated health.
+// While a single bounded asynchronous probe is pending, use the known-compatible
+// resampling fallback; after it confirms lowpass, subsequent commands stay unchanged.
 const ffmpegBin = process.env.FFMPEG_BIN || "";
 if (ffmpegBin) {
   const childProcess = require("node:child_process");
   let filters = null;
-  const hasFilter = (name) => {
-    if (filters === null) {
+  let probeStarted = false;
+  const LOWPASS = "lowpass=f=4000";
+  const FALLBACK = "aresample=8000,aresample=16000";
+  const withFilters = (arg) => (typeof arg === "string" && arg.includes(LOWPASS) && !filters?.has("lowpass")
+    ? arg.split(LOWPASS).join(FALLBACK) : arg);
+  const spawn = childProcess.spawn;
+  const discoverFilters = () => {
+    if (probeStarted) return;
+    probeStarted = true;
+    // First speech-band ChildProcess must be returned synchronously. Launch
+    // discovery on the next turn, never wait for its output inside spawn().
+    setImmediate(() => {
+      let probe;
       try {
-        const listing = childProcess.execFileSync(ffmpegBin, ["-hide_banner", "-filters"], { encoding: "utf8", timeout: 10_000, stdio: ["ignore", "pipe", "ignore"] });
-        filters = new Set(listing.split("\n").map((line) => line.trim().split(/\s+/)[1]).filter(Boolean));
+        // 'spawn' is the previous wrapped function (including per-child bearer
+        // insertion), not this filter wrapper; there is no recursive probe.
+        probe = spawn.call(childProcess, ffmpegBin, ["-hide_banner", "-filters"], {
+          stdio: ["ignore", "pipe", "ignore"], windowsHide: true,
+        });
       } catch {
         filters = new Set();
+        console.warn("Android: this FFmpeg has no lowpass filter (discovery failed); speech band uses resampling");
+        return;
       }
-      if (!filters.has("lowpass")) console.warn("Android: this FFmpeg has no lowpass filter; the speech band uses resampling instead");
-    }
-    return filters.has(name);
+      let output = "";
+      let settled = false;
+      let timer = null;
+      const settle = (ok) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        filters = ok ? new Set(output.split("\n")
+          .map((line) => line.trim().split(/\s+/)[1]).filter(Boolean)) : new Set();
+        if (!filters.has("lowpass")) console.warn("Android: this FFmpeg has no lowpass filter (missing or unverified); the speech band uses resampling instead");
+      };
+      probe.stdout?.setEncoding("utf8");
+      probe.stdout?.on("data", (chunk) => {
+        if (settled) return;
+        if (output.length + chunk.length > 1024 * 1024) {
+          // A malformed/flooding helper must never consume unbounded memory.
+          settle(false);
+          probe.kill();
+          return;
+        }
+        output += chunk;
+      });
+      probe.on("error", () => settle(false));
+      probe.on("close", (code) => settle(code === 0));
+      timer = setTimeout(() => {
+        settle(false);
+        probe.kill();
+      }, 10_000);
+    });
   };
-  const LOWPASS = "lowpass=f=4000";
-  const withFilters = (arg) => (typeof arg === "string" && arg.includes(LOWPASS) && !hasFilter("lowpass")
-    ? arg.split(LOWPASS).join("aresample=8000,aresample=16000") : arg);
-  const spawn = childProcess.spawn;
   childProcess.spawn = function spawnWithFilters(command, args, ...rest) {
-    if (command === ffmpegBin && Array.isArray(args)) args = args.map(withFilters);
+    if (command === ffmpegBin && Array.isArray(args) && args.some((arg) =>
+      typeof arg === "string" && arg.includes(LOWPASS))) {
+      if (!probeStarted) discoverFilters();
+      args = args.map(withFilters);
+    }
     return spawn.call(this, command, args, ...rest);
   };
   syncBuiltinESMExports();

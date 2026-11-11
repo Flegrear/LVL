@@ -39,6 +39,8 @@ object ApkInstall {
     data class Attempt(
         val id: String, val sessionId: Int, val version: String,
         val versionCode: Long, val phase: String, val message: String?,
+        val createdAtMillis: Long,
+        val signerHashes: Set<String>,
     ) {
         val pending: Boolean get() = phase in setOf("created", "committing", "awaiting-confirmation", "reported-success")
         val awaitingConfirmation: Boolean get() = phase == "awaiting-confirmation"
@@ -51,8 +53,16 @@ object ApkInstall {
             ?: return null
         return runCatching {
             val json = JSONObject(raw)
+            val stored = json.optString("signerHashes", "")
+            val signers = if (json.has("signerHashes")) {
+                require(stored.isNotBlank())
+                stored.split(",").toSet().also { hashes ->
+                    require(hashes.all { it.matches(Regex("[a-f0-9]{64}")) })
+                }
+            } else emptySet()
             Attempt(json.getString("id"), json.getInt("sessionId"), json.getString("version"),
-                json.getLong("versionCode"), json.getString("phase"), json.optString("message").ifEmpty { null })
+                json.getLong("versionCode"), json.getString("phase"), json.optString("message").ifEmpty { null },
+                json.optLong("createdAtMillis", 0L), signers)
         }.getOrNull()?.takeIf { it.id.length in 32..80 && it.sessionId >= 0 && it.version.isNotBlank() }
     }
 
@@ -64,6 +74,11 @@ object ApkInstall {
             put("versionCode", attempt.versionCode)
             put("phase", attempt.phase)
             put("message", attempt.message ?: "")
+            put("createdAtMillis", attempt.createdAtMillis)
+            // Older journals had no pin. Preserve their readback format across
+            // a transition so an interrupted 0.2.1 install remains recoverable.
+            if (attempt.signerHashes.isNotEmpty())
+                put("signerHashes", attempt.signerHashes.sorted().joinToString(","))
         }.toString()
         if (!context.getSharedPreferences(JOURNAL, Context.MODE_PRIVATE).edit()
                 .putString(JOURNAL_KEY, json).commit()) {
@@ -73,6 +88,15 @@ object ApkInstall {
 
     fun recorded(context: Context): Attempt? = synchronized(journalLock) { readLocked(context) }
 
+    private fun installedSignerHashes(context: Context): Set<String> = runCatching {
+        val info = context.packageManager.getPackageInfo(
+            context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+        val signing = info.signingInfo
+        val certificates = (signing?.apkContentsSigners ?: emptyArray()) +
+            (signing?.signingCertificateHistory ?: emptyArray())
+        InstallVersionAttestation.signerDigests(certificates.map { it.toByteArray() })
+    }.getOrDefault(emptySet())
+
     private fun callbackData(context: Context, attempt: Attempt): Uri =
         Uri.parse("lvl-install-result://${context.packageName}/${attempt.sessionId}/${attempt.id}")
 
@@ -80,7 +104,10 @@ object ApkInstall {
         synchronized(journalLock) {
             val previous = readLocked(context)
             check(previous?.pending != true) { "An Android installation is already pending" }
-            Attempt(UUID.randomUUID().toString(), id, version, versionCode, "created", null)
+            val signerHashes = installedSignerHashes(context)
+            check(signerHashes.isNotEmpty()) { "Couldn't verify the installed LVL signature" }
+            Attempt(UUID.randomUUID().toString(), id, version, versionCode, "created", null,
+                System.currentTimeMillis(), signerHashes)
                 .also { writeLocked(context, it) }
         }
 
@@ -89,6 +116,7 @@ object ApkInstall {
                    phase: String, message: String? = null): Attempt? = synchronized(journalLock) {
         val old = readLocked(context) ?: return@synchronized null
         if (old.id != attemptId || old.sessionId != sessionId || old.phase == "confirmed" ||
+            (!old.pending && old.phase != "unknown" && phase != "confirmed") ||
             (old.phase in setOf("failed", "cancelled") && phase !in setOf("confirmed"))) return@synchronized null
         if (old.phase == "reported-success" && phase in setOf("created", "committing", "awaiting-confirmation"))
             return@synchronized null
@@ -103,10 +131,12 @@ object ApkInstall {
     fun reconcile(context: Context): Attempt? = synchronized(journalLock) {
         val old = readLocked(context) ?: return@synchronized null
         val installed = runCatching {
-            context.packageManager.getPackageInfo(context.packageName, 0)
+            context.packageManager.getPackageInfo(
+                context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
         }.getOrNull()
-        val actual = installed != null && installed.longVersionCode >= old.versionCode &&
-            installed.versionName.orEmpty().removeSuffix("-debug") == old.version
+        val actual = InstallVersionAttestation.matches(
+            old.version, old.versionCode, old.signerHashes,
+            installed?.versionName, installed?.longVersionCode, installedSignerHashes(context))
         if (actual) {
             if (old.phase == "confirmed") return@synchronized old
             return@synchronized old.copy(phase = "confirmed", message = null)
@@ -116,6 +146,15 @@ object ApkInstall {
         val session = runCatching {
             context.packageManager.packageInstaller.getSessionInfo(old.sessionId)
         }.getOrNull()
+        // Android may remove a committed install session before PackageManager
+        // reports the replacement version. The gap isn't evidence of failure.
+        // Keep the original durable pending attempt for a bounded period; the
+        // next reconcile can confirm the installed package or observe an
+        // authenticated explicit failure result. Old pre-migration journal
+        // entries have no timestamp and retain their previous behavior.
+        if (session == null && InstallSessionReconciliation.shouldAwaitPackagePublication(
+                old.phase, old.createdAtMillis, System.currentTimeMillis()))
+            return@synchronized old
         val next = when {
             session == null -> old.copy(phase = "unknown",
                 message = "Android hasn't confirmed this update")
@@ -159,14 +198,21 @@ object ApkInstall {
         if (id < 0 || id != intent.getIntExtra(PackageInstaller.EXTRA_SESSION_ID, -2)) return null
         val attemptId = intent.getStringExtra(EXTRA_LVL_ATTEMPT_ID) ?: return null
         val old = recorded(context) ?: return null
-        if (old.id != attemptId || old.sessionId != id || old.phase == "confirmed") return null
+        if (old.id != attemptId || old.sessionId != id ||
+            old.phase in setOf("confirmed", "failed", "cancelled")) return null
         if (intent.data != callbackData(context, old)) return null
         val session = runCatching { context.packageManager.packageInstaller.getSessionInfo(id) }.getOrNull()
         if (session != null && (session.installerPackageName != context.packageName ||
                 (session.appPackageName != null && session.appPackageName != context.packageName))) return null
         if (intent.getIntExtra(PackageInstaller.EXTRA_STATUS, -99) == PackageInstaller.STATUS_PENDING_USER_ACTION &&
             session == null) return null
-        return old
+        // Installation may have finished between callback delivery and this
+        // receiver's wakeup. Reconcile only after the exact attempt/session
+        // identity and callback URI are verified.
+        val resolved = reconcile(context) ?: return null
+        if (resolved.id != old.id || resolved.phase == "confirmed" ||
+            (!resolved.pending && resolved.phase != "unknown")) return null
+        return resolved
     }
 
     /** The exact installer session is required: an older result cannot fail a newer attempt. */
@@ -262,6 +308,13 @@ class InstallResultReceiver : BroadcastReceiver() {
         // The OS may instantiate this receiver without ever starting ServerService.
         // Commit the result before any UI launch or optional in-memory callback.
         if (ApkInstall.transition(context, attempt.id, sessionId, phase, message) == null) return
+        // A replacement can become visible after acceptResult and before the
+        // journal commit. The installed signed target wins over a late failure.
+        val finalState = ApkInstall.reconcile(context)
+        if (finalState?.phase == "confirmed") {
+            ApkInstall.onResult?.invoke(sessionId, true, null)
+            return
+        }
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
                 val confirm = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
