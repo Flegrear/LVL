@@ -85,6 +85,8 @@ class MainActivity : Activity() {
     @Volatile private var navigationStarted = false
     @Volatile private var authenticatedChild: ServerService.Child? = null
     private val freshProof = FreshChildProof()
+    private var connectionSuspended = false
+    private var cookieMutation = 0L
     private var nativeBridgeSupported = false
     private var localNavigationIntent = 0L
     private var signInRequestSerial = REQUEST_SIGN_IN - 1
@@ -229,6 +231,7 @@ class MainActivity : Activity() {
 
     private fun monitorAuthenticatedChild(child: ServerService.Child, generation: Int) {
         thread(name = "lvl-proof-renewal", isDaemon = true) {
+            var missingProofSince = 0L
             while (generation == waitGeneration && !isDestroyed && !isFinishing &&
                 ServerService.isCurrentChild(child)) {
                 try { Thread.sleep(450) } catch (_: InterruptedException) { return@thread }
@@ -237,12 +240,20 @@ class MainActivity : Activity() {
                 if (generation != waitGeneration || !ServerService.isCurrentChild(child)) break
                 freshProof.record(child, generation, SystemClock.elapsedRealtime(), authenticated)
                 if (!authenticated) {
+                    val now = SystemClock.elapsedRealtime()
+                    if (missingProofSince == 0L) missingProofSince = now
+                    val expired = now - missingProofSince >= 30_000L
                     main.post {
                         if (generation == waitGeneration && authenticatedChild === child &&
-                            !isDestroyed && !isFinishing) showStartupFailure()
+                            !isDestroyed && !isFinishing) {
+                            if (expired) showStartupFailure()
+                            else suspendAuthenticatedPage(child, generation)
+                        }
                     }
-                    return@thread
+                    if (expired) return@thread
+                    continue
                 }
+                missingProofSince = 0L
                 main.post {
                     if (generation == waitGeneration && authenticatedChild === child &&
                         !isDestroyed && !isFinishing) {
@@ -263,14 +274,51 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun suspendAuthenticatedPage(child: ServerService.Child, generation: Int) {
+        if (generation != waitGeneration || authenticatedChild !== child ||
+            isDestroyed || isFinishing || currentlyAuthenticated(child)) return
+        if (!ServerService.isCurrentChild(child)) {
+            showStartupFailure()
+            return
+        }
+        if (connectionSuspended) return
+        connectionSuspended = true
+        freshProof.revoke()
+        cookieReady = false
+        cookiePending = true
+        val mutation = ++cookieMutation
+        web.visibility = View.INVISIBLE
+        statusBox.visibility = View.VISIBLE
+        status.text = getString(R.string.reconnecting)
+        retryStartupButton.visibility = View.GONE
+        startup("connection_suspended")
+        // Keep this document and its local edits mounted. Neither its native
+        // bridge nor a new bearer is admitted until fresh child proof returns.
+        CookieManager.getInstance().setCookie(
+            base, "lvl_access=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict"
+        ) { accepted ->
+            if (mutation != cookieMutation || generation != waitGeneration ||
+                authenticatedChild !== child || isDestroyed || isFinishing) return@setCookie
+            cookiePending = false
+            if (!accepted) {
+                cookieFailed = true
+                showStartupFailure()
+                return@setCookie
+            }
+            if (currentlyAuthenticated(child)) installAuthenticatedCookie(child)
+        }
+    }
+
     private fun installAuthenticatedCookie(child: ServerService.Child) {
         if (!currentlyAuthenticated(child) || cookiePending || cookieReady) return
         cookiePending = true
         cookieReady = false
+        val mutation = ++cookieMutation
         // The HttpOnly cookie is written only after the specific child proves its identity.
         CookieManager.getInstance().apply {
             setAcceptCookie(true)
             setCookie(base, "lvl_access=${child.accessToken}; Path=/; HttpOnly; SameSite=Strict") { accepted ->
+                if (mutation != cookieMutation) return@setCookie
                 cookiePending = false
                 if (isDestroyed || isFinishing || !currentlyAuthenticated(child) ||
                     authenticatedChild !== child) return@setCookie
@@ -282,8 +330,11 @@ class MainActivity : Activity() {
                     return@setCookie
                 }
                 cookieReady = true
+                if (connectionSuspended) startup("connection_restored")
+                connectionSuspended = false
                 startup("cookie_ready")
                 maybeNavigate()
+                maybeRevealWeb()
             }
         }
     }
@@ -298,7 +349,7 @@ class MainActivity : Activity() {
     }
 
     private fun maybeRevealWeb() {
-        if (!navigationStarted || !currentlyAuthenticated() ||
+        if (!navigationStarted || !currentlyAuthenticated() || !cookieReady ||
             !isLocalUri(Uri.parse(web.url.orEmpty())) || web.progress != 100 ||
             web.visibility == View.VISIBLE) return
         web.visibility = View.VISIBLE
@@ -577,6 +628,8 @@ class MainActivity : Activity() {
     }
 
     private fun showStartupFailure() {
+        connectionSuspended = false
+        cookieMutation += 1
         waiting = false
         waitGeneration += 1
         localNavigationIntent += 1
@@ -601,6 +654,8 @@ class MainActivity : Activity() {
 
     private fun retryStartup() {
         if (isDestroyed || isFinishing || cookieFailed) return
+        connectionSuspended = false
+        cookieMutation += 1
         localNavigationIntent += 1
         pendingSignInRequestCode = null
         pendingSignInChild = null
@@ -702,7 +757,13 @@ class MainActivity : Activity() {
         override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
             if (readerImmersive && Uri.parse(url).path != "/comic") setReaderImmersive(false)
             if (isLocalUri(Uri.parse(url))) {
-                if (!currentlyAuthenticated()) { showStartupFailure(); return }
+                if (!currentlyAuthenticated()) {
+                    val child = authenticatedChild
+                    if (child != null && ServerService.isCurrentChild(child))
+                        suspendAuthenticatedPage(child, waitGeneration)
+                    else showStartupFailure()
+                    return
+                }
                 startup("webview_page_started")
             }
         }

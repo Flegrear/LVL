@@ -1,14 +1,11 @@
 {
-  "version": "0.2.0",
-  "versionCode": 208,
+  "version": "0.2.1",
+  "versionCode": 209,
   "desktopSourceVersion": "0.3.0",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Browse Comics through Popular, Latest and Search, mark chapters read or unread together, and continue from the next unread.",
-    "Use refined reader controls and long-press menus that stay near your touch and inside the screen.",
-    "Improve playback recovery and remember your selected audio language when episode tracks change.",
-    "Keep source searches, subtitle alignment and canceled download or import work from affecting newer selections.",
-    "Protect Library and reading progress during sync, and keep Calendar and recommendations current after refreshes.",
-    "Make app updates safer by preventing overlapping attempts and handling interruptions more clearly."
+    "Recover automatically when a busy video briefly interrupts the local server connection.",
+    "Keep the current page and pending local changes while reconnecting instead of returning to the Retry screen.",
+    "Keep Retry available when the local server has stopped or cannot reconnect."
   ]
 }
