@@ -21,6 +21,17 @@ import java.util.UUID
 import org.json.JSONObject
 
 /**
+ * Pure predicate shared by the durable session transition and offline tests.
+ * A phase can be repeated once when Android previously reported pending user
+ * action without a usable confirmation Intent. The one UI claim is separate
+ * from the already-recorded pending phase and survives process recreation.
+ */
+internal object InstallPendingConfirmationPolicy {
+    fun shouldRecordTransition(oldPhase: String, phase: String, intentClaimed: Boolean, usableIntent: Boolean): Boolean =
+        oldPhase != phase || (phase == "awaiting-confirmation" && usableIntent && !intentClaimed)
+}
+
+/**
  * Installs a new LVL APK with Android's package installer. Android asks the user to confirm
  * the first time (and to allow installs from LVL); once LVL installed itself, later updates
  * may go through without asking (UPDATE_PACKAGES_WITHOUT_USER_ACTION). Android stops LVL
@@ -34,6 +45,9 @@ object ApkInstall {
     private const val CHANNEL = "updates"
     private const val JOURNAL = "lvl-apk-install-journal"
     private const val JOURNAL_KEY = "attempt"
+    // Private metadata only: no APK bytes, installer Intent contents, or raw
+    // OS failure descriptions. A bounded timeline survives receiver-only wakeups.
+    private const val MAX_TIMELINE_EVENTS = 12
     private val journalLock = Any()
 
     data class Attempt(
@@ -41,6 +55,9 @@ object ApkInstall {
         val versionCode: Long, val phase: String, val message: String?,
         val createdAtMillis: Long,
         val signerHashes: Set<String>,
+        val timeline: List<String> = emptyList(),
+        val lastStatusCode: Int? = null,
+        val confirmationIntentClaimed: Boolean = false,
     ) {
         val pending: Boolean get() = phase in setOf("created", "committing", "awaiting-confirmation", "reported-success")
         val awaitingConfirmation: Boolean get() = phase == "awaiting-confirmation"
@@ -60,9 +77,15 @@ object ApkInstall {
                     require(hashes.all { it.matches(Regex("[a-f0-9]{64}")) })
                 }
             } else emptySet()
+            val events = json.optJSONArray("timeline")
+            val timeline = (0 until minOf(events?.length() ?: 0, MAX_TIMELINE_EVENTS))
+                .mapNotNull { index -> events?.optString(index)?.takeIf { it.matches(Regex("[a-z0-9:@-]{1,80}")) } }
             Attempt(json.getString("id"), json.getInt("sessionId"), json.getString("version"),
                 json.getLong("versionCode"), json.getString("phase"), json.optString("message").ifEmpty { null },
-                json.optLong("createdAtMillis", 0L), signers)
+                json.optLong("createdAtMillis", 0L), signers, timeline,
+                if (json.has("lastStatusCode") && !json.isNull("lastStatusCode"))
+                    json.getInt("lastStatusCode") else null,
+                json.optBoolean("confirmationIntentClaimed", false))
         }.getOrNull()?.takeIf { it.id.length in 32..80 && it.sessionId >= 0 && it.version.isNotBlank() }
     }
 
@@ -75,6 +98,9 @@ object ApkInstall {
             put("phase", attempt.phase)
             put("message", attempt.message ?: "")
             put("createdAtMillis", attempt.createdAtMillis)
+            put("timeline", org.json.JSONArray(attempt.timeline))
+            attempt.lastStatusCode?.let { put("lastStatusCode", it) }
+            put("confirmationIntentClaimed", attempt.confirmationIntentClaimed)
             // Older journals had no pin. Preserve their readback format across
             // a transition so an interrupted 0.2.1 install remains recoverable.
             if (attempt.signerHashes.isNotEmpty())
@@ -87,6 +113,13 @@ object ApkInstall {
     }
 
     fun recorded(context: Context): Attempt? = synchronized(journalLock) { readLocked(context) }
+
+    private fun observe(old: Attempt, phase: String, statusCode: Int? = old.lastStatusCode): Attempt {
+        val at = System.currentTimeMillis()
+        val event = "${at}:${phase}:${statusCode ?: "none"}"
+        return old.copy(phase = phase, lastStatusCode = statusCode,
+            timeline = (old.timeline + event).takeLast(MAX_TIMELINE_EVENTS))
+    }
 
     private fun installedSignerHashes(context: Context): Set<String> = runCatching {
         val info = context.packageManager.getPackageInfo(
@@ -106,23 +139,31 @@ object ApkInstall {
             check(previous?.pending != true) { "An Android installation is already pending" }
             val signerHashes = installedSignerHashes(context)
             check(signerHashes.isNotEmpty()) { "Couldn't verify the installed LVL signature" }
+            val createdAt = System.currentTimeMillis()
             Attempt(UUID.randomUUID().toString(), id, version, versionCode, "created", null,
-                System.currentTimeMillis(), signerHashes)
+                createdAt, signerHashes, listOf("${createdAt}:created:none"))
                 .also { writeLocked(context, it) }
         }
 
     /** Exact attempt ID + session ID fence; an older PendingIntent cannot clear the latest attempt. */
     fun transition(context: Context, attemptId: String, sessionId: Int,
-                   phase: String, message: String? = null): Attempt? = synchronized(journalLock) {
+                   phase: String, message: String? = null, statusCode: Int? = null,
+                   usableConfirmationIntent: Boolean = false): Attempt? = synchronized(journalLock) {
         val old = readLocked(context) ?: return@synchronized null
         if (old.id != attemptId || old.sessionId != sessionId || old.phase == "confirmed" ||
             (!old.pending && old.phase != "unknown" && phase != "confirmed") ||
             (old.phase in setOf("failed", "cancelled") && phase !in setOf("confirmed"))) return@synchronized null
+        if (!InstallPendingConfirmationPolicy.shouldRecordTransition(
+                old.phase, phase, old.confirmationIntentClaimed, usableConfirmationIntent))
+            return@synchronized null
         if (old.phase == "reported-success" && phase in setOf("created", "committing", "awaiting-confirmation"))
             return@synchronized null
         if (old.phase == "awaiting-confirmation" && phase in setOf("created", "committing"))
             return@synchronized null
-        val next = old.copy(phase = phase, message = message?.take(180))
+        val next = observe(old, phase, statusCode ?: old.lastStatusCode)
+            .copy(message = message?.take(180),
+                confirmationIntentClaimed = old.confirmationIntentClaimed ||
+                    (phase == "awaiting-confirmation" && usableConfirmationIntent))
         writeLocked(context, next)
         next
     }
@@ -139,7 +180,7 @@ object ApkInstall {
             installed?.versionName, installed?.longVersionCode, installedSignerHashes(context))
         if (actual) {
             if (old.phase == "confirmed") return@synchronized old
-            return@synchronized old.copy(phase = "confirmed", message = null)
+            return@synchronized observe(old, "confirmed").copy(message = null)
                 .also { writeLocked(context, it) }
         }
         if (!old.pending) return@synchronized old
@@ -156,11 +197,11 @@ object ApkInstall {
                 old.phase, old.createdAtMillis, System.currentTimeMillis()))
             return@synchronized old
         val next = when {
-            session == null -> old.copy(phase = "unknown",
-                message = "Android hasn't confirmed this update")
+            session == null -> observe(old, "unknown")
+                .copy(message = "Android hasn't confirmed this update")
             session.installerPackageName != context.packageName ||
                 (session.appPackageName != null && session.appPackageName != context.packageName) ->
-                old.copy(phase = "failed", message = "The install session belongs to another app")
+                observe(old, "failed").copy(message = "The install session belongs to another app")
             else -> old
         }
         if (next !== old) writeLocked(context, next)
@@ -286,7 +327,9 @@ class InstallResultReceiver : BroadcastReceiver() {
         val attempt = ApkInstall.acceptResult(context, intent) ?: return
         val sessionId = attempt.sessionId
         val status = intent.getIntExtra(PackageInstaller.EXTRA_STATUS, PackageInstaller.STATUS_FAILURE)
-        ApkInstall.log("Install session $sessionId status $status ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE).orEmpty()}")
+        // Raw PackageInstaller status messages may contain device-specific
+        // paths or third-party text. Only the numeric result is logged.
+        ApkInstall.log("Install session $sessionId status $status")
         val message = when (status) {
             PackageInstaller.STATUS_SUCCESS, PackageInstaller.STATUS_PENDING_USER_ACTION -> null
             PackageInstaller.STATUS_FAILURE_ABORTED -> "The update was cancelled"
@@ -305,9 +348,18 @@ class InstallResultReceiver : BroadcastReceiver() {
             PackageInstaller.STATUS_FAILURE_ABORTED -> "cancelled"
             else -> "failed"
         }
+        // Decode the OS confirmation Intent before taking the durable claim.
+        // The first callback may carry no Intent; a later callback for this
+        // same validated session is allowed one usable UI handoff.
+        val confirm = if (status == PackageInstaller.STATUS_PENDING_USER_ACTION) {
+            if (Build.VERSION.SDK_INT >= 33)
+                intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
+            else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
+        } else null
         // The OS may instantiate this receiver without ever starting ServerService.
         // Commit the result before any UI launch or optional in-memory callback.
-        if (ApkInstall.transition(context, attempt.id, sessionId, phase, message) == null) return
+        if (ApkInstall.transition(context, attempt.id, sessionId, phase, message,
+                statusCode = status, usableConfirmationIntent = confirm != null) == null) return
         // A replacement can become visible after acceptResult and before the
         // journal commit. The installed signed target wins over a late failure.
         val finalState = ApkInstall.reconcile(context)
@@ -317,19 +369,24 @@ class InstallResultReceiver : BroadcastReceiver() {
         }
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
-                val confirm = if (Build.VERSION.SDK_INT >= 33) intent.getParcelableExtra(Intent.EXTRA_INTENT, Intent::class.java)
-                    else @Suppress("DEPRECATION") intent.getParcelableExtra(Intent.EXTRA_INTENT)
                 if (confirm == null) {
-                    ApkInstall.transition(context, attempt.id, sessionId, "failed", "Android didn't ask to confirm the update")
-                    ApkInstall.onResult?.invoke(sessionId, false, "Android didn't ask to confirm the update")
+                    // A pending-action callback without a usable confirmation
+                    // Intent is not an explicit install failure. Retain the
+                    // journal; Android may expose session details later.
+                    ApkInstall.remindPending(context)
                     return
                 }
                 confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 val opened = MainActivity.visible && runCatching { context.startActivity(confirm) }.isSuccess
                 if (!opened) {
                     // Away from LVL, Android doesn't let it open the confirmation: ask from a notification.
-                    val tap = PendingIntent.getActivity(context, 7, confirm, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-                    ApkInstall.notify(context, 7, "Finish updating LVL", "Tap to install the new version", tap)
+                    runCatching {
+                        val tap = PendingIntent.getActivity(context, 7, confirm,
+                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                        ApkInstall.notify(context, 7, "Finish updating LVL", "Tap to install the new version", tap)
+                    }.onFailure {
+                        ApkInstall.log("Optional install confirmation notification unavailable: ${it.javaClass.simpleName}")
+                    }
                 }
             }
             else -> ApkInstall.onResult?.invoke(sessionId, status == PackageInstaller.STATUS_SUCCESS, message)
@@ -346,6 +403,8 @@ class PackageReplacedReceiver : BroadcastReceiver() {
         val version = runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }.getOrNull().orEmpty()
             .removeSuffix("-debug")
         val open = PendingIntent.getActivity(context, 8, Intent(context, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
-        ApkInstall.notify(context, 8, "LVL updated${if (version.isNotEmpty()) " to $version" else ""}", "Tap to open LVL", open)
+        runCatching {
+            ApkInstall.notify(context, 8, "LVL updated${if (version.isNotEmpty()) " to $version" else ""}", "Tap to open LVL", open)
+        }.onFailure { ApkInstall.log("Optional update notification unavailable: ${it.javaClass.simpleName}") }
     }
 }

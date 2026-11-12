@@ -133,8 +133,8 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
 .comic-detail-hero { min-height:0; background:#050505; }
 .comic-detail-hero__body { position:relative; z-index:2; display:grid; gap:17px; box-sizing:border-box; width:100%; padding:104px var(--title-gutter) 30px; }
 .comic-detail-hero__identity { display:grid; grid-template-columns:clamp(150px,15vw,218px) minmax(0,1fr); align-items:center; gap:26px; }
-.comic-detail-hero__identity .title-hero__poster-wrap { width:100%; }
-.comic-detail-hero__identity .title-hero__poster { filter:none; box-shadow:none; }
+.comic-detail-hero__identity .title-hero__poster-wrap { box-sizing:border-box; width:100%; min-width:0; aspect-ratio:2/3; overflow:hidden; border:1px solid #343434; border-radius:var(--ui-radius-lg); background:linear-gradient(145deg,#171717,#080808); }
+.comic-detail-hero__identity .title-hero__poster { display:block; width:100%; height:100%; object-fit:cover; filter:none; box-shadow:none; }
 .comic-detail-hero__identity-copy { display:grid; align-content:center; gap:12px; min-width:0; }
 .comic-detail-hero__identity .title-hero__title { margin:0; font-size:clamp(28px,3.5vw,48px); line-height:1.12; overflow-wrap:anywhere; }
 .comic-detail-hero__identity .title-hero__facts { display:grid; justify-items:start; gap:10px; }
@@ -457,6 +457,14 @@ html.comics-off :is(.ui-tab, .nav-btn)[data-feature="comics"]:not(#settings-tab-
 .comic-sources__favorites { display:grid; grid-template-columns:minmax(0, 1fr); gap:20px; width:100%; min-width:0; }
 .comic-ext { display:grid; grid-template-columns:minmax(0, 1fr); gap:8px; width:100%; min-width:0; }
 .comic-source-filter { position:relative; width:min(100%,420px); color:#ddd; font-size:13px; }
+.comic-browser__source-filter { position:relative; flex:1 1 160px; min-width:148px; }
+.comic-browser__source-filter .comic-source-filter { width:100%; }
+.comic-browser__source-filter .comic-source-filter__menu { z-index:40; }
+.comics-filters__row > .comic-source-filter { align-self:end; width:100%; min-width:0; }
+.comic-provider__choose-source { justify-self:start; }
+@media (max-width:680px) {
+  .comic-browser__source-filter { flex:1 1 calc(50% - 10px); min-width:0; }
+}
 .comic-source-filter[open] { z-index:30; }
 .comic-source-filter > summary { display:flex; align-items:center; gap:10px; min-height:44px; box-sizing:border-box; width:100%; padding:8px 12px; list-style:none; border:1px solid #404040; border-radius:10px; background:#101010; cursor:pointer; }
 .comic-source-filter > summary::-webkit-details-marker { display:none; }

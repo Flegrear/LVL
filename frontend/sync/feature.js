@@ -4,6 +4,11 @@
 import { buttonMarkup, confirmDialog, escapeHtml as esc, icon, toast } from "../ui/ui.js";
 
 const CHOICE_KEY = "lvl-sync-option-v1";
+const TAB_PENDING_LIBRARY_KEY = "blackline-db-library-pending-tab-v1";
+// Each open window acknowledges only revisions actually applied to its own
+// Library. The server's reloadNeeded count is global and cannot certify a
+// specific view after another tab has refreshed.
+const syncViewFeedback = { kind: "", revision: 0, since: 0 };
 const OPTIONS = [
   { id: "github", label: "GitHub", ready: true },
   { id: "google", label: "Google Drive", ready: false, text: "Sign in with Google, and LVL keeps the copy in a hidden folder only LVL can see." },
@@ -26,6 +31,27 @@ const line = (text, { error = false, busy = false } = {}) => (text
 const errorLine = (status) => line(status.lastError, { error: true });
 const field = (label, input) => `<label class="settings-field"><span>${esc(label)}</span>${input}</label>`;
 const repoLink = (status) => (status.repo ? `<a class="sync-repo" href="https://github.com/${esc(status.repo)}" target="_blank" rel="noopener noreferrer">${esc(status.repo)}</a>` : "lvl-sync");
+
+function syncStatusText(status) {
+  if (document.getElementById("library-persistence-conflict"))
+    return "Local Library edits need your choice before they can be synced. Your unsaved copy is preserved.";
+  try {
+    if (sessionStorage.getItem(TAB_PENDING_LIBRARY_KEY))
+      return "Local Library write pending. Your changes are kept here until they are saved and synced.";
+  } catch { /* Session storage may be disabled; in-memory CAS still protects writes. */ }
+  if (Number(status.retryAt) > Date.now())
+    return `GitHub rate limit. The next sync attempt is scheduled for ${new Date(status.retryAt).toLocaleTimeString(document.documentElement.lang || undefined, { hour: "numeric", minute: "2-digit" })}.`;
+  if (status.lastError)
+    return "The shared copy could not be checked. Local Library changes are preserved; review the error below.";
+  if (status.syncing) return "Saved on this device. Syncing with GitHub now.";
+  if (syncViewFeedback.kind === "applied" && Date.now() - syncViewFeedback.since < 30_000)
+    return "Changes received and applied to this window's Library.";
+  if (syncViewFeedback.kind === "waiting")
+    return "Incoming changes are waiting for a safe Library refresh. Local edits are preserved.";
+  if (syncViewFeedback.kind === "checked" || Number(status.lastCheckedAt) > 0)
+    return "Shared copy checked. This window's Library is up to date.";
+  return "Saved on this device. The shared copy is checked automatically while LVL is open.";
+}
 
 // Numbered steps: each with what to do and, when there's one, the button that does it.
 const steps = (list) => `<ol class="sync-steps">${list.map((item, n) => `<li class="sync-step${item.done ? " is-done" : ""}">`
@@ -99,7 +125,7 @@ function githubPanel(status, ui) {
     + `<div class="ui-stat-group sync-stats">${stat("Last synced", status.syncing ? "Syncing…" : ago(status.lastSyncAt))}${stat("Sent", String(status.sent))}${stat("Received", String(status.received))}</div>`
     + `<p class="settings-hint">${repoLink(status)} · ${status.encrypted ? "Encrypted with your passphrase" : "Plain files"} · Checked every 10 s while LVL is open</p>`
     + (problems ? line(problems) : "")
-    + (status.reloadNeeded ? `<p class="settings-hint">Changes from your other devices are saved. Your Library refreshes when pending local edits have finished saving.</p>` : "")
+    + line(syncStatusText(status))
     + `<div class="settings-actions">${action("Sync now", "now", "primary")}</div>` + errorLine(status);
 }
 
@@ -266,6 +292,8 @@ export const syncFeature = {
   start(ctx) {
     let timer = null;
     let busy = false;
+    let appliedRevision = null;
+    let accountIdentity = null;
     const refresh = async () => {
       if (busy) return;
       busy = true;
@@ -273,8 +301,34 @@ export const syncFeature = {
       try {
         if (!document.hidden) {
           const status = await call("status");
-          if (status.step === "ready" && await ctx.refreshSyncedLibrary?.(status.libraryRevision) && status.reloadNeeded)
-            await call("reload-shown", {});
+          const identity = [status.step, status.login, status.repo].join("\u0000");
+          if (accountIdentity !== identity) {
+            accountIdentity = identity;
+            appliedRevision = null;
+            syncViewFeedback.kind = "";
+            syncViewFeedback.revision = 0;
+            syncViewFeedback.since = 0;
+          }
+          if (status.step === "ready" && Number.isSafeInteger(status.libraryRevision)) {
+            const accepted = await ctx.refreshSyncedLibrary?.(status.libraryRevision);
+            if (accepted) {
+              const changed = appliedRevision !== null && status.libraryRevision > appliedRevision;
+              const newlyApplied = changed || (appliedRevision === null && status.reloadNeeded);
+              if (newlyApplied) {
+                syncViewFeedback.kind = "applied";
+                syncViewFeedback.since = Date.now();
+              } else if (syncViewFeedback.kind !== "applied" || Date.now() - syncViewFeedback.since >= 30_000) {
+                syncViewFeedback.kind = "checked";
+                syncViewFeedback.since = Date.now();
+              }
+              syncViewFeedback.revision = status.libraryRevision;
+              appliedRevision = Math.max(appliedRevision ?? 0, status.libraryRevision);
+              if (status.reloadNeeded) await call("reload-shown", {});
+            } else {
+              syncViewFeedback.kind = "waiting";
+              syncViewFeedback.since = Date.now();
+            }
+          }
         }
       } catch { /* Offline: the next check retries without disturbing the open view. */ }
       finally {

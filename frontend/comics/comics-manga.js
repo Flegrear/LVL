@@ -30,6 +30,36 @@ export function continueReadingFromList(chapterList, { onEmpty = () => {}, onCha
   return chapterList.read(next.chapter, next.volume ?? "");
 }
 
+// A saved target is a real reader identity and page, never a guessed chapter
+// number. Keep the source/chapter/volume expectation in the route so reloading
+// and a later source change still receive an independent ownership check.
+export function resumeReaderQuery(workId, target) {
+  if (!/^(?:anilist-[1-9]\d{0,9}|local-[0-9a-f]{12})$/.test(String(workId)) ||
+      !/^(?:f[0-9a-f]{16}|ex-[0-9a-f]{20})$/.test(String(target?.readerId)) ||
+      !Number.isSafeInteger(target.page) || target.page < 0 || target.page > 100_000)
+    throw Error("The saved reading target is invalid.");
+  const params = new URLSearchParams({ id: workId, read: target.readerId, page: String(target.page), back: "1", resume: "1" });
+  if (target.sourceId) params.set("source", String(target.sourceId));
+  if (target.chapter !== null && target.chapter !== undefined) params.set("chapter", String(target.chapter));
+  if (target.volume !== undefined) params.set("volume", target.volume === null ? "" : String(target.volume));
+  return `?${params}`;
+}
+
+export async function resumeComicReading(workId, chapterList, { resolve = comicsApi.resume, open = () => {},
+  onUnavailable = () => {}, onEmpty = () => {}, onChapters = () => {}, isCurrent = () => true } = {}) {
+  const target = await resolve(workId);
+  if (!isCurrent()) return false;
+  if (target?.status === "ready") {
+    return (await open(target)) !== false;
+  }
+  if (target?.status === "unavailable") {
+    onUnavailable(target);
+    return false;
+  }
+  if (target?.status !== "none") throw Error("The saved reading position could not be verified.");
+  return continueReadingFromList(chapterList, { onEmpty, onChapters });
+}
+
 const statusLabel = (status) => t(STATUS_LABELS[status] || "Not in Library");
 
 export function statusSelectMarkup(current, { label = "Library status", workId = "" } = {}) {
@@ -341,7 +371,11 @@ export function mountMangaBlock(element, ctx, { workId, comic, index, files = []
     },
   };
   const loaded = new Set();
-  const open = (readerId, page) => ctx.switchView("comic", { query: `?id=${encodeURIComponent(id)}&read=${encodeURIComponent(readerId)}${Number(page) > 0 ? `&page=${Number(page)}` : ""}&back=1` });
+  let resumeSerial = 0;
+  const open = (readerId, page) => {
+    ++resumeSerial;
+    return ctx.switchView("comic", { query: `?id=${encodeURIComponent(id)}&read=${encodeURIComponent(readerId)}${Number(page) > 0 ? `&page=${Number(page)}` : ""}&back=1` });
+  };
   function show(name) {
     for (const item of VIEWS) viewOf(item.value).hidden = item.value !== name;
     setActiveTab(element.querySelector(".ui-tabs"), name);
@@ -356,16 +390,40 @@ export function mountMangaBlock(element, ctx, { workId, comic, index, files = []
     onRead: open,
     onChooseSources: () => show("sources"),
   });
-  block.continueReading = () => continueReadingFromList(block.chapterList, {
-    onEmpty: () => show("sources"),
-    onChapters: () => show("chapters"),
-  });
+  block.continueReading = async () => {
+    const serial = ++resumeSerial;
+    const startRoute = window.location.pathname + window.location.search;
+    const isCurrent = () => serial === resumeSerial && mangaBlocks.get(id) === block &&
+      element.isConnected && window.location.pathname + window.location.search === startRoute;
+    try {
+      return await resumeComicReading(id, block.chapterList, {
+        isCurrent,
+        open: (target) => ctx.switchView("comic", { query: resumeReaderQuery(id, target) }),
+        onUnavailable: (target) => {
+          show("sources");
+          element.scrollIntoView?.({ block: "start", behavior: "smooth" });
+          toast(t(target.reason || "The saved source is unavailable. Choose a source to continue."));
+        },
+        onEmpty: () => show("sources"),
+        onChapters: () => show("chapters"),
+      });
+    } catch (error) { if (isCurrent()) toast(t(error?.message || "Couldn't load reading progress.")); return false; }
+  };
   show(view);
   bindTabs(element.querySelector(".ui-tabs"), { onChange: (value) => show(value) });
   bindStatusMenu(element.querySelector("[data-comics-status-for]"), id, ctx);
+  // Navigation intent wins immediately, including when the chapter or source
+  // selector itself still has an in-flight metadata request.
+  element.addEventListener("click", (event) => {
+    if (event.target.closest("[data-comic-open-chapter],[data-comics-pick],[data-comics-link],[data-comics-unlink]"))
+      ++resumeSerial;
+  }, { capture: true });
   element.querySelector("[data-manga-continue]")?.addEventListener("click", () => { void block.continueReading(); });
   element.addEventListener("change", (event) => {
-    if (event.target.matches("[data-manga-switch]") && event.target.value !== id) onSwitch?.(event.target.value);
+    if (event.target.matches("[data-manga-switch]") && event.target.value !== id) {
+      ++resumeSerial;
+      onSwitch?.(event.target.value);
+    }
     return undefined;
   });
   mangaBlocks.set(id, block);

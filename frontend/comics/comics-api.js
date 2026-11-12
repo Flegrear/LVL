@@ -20,6 +20,10 @@ export const comicsApi = Object.freeze({
   work: (id) => call(`/api/comics/work/${encodeURIComponent(id)}`),
   units: (id) => call(`/api/comics/work/${encodeURIComponent(id)}/units`),
   files: (id) => call(`/api/comics/work/${encodeURIComponent(id)}/files`),
+  resume: (id) => call(`/api/comics/work/${encodeURIComponent(id)}/resume`, { timeoutMs: 120_000 }),
+  recordResume: (id, readerId) => call(`/api/comics/work/${encodeURIComponent(id)}/resume`, {
+    method: "POST", body: { readerId }, timeoutMs: 120_000,
+  }),
   rematch: (id, anilistId) => call(`/api/comics/work/${encodeURIComponent(id)}/match`, { method: "PUT", body: { anilistId } }),
   library: () => call("/api/comics/library"),
   setStatus: (id, status) => call(`/api/comics/library/${encodeURIComponent(id)}`, { method: "PUT", body: { status } }),

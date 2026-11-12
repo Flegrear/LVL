@@ -5,12 +5,13 @@
 // - Comics: comics-data.js.
 // mark(): a short text that changes whenever synced data may have changed (section times, row
 // counts and newest times), so the sync service compares everything only when it moved.
-// An incoming change older than the same item here (by the item's own time) isn't applied:
-// the next export sends the newer local value instead. This keeps the newest data the first
-// time two devices with their own data meet.
+// Accepted sync changes follow their logical stamps. Local pending edits are
+// protected by sync-service's acknowledged base rather than by raw wall time.
 import crypto from "node:crypto";
 import { joinId, splitId } from "../../shared/sync/records.js";
-import { parseStamp } from "../../shared/sync/clock.js";
+import { compareStamps, parseStamp } from "../../shared/sync/clock.js";
+import { videoProgressComplete, videoPartialProgress, videoWatchedChoice,
+  verifiedVideoEpisodeKey } from "../../shared/sync/video-state.js";
 import { COMIC_TYPES, createComicsData, present } from "./comics-data.js";
 
 const TITLE_FIELDS = ["title", "displayTitle", "rawName", "seriesKey", "magnet", "coverUrl", "catalogId", "catalogType", "mediaKind", "aliases", "sourceMeta",
@@ -46,29 +47,52 @@ export function createLocalData({ appState, db, recs, log = console }) {
   const tableExists = (name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
   function exportLibrary(out, entries = appState.readSection("library") || []) {
+    const sourceIds = new Set(entries.map((entry) => wireId(String(entry?.id || ""))));
     for (const entry of entries) {
       const libraryId = String(entry?.id || "");
       if (!libraryId || libraryId.length > 600) continue;
       const id = wireId(libraryId);
       const context = (code) => ({ title: String(entry.displayTitle || entry.title || "").slice(0, 2000),
-        ...(entry.catalogId ? { catalogId: entry.catalogId } : {}), ...(code ? { episode: code } : {}) });
+        ...(entry.catalogId ? { catalogId: entry.catalogId } : {}),
+        ...(entry.catalogType ? { catalogType: entry.catalogType } : {}),
+        ...(code ? { episode: code } : {}) });
       out.push({ type: "video.title", id, value: { ...pick(entry, TITLE_FIELDS),
         ...(importedSnapshot(entry) ? { anilistSync: importedSnapshot(entry) } : {}),
         ...(!HASH_ID.test(libraryId) ? { libraryId } : {}), episodes: (entry.episodes || []).map(episodeMeta) } });
+      const completed = new Map();
       for (const episode of entry.episodes || []) {
         const index = Number(episode?.fileIndex);
         if (!episode?.progress || !Number.isInteger(index) || index < 0) continue;
+        const code = String(episode.code || "").toUpperCase();
+        const manual = videoWatchedChoice(entry, code);
+        const identifiable = /^S\d{2}E\d{2,4}$/.test(code);
+        if (identifiable && (manual === true || manual !== false && videoProgressComplete(episode.progress))) {
+          if (manual !== true && manual !== false) completed.set(code, episode.progress);
+          // The watched register is the compact account record. Dropping this
+          // source progress produces the existing v1 progress tombstone.
+          continue;
+        }
         out.push({ type: "video.progress", id: `${id}/${index}`, value: {
           positionMs: Math.max(0, Math.round(Number(episode.progress.positionMs) || 0)),
           durationMs: Math.max(0, Math.round(Number(episode.progress.durationMs) || 0)),
-          finished: Boolean(episode.progress.finished),
+          // An unidentified file has no chapter key for a compact watched
+          // register, so retain its source-specific completed state.
+          finished: !identifiable && manual !== false && videoProgressComplete(episode.progress),
           ...(Number(episode.progress.updatedAt) > 0 ? { updatedAt: Number(episode.progress.updatedAt) } : {}),
           context: context(episode.code) } });
       }
-      for (const [code, watched] of Object.entries(entry.watchedChapters || {})) {
+      for (const [code, watched] of [...Object.entries(entry.watchedChapters || {}),
+        ...[...completed].filter(([code]) => !Object.hasOwn(entry.watchedChapters || {}, code))
+          .map(([code, progress]) => [code, Number(progress.updatedAt) || true])]) {
         if (typeof watched !== "boolean" && !(typeof watched === "number" && Number.isFinite(watched) && watched > 0)) continue;
         const updatedAt = typeof watched === "number" ? watched : Number(entry.watchedChapterUpdatedAt?.[code]) || 0;
-        const origin = entry.watchedChapterOrigins?.[code] || (watched && entry.anilist?.showId
+        const mirrored = entry.watchedChapterReplicas?.[code];
+        // Replicas avoid echoing a watch action under every torrent hash.
+        // If its originating file has since been removed, another verified
+        // source adopts the mark so the account does not lose its watch truth.
+        if (mirrored && mirrored.value === Boolean(watched) && mirrored.observedAt === updatedAt
+          && (!mirrored.sourceId || sourceIds.has(mirrored.sourceId))) continue;
+        const origin = entry.watchedChapterOrigins?.[code] || (completed.has(code) ? { source: "playback", updatedAt } : null) || (watched && entry.anilist?.showId
           ? { source: "anilist", accountUserId: entry.anilist.accountUserId || null, updatedAt } : null);
         out.push({ type: origin?.source === "anilist" && watched ? "video.imported-watched" : "video.watched", id: joinId(id, code), value: { watched: Boolean(watched),
           ...(origin ? { provenance: origin } : {}),
@@ -91,10 +115,18 @@ export function createLocalData({ appState, db, recs, log = console }) {
   // Library changes in one revision-checked write (tried again if a window saved meanwhile).
   function applyLibrary(changes, done, onLibraryApplied) {
     const order = { "video.title": 0, "video.progress": 1, "video.watched": 2, "video.imported-watched": 3 };
-    const sorted = [...changes].sort((a, b) => order[a.type] - order[b.type]);
+    const sorted = [...changes].sort((a, b) => {
+      const aTitle = a.type === "video.title";
+      const bTitle = b.type === "video.title";
+      return aTitle !== bTitle ? (aTitle ? -1 : 1)
+        : compareStamps(a.at, b.at) || order[a.type] - order[b.type];
+    });
+    const importedReplacements = new Set(sorted.filter((item) => item.type === "video.imported-watched" && item.value?.watched)
+      .map((item) => item.id));
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const expected = appState.sectionUpdatedAt("library");
       const library = structuredClone(appState.readSection("library") || []);
+      const before = JSON.stringify(library);
       const byId = new Map(library.map((entry) => [wireId(String(entry?.id || "")), entry]));
       const appliedNow = [];
       for (const change of sorted) {
@@ -107,7 +139,8 @@ export function createLocalData({ appState, db, recs, log = console }) {
             appliedNow.push(change);
             continue;
           }
-          if (entry && Number(entry.updatedAt || entry.addedAt || 0) > at) continue;
+          // The service only delivers accepted remote HLC records after it has
+          // protected unacknowledged local edits against their accepted base.
           const episodes = Array.isArray(change.value.episodes) ? change.value.episodes : null;
           if (!entry) {
             // A title that doesn't say what it is would be a blank Library card: wait for one that does.
@@ -140,45 +173,115 @@ export function createLocalData({ appState, db, recs, log = console }) {
           let episode = entry.episodes.find((item) => Number(item.fileIndex) === Number(index));
           if (!episode) { episode = { fileIndex: Number(index) }; entry.episodes.push(episode); }
           const playedAt = editedMs(change);
-          if (Number(episode.progress?.updatedAt || 0) > playedAt) continue;
+          if (episode.progress?.syncStamp && compareStamps(episode.progress.syncStamp, change.at) >= 0) {
+            appliedNow.push(change); continue;
+          }
           if (change.value === null) delete episode.progress;
           else {
-            episode.progress = { positionMs: change.value.positionMs || 0, durationMs: change.value.durationMs || 0, finished: Boolean(change.value.finished), updatedAt: playedAt };
+            const code = String(episode.code || "").toUpperCase();
+            const explicitUnwatch = videoWatchedChoice(entry, code) === false;
+            const unwatchStamp = entry.watchedChapterSyncStamps?.[code];
+            // A negative watched action blocks stale prior completion, not a
+            // *later* real rewatch at 24%. The chapter stays explicitly
+            // unwatched until the player re-arms it after genuine playback.
+            const allowPartialRewatch = explicitUnwatch && videoPartialProgress(change.value)
+              && (!unwatchStamp || compareStamps(change.at, unwatchStamp) > 0);
+            episode.progress = { positionMs: explicitUnwatch && !allowPartialRewatch ? 0 : change.value.positionMs || 0,
+              durationMs: change.value.durationMs || 0,
+              finished: !explicitUnwatch && videoProgressComplete(change.value), updatedAt: playedAt, syncStamp: change.at };
             if (playedAt >= Number(entry.lastPlayedAt || 0)) { entry.lastPlayedAt = playedAt; entry.lastPlayedFileIndex = Number(index); }
           }
           appliedNow.push(change);
         } else if (change.type === "video.watched" || change.type === "video.imported-watched") {
-          const [id, code] = splitId(change.id);
+          let id, code;
+          try { [id, code] = splitId(change.id); } catch { continue; }
           const entry = byId.get(id);
-          if (!entry || !code) continue;
+          if (!code) continue;
           const imported = change.type === "video.imported-watched";
-          const origin = entry.watchedChapterOrigins?.[code];
+          const origin = entry?.watchedChapterOrigins?.[code];
           // Moving between local and imported record types emits a tombstone
           // for the old type. It must not erase the replacement value.
+          if (!imported && change.value === null && importedReplacements.has(change.id)) {
+            appliedNow.push(change); continue;
+          }
           if (change.value === null && (imported ? origin?.source !== "anilist" : origin?.source === "anilist")) {
             appliedNow.push(change); continue;
           }
           if (imported && change.value !== null && change.value.provenance?.source !== "anilist") continue;
-          if (imported && change.value?.watched && (entry.watchedChapters?.[code] === false || origin?.source === "local")) {
+          if (imported && change.value?.watched && (entry?.watchedChapters?.[code] === false
+            || origin?.source === "local" || origin?.source === "playback")) {
             appliedNow.push(change); continue;
           }
-          const localAt = typeof entry.watchedChapters?.[code] === "number" ? entry.watchedChapters[code] : Number(entry.watchedChapterUpdatedAt?.[code]) || 0;
           const watchedAt = editedMs(change);
-          if (localAt > watchedAt && !(!imported && origin?.source === "anilist")) continue;
-          const marks = { ...(entry.watchedChapters || {}) };
-          if (change.value === null) delete marks[code];
-          else marks[code] = Boolean(change.value.watched);
-          entry.watchedChapters = marks;
-          entry.watchedChapterUpdatedAt = { ...(entry.watchedChapterUpdatedAt || {}) };
-          if (change.value === null || !change.value.updatedAt) delete entry.watchedChapterUpdatedAt[code];
-          else entry.watchedChapterUpdatedAt[code] = watchedAt;
-          entry.watchedChapterOrigins = { ...(entry.watchedChapterOrigins || {}) };
-          if (change.value?.provenance) entry.watchedChapterOrigins[code] = change.value.provenance;
-          else delete entry.watchedChapterOrigins[code];
+          const context = change.value?.context;
+          const identity = verifiedVideoEpisodeKey(entry, code);
+          // The historical source might already be removed. Its authenticated
+          // accepted record can still carry a verified work/episode identity;
+          // never infer one from a translated title or an unverified alias.
+          const verifiedContext = verifiedVideoEpisodeKey(context, code);
+          if (entry && identity && verifiedContext && identity !== verifiedContext) continue;
+          // A present source without a verified catalog must stay independent,
+          // even when its legacy record carries a claimed catalog context.
+          // When the source is gone entirely, the accepted record's verified
+          // context is the only safe account identity still available.
+          const sharedIdentity = !entry ? verifiedContext
+            : identity && (verifiedContext === identity || !context?.catalogId) ? identity : null;
+          const matches = sharedIdentity ? library.filter((item) =>
+            verifiedVideoEpisodeKey(item, code) === sharedIdentity) : entry ? [entry] : [];
+          if (!matches.length) continue;
+          // Imported completions do not acquire a new origin after the
+          // original account-bound source has been removed.
+          if (imported && !entry) continue;
+          // An external aggregate count is weaker than a locally observed
+          // partial episode; it cannot turn 16/22 minutes into watched.
+          if (imported && change.value?.watched && matches.some((item) =>
+            (item.episodes || []).some((ep) => String(ep.code || "").toUpperCase() === code
+              && videoPartialProgress(ep.progress)))) {
+            appliedNow.push(change); continue;
+          }
+          for (const target of matches) {
+            const prior = target.watchedChapterSyncStamps?.[code];
+            if (prior && compareStamps(prior, change.at) >= 0) continue;
+            const replica = target.watchedChapterReplicas?.[code];
+            const localChoice = videoWatchedChoice(target, code);
+            if (target !== entry && target.watchedChapterOrigins?.[code]?.source === "local"
+              && !prior && localChoice !== null) continue;
+            if (target !== entry && replica && (replica.value !== localChoice
+              || replica.observedAt !== (Number(target.watchedChapterUpdatedAt?.[code]) || 0))) continue;
+            target.watchedChapters = { ...(target.watchedChapters || {}) };
+            if (change.value === null) delete target.watchedChapters[code];
+            else target.watchedChapters[code] = Boolean(change.value.watched);
+            target.watchedChapterUpdatedAt = { ...(target.watchedChapterUpdatedAt || {}) };
+            if (change.value === null || !change.value.updatedAt) delete target.watchedChapterUpdatedAt[code];
+            else target.watchedChapterUpdatedAt[code] = watchedAt;
+            target.watchedChapterOrigins = { ...(target.watchedChapterOrigins || {}) };
+            if (change.value?.provenance) target.watchedChapterOrigins[code] = change.value.provenance;
+            else delete target.watchedChapterOrigins[code];
+            target.watchedChapterSyncStamps = { ...(target.watchedChapterSyncStamps || {}), [code]: change.at };
+            if (target !== entry) target.watchedChapterReplicas = { ...(target.watchedChapterReplicas || {}), [code]: {
+              value: Boolean(change.value?.watched), observedAt: change.value?.updatedAt ? watchedAt : 0,
+              sourceId: id } };
+            else if (target.watchedChapterReplicas?.[code]) {
+              target.watchedChapterReplicas = { ...target.watchedChapterReplicas };
+              delete target.watchedChapterReplicas[code];
+            }
+            if (change.value?.watched === false)
+              for (const ep of target.episodes || []) {
+                if (String(ep.code || "").toUpperCase() !== code || !ep.progress) continue;
+                // A genuine in-flight partial replay can arrive in the same
+                // v1 batch as an explicit unwatch. Keep that safe resume
+                // point; reset completed/near-end positions to prevent Up Next.
+                const keepPartial = videoPartialProgress(ep.progress)
+                  && Number(ep.progress.positionMs) <= Number(ep.progress.durationMs) * 0.8;
+                ep.progress = { ...ep.progress, positionMs: keepPartial ? ep.progress.positionMs : 0, finished: false,
+                  updatedAt: watchedAt, syncStamp: change.at };
+              }
+          }
           appliedNow.push(change);
         }
       }
       if (!appliedNow.length) return;
+      if (JSON.stringify(library) === before) { for (const change of appliedNow) done.add(change); return; }
       const result = appState.compareAndSwapSection("library", library, expected,
         onLibraryApplied ? (updatedAt) => onLibraryApplied({ library, updatedAt }) : null);
       if (result.ok) { for (const change of appliedNow) done.add(change); return; }

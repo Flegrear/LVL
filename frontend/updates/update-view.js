@@ -34,17 +34,18 @@ export function updatePercent(progress) {
 // Android's full APK replacement is the only update that asks for an Android
 // PackageInstaller confirmation. A Windows installer is also called "installer"
 // in the size report, so kind alone is not proof of Android context.
-const androidApkInstall = (report) => report?.autoInstall !== true && (
+export const androidApkInstall = (report) => report?.autoInstall !== true && (
   Boolean(report?.apkInstall?.version)
   || (report?.autoInstall === false
     && [report?.availableSize, report?.update?.size, report?.download, report?.update?.progress]
       .some((item) => item?.kind === "installer")));
 
+export const ANDROID_APK_HANDOFF = "Android will replace LVL and close the app. After installation, reopen LVL from the update notification or app icon if Android doesn't reopen it.";
 const installing = (version, androidApk = false, pendingConfirmation = false) => ({ phase: "installing", version, title: `Installing LVL ${version}`,
   detail: pendingConfirmation
-    ? "Waiting for you to confirm the installation in Android."
+    ? `Waiting for you to confirm the installation in Android. ${ANDROID_APK_HANDOFF}`
     : androidApk
-    ? "After installation, reopen LVL if the window doesn't reload by itself."
+    ? ANDROID_APK_HANDOFF
     : "LVL restarts by itself. This window reloads when it's back.",
   progress: { percent: null } });
 const failed = (version, current, reason = "") => ({ phase: "failed", version, title: "The update didn't install",
@@ -62,7 +63,7 @@ const failed = (version, current, reason = "") => ({ phase: "failed", version, t
 export function updateView({ report = null, downSince = null, pending = null, loadedVersion = "",
   later = null, now = Date.now() } = {}) {
   const installed = String(report?.installedVersion || loadedVersion || "");
-  const apkInstall = androidApkInstall(report);
+  const apkInstall = androidApkInstall(report) || pending?.androidApk === true;
 
   if (downSince) {
     if (!pending?.active || !pending.to) return { phase: "idle" };
@@ -87,7 +88,8 @@ export function updateView({ report = null, downSince = null, pending = null, lo
     const amount = total ? `${formatUpdateBytes(bytes)} of ${formatUpdateBytes(total)}`
       : bytes ? formatUpdateBytes(bytes) : "Starting the download";
     return { phase: "downloading", version, title: `Downloading LVL ${version}`,
-      detail: percent === null ? amount : `${percent}% · ${amount}`, progress: { percent } };
+      detail: (percent === null ? amount : `${percent}% · ${amount}`) +
+        (apkInstall ? ` ${ANDROID_APK_HANDOFF}` : ""), progress: { percent } };
   }
   if (update.phase === "installing" && version) return installing(version, apkInstall, update.pendingConfirmation === true);
   if (update.phase === "failed" && version) return failed(version, installed, update.error || "");
@@ -104,7 +106,7 @@ export function updateView({ report = null, downSince = null, pending = null, lo
       detail: update.installsWhenIdle
         ? `It installs by itself when no video is open${size}.`
         : apkInstall
-          ? `Install it now${size}. Android may ask you to confirm the installation. Reopen LVL afterward.`
+          ? `Install it now${size}. Android may ask you to confirm the installation. ${ANDROID_APK_HANDOFF}`
           : `Install it now${size}. LVL restarts by itself.`,
       progress: null };
   }

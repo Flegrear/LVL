@@ -1,14 +1,14 @@
 {
-  "version": "0.2.2",
-  "versionCode": 210,
-  "desktopSourceVersion": "0.3.1",
+  "version": "0.2.3",
+  "versionCode": 211,
+  "desktopSourceVersion": "0.3.2",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Prevent a video startup check from blocking the local server connection.",
-    "Fix loading timelines showing a buffered fragment as the full episode.",
-    "Load comic pages in order and reduce scrolling work in long chapters.",
-    "Keep watched titles and episodes consistent across Library, sources and synced devices.",
-    "Keep season and episode watched actions in Android long-press menus.",
-    "Improve interrupted update recovery and recognize an update that has already installed."
+    "Fix watched and partially watched episodes syncing across devices without losing newer changes.",
+    "Refresh Library progress when changes arrive from another device.",
+    "Improve Android update installation handoff, startup status and completed-update notices.",
+    "Align episode details and improve Library responsiveness on phones.",
+    "Resume Comics from the saved chapter, source and reading position.",
+    "Improve continuous chapter reading and place favorite Comic sources within Comics filters."
   ]
 }

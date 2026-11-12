@@ -4,7 +4,7 @@
 // Pages come from api.pageUrl(id, n); progress is saved per page.
 import { escapeHtml } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
-import { atEnd, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
+import { atEnd, cascadeBridgePageWindow, cascadeBridgeSameOwner, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderTapGuard, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
 import { createOrderedReaderPages, readerPageAtOffset } from "./reader-page-window.js";
 
 const COMFORT_KEY = "lvl-reader-comfort-v1";
@@ -26,7 +26,6 @@ const ICONS = {
   right: '<path d="m9.5 6 6 6-6 6"/>',
   sidebar: '<rect x="3.5" y="4.5" width="17" height="15" rx="2"/><path d="M9.5 4.5v15"/>',
   fullscreen: '<path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/>',
-  more: '<circle cx="6" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.5" fill="currentColor" stroke="none"/><circle cx="18" cy="12" r="1.5" fill="currentColor" stroke="none"/>',
   vertical: '<rect x="7" y="3.5" width="10" height="7.5" rx="1.2"/><rect x="7" y="13" width="10" height="7.5" rx="1.2"/>',
   double: '<rect x="3.5" y="5" width="8" height="14" rx="1.2"/><rect x="12.5" y="5" width="8" height="14" rx="1.2"/>',
   comfort: '<circle cx="12" cy="12" r="3.5"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/>',
@@ -64,16 +63,7 @@ export function readerMarkup(comic, pages) {
     + `<div class="reader__pager">${iconButton("left", "Page to the left")}<span class="reader__count" aria-live="polite"></span>${iconButton("right", "Page to the right")}</div>`
     + `<div class="reader__tools">${iconButton("fullscreen", "Fullscreen")}`
     + `<select class="reader__select" data-reader="fit" aria-label="${escapeHtml(t("Page size"))}">${fits.map(([value, label]) => `<option value="${value}">${escapeHtml(t(label))}</option>`).join("")}</select>`
-    + `${iconButton("more", "More", ' aria-expanded="false"')}</div></header>`
-    + `<div class="reader__menu reader__pop" hidden>`
-    + `<label data-reader-source-row hidden>${escapeHtml(t("Read from"))} <select class="reader__select" data-reader="source"></select></label>`
-    + `<label>${escapeHtml(t("Direction"))} <select class="reader__select" data-reader="direction"><option value="rtl">${escapeHtml(t("Right to left"))}</option><option value="ltr">${escapeHtml(t("Left to right"))}</option></select></label>`
-    + `<label class="reader__check"><input type="checkbox" data-reader="offset" /> ${escapeHtml(t("Shift spread"))}</label>`
-    + `<p class="reader__hint">${escapeHtml(t("Click the middle of the page to hide the bars."))}</p></div>`
-    + `<div class="reader__comfort reader__pop" hidden>`
-    + `<label>${escapeHtml(t("Brightness"))} <input type="range" min="0" max="100" step="1" data-comfort="brightness" aria-label="${escapeHtml(t("Brightness"))}" /></label>`
-    + `<label>${escapeHtml(t("Color temperature"))} <input type="range" min="-100" max="100" step="1" data-comfort="temperature" aria-label="${escapeHtml(t("Color temperature"))}" /></label>`
-    + `<label>${escapeHtml(t("Background"))} <select class="reader__select" data-comfort="theme"><option value="black">${escapeHtml(t("Black"))}</option><option value="dark">${escapeHtml(t("Dark"))}</option><option value="sepia">${escapeHtml(t("Sepia"))}</option><option value="white">${escapeHtml(t("White"))}</option></select></label></div>`
+    + `</div></header>`
     + `<main class="reader__stage" tabindex="0" aria-label="${escapeHtml(t("Reader pages. Tap the middle or press Escape to show controls."))}"></main>`
     + `<div class="reader__page-counter" aria-hidden="true"></div>`
     + `<footer class="reader__foot"><div class="reader__mobile-pages">${iconButton("left", "Page to the left")}<span class="reader__mobile-count" aria-live="off"></span>${iconButton("right", "Page to the right")}</div><div class="reader__progress"><span class="reader__end-num" data-reader-start>1</span><span class="reader__mobile-current"></span>`
@@ -96,8 +86,11 @@ export function readerMarkup(comic, pages) {
     + `<h3>${escapeHtml(t("Direction"))}</h3>`
     + choiceGroup("direction", [["ltr", "Left to right"], ["rtl", "Right to left"]])
     + `<h3>${escapeHtml(t("Page size"))}</h3>` + choiceGroup("fit", fits)
-    + settingSwitch("offset", "Shift spread") + `</div>`
-    + `<div class="reader__sheet-panel" data-reader-sheet-panel="general" hidden><h3>${escapeHtml(t("Background"))}</h3>`
+    + settingSwitch("offset", "Shift spread")
+    + `<p class="reader__hint">${escapeHtml(t("Tap the center of the page to show or hide controls."))}</p></div>`
+    + `<div class="reader__sheet-panel" data-reader-sheet-panel="general" hidden>`
+    + `<label class="reader__sheet-select-row" data-reader-source-row hidden><span>${escapeHtml(t("Read from"))}</span><select class="reader__select" data-reader="source" aria-label="${escapeHtml(t("Read from"))}"></select></label>`
+    + `<h3>${escapeHtml(t("Background"))}</h3>`
     + choiceGroup("theme", [["black", "Black"], ["dark", "Dark"], ["sepia", "Sepia"], ["white", "White"]])
     + settingSwitch("pageNumber", "Show page number") + settingSwitch("previews", "Page previews") + preloadSetting()
     + `<button type="button" class="reader__sheet-action" data-reader="fullscreen">${svg("fullscreen")}${escapeHtml(t("Fullscreen"))}</button>`
@@ -121,7 +114,7 @@ export function readerMarkup(comic, pages) {
 //   onClose(), onPage(fileId, page), onOpenFile(fileId) }. A source's exact volume
 //   can come from options.volume or the verified reader metadata. Missing volume
 //   (undefined) means unknown; explicit null means this unit has no volume.
-export async function openReader(host, { fileId, page = null, comic = {}, api, chapter = null, volume = undefined, chapters = [], source = "", sources = null, onSource, onChapter, onPreloadChapters, onClose, onPage, onOpenFile, cascadeNotice = false }) {
+export async function openReader(host, { fileId, page = null, comic = {}, api, chapter = null, volume = undefined, chapters = [], source = "", sources = null, onSource, onChapter, onPreloadChapters, onCascadeBack, onClose, onPage, onOpenFile, cascadeNotice = false }) {
   const info = await api.readerFile(fileId);
   // Opened from its address alone: the server says which chapter and source this is.
   if (chapter === null || chapter === undefined) chapter = info.chapter ?? info.file?.chapter ?? null;
@@ -151,7 +144,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   let autoAdvancing = false;
   let preloadController = null;
   let preloadingStarted = false;
-  let suppressStageClickUntil = 0;
+  const tapGuard = createReaderTapGuard();
   let autoFullscreenDenied = false;
   let nativeImmersiveWasAcknowledged = false;
   let ownsNativeImmersive = false;
@@ -171,6 +164,15 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   let scrollIntent = null;
   let unitTransition = null;
   let chapterTransitionGeneration = 0;
+  let cascadeBridge = null;
+  let initialPageStatus = "pending";
+  let resolveInitialPage;
+  const initialPageReady = new Promise((resolve) => { resolveInitialPage = resolve; });
+  const settleInitialPage = (ready) => {
+    if (initialPageStatus !== "pending") return;
+    initialPageStatus = ready ? "ready" : "failed";
+    resolveInitialPage(ready);
+  };
   // Pages found to be wider than tall; two-page mode shows them alone.
   const wide = new Set();
   const pairing = () => ({ ...mode, wide });
@@ -206,6 +208,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     sheet.hidden = true;
     sheetShade.hidden = true;
     for (const part of [stage, root.querySelector(".reader__bar"), root.querySelector(".reader__foot")]) part.inert = false;
+    sheetTrigger?.setAttribute("aria-expanded", "false");
     if (restoreFocus && sheetTrigger?.isConnected) sheetTrigger.focus({ preventScroll: true });
     sheetTrigger = null;
   }
@@ -214,6 +217,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       tab.setAttribute("aria-selected", String(tab.dataset.readerSheetTab === name));
     for (const panel of sheet.querySelectorAll("[data-reader-sheet-panel]"))
       panel.hidden = panel.dataset.readerSheetPanel !== name;
+    if (name === "general") void loadSources();
   }
   function syncSheet() {
     for (const choice of sheet.querySelectorAll("[data-reader-choice]")) {
@@ -234,10 +238,10 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   }
   function openSheet(tab = "reading", trigger = null) {
     setChromeHidden(false);
-    for (const pop of root.querySelectorAll(".reader__pop")) pop.hidden = true;
-    for (const name of ["more", "settings", "comfort"])
+    for (const name of ["settings", "reading", "comfort"])
       root.querySelector(`button[data-reader="${name}"]`)?.setAttribute("aria-expanded", "false");
     sheetTrigger = trigger;
+    sheetTrigger?.setAttribute("aria-expanded", "true");
     syncSheet();
     selectSheetTab(tab);
     sheetShade.hidden = false;
@@ -269,9 +273,6 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     }
     if (hidden) {
       closeSheet({ restoreFocus: false });
-      for (const pop of root.querySelectorAll(".reader__pop")) pop.hidden = true;
-      for (const name of ["more", "settings", "comfort"])
-        root.querySelector(`button[data-reader="${name}"]`)?.setAttribute("aria-expanded", "false");
       // A focused hidden toolbar would otherwise reopen itself via :focus-within.
       stage.focus({ preventScroll: true });
     }
@@ -492,6 +493,134 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     return info.file?.name || t("Chapter");
   }
 
+  // A staged reader resolves its first *decoded* page before the routing
+  // owner commits an automatic scroll bridge. Neither a metadata response nor
+  // a gray placeholder is sufficient to discard the readable old chapter.
+  function waitForFirstPage({ timeoutMs = 12000, isCurrent = () => true } = {}) {
+    if (closed || !isCurrent()) return Promise.resolve(false);
+    if (initialPageStatus !== "pending") return Promise.resolve(initialPageStatus === "ready");
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = (ok) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        clearInterval(check);
+        resolve(Boolean(ok && !closed && isCurrent()));
+      };
+      const timeout = setTimeout(() => finish(false), Math.max(100, Math.min(15000, timeoutMs)));
+      const check = setInterval(() => { if (closed || !isCurrent()) finish(false); }, 150);
+      void initialPageReady.then((ok) => finish(ok));
+    });
+  }
+
+  function waitForCascadeTail({ timeoutMs = 12000, isCurrent = () => true } = {}) {
+    if (closed || !isCurrent() || mode.layout !== "vertical") return Promise.resolve(false);
+    if ((verticalLoader?.visibleThrough ?? -1) >= pages - 1) return Promise.resolve(true);
+    // Reverse navigation can start on the penultimate old page. Wait for its
+    // final page before retaining a following head; otherwise an appended
+    // preview could jump past a missing/failed page and spoil the story order.
+    return new Promise((resolve) => {
+      let finished = false;
+      const finish = (ready) => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timeout);
+        clearInterval(check);
+        resolve(Boolean(ready && !closed && isCurrent()));
+      };
+      const checkNow = () => {
+        if (closed || !isCurrent()) finish(false);
+        else if ((verticalLoader?.visibleThrough ?? -1) >= pages - 1) finish(true);
+        else if (verticalLoader?.blockingPage !== null &&
+            verticalPages[verticalLoader.blockingPage]?.dataset.readerState === "failed") finish(false);
+      };
+      const timeout = setTimeout(() => finish(false), Math.max(100, Math.min(15000, timeoutMs)));
+      const check = setInterval(checkNow, 120);
+      checkNow();
+    });
+  }
+
+  function snapshotCascadeEdge(edge = "tail") {
+    if (closed || !root.isConnected || mode.layout !== "vertical" || !pages) return null;
+    if (edge === "tail" && (verticalLoader?.visibleThrough ?? -1) < pages - 1) return null;
+    const indices = cascadeBridgePageWindow(pages, edge, edge === "head" ? verticalAnchor : 0);
+    const images = indices.map((n) => {
+      const image = verticalPages[n];
+      if (image?.tagName !== "IMG" || image.dataset.readerState !== "ready" || !image.naturalWidth || !image.naturalHeight)
+        return null;
+      // The old reader revokes cropped blob URLs when it closes. The original
+      // same-origin page endpoint remains valid in the server's bounded cache.
+      return { page: n, src: image.src?.startsWith("blob:") ? url(n) : image.currentSrc || image.src || url(n),
+        width: image.naturalWidth, height: image.naturalHeight };
+    }).filter(Boolean);
+    if (!images.length || (edge === "tail" && images.at(-1).page !== pages - 1)) return null;
+    const boundary = stage.querySelector(".reader__chapter-boundary");
+    const anchorViewportY = boundary
+      ? boundary.getBoundingClientRect().top - stage.getBoundingClientRect().top
+      : stage.clientHeight * .65;
+    return { fileId, workId: info.workId, sourceId: fileId.startsWith("ex-") ? info.sourceId : "local",
+      chapter, volume: volume ?? null, pages, edge, images, anchorViewportY };
+  }
+
+  // Insert only two already-verified edge images, never a cloned chapter DOM,
+  // listener or progress callback. The new reader owns *all* active progress;
+  // this neighboring fragment is a reversible, inert visual preview.
+  function attachCascadeBridge(snapshot, { side = "before", point = null } = {}) {
+    if (closed || mode.layout !== "vertical" || cascadeBridge || !snapshot ||
+        !cascadeBridgeSameOwner(snapshot, { fileId, workId: info.workId, sourceId: info.sourceId }) ||
+        !["before", "after"].includes(side) || !Array.isArray(snapshot.images) ||
+        (side === "after" && (verticalLoader?.visibleThrough ?? -1) < pages - 1) ||
+        snapshot.images.length < 1 || snapshot.images.length > 2) return false;
+    const fragment = document.createElement("section");
+    fragment.className = "reader__bridge-fragment";
+    fragment.dataset.readerBridge = side;
+    fragment.setAttribute("aria-label", t(side === "before" ? "Previous" : "Next"));
+    const seam = document.createElement("div");
+    seam.className = "reader__bridge-seam";
+    seam.textContent = side === "before"
+      ? t("End of {name}", { name: cascadeChapterLabel(snapshot) })
+      : t("Chapter {number}", { number: String(snapshot.chapter ?? "") });
+    if (side === "after") fragment.append(seam);
+    for (const { page: number, src: imageUrl, width, height } of snapshot.images) {
+      if (!Number.isSafeInteger(number) || number < 0 || number >= snapshot.pages ||
+          typeof imageUrl !== "string" || !imageUrl || !Number.isFinite(width) || !Number.isFinite(height) ||
+          width <= 0 || height <= 0) return false;
+      const image = document.createElement("img");
+      image.className = "reader__page reader__bridge-image";
+      image.dataset.readerBridgePage = String(number);
+      image.alt = t("Page {number}", { number: number + 1 });
+      image.decoding = "async";
+      image.width = width;
+      image.height = height;
+      image.src = imageUrl;
+      fragment.append(image);
+    }
+    if (side === "before") fragment.append(seam);
+    if (side === "before") stage.prepend(fragment);
+    else stage.append(fragment);
+    cascadeBridge = { side, fragment, seam, owner: snapshot, armed: false,
+      lastScrollTop: 0, forwardAttempted: false, reverseAttempted: false };
+    // Both stages are live for this one synchronous route commit. Keep the old
+    // boundary at the same viewport coordinate; never scroll to the top of the
+    // fresh chapter after a successful automatic handover.
+    if (side === "before") {
+      const markerTop = seam.getBoundingClientRect().top - stage.getBoundingClientRect().top + stage.scrollTop;
+      const y = Math.max(0, Math.min(stage.clientHeight * .9, Number(snapshot.anchorViewportY) || 0));
+      stage.scrollTop = Math.max(0, markerTop - y);
+    } else if (point && Number.isSafeInteger(point.page)) {
+      const active = verticalPages[point.page];
+      if (active && stage.contains(active)) {
+        const top = active.getBoundingClientRect().top - stage.getBoundingClientRect().top + stage.scrollTop;
+        const within = Math.max(0, Number(point.within) || 0);
+        const viewportY = Math.max(0, Number(point.viewportY) || 0);
+        stage.scrollTop = Math.max(0, top + within - viewportY);
+      }
+    }
+    cascadeBridge.lastScrollTop = stage.scrollTop;
+    return true;
+  }
+
   // These two labels are part of the long strip itself. The reader still
   // verifies and atomically hands over the next chapter only on *continued*
   // scroll beyond this boundary; preload is optional and independent.
@@ -520,7 +649,9 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     // A boundary must not appear while the chapter's earlier pages are still
     // unresolved; it is part of the accepted, completed strip.
     boundary.hidden = Boolean(verticalLoader && verticalLoader.visibleThrough < pages - 1);
-    stage.append(boundary);
+    const followingPreview = stage.querySelector('[data-reader-bridge="after"]');
+    if (followingPreview) stage.insertBefore(boundary, followingPreview);
+    else stage.append(boundary);
   }
 
   function cascadeBoundaryHint(message, state = "ready") {
@@ -625,6 +756,9 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     pagedPageOrder = [];
     clearPagedPrefetch();
     verticalPages = [];
+    // A layout change discards the optional adjacent preview. It does not
+    // change the active chapter's progress or create a second session owner.
+    cascadeBridge = null;
     if (scrollFrame) { cancelAnimationFrame(scrollFrame); scrollFrame = 0; }
     for (const objectUrl of trimmed.values()) URL.revokeObjectURL(objectUrl);
     trimmed.clear();
@@ -632,10 +766,6 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     root.dataset.direction = mode.direction;
     root.dataset.fit = mode.fit;
     root.querySelector('[data-reader="fit"]').value = mode.fit;
-    root.querySelector('[data-reader="direction"]').value = mode.direction;
-    const offset = root.querySelector('[data-reader="offset"]');
-    offset.checked = mode.offset;
-    offset.disabled = mode.layout !== "double";
     root.querySelector('button[data-reader="single"]').setAttribute("aria-pressed", String(mode.layout === "single"));
     root.querySelector('button[data-reader="vertical"]').setAttribute("aria-pressed", String(mode.layout === "vertical"));
     root.querySelector('button[data-reader="double"]').setAttribute("aria-pressed", String(mode.layout === "double"));
@@ -656,6 +786,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
           old.replaceWith(img);
           verticalPages[n] = img;
           if (n === verticalAnchor) stage.scrollTop = 0;
+          if (n === verticalAnchor) settleInitialPage(true);
           if (trim) trimPage(n, img); // decoded before mount, so load already fired
           noteSize(n, img);
           if (previews) {
@@ -678,6 +809,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
         },
         onBlocked: (n, error) => {
           if (closed || mode.layout !== "vertical") return;
+          if (n === verticalAnchor && error) settleInitialPage(false);
           let placeholder = verticalPages[n];
           if (!placeholder || !stage.contains(placeholder)) return;
           if (placeholder.tagName === "IMG" || placeholder.dataset.readerState === "failed") {
@@ -723,12 +855,14 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
           const slot = slots.get(n);
           if (closed || mode.layout === "vertical" || !slot || !stage.contains(slot)) return;
           img.dataset.readerState = "ready";
+          if (index === 0) settleInitialPage(true);
           slot.replaceWith(img);
           slots.set(n, img);
           if (trim) trimPage(n, img);
           noteSize(n, img);
         },
         onBlocked: (index, error) => {
+          if (index === 0 && error) settleInitialPage(false);
           const n = pagedPageOrder[index];
           let slot = slots.get(n);
           if (closed || !slot || !stage.contains(slot)) return;
@@ -856,6 +990,11 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   });
   async function openTarget(target, { strictSource = false } = {}) {
     if (!target || closed) return false;
+    // Foreground chapter resolution must have network priority. The optional
+    // previous chapter's image/metadata prefetch releases its streams now,
+    // rather than waiting for a successful reader handover to close it.
+    preloadController?.abort();
+    preloadController = null;
     if (target.file) {
       chapterTransitionGeneration++;
       return unitTransition.open(target.file, { startAtBeginning: strictSource });
@@ -890,6 +1029,18 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     if (closed || autoAdvancing) return false;
     const target = chapterTargets().next;
     if (!target) { showEnd(); return false; }
+    // A genuine bottom-edge gesture may overtake the queued scroll rAF. Save
+    // the verified terminal page of this chapter *before* starting the async
+    // source lookup, instead of closing the old reader with a stale penultimate
+    // page. No later/undecoded page is promoted and no new unit is marked read.
+    if (mode.layout === "vertical" && pages > 0 && current < pages - 1 &&
+        (verticalLoader?.visibleThrough ?? -1) >= pages - 1 &&
+        stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2) {
+      current = pages - 1;
+      verticalLoader.progress(current);
+      updateCount();
+      saveSoon();
+    }
     autoAdvancing = true;
     chapterAdvance.reset();
     cascadeBoundaryHint(t("Opening chapter…"), "loading");
@@ -904,14 +1055,41 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     }
   }
 
-  function togglePop(selector, button) {
-    setChromeHidden(false);
-    for (const pop of root.querySelectorAll(".reader__pop")) if (!pop.matches(selector)) pop.hidden = true;
-    const pop = root.querySelector(selector);
-    pop.hidden = !pop.hidden;
-    for (const name of ["more", "settings", "comfort"]) root.querySelector(`button[data-reader="${name}"]`)?.setAttribute("aria-expanded", "false");
-    if (!pop.hidden) button?.setAttribute("aria-expanded", "true");
-    if (!pop.hidden && selector === ".reader__menu") void loadSources();
+  async function openAutoPrevious() {
+    const bridge = cascadeBridge;
+    if (!bridge || bridge.side !== "before" || !bridge.armed || closed || autoAdvancing
+        || typeof onCascadeBack !== "function") return false;
+    const preview = [...bridge.fragment.querySelectorAll("[data-reader-bridge-page]")];
+    if (!preview.length) return false;
+    // The viewport center determines which *verified* old page to restore;
+    // the preview itself never writes a page, read mark or resume pointer.
+    const center = stage.getBoundingClientRect().top + stage.clientHeight * .5;
+    let image = preview[0];
+    for (const item of preview) if (item.getBoundingClientRect().top <= center) image = item;
+    const page = Number(image.dataset.readerBridgePage);
+    if (!Number.isSafeInteger(page) || page < 0 || page >= bridge.owner.pages) return false;
+    const within = Math.max(0, center - image.getBoundingClientRect().top);
+    const serial = ++chapterTransitionGeneration;
+    autoAdvancing = true;
+    preloadController?.abort();
+    preloadController = null;
+    unitTransition?.cancel();
+    try {
+      const moved = await onCascadeBack({ ...bridge.owner, page, within,
+        viewportY: stage.clientHeight * .5 }, {
+        isCurrent: () => !closed && cascadeBridge === bridge && serial === chapterTransitionGeneration,
+      });
+      if (closed || cascadeBridge !== bridge || serial !== chapterTransitionGeneration) return false;
+      if (!moved && !closed && serial === chapterTransitionGeneration)
+        transitionMessage(t("Cannot open the selected chapter."));
+      return moved === true;
+    } catch (error) {
+      if (!closed && serial === chapterTransitionGeneration)
+        transitionMessage(error?.message || t("Cannot open the selected chapter."));
+      return false;
+    } finally {
+      autoAdvancing = false;
+    }
   }
 
   // The same chapter on the other chosen sources (and files), asked for once.
@@ -975,9 +1153,8 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     },
     direction: () => setMode({ direction: mode.direction === "rtl" ? "ltr" : "rtl" }),
     reading: (button) => openSheet("reading", button),
-    more: (button) => togglePop(".reader__menu", button),
-    settings: (button) => onAndroidPhone() ? openSheet("general", button) : togglePop(".reader__menu", button),
-    comfort: (button) => onAndroidPhone() ? openSheet("filters", button) : togglePop(".reader__comfort", button),
+    settings: (button) => openSheet("general", button),
+    comfort: (button) => openSheet("filters", button),
   };
 
   root.addEventListener("click", (event) => {
@@ -1032,11 +1209,11 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     if (thumb) return go(Number(thumb.dataset.readerPage));
     const control = event.target.closest("button[data-reader]");
     if (control) return actions[control.dataset.reader]?.(control);
-    if (!event.target.closest(".reader__pop")) for (const pop of root.querySelectorAll(".reader__pop")) pop.hidden = true;
     if (!event.target.closest(".reader__stage")) return undefined;
-    if (Date.now() < suppressStageClickUntil) return undefined;
+    if (event.target.closest('button, a, input, select, textarea, label, [contenteditable], [role="button"]')) return undefined;
+    if (tapGuard.blocked() || window.getSelection?.()?.toString().trim()) return undefined;
     const box = stage.getBoundingClientRect();
-    const selected = clickAction(event.clientX - box.left, box.width, mode);
+    const selected = zoom > 1 ? "bars" : clickAction(event.clientX - box.left, box.width, mode);
     if (selected !== "bars") enterImmersive({ gesture: true });
     return actions[selected]?.();
   }, { signal: listeners.signal });
@@ -1062,7 +1239,12 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       return undefined;
     }
     const name = event.target.dataset.reader;
-    if (name === "source") return event.target.value !== fileId ? onSource?.(event.target.value, current) : undefined;
+    if (name === "source") {
+      if (event.target.value === fileId) return undefined;
+      preloadController?.abort();
+      preloadController = null;
+      return onSource?.(event.target.value, current);
+    }
     if (name === "fit" || name === "direction") return setMode({ [name]: event.target.value });
     if (name === "offset") return setMode({ offset: event.target.checked });
     const key = event.target.dataset.comfort;
@@ -1087,7 +1269,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       event.stopPropagation();
       closeSheet();
     } else if (event.key === "Tab") {
-      const controls = [...sheet.querySelectorAll('button:not([disabled]), input:not([disabled])')]
+      const controls = [...sheet.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled])')]
         .filter((item) => item.getClientRects().length);
       if (!controls.length) return;
       if (event.shiftKey && document.activeElement === controls[0]) {
@@ -1137,6 +1319,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   }, { passive: false, signal: listeners.signal });
   let touch = null;
   stage.addEventListener("touchstart", (event) => {
+    if (event.touches.length !== 1) tapGuard.multiTouch();
     scrollIntent?.touchStart();
     chapterAdvance.touchStart();
     touch = event.touches.length === 1 ? {
@@ -1145,6 +1328,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     } : null;
   }, { passive: true, signal: listeners.signal });
   stage.addEventListener("touchmove", (event) => {
+    if (event.touches.length !== 1) tapGuard.multiTouch();
     if (!touch || event.touches.length !== 1) return;
     const dx = event.touches[0].clientX - touch.x;
     const dy = event.touches[0].clientY - touch.y;
@@ -1164,7 +1348,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     if (!touch) return;
     const started = touch;
     touch = null;
-    if (started.moved) suppressStageClickUntil = Date.now() + 350;
+    if (started.moved) tapGuard.suppress();
     if (mode.layout === "vertical") {
       if (started.y - started.lastY < -70 && stage.scrollTop <= 2
           && current === verticalAnchor && current > 0) {
@@ -1185,11 +1369,13 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   }, { signal: listeners.signal });
   stage.addEventListener("touchcancel", () => {
     touch = null;
+    tapGuard.multiTouch();
     chapterAdvance.reset();
   }, { passive: true, signal: listeners.signal });
   // Mouse scrollbar/track drag is genuine navigation even without wheel.
   // A touch on the image is not: touch scrolling is armed on real movement.
   stage.addEventListener("pointerdown", (event) => {
+    tapGuard.pointerDown(event);
     if (event.pointerType !== "mouse" || event.target !== stage ||
         stage.scrollHeight <= stage.clientHeight + 1) return;
     const rect = stage.getBoundingClientRect();
@@ -1197,22 +1383,61 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     if (event.clientX >= rect.right - edge) {
       scrollIntent?.scrollbar();
       // Native scrollbar track clicks should scroll, not also turn a page.
-      suppressStageClickUntil = Date.now() + 350;
+      tapGuard.suppress();
     }
   }, { passive: true, signal: listeners.signal });
+  stage.addEventListener("pointermove", (event) => tapGuard.pointerMove(event), { passive: true, signal: listeners.signal });
+  stage.addEventListener("pointerup", (event) => tapGuard.pointerUp(event), { passive: true, signal: listeners.signal });
+  stage.addEventListener("pointercancel", () => tapGuard.pointerCancel(), { passive: true, signal: listeners.signal });
+  stage.addEventListener("scroll", () => tapGuard.scroll(), { passive: true, signal: listeners.signal });
   // One frame per group of scroll events; binary search only the accepted
   // visible strip. A 400-page chapter needs ~9 geometry checks instead of
   // scanning and measuring hundreds of page rectangles per touch event.
   function updateVerticalPosition() {
     scrollFrame = 0;
     if (closed || mode.layout !== "vertical" || !verticalLoader) return;
+    const bridge = cascadeBridge;
+    if (bridge?.side === "before") {
+      const upward = stage.scrollTop < bridge.lastScrollTop - 2;
+      bridge.lastScrollTop = stage.scrollTop;
+      const bottom = bridge.fragment.getBoundingClientRect().bottom - stage.getBoundingClientRect().top;
+      // A new chapter must first enter the viewport before returning to the
+      // previous one is eligible. A staged mount or image reflow alone cannot
+      // silently replace the accepted reader with its predecessor.
+      if (bottom <= stage.clientHeight * .4) {
+        bridge.armed = true;
+        bridge.reverseAttempted = false;
+      }
+      if (bridge.armed && upward && bottom >= stage.clientHeight * .72 && !bridge.reverseAttempted) {
+        bridge.reverseAttempted = true;
+        void openAutoPrevious();
+        return;
+      }
+    } else if (bridge?.side === "after" && !autoAdvancing &&
+        (verticalLoader?.visibleThrough ?? -1) >= pages - 1) {
+      // Reversing retains two pages from the next unit below this boundary.
+      // They are a visual hint only: crossing into the head commits its
+      // verified owner before further reading, never updates old progress.
+      const top = bridge.fragment.getBoundingClientRect().top - stage.getBoundingClientRect().top;
+      if (top >= stage.clientHeight * .9) bridge.forwardAttempted = false;
+      else if (top <= stage.clientHeight * .55 && !bridge.forwardAttempted) {
+        bridge.forwardAttempted = true;
+        void openAutoNext();
+        return;
+      }
+    }
     const last = Math.min(pages - 1, verticalLoader.visibleThrough);
     if (last < verticalAnchor) return;
     const y = stage.scrollTop + 40;
-    const low = readerPageAtOffset(verticalAnchor, last, y, (n) => {
-      const page = verticalPages[n];
-      return page ? page.offsetTop + page.offsetHeight : Infinity;
-    });
+    // At the *accepted* chapter boundary the first viewport pixel may still
+    // overlap the penultimate tall image, especially after chrome expands the
+    // stage. Repeated scroll rAFs must not rewind a verified end-of-chapter
+    // page into an older incomplete checkpoint while Next is opening.
+    const low = last === pages - 1 && stage.scrollHeight - stage.clientHeight - stage.scrollTop <= 2
+      ? pages - 1 : readerPageAtOffset(verticalAnchor, last, y, (n) => {
+        const page = verticalPages[n];
+        return page ? page.offsetTop + page.offsetHeight : Infinity;
+      });
     const page = verticalPages[low];
     if (!page || !["ready", "evicted"].includes(page.dataset.readerState) || low === current) return;
     current = low;
@@ -1234,6 +1459,8 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     // immersive mode during an atomic handover.
     const releaseOwnedNative = root.isConnected && ownsNativeImmersive;
     closed = true;
+    settleInitialPage(false);
+    cascadeBridge = null;
     preloadController?.abort();
     preloadController = null;
     chapterAdvance.reset();
@@ -1279,6 +1506,21 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   saveSoon();
   return {
     close,
+    // An atomic cascade handover must retain the old reader's chrome geometry
+    // before measuring its scroll anchor; otherwise the new reader opens with
+    // bars visible, reducing its stage height and moving the bridge seam.
+    inheritCascadeChrome(hidden) {
+      if (!closed && mode.layout === "vertical")
+        setChromeHidden(Boolean(hidden), { notifyNative: false });
+    },
+    activateCascadeChrome() {
+      if (!closed && mode.layout === "vertical" && root.classList.contains("is-chrome-hidden"))
+        nativeImmersive(true);
+    },
+    waitForFirstPage,
+    waitForCascadeTail,
+    snapshotCascadeEdge,
+    attachCascadeBridge,
     startPreloading() {
       preloadingStarted = true;
       scheduleChapterPreloads();
@@ -1288,14 +1530,12 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
         if (event.key === "Escape") { event.preventDefault(); closeSheet(); return true; }
         return false;
       }
-      if (event.target?.closest?.(".reader__pop, .reader__select")) return false;
+      if (event.target?.closest?.(".reader__select, input, textarea, button")) return false;
       if (event.target === stage && event.key === "Enter") {
         event.preventDefault();
         actions.bars();
         return true;
       }
-      const open = [...root.querySelectorAll(".reader__pop")].find((pop) => !pop.hidden);
-      if (open && event.key === "Escape") { event.preventDefault(); open.hidden = true; return true; }
       if (event.key === "Escape" && root.classList.contains("is-chrome-hidden")) {
         event.preventDefault();
         setChromeHidden(false);
@@ -1334,6 +1574,9 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     // announces onClose, saves progress and toggles native immersive off (which
     // would corrupt the still-mounted reader's state). Never mask the root error.
     closed = true;
+    settleInitialPage(false);
+    cascadeBridge = null;
+    try { preloadController?.abort(); } catch {}
     chapterTransitionGeneration++;
     try { unitTransition?.close(); } catch {}
     try { scrollIntent?.disconnect(); } catch {}

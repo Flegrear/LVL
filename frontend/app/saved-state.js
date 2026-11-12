@@ -88,6 +88,10 @@ const persistentAppAcceptedSnapshots = new Map();
 // later-generation edit can still be made on stale visible data while an older
 // HTTP CAS is in flight; updating acceptedSnapshots alone does not update it.
 let persistentAppLibraryViewBaseline = null;
+// The revision the open tab has actually applied. A successful SQLite CAS
+// can advance the acknowledged revision while newer in-tab edits still keep
+// the visible Library based on an older snapshot.
+let persistentAppLibraryViewRevision = null;
 // Successful, still-unreflected changes authored by this tab. A newer user
 // edit can change the same item again while its previous CAS acknowledgment
 // arrives, without confusing that prior same-tab edit with a remote conflict.
@@ -95,6 +99,12 @@ const persistentAppUnreflectedLibraryWrites = new Map();
 const persistentAppUnresolvedConflicts = new Set();
 const persistentAppConflictViewBaselines = new Map();
 const persistentAppPartialLibrarySaves = new Set();
+// Local SQLite transport failures are retryable. A real semantic conflict is
+// held separately above until the user chooses how to resolve it.
+const persistentAppRetryAfter = new Map();
+// Browser localStorage is shared by tabs. Only this tab's writes may block
+// its read-only Library refresh; the shared marker alone proves no ownership.
+const persistentAppOwnPendingSections = new Set();
 const PERSISTENT_CAS_SECTIONS = new Set(["cards", "known", "library", "preferences"]);
 const APP_DB_TAB_LIBRARY_PENDING_KEY = "blackline-db-library-pending-tab-v1";
 
@@ -253,7 +263,14 @@ function invalidatePersistentLibraryReplay() {
 }
 
 function clearPendingLibraryForTab() {
+  persistentAppOwnPendingSections.delete("library");
   try { if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(APP_DB_TAB_LIBRARY_PENDING_KEY); } catch {}
+}
+
+function hasPendingLibraryForTab() {
+  try {
+    return typeof sessionStorage !== "undefined" && Boolean(sessionStorage.getItem(APP_DB_TAB_LIBRARY_PENDING_KEY));
+  } catch { return false; }
 }
 
 function alertPersistentLibraryConflict() {
@@ -297,6 +314,7 @@ async function useSavedPersistentLibrary() {
   persistentAppSectionRevisions.set("library", disk.updatedAt);
   persistentAppAcceptedSnapshots.set("library", copyPersistentLibrary(saved));
   persistentAppLibraryViewBaseline = copyPersistentLibrary(saved);
+  persistentAppLibraryViewRevision = disk.updatedAt;
   persistentAppUnreflectedLibraryWrites.clear();
   persistentAppUnresolvedConflicts.delete("library");
   persistentAppConflictViewBaselines.delete("library");
@@ -331,7 +349,11 @@ function rebasePersistentPlayback(base, local, remote) {
   const next = copyPersistentLibrary([remote])[0];
   // A watch flag, its author and its timestamp are one episode edit. Different
   // episodes can change on both devices without conflicting over the whole title.
-  const tracking = ["watchedChapters", "watchedChapterUpdatedAt", "watchedChapterOrigins"];
+  // A sync stamp and its replica identify the causal author of a watched
+  // choice. They must follow that very chapter's edit, never an unrelated
+  // whole-title metadata update from a different tab.
+  const tracking = ["watchedChapters", "watchedChapterUpdatedAt", "watchedChapterOrigins",
+    "watchedChapterSyncStamps", "watchedChapterReplicas"];
   for (const entry of [base, local, remote]) for (const field of tracking)
     if (entry[field] !== undefined && (!entry[field] || typeof entry[field] !== "object" || Array.isArray(entry[field]))) return null;
   const bundle = (entry, code) => Object.fromEntries(tracking
@@ -341,7 +363,18 @@ function rebasePersistentPlayback(base, local, remote) {
     if (!/^S\d{2}E\d{2,4}$/.test(code)) return null;
     const was = bundle(base, code), mine = bundle(local, code), theirs = bundle(remote, code);
     if (equal(was, mine)) continue;
-    if (!equal(was, theirs) && !equal(mine, theirs)) return null;
+    if (!equal(was, theirs) && !equal(mine, theirs)) {
+      const watched = entry => {
+        const choice = entry.watchedChapters?.[code];
+        return choice === false ? false
+          : choice === true || typeof choice === "number" && Number.isFinite(choice) && choice > 0 ? true : null;
+      };
+      // Two tabs may explicitly confirm the same watched choice at different
+      // times. Accept the already-saved causality for that idempotent choice;
+      // opposing watched/unwatched decisions still need a real user choice.
+      if (watched(local) !== null && watched(local) === watched(remote)) continue;
+      return null;
+    }
     for (const field of tracking) {
       if (Object.hasOwn(local[field] || {}, code)) {
         next[field] = next[field] || {};
@@ -356,7 +389,17 @@ function rebasePersistentPlayback(base, local, remote) {
   for (const episode of local.episodes) {
     const was = expected.episodes.find(item => item.fileIndex === episode.fileIndex);
     const incoming = next.episodes.find(item => item.fileIndex === episode.fileIndex);
-    if (!was || !incoming) return null;
+    if (!was) {
+      // An added local source episode is independent of a remote watch choice
+      // for another chapter. It must retain a unique concrete file identity.
+      if (!Number.isSafeInteger(episode.fileIndex) || episode.fileIndex < 0
+        || local.episodes.filter(item => item.fileIndex === episode.fileIndex).length !== 1
+        || incoming && !equal(incoming, episode)) return null;
+      expected.episodes.push(copyPersistentLibrary([episode])[0]);
+      if (!incoming) next.episodes.push(copyPersistentLibrary([episode])[0]);
+      continue;
+    }
+    if (!incoming) return null;
     if (!equal(was.progress, episode.progress)) {
       if (!equal(was.progress, incoming.progress) && !equal(episode.progress, incoming.progress)) return null;
       if (Object.hasOwn(episode, "progress")) incoming.progress = episode.progress;
@@ -364,6 +407,13 @@ function rebasePersistentPlayback(base, local, remote) {
     }
     if (Object.hasOwn(episode, "progress")) was.progress = episode.progress;
     else delete was.progress;
+  }
+  for (const prior of base.episodes) {
+    if (local.episodes.some(item => item.fileIndex === prior.fileIndex)) continue;
+    const incoming = next.episodes.find(item => item.fileIndex === prior.fileIndex);
+    if (incoming && !equal(prior, incoming)) return null;
+    expected.episodes = expected.episodes.filter(item => item.fileIndex !== prior.fileIndex);
+    next.episodes = next.episodes.filter(item => item.fileIndex !== prior.fileIndex);
   }
   for (const key of ["lastPlayedAt", "lastPlayedFileIndex"]) {
     if (Object.hasOwn(local, key)) expected[key] = local[key];
@@ -412,8 +462,18 @@ function rebasePersistentPlayback(base, local, remote) {
   const mappingFields = ["anilist", "anilistSync", "anilistManualLinks",
     "anilistAutoLinks", "anilistImported"];
   const edited = (a, b, keys) => keys.some(key => !sameField(a, b, key));
+  // A catalog rematch changes the identity under which a chapter was
+  // verified. Do not transfer a concurrent old-catalog watched choice,
+  // playback timestamp, or source-episode edit into the new catalog.
+  const watchedFields = ["watchedChapters", "watchedChapterUpdatedAt", "watchedChapterOrigins",
+    "watchedChapterSyncStamps", "watchedChapterReplicas", "watchedTitleAt"];
+  const changedChapterOrSource = (a, b) =>
+    edited(a, b, watchedFields) || !sameField(a, b, "episodes")
+      || edited(a, b, ["lastPlayedAt", "lastPlayedFileIndex"]);
   if ((edited(base, local, identityFields) && edited(base, remote, mappingFields))
-    || (edited(base, remote, identityFields) && edited(base, local, mappingFields))) return null;
+    || (edited(base, remote, identityFields) && edited(base, local, mappingFields))
+    || (edited(base, local, identityFields) && changedChapterOrSource(base, remote))
+    || (edited(base, remote, identityFields) && changedChapterOrSource(base, local))) return null;
   if (!applyOwned(identityFields) || !applyOwned(mappingFields)) return null;
   // Only understood, independent presentation fields may be rebased one at a
   // time. Any other local metadata edit remains subject to the old strict
@@ -555,6 +615,7 @@ export function persistAppSection(section, value, { immediate = false, merge = f
   const mode = merge ? "merge" : "replace";
   // The pop-up player window saves nothing: LVL's window does (no second writer, no conflicts).
   if (typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF) return;
+  if (section === "library" && !merge) persistentAppOwnPendingSections.add(section);
   const generation = (persistentAppWriteGenerations.get(section) || 0) + 1;
   persistentAppWriteGenerations.set(section, generation);
   if (section === "library" && !merge) preservePendingLibraryForTab(value);
@@ -650,7 +711,20 @@ export function persistAppSection(section, value, { immediate = false, merge = f
             // Exactly one retry, atomically CAS against the snapshot compared.
             return { result: await write(rebased, disk.updatedAt), savedValue: rebased };
           } catch (retryError) {
-            if (retryError?.status === 409) {
+            if (retryError?.status === 409 && retryError?.data?.error === "app_state_conflict") {
+              // A second CAS revision mismatch is a transport race, not
+              // automatically a collision between watched choices. Check the
+              // newly persisted snapshot once, then leave a safe disjoint
+              // delta pending for the bounded timer/manual retry path.
+              const latest = await fetchJson("/api/app-state/library");
+              if (persistentAppWriteGenerations.get(section) !== generation) return null;
+              if (Number.isSafeInteger(latest?.updatedAt)
+                && rebasePersistentLibrary(disk.value, rebased, latest?.value)) {
+                invalidatePersistentLibraryReplay();
+                persistentAppRetryAfter.set(section, Date.now() + 10_000);
+                console.warn("Library changed again during a safe edit. Retrying after a short delay.");
+                return null;
+              }
               if (typeof persistentAppUnresolvedConflicts !== "undefined")
                 persistentAppUnresolvedConflicts.add(section);
               invalidatePersistentLibraryReplay();
@@ -667,14 +741,17 @@ export function persistAppSection(section, value, { immediate = false, merge = f
       .then((completed) => {
         if (!completed) return;
         const { result, savedValue } = completed;
+        persistentAppRetryAfter.delete(section);
         if (Number.isFinite(Number(result?.updatedAt))) persistentAppSectionRevisions.set(section, Number(result.updatedAt));
         if (section === "library" && typeof persistentAppAcceptedSnapshots !== "undefined")
           persistentAppAcceptedSnapshots.set(section, copyPersistentLibrary(savedValue));
         if (persistentAppWriteGenerations.get(section) === generation) {
           if (section === "library") {
+            persistentAppPartialLibrarySaves.delete(section);
             state.library = copyPersistentLibrary(savedValue);
             if (typeof persistentAppLibraryViewBaseline !== "undefined")
               persistentAppLibraryViewBaseline = copyPersistentLibrary(savedValue);
+            persistentAppLibraryViewRevision = persistentAppSectionRevisions.get("library") ?? null;
             if (typeof persistentAppUnreflectedLibraryWrites !== "undefined")
               persistentAppUnreflectedLibraryWrites.clear();
             if (typeof storeLocalCopy === "function") storeLocalCopy("blackline-library", state.library);
@@ -705,6 +782,8 @@ export function persistAppSection(section, value, { immediate = false, merge = f
         }
       })
       .catch((error) => {
+        if (section === "library" && !persistentAppUnresolvedConflicts.has(section))
+          persistentAppRetryAfter.set(section, Date.now() + 10_000);
         console.warn(`Persistent ${section} save failed:`, error);
       })
       .finally(() => {
@@ -790,6 +869,7 @@ export async function hydratePersistentAppState() {
         const candidate = Array.isArray(parsed) ? parsed : parsed?.value;
         if (Array.isArray(candidate)) {
           tabPendingValue = copyPersistentLibrary(candidate);
+          persistentAppOwnPendingSections.add("library");
           tabPendingRevision = Number.isSafeInteger(parsed?.expectedUpdatedAt)
             ? parsed.expectedUpdatedAt : null;
           tabPendingSafeToReplay = parsed?.safeToReplay === true
@@ -933,6 +1013,11 @@ export async function hydratePersistentAppState() {
           }
         } else if (section === "library") {
           if (sameLibraryContent(localOverlay.library, payload.state.library)) {
+            // A previous window may have crashed after SQLite accepted its
+            // PUT but before clearing its tab shadow. There is no remaining
+            // unsaved intent once the disk has the exact same Library.
+            clearPendingLibraryForTab();
+            persistentAppPartialLibrarySaves.delete("library");
             setPersistentSectionDirty("library", false);
             continue;
           }
@@ -949,6 +1034,9 @@ export async function hydratePersistentAppState() {
       }
     }
     if (payload?.state && typeof payload.state === "object") applyPersistentAppState(payload.state);
+    persistentAppLibraryViewRevision = !persistentDirtySections().has("library")
+      && sameLibraryContent(state.library, persistentAppAcceptedSnapshots.get("library"))
+      ? persistentAppSectionRevisions.get("library") ?? null : null;
     persistentAppStateReady = true;
     for (const section of earlySaveSections) persistAppSection(section, persistentAppSnapshot()[section], { immediate: true });
     if (localCopyUnloaded.size) {
@@ -968,18 +1056,29 @@ export async function hydratePersistentAppState() {
 // Refresh a confirmed server revision without reloading the app or saving a stale
 // browser snapshot back over it. Pending edits keep their existing CAS workflow.
 export async function refreshPersistentLibrary({ revision } = {}) {
+  if (persistentAppRetryAfter.has("library") && Date.now() >= persistentAppRetryAfter.get("library")
+    && persistentAppStateReady && !POPUP_HANDOFF && hasPendingLibraryForTab()
+    && !persistentAppUnresolvedConflicts.has("library")
+    && !persistentAppWriteChains.has("library") && !persistentAppWriteTimers.has("library")) {
+    persistentAppRetryAfter.set("library", Date.now() + 10_000);
+    persistAppSection("library", state.library, { immediate: true });
+  }
   const blocked = () => !persistentAppStateReady || POPUP_HANDOFF
-    || persistentDirtySections().has("library") || persistentAppWriteTimers.has("library")
+    || persistentAppOwnPendingSections.has("library") || hasPendingLibraryForTab()
+    || persistentAppWriteTimers.has("library")
     || persistentAppWriteChains.has("library") || persistentAppUnresolvedConflicts.has("library");
   if (blocked() || !Number.isSafeInteger(revision)) return false;
-  if (revision <= (persistentAppSectionRevisions.get("library") || 0)) return true;
+  // Only an applied revision proves the window is current. An acknowledged
+  // SQLite write may be newer than the view when another local edit is queued.
+  const appliedRevision = persistentAppLibraryViewRevision ?? 0;
+  if (revision <= appliedRevision) return true;
   const generation = persistentAppWriteGenerations.get("library") || 0;
   const visible = copyPersistentLibrary(state.library);
   const disk = await fetchJson("/api/app-state/library");
   if (blocked() || generation !== (persistentAppWriteGenerations.get("library") || 0)
     || !sameLibraryContent(visible, state.library) || !Array.isArray(disk?.value)
     || !Number.isSafeInteger(disk.updatedAt) || disk.updatedAt < revision
-    || disk.updatedAt <= (persistentAppSectionRevisions.get("library") || 0)) return false;
+    || disk.updatedAt <= appliedRevision) return false;
   const baseline = persistentAppLibraryViewBaseline;
   const next = copyPersistentLibrary(disk.value);
   if (!sameLibraryContent(visible, baseline)) {
@@ -1010,6 +1109,7 @@ export async function refreshPersistentLibrary({ revision } = {}) {
   persistentAppSectionRevisions.set("library", disk.updatedAt);
   persistentAppAcceptedSnapshots.set("library", copyPersistentLibrary(disk.value));
   persistentAppLibraryViewBaseline = copyPersistentLibrary(disk.value);
+  persistentAppLibraryViewRevision = disk.updatedAt;
   persistentAppUnreflectedLibraryWrites.clear();
   state.library = next;
   storeLocalCopy("blackline-library", state.library);
@@ -1023,6 +1123,14 @@ export async function refreshPersistentLibrary({ revision } = {}) {
 // edit is still in the browser's pending CAS write. It would publish the old
 // Library and make a second device look as though the watched change vanished.
 export async function flushLibraryPersistenceBeforeSync() {
+  // A transient offline/503 failure left the browser's own full Library
+  // intent pending, but no writer is active. Retry using the same three-way
+  // CAS path before a manual account sync can publish an older disk snapshot.
+  if (persistentAppStateReady && hasPendingLibraryForTab()
+    && !persistentAppWriteTimers.has("library") && !persistentAppWriteChains.has("library")
+    && !persistentAppUnresolvedConflicts.has("library")) {
+    persistAppSection("library", state.library, { immediate: true });
+  }
   const deadline = Date.now() + 8_000;
   while (persistentAppWriteChains.has("library")) {
     const pending = persistentAppWriteChains.get("library");

@@ -40,6 +40,7 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.FrameLayout
 import android.widget.Button
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -166,9 +167,19 @@ class MainActivity : Activity() {
             visibility = View.GONE
             setOnClickListener { retryStartup() }
         }
+        val startupLogo = ImageView(this).apply {
+            setImageResource(R.drawable.ic_lvl_mark)
+            contentDescription = getString(R.string.startup_logo_description)
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_YES
+        }
         val startupPanel = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             gravity = Gravity.CENTER
+            val markSize = (88 * resources.displayMetrics.density).toInt()
+            addView(startupLogo, LinearLayout.LayoutParams(markSize, markSize).apply {
+                bottomMargin = (12 * resources.displayMetrics.density).toInt()
+            })
             addView(status, LinearLayout.LayoutParams(MATCH_PARENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
             addView(retryStartupButton, LinearLayout.LayoutParams(android.view.ViewGroup.LayoutParams.WRAP_CONTENT, android.view.ViewGroup.LayoutParams.WRAP_CONTENT))
         }

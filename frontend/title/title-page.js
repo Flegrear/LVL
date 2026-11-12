@@ -939,9 +939,16 @@ function featureTitleHeroMarkup(info) {
     size: "lg", icon: action.icon || "", attrs: action.attrs || {}, i18n: action.i18n !== false })).join("");
   const scores = (info.scores || []).filter((score) => Number.isFinite(Number(score.value)) && Number(score.value) > 0 && Number(score.value) <= 10)
     .map((score) => `<span class="title-rating" data-title-rating-provider="${escapeHtml(score.provider)}">${icon("star")}<strong>${escapeHtml(Number(score.value).toFixed(1))}</strong><span>${escapeHtml(score.provider)}</span></span>`).join("");
+  // Reserve the Android portrait before a remote cover is decoded. Retry the
+  // existing local file on error, then let the shared image fallback generate
+  // its inline monochrome placeholder. Only one image occupies this hero.
+  const comicPosterAttrs = info.comicsHero
+    ? ` width="200" height="300" fetchpriority="high"` : "";
+  const comicPosterFallback = info.comicsHero && info.posterFallback && info.posterFallback !== info.poster
+    ? ` data-fallback-src="${escapeHtml(info.posterFallback)}"` : "";
   const poster = info.poster
-    ? `<img class="title-hero__poster" src="${escapeHtml(info.poster)}" alt="${escapeHtml(`${info.name} cover`)}" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(info.name)}" />`
-    : `<img class="title-hero__poster" src="${escapeHtml(artworkFallback(info.name, { label: info.kind || "" }))}" alt="" />`;
+    ? `<img class="title-hero__poster" src="${escapeHtml(info.poster)}"${comicPosterAttrs} alt="${escapeHtml(`${info.name} cover`)}" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(info.name)}"${comicPosterFallback} />`
+    : `<img class="title-hero__poster" src="${escapeHtml(artworkFallback(info.name, { label: info.kind || "" }))}"${comicPosterAttrs} alt="${escapeHtml(info.comicsHero ? `${info.name} cover` : "")}" />`;
   if (info.comicsHero) return `<div class="title-hero comic-detail-hero">
     <div class="title-hero__bar">${titleBackButtonMarkup()}${comicsTitleSortMarkup()}</div>
     <div class="comic-detail-hero__body">

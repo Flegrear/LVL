@@ -101,19 +101,30 @@ export function createSyncLog({ storage, device, key = null }) {
       if (changes.length > MAX_CHANGES_PER_FILE) throw new Error("Too many changes for one sync file");
       const path = changePath(device, seq);
       const planned = { device, seq, changes };
-      try {
-        const version = await storage.write(path, await encode(path, planned), {});
-        return { path, version };
-      } catch (error) {
-        if (error.code !== "conflict") throw error;
-        // An HTTP response may have been lost after GitHub committed this exact
-        // immutable file. Reuse its identity only after verifying every record.
-        const existing = (await storage.list()).find((file) => file.path === path);
-        if (!existing) throw error;
-        const content = await readJson(path, existing.version);
-        if (content?.device !== device || content?.seq !== seq
-          || JSON.stringify(content.changes) !== JSON.stringify(changes)) throw error;
-        return { path, version: existing.version, replayed: true };
+      // Serialize once: a transient branch conflict may retry this exact
+      // immutable file, never invent another sequence, clock or set of changes.
+      const text = await encode(path, planned);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const version = await storage.write(path, text, {});
+          return { path, version };
+        } catch (error) {
+          if (error.code !== "conflict") throw error;
+          // GitHub may have committed the file but its response was lost.
+          const existing = (await storage.list()).find((file) => file.path === path);
+          if (existing) {
+            const content = await readJson(path, existing.version);
+            if (content?.device !== device || content?.seq !== seq
+              || JSON.stringify(content.changes) !== JSON.stringify(changes))
+              throw Object.assign(new Error(`${path} changed on GitHub; its immutable sequence cannot be replaced`),
+                { code: "sync_immutable_conflict" });
+            return { path, version: existing.version, replayed: true };
+          }
+          if (attempt === 2) throw error;
+          // The branch moved, but our path does not exist. Refresh its head
+          // and allow a bounded retry without changing the payload.
+          await storage.head?.();
+        }
       }
     },
     // Replaces this device's snapshot: all current changes, up to its change file `upTo`.

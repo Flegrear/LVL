@@ -5,7 +5,7 @@
 import { buttonMarkup, emptyMarkup, escapeHtml, icon, iconButtonMarkup, toast } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
-import { filterSources, readSourceChoice, saveSourceChoice, sourceChoice, sourceChoices } from "./comics-source-filter.js";
+import { filterSources, readSourceChoice, reconcileFavoriteSource, selectFavoriteSource, sourceChoice, sourceChoices, watchFavoriteSource } from "./comics-source-filter.js";
 import { WORK_ID } from "../../shared/reading/ids.js";
 
 const size = (bytes) => (bytes >= 1024 ** 3 ? `${(bytes / 1024 ** 3).toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`);
@@ -34,24 +34,36 @@ export function orderFavorites(favorites, langs) {
 }
 
 // Source IDs are stable across translated names and duplicate language entries.
+// Even two providers with the same visible name/language/host are distinguishable
+// by their exact ID; labels never become selection keys.
+export function favoriteSourceLabels(favorites = []) {
+  const options = sourceChoices(favorites);
+  const descriptions = options.map((source) => [source.name, languageName(source.lang), source.host].filter(Boolean).join(" · "));
+  const totals = new Map();
+  for (const description of descriptions) totals.set(description, (totals.get(description) || 0) + 1);
+  return new Map(options.map((source, index) => [String(source.id),
+    descriptions[index] + (totals.get(descriptions[index]) > 1 ? ` · #${source.id}` : "")]));
+}
+
 export function sourceFilterMarkup(favorites = [], selected = "") {
   const options = sourceChoices(favorites);
   if (!options.length) return "";
   const choice = sourceChoice(selected, options);
-  const current = options.find((item) => String(item.id) === choice);
-  const selectedLabel = current ? [current.name, languageName(current.lang), current.host].filter(Boolean).join(" · ") : t("All sources");
+  const labels = favoriteSourceLabels(options);
+  const selectedLabel = labels.get(choice) || t("All sources");
   const radio = (id, label) => `<button type="button" role="radio" data-comics-source-choice="${escapeHtml(id)}" aria-checked="${id === choice}"><span>${escapeHtml(label)}</span><span class="comic-source-filter__radio" aria-hidden="true"></span></button>`;
   return `<details class="comic-source-filter" data-comics-source-filter><summary aria-label="${escapeHtml(t("Filter by source"))}"><span>${escapeHtml(t("Source"))}</span><strong>${escapeHtml(selectedLabel)}</strong>${icon("chevron-down")}</summary>`
     + `<div class="comic-source-filter__menu" role="radiogroup" aria-label="${escapeHtml(t("Filter by source"))}">`
     + radio("", t("All sources"))
-    + options.map((source) => radio(String(source.id), [source.name, languageName(source.lang), source.host].filter(Boolean).join(" · "))).join("")
+    + options.map((source) => radio(String(source.id), labels.get(String(source.id)))).join("")
     + `</div></details>`;
 }
 
 export function sourceOptionsMarkup(sources = [], selected = "") {
   const choice = sourceChoice(selected, sources);
+  const labels = favoriteSourceLabels(sources);
   return `<option value="">${escapeHtml(t("All sources"))}</option>`
-    + sourceChoices(sources).map((source) => `<option value="${escapeHtml(source.id)}"${choice === String(source.id) ? " selected" : ""}>${escapeHtml([source.name, languageName(source.lang), source.host].filter(Boolean).join(" · "))}</option>`).join("");
+    + sourceChoices(sources).map((source) => `<option value="${escapeHtml(source.id)}"${choice === String(source.id) ? " selected" : ""}>${escapeHtml(labels.get(String(source.id)))}</option>`).join("");
 }
 
 const torrentsMarkup = (items, workId) => `<ol class="comic-source__torrents">${items.map((item) => `<li><span class="comic-source__name">${escapeHtml(item.name)}</span>`
@@ -198,6 +210,10 @@ export async function comicSourcesSection(holder, data, ctx) {
   let favorites = [];
   let favoritesError = "";
   let selectedSource = readSourceChoice();
+  let favoriteRevision = 0;
+  let initialized = false;
+  let poll = 0;
+  const localListeners = new AbortController();
   const results = new Map();
   const revisions = new Map();
   const loadLinked = async () => { linked = (await comicsApi.linked(id).catch(() => ({ linked: [] }))).linked || []; };
@@ -213,11 +229,16 @@ export async function comicSourcesSection(holder, data, ctx) {
   };
   const paint = () => {
     if (!favoritesError) selectedSource = sourceChoice(selectedSource, favorites);
-    const sourceFilter = sourceFilterMarkup(favorites, selectedSource);
+    const current = favorites.find((source) => String(source.id) === selectedSource);
+    const selectedLabel = current ? favoriteSourceLabels(favorites).get(selectedSource) : "";
     section.innerHTML = (linked.length ? `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("In use"))}</h2></div>${chosenMarkup(linked)}` : "")
       + `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("Favorite sources"))}</h2>`
       + (favorites.length ? iconButtonMarkup({ icon: "refresh", label: "Search again", size: "sm", attrs: { "data-comics-research": "" } }) : "") + "</div>"
-      + sourceFilter
+      // Source choice is in Home › Comics filters and Settings › Browse
+      // sources. This title uses that same source ID, not a third standalone
+      // picker. Clearing here remains available without losing saved reading
+      // source/chapter provenance.
+      + (current ? `<div class="comic-sources__selected" role="status"><span>${escapeHtml(t("Showing source"))}: <strong>${escapeHtml(selectedLabel)}</strong></span>${buttonMarkup({ label: "All sources", size: "sm", variant: "ghost", attrs: { "data-comics-source-clear": "" } })}</div>` : "")
       + `<div class="comic-sources__favorites" aria-live="polite"></div>`
       + `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("Packs to download"))}</h2>${buttonMarkup({ label: "Search packs", icon: "search", size: "sm", attrs: { "data-comics-find": "" } })}</div>`
       + `<div class="comic-sources__results" aria-live="polite"></div><div class="comic-sources__downloads"></div>`;
@@ -250,7 +271,7 @@ export async function comicSourcesSection(holder, data, ctx) {
   // otherwise claim success for hours while Cloudflare still rejects requests.
   const verifyAndSearch = (source) => verifyFlow(source, (item) => searchOne(item, { fresh: true }));
   async function loadCounts(source, result) {
-    if (result?.status !== "ok") return;
+    if (!sourceLifecycle.isActive() || result?.status !== "ok") return;
     const items = result.items.slice(0, COUNTED);
     for (const item of items) { const key = `${source.id}\n${item.path}`; if (!counts.has(key)) counts.set(key, previews.get(key) || null); }
     repaintSource(source);
@@ -258,44 +279,65 @@ export async function comicSourcesSection(holder, data, ctx) {
       const key = `${source.id}\n${item.path}`;
       if (counts.get(key)) continue;
       const preview = await comicsApi.extPreview(id, source.id, item.path).catch((error) => ({ status: "error", error: error.message }));
-      if (results.get(source.id) !== result) return; // searched again meanwhile
+      if (!sourceLifecycle.isActive() || results.get(source.id) !== result) return; // searched again meanwhile
       counts.set(key, preview);
       if (preview.status === "ok") previews.set(key, preview);
       repaintSource(source);
     }
   }
   const searchOne = async (source, { fresh = false } = {}) => {
+    if (!sourceLifecycle.isActive()) return null;
     const revision = (revisions.get(source.id) || 0) + 1;
     revisions.set(source.id, revision);
     results.delete(source.id);
     repaintSource(source);
     const result = await comicsApi.extSearch(id, source.id, { fresh }).catch((error) => ({ status: "error", error: error.message, items: [] }));
-    if (revisions.get(source.id) !== revision) return null;
+    if (!sourceLifecycle.isActive() || revisions.get(source.id) !== revision) return null;
     results.set(source.id, result);
     repaintSource(source);
     void loadCounts(source, result);
     return result;
   };
   const searchFavorites = async () => {
+    if (!sourceLifecycle.isActive()) return;
     for (const source of filterSources(favorites, selectedSource)) results.delete(source.id);
     paintFavorites();
     await Promise.all(filterSources(favorites, selectedSource).map(searchOne));
   };
-  await loadLinked();
   async function refreshFavoriteList() {
+    const revision = favoriteRevision;
     try {
-      favorites = orderFavorites((await comicsApi.favorites()).favorites || [], langs);
+      const fresh = orderFavorites((await comicsApi.favorites()).favorites || [], langs);
+      if (!sourceLifecycle.isActive() || revision !== favoriteRevision) return;
+      favorites = fresh;
       favoritesError = "";
     } catch (error) {
+      if (!sourceLifecycle.isActive() || revision !== favoriteRevision) return;
       favoritesError = String(error.message || t("Couldn't load sources."));
     }
   }
+  const onSourceChanged = (event) => {
+    if (Array.isArray(event.detail?.favorites)) {
+      ++favoriteRevision;
+      favorites = orderFavorites(sourceChoices(event.detail.favorites), langs);
+      favoritesError = "";
+    }
+    selectedSource = sourceChoice(event.detail?.sourceId, favorites);
+    if (!initialized) return;
+    paint();
+    void Promise.all(filterSources(favorites, selectedSource).filter((source) => !results.has(source.id)).map(searchOne));
+  };
+  const sourceLifecycle = watchFavoriteSource(section, onSourceChanged, () => {
+    localListeners.abort();
+    clearInterval(poll);
+    poll = 0;
+  });
+  await loadLinked();
+  if (!sourceLifecycle.isActive()) return;
   await refreshFavoriteList();
-  const previousSelection = selectedSource;
-  if (!favoritesError) {
-    selectedSource = sourceChoice(selectedSource, favorites);
-    if (previousSelection && !selectedSource) saveSourceChoice("");
-  }
+  if (!sourceLifecycle.isActive()) return;
+  if (!favoritesError) selectedSource = reconcileFavoriteSource(favorites);
+  initialized = true;
   paint();
   if (!favoritesError) void searchFavorites();
   // Entry details open in a popup.
@@ -343,10 +385,10 @@ export async function comicSourcesSection(holder, data, ctx) {
     paint();
     paintDialog();
   };
-  let poll = 0;
   const refreshDownloads = async () => {
     if (!section.isConnected) return clearInterval(poll);
     const { downloads } = await comicsApi.downloads().catch(() => ({ downloads: [] }));
+    if (!sourceLifecycle.isActive()) return;
     const mine = downloads.filter((item) => item.workId === id);
     const holderEl = section.querySelector(".comic-sources__downloads");
     if (holderEl) holderEl.innerHTML = downloadsMarkup(mine);
@@ -359,6 +401,7 @@ export async function comicSourcesSection(holder, data, ctx) {
     const resultsEl = section.querySelector(".comic-sources__results");
     resultsEl.innerHTML = `<div class="ui-skeleton comic-volumes__loading"></div>`;
     const payload = await comicsApi.workSources(id, langs);
+    if (!sourceLifecycle.isActive()) return;
     resultsEl.innerHTML = payload.sources.map((source) => {
       const body = source.status === "error" ? `<p class="comic-source__error">${escapeHtml(source.error)}</p>`
         : !source.items.length ? `<p class="comic-source__meta">${escapeHtml(t("No packs found"))}</p>` : torrentsMarkup(source.items, id);
@@ -372,13 +415,17 @@ export async function comicSourcesSection(holder, data, ctx) {
       if (button.matches("[data-comics-favorites-retry]")) {
         button.disabled = true;
         await refreshFavoriteList();
-        selectedSource = sourceChoice(selectedSource, favorites);
+        if (!favoritesError) selectedSource = reconcileFavoriteSource(favorites);
         paint();
         if (!favoritesError) void searchFavorites();
         return;
       }
       if (button.matches("[data-comics-find]")) { button.disabled = true; await searchPacks(); button.disabled = false; return; }
       if (button.matches("[data-comics-research]")) { await searchFavorites(); return; }
+      if (button.matches("[data-comics-source-clear]")) {
+        selectedSource = selectFavoriteSource("", favorites);
+        return;
+      }
       if (button.dataset.extRetry) { const source = favorites.find((item) => item.id === button.dataset.extRetry); if (source) await searchOne(source); return; }
       if (button.dataset.hitOpen !== undefined) { await openHit(button); return; }
       if (button.dataset.extCheck) {
@@ -445,34 +492,7 @@ export async function comicSourcesSection(holder, data, ctx) {
       button.disabled = false;
     }
   }
-  section.addEventListener("click", (event) => { void handleClick(event); });
-  section.addEventListener("click", (event) => {
-    const item = event.target.closest("[data-comics-source-choice]");
-    if (!item) return;
-    selectedSource = sourceChoice(item.dataset.comicsSourceChoice, favorites);
-    saveSourceChoice(selectedSource);
-    // Rebuild only the filter and results: preserve linked work and pack panels.
-    const filter = section.querySelector("[data-comics-source-filter]");
-    filter?.insertAdjacentHTML("beforebegin", sourceFilterMarkup(favorites, selectedSource));
-    filter?.remove();
-    paintFavorites();
-    void Promise.all(filterSources(favorites, selectedSource).filter((source) => !results.has(source.id)).map(searchOne));
-    section.querySelector("[data-comics-source-filter] summary")?.focus({ preventScroll: true });
-  });
-  section.addEventListener("keydown", (event) => {
-    const filter = event.target.closest("[data-comics-source-filter]");
-    if (!filter) return;
-    if (event.key === "Escape" && filter.open) {
-      filter.open = false;
-      filter.querySelector("summary")?.focus();
-      event.preventDefault();
-    } else if (["ArrowDown", "ArrowUp"].includes(event.key) && event.target.matches("[data-comics-source-choice]")) {
-      const buttons = [...filter.querySelectorAll("[data-comics-source-choice]")];
-      const at = buttons.indexOf(event.target);
-      buttons[(at + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
-      event.preventDefault();
-    }
-  });
+  section.addEventListener("click", (event) => { void handleClick(event); }, { signal: localListeners.signal });
 }
 
 // ---- Settings › Comics (cards, fields and switches like core Settings)
@@ -590,17 +610,21 @@ export async function sourcesSettingsSection(container) {
   const favoritesCard = (favorites) => cardMarkup({ title: t("Favorite sources"), badge: favorites.length ? String(favorites.length) : "",
     hint: favorites.length ? t("A comic's Sources tab searches these for it. Each site can have its own settings.") : "", body: favoritesBody(favorites), attrs: " data-favorites-section" });
   const render = async () => {
-    const [{ sources, downloads }, cache, { favorites }, prefs] = await Promise.all([comicsApi.sources(), comicsApi.cache().catch(() => null),
-      comicsApi.favorites().catch(() => ({ favorites: [] })), comicsApi.settings().catch(() => ({ showAdult: false }))]);
-    availableBrowseSources = sourceChoices(favorites);
-    selectedBrowseSource = sourceChoice(selectedBrowseSource, availableBrowseSources);
+    const [{ sources, downloads }, cache, favoriteReply, prefs] = await Promise.all([comicsApi.sources(), comicsApi.cache().catch(() => null),
+      comicsApi.favorites().catch(() => null), comicsApi.settings().catch(() => ({ showAdult: false }))]);
+    const favorites = favoriteReply?.favorites || [];
+    if (favoriteReply) {
+      availableBrowseSources = sourceChoices(favorites);
+      selectedBrowseSource = reconcileFavoriteSource(availableBrowseSources);
+    } else selectedBrowseSource = ""; // No verified favorites; leave the saved ID intact until a successful refresh.
     const field = (label, control) => `<label class="settings-field"><span>${escapeHtml(t(label))}</span>${control}</label>`;
     holder.innerHTML = favoritesCard(favorites)
       + cardMarkup({ title: t("Browse sources"), attrs: " data-extensions-section", hint: t("Add the sources you read from. A comic's Sources tab searches them for it."), body: `<div class="comics-repos"></div>`
         + `<form class="comics-filters" data-extension-search><div class="comics-filters__row">`
         + field("Search sources", `<input type="search" name="q" autocomplete="off" placeholder="${escapeHtml(t("Name or site"))}" />`)
         + field("Language", `<select name="lang"><option value="">${escapeHtml(t("All languages"))}</option></select>`)
-        + field("Source", `<select name="source" aria-label="${escapeHtml(t("Filter by source"))}">${sourceOptionsMarkup(availableBrowseSources, selectedBrowseSource)}</select>`)
+        + (favoriteReply ? sourceFilterMarkup(availableBrowseSources, selectedBrowseSource)
+          : `<p class="comic-source__error" role="alert">${escapeHtml(t("Couldn't load sources."))}</p>`)
         + "</div></form>"
         + `<ul class="comics-rows comics-extensions"></ul>` })
       + cardMarkup({ title: t("Content"), body: `<label class="ui-switch settings-switch-row"><input type="checkbox" data-show-adult${prefs.showAdult ? " checked" : ""} />`
@@ -619,13 +643,19 @@ export async function sourcesSettingsSection(container) {
   const paintFavorites = (favorites) => {
     const section = holder.querySelector("[data-favorites-section]");
     if (section) section.outerHTML = favoritesCard(favorites);
-    const select = holder.querySelector('[data-extension-search] select[name="source"]');
-    if (select) {
+    const filter = holder.querySelector("[data-extension-search] [data-comics-source-filter]");
+    if (filter || holder.querySelector("[data-extension-search]")) {
       const before = selectedBrowseSource;
       availableBrowseSources = sourceChoices(favorites);
-      selectedBrowseSource = sourceChoice(before, availableBrowseSources);
-      select.innerHTML = sourceOptionsMarkup(availableBrowseSources, selectedBrowseSource);
-      if (before !== selectedBrowseSource) { saveSourceChoice(selectedBrowseSource); void listExtensions(); }
+      selectedBrowseSource = reconcileFavoriteSource(availableBrowseSources);
+      filter?.insertAdjacentHTML("beforebegin", sourceFilterMarkup(availableBrowseSources, selectedBrowseSource));
+      filter?.remove();
+      if (!filter && availableBrowseSources.length) holder.querySelector("[data-extension-search] .comics-filters__row")
+        ?.insertAdjacentHTML("beforeend", sourceFilterMarkup(availableBrowseSources, selectedBrowseSource));
+      if (before !== selectedBrowseSource) void listExtensions();
+      // Refresh other connected Comics filter surfaces when the favorite list
+      // changes, including removal of an ID they previously offered.
+      selectFavoriteSource(selectedBrowseSource, availableBrowseSources);
     }
   };
   let languagesFilled = false;
@@ -688,10 +718,6 @@ export async function sourcesSettingsSection(container) {
       return listExtensions();
     }
     if (event.target.closest("[data-extension-search]")) {
-      if (event.target.name === "source") {
-        selectedBrowseSource = sourceChoice(event.target.value, availableBrowseSources);
-        saveSourceChoice(selectedBrowseSource);
-      }
       return listExtensions();
     }
     const toggle = event.target.closest("[data-source-toggle]");
@@ -712,6 +738,16 @@ export async function sourcesSettingsSection(container) {
     } catch (error) { return toast(error.message); }
   });
   holder.addEventListener("click", async (event) => {
+    const choice = event.target.closest("[data-extension-search] [data-comics-source-choice]");
+    if (choice) {
+      selectedBrowseSource = selectFavoriteSource(choice.dataset.comicsSourceChoice, availableBrowseSources);
+      const filter = holder.querySelector("[data-extension-search] [data-comics-source-filter]");
+      filter?.insertAdjacentHTML("beforebegin", sourceFilterMarkup(availableBrowseSources, selectedBrowseSource));
+      filter?.remove();
+      holder.querySelector("[data-extension-search] [data-comics-source-filter] summary")?.focus({ preventScroll: true });
+      void listExtensions();
+      return;
+    }
     const button = event.target.closest("button");
     if (!button || button.type === "submit") return;
     try {
@@ -752,6 +788,20 @@ export async function sourcesSettingsSection(container) {
       if (button.dataset.comicsCancel) { await comicsApi.cancelDownload(button.dataset.comicsCancel); await render(); await listExtensions(); return; }
       if (button.matches("[data-cache-clear]")) { await comicsApi.clearCache(); await render(); await listExtensions(); }
     } catch (error) { toast(error.message); button.disabled = false; }
+  });
+  holder.addEventListener("keydown", (event) => {
+    const filter = event.target.closest("[data-extension-search] [data-comics-source-filter]");
+    if (!filter) return;
+    if (event.key === "Escape" && filter.open) {
+      filter.open = false;
+      filter.querySelector("summary")?.focus();
+      event.preventDefault();
+    } else if (["ArrowDown", "ArrowUp"].includes(event.key) && event.target.matches("[data-comics-source-choice]")) {
+      const buttons = [...filter.querySelectorAll("[data-comics-source-choice]")];
+      const at = buttons.indexOf(event.target);
+      buttons[(at + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+      event.preventDefault();
+    }
   });
   await render();
   await listExtensions();

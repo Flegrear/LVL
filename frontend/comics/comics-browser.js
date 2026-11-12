@@ -6,6 +6,8 @@ import { bindHero, buttonMarkup, escapeHtml, heroMarkup, refreshImages } from ".
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
 import { formatLabel } from "./comics-render.js";
+import { sourceFilterMarkup } from "./comics-sources.js";
+import { readSourceChoice, reconcileFavoriteSource, selectFavoriteSource, sourceChoice, sourceChoices, watchFavoriteSource } from "./comics-source-filter.js";
 
 export const BROWSER_GENRES = Object.freeze(["Action", "Adventure", "Comedy", "Drama", "Ecchi", "Fantasy", "Horror", "Mahou Shoujo", "Mecha", "Music",
   "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"]);
@@ -13,7 +15,8 @@ export const BROWSER_GENRES = Object.freeze(["Action", "Adventure", "Comedy", "D
 const DEFAULT_FILTERS = Object.freeze({ q: "", type: "", sort: "POPULARITY_DESC", status: "", genre: "", year: String(new Date().getFullYear()) });
 // Kept while the app is open, like the anime browser's filters.
 const state = { filters: { ...DEFAULT_FILTERS }, items: [], page: 0, hasNextPage: false, loading: false, loaded: false, error: "", requestId: 0 };
-const changed = (filters) => Object.keys(DEFAULT_FILTERS).some((key) => (filters[key] || "") !== DEFAULT_FILTERS[key]);
+const changed = (filters, selectedSource = readSourceChoice()) =>
+  Object.keys(DEFAULT_FILTERS).some((key) => (filters[key] || "") !== DEFAULT_FILTERS[key]) || Boolean(selectedSource);
 
 const select = (label, name, options, value) => `<label>${escapeHtml(t(label))}<select name="${name}">${options.map(([key, text]) =>
   `<option value="${escapeHtml(key)}"${String(value) === String(key) ? " selected" : ""}>${escapeHtml(t(text))}</option>`).join("")}</select></label>`;
@@ -28,6 +31,10 @@ export function comicBrowserMarkup(filters = state.filters, { year = new Date().
     + select("Status", "status", [["", "Any status"], ["RELEASING", "Releasing"], ["FINISHED", "Finished"], ["HIATUS", "On hiatus"], ["CANCELLED", "Cancelled"], ["NOT_YET_RELEASED", "Not yet released"]], filters.status)
     + select("Genre", "genre", [["", "Any genre"], ...BROWSER_GENRES.map((genre) => [genre, genre])], filters.genre)
     + select("Year", "year", years, filters.year)
+    // Source is a favorite-provider choice, not an AniList API parameter. It
+    // lives inside this existing filter form so the phone's Filters disclosure
+    // can display and reset it alongside Type, Genre and Year.
+    + `<div class="comic-browser__source-filter" data-comic-browser-source-filter><input type="hidden" name="source" value="" /></div>`
     + buttonMarkup({ label: "Apply filters", variant: "primary", size: "sm", type: "submit" })
     + buttonMarkup({ label: "Reset", variant: "ghost", size: "sm", attrs: { "data-comic-browser-reset": "", hidden: !changed(filters) } })
     + `</form><p class="anime-browser-status" role="status" aria-live="polite"></p><div class="anime-browser-grid"></div>`
@@ -81,24 +88,103 @@ async function load(section, inLibrary, { append = false } = {}) {
 export function mountComicBrowser(section, { inLibrary = () => false } = {}) {
   if (!section) return;
   const form = section.querySelector("[data-comic-browser]");
+  let favorites = [];
+  let favoritesLoaded = false;
+  let selectedSource = readSourceChoice();
+  let favoriteRevision = 0;
+  const localListeners = new AbortController();
+  const sourceArea = form.querySelector("[data-comic-browser-source-filter]");
+  const sourceInput = sourceArea?.querySelector('input[name="source"]');
+  const paintSourceFilter = () => {
+    if (!sourceArea || !section.isConnected) return;
+    const selected = sourceChoice(selectedSource, favorites);
+    sourceArea.querySelector("[data-comics-source-filter]")?.remove();
+    // Keep the phone summary's hidden input across updates, without rendering
+    // a second native source selector or changing AniList's request filters.
+    sourceArea.insertAdjacentHTML("beforeend", sourceFilterMarkup(favorites, selected));
+    if (sourceInput) {
+      sourceInput.value = selected;
+      sourceInput.dataset.sourceLabel = sourceArea.querySelector("[data-comics-source-filter] summary strong")?.textContent || "";
+      sourceInput.dispatchEvent(new Event("input", { bubbles: true }));
+    }
+    if (!favorites.length && favoritesLoaded && !sourceArea.querySelector("[data-comic-no-favorites]")) {
+      sourceArea.insertAdjacentHTML("beforeend", `<p class="comic-source__meta" data-comic-no-favorites>${escapeHtml(t("Add favorite sources in Settings › Comics."))}</p>`);
+    } else if (favorites.length) sourceArea.querySelector("[data-comic-no-favorites]")?.remove();
+    const reset = form.querySelector("[data-comic-browser-reset]");
+    if (reset) reset.hidden = !changed(state.filters, selectedSource);
+  };
+  const initialFavoritesRevision = favoriteRevision;
+  comicsApi.favorites().then(({ favorites: values = [] }) => {
+    if (!sourceLifecycle.isActive() || initialFavoritesRevision !== favoriteRevision) return;
+    favorites = sourceChoices(values);
+    favoritesLoaded = true;
+    selectedSource = reconcileFavoriteSource(favorites);
+    paintSourceFilter();
+  }).catch(() => {
+    if (!sourceLifecycle.isActive()) return;
+    sourceArea?.insertAdjacentHTML("beforeend", `<p class="comic-source__error" role="alert">${escapeHtml(t("Couldn't load sources."))}</p>`);
+  });
+  const onSourceChange = (event) => {
+    if (Array.isArray(event.detail?.favorites)) {
+      ++favoriteRevision;
+      favorites = sourceChoices(event.detail.favorites);
+      favoritesLoaded = true;
+    }
+    selectedSource = sourceChoice(event.detail?.sourceId, favorites);
+    if (favoritesLoaded) paintSourceFilter();
+  };
+  const sourceLifecycle = watchFavoriteSource(section, onSourceChange, () => {
+    localListeners.abort();
+    if (state.loading) {
+      ++state.requestId;
+      state.loading = false;
+      state.loaded = false;
+    }
+  });
   const read = () => {
     const data = new FormData(form);
     for (const key of Object.keys(DEFAULT_FILTERS)) state.filters[key] = String(data.get(key) || "").trim();
     const reset = form.querySelector("[data-comic-browser-reset]");
-    if (reset) reset.hidden = !changed(state.filters);
+    if (reset) reset.hidden = !changed(state.filters, selectedSource);
   };
-  form.addEventListener("submit", (event) => { event.preventDefault(); read(); void load(section, inLibrary); });
-  form.addEventListener("change", (event) => { if (event.target.name !== "q") form.requestSubmit(); });
+  form.addEventListener("submit", (event) => { event.preventDefault(); read(); void load(section, inLibrary); }, { signal: localListeners.signal });
+  form.addEventListener("change", (event) => {
+    if (event.target.name !== "q" && event.target.name !== "source") form.requestSubmit();
+  }, { signal: localListeners.signal });
   section.addEventListener("click", (event) => {
+    const sourceButton = event.target.closest("[data-comics-source-choice]");
+    if (sourceButton && form.contains(sourceButton) && favoritesLoaded) {
+      selectedSource = selectFavoriteSource(sourceButton.dataset.comicsSourceChoice, favorites);
+      sourceArea.querySelector("[data-comics-source-filter] summary")?.focus({ preventScroll: true });
+      return;
+    }
     if (event.target.closest("[data-comic-browser-more]") && !state.loading) void load(section, inLibrary, { append: true });
     if (event.target.closest("[data-comic-browser-reset]")) {
+      sourceLifecycle.dispose();
+      selectedSource = "";
+      selectFavoriteSource("", favorites);
       state.filters = { ...DEFAULT_FILTERS };
+      Object.assign(state, { requestId: state.requestId + 1, items: [], page: 0, loaded: false, loading: false, hasNextPage: false });
       const fresh = document.createElement("div");
       fresh.innerHTML = comicBrowserMarkup();
       section.replaceWith(fresh.firstElementChild);
       mountComicBrowser(document.querySelector("#comic-browser"), { inLibrary });
     }
-  });
+  }, { signal: localListeners.signal });
+  form.addEventListener("keydown", (event) => {
+    const disclosure = event.target.closest("[data-comics-source-filter]");
+    if (!disclosure) return;
+    if (event.key === "Escape" && disclosure.open) {
+      disclosure.open = false;
+      disclosure.querySelector("summary")?.focus();
+      event.preventDefault();
+    } else if (["ArrowDown", "ArrowUp"].includes(event.key) && event.target.matches("[data-comics-source-choice]")) {
+      const buttons = [...disclosure.querySelectorAll("[data-comics-source-choice]")];
+      const at = buttons.indexOf(event.target);
+      buttons[(at + (event.key === "ArrowDown" ? 1 : buttons.length - 1)) % buttons.length]?.focus();
+      event.preventDefault();
+    }
+  }, { signal: localListeners.signal });
   if (state.loaded || state.loading) paintResults(section, inLibrary);
   else void load(section, inLibrary);
 }

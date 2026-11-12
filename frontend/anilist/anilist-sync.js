@@ -1,6 +1,7 @@
 // AniList: automatic sync, scores and the library import.
 import { toast } from "../ui/ui.js";
 import { chapterCode } from "../../shared/media/series-sources.js";
+import { videoPartialProgress } from "../../shared/sync/video-state.js";
 import {
   canLinkAniListTv, fillMissingAniListAverages, importedEntryId, planAniListLibrary, seriesAniList,
   verifiedAniListLibraryIdentity,
@@ -528,6 +529,11 @@ function applyAniListRemoteWatchHistory(remote, accountId = readAniListAccount(l
         const mapped = resolveAniListEpisode({ seasons: info.seasons, ranges: info.ranges || [], episodeCode: code, type: series.type });
         if (!mapped || mapped.mediaId !== Number(part.anilistId) || Object.hasOwn(watched, code)
           || explicitlyUnwatchedChapter(series, code)) continue;
+        // The remote service stores a contiguous count, not individual episode
+        // evidence. Do not hide an actual 16/22-minute local resume simply
+        // because a later episode has been marked or imported.
+        if (series.sources.some((source) => (source.episodes || []).some((item) =>
+          String(item.code || "").toUpperCase() === code && videoPartialProgress(item.progress)))) continue;
         watched[code] = Date.now();
         anchor.watchedChapterOrigins = { ...(anchor.watchedChapterOrigins || {}), [code]: {
           source: "anilist", accountUserId: accountId, mediaId: mapped.mediaId, updatedAt: watched[code] } };

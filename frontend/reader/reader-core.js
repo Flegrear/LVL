@@ -67,6 +67,22 @@ export function readerChapterNeighbours(chapters = [], current = {}) {
 }
 
 export const MAX_NEXT_CHAPTER_PRELOAD = 3;
+// A cascade handover may keep only the immediately adjacent chapter's two
+// edge images; the existing active reader remains the sole progress owner.
+export const MAX_CASCADE_BRIDGE_PAGES = 2;
+export function cascadeBridgePageWindow(total, edge = "tail", start = 0) {
+  if (!Number.isSafeInteger(total) || total < 1 || !Number.isSafeInteger(start) || start < 0 || start >= total)
+    return [];
+  const first = edge === "head" ? start : Math.max(0, total - MAX_CASCADE_BRIDGE_PAGES);
+  const last = edge === "head" ? Math.min(total, first + MAX_CASCADE_BRIDGE_PAGES) : total;
+  return Array.from({ length: last - first }, (_, n) => first + n);
+}
+export function cascadeBridgeSameOwner(from, to) {
+  if (!from || !to || !from.fileId || !to.fileId || from.fileId === to.fileId
+      || !from.workId || from.workId !== to.workId) return false;
+  const source = (owner) => owner.fileId.startsWith("ex-") ? owner.sourceId : "local";
+  return Boolean(source(from) && source(from) === source(to));
+}
 export function normalizeNextChapterPreload(value, fallback = 2) {
   const count = Number(value);
   return Number.isSafeInteger(count) && count >= 0
@@ -280,14 +296,41 @@ export function createReaderScrollIntentController(stage, { onScroll, enterImmer
   };
 }
 
-// Click on the left or right third turns the page (scrolls the long strip); the middle
-// toggles the bars. The third on the side the story goes moves forward.
+// The middle 60% toggles the HUD; only the outer 20% on either side turns
+// pages (or scrolls the strip). These ratios work in portrait and landscape.
 export function clickAction(x, width, mode) {
   if (!(width > 0)) return "bars";
-  const third = x / width;
-  if (third > 1 / 3 && third < 2 / 3) return "bars";
-  const left = third <= 1 / 3;
+  const fraction = x / width;
+  if (fraction >= 0.2 && fraction <= 0.8) return "bars";
+  const left = fraction < 0.2;
   return (mode.direction === "rtl") === left ? "next" : "prev";
+}
+
+// Prevent a native click generated after a drag, scroll or pinch from acting as
+// a page tap. Pointer-up also measures movement: a short gesture may have no
+// pointermove sample before the browser dispatches pointerup and click.
+export function createReaderTapGuard({ now = Date.now, travel = 12, quietMs = 350 } = {}) {
+  let pointer = null;
+  let blockedUntil = -Infinity;
+  const suppress = () => { pointer = null; blockedUntil = now() + quietMs; };
+  const traveled = (event) => pointer && event.pointerId === pointer.id
+    && Math.hypot(event.clientX - pointer.x, event.clientY - pointer.y) > travel;
+  return {
+    pointerDown(event) {
+      if (event.isPrimary === false) { suppress(); return; }
+      pointer = { id: event.pointerId, x: event.clientX, y: event.clientY };
+    },
+    pointerMove(event) { if (traveled(event)) suppress(); },
+    pointerUp(event) {
+      if (traveled(event)) suppress();
+      else if (pointer?.id === event.pointerId) pointer = null;
+    },
+    pointerCancel: suppress,
+    multiTouch: suppress,
+    scroll: suppress,
+    suppress,
+    blocked: () => now() < blockedUntil,
+  };
 }
 
 // Mouse wheel on pages (user, 2026-11-01): reading left to right, wheel up moves forward;

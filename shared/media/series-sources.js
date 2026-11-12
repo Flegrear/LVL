@@ -5,6 +5,7 @@
 // chapter) or a *pack* (a season, an episode range or the whole series, where this chapter is one
 // file). Episode files come first. A pack is still usable: the backend streams only the chosen
 // file, and Library entries created from a pack keep only the chapters the user picked.
+import { videoProgressComplete, videoPartialProgress } from '../sync/video-state.js';
 
 const VIDEO_EXTENSION = /\.(?:mkv|mp4|m4v|avi|mov|webm|ts|m2ts|wmv|flv)$/i;
 // Provider stats lines: 👤 peers, 💾 size, ⚙️ origin, 📺 quality, 🌐 languages, and flag emoji.
@@ -387,9 +388,9 @@ export function packChapterMap(files, seasons) {
 // copy wins over incomplete ones, and partial progress uses the most recently
 // updated resume point.
 export function chapterWatchStatus(refs = []) {
-  const progress = refs.map((ref) => ref?.episode?.progress).filter((item) => item?.durationMs > 0);
-  const watched = progress.some((item) => item.finished);
-  const resume = progress.filter((item) => !item.finished && item.positionMs > 0)
+  const progress = refs.map((ref) => ref?.episode?.progress).filter((item) => Number(item?.durationMs) > 0);
+  const watched = progress.some(videoProgressComplete);
+  const resume = progress.filter((item) => videoPartialProgress(item) && item.positionMs > 0)
     .sort((a, b) => (Number(b.updatedAt) || 0) - (Number(a.updatedAt) || 0))[0] || null;
   const percent = watched ? 100 : resume
     ? Math.round(Math.max(0, Math.min(1, resume.positionMs / resume.durationMs)) * 100) : 0;

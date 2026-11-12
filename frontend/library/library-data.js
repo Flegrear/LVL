@@ -8,6 +8,7 @@ import { saveLibrary } from "../app/saved-state.js";
 import { $ } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { episodeIdentity, normalizeCollectionTitle, sourceTagFor } from "../player/player-tracks.js";
+import { verifiedVideoWorkKey } from "../../shared/sync/video-state.js";
 import { episodeSortKey, partitionTorrentVideos, sortedVideoFiles } from "../player/torrent-playback.js";
 import { renderLibrary, updateLibrarySummary } from "./library-page.js";
 import { catalogResultYear, compareLibrarySourceRefsByPeers } from "../catalog/catalog-search.js";
@@ -237,8 +238,10 @@ export function buildLibrarySeries() {
     if (entry.libraryHidden === true) return;
     const key = entry.seriesKey || librarySeriesKey(entry.title);
     const displayTitle = entry.displayTitle || entry.title;
-    const group = groups.get(key) || {
+    const groupId = verifiedVideoWorkKey(entry) || `legacy:${key}`;
+    const group = groups.get(groupId) || {
       key,
+      routeKey: groupId,
       title: displayTitle,
       type: entry.catalogType === "movie" ? "movie" : "series",
       mediaKind: entry.mediaKind || "",
@@ -288,9 +291,17 @@ export function buildLibrarySeries() {
       season.push(ref);
       group.seasons.set(seasonNumber, season);
     });
-    groups.set(key, group);
+    groups.set(groupId, group);
   });
-  return [...groups.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
+  const result = [...groups.values()];
+  // Two verified IMDb titles can have the SAME translated/normalized title.
+  // Retain historical series.key for ordinary Library/AniList integration,
+  // but assign both colliding groups a stable qualified action key. Doing
+  // this for *both* makes routing independent of Library insertion order.
+  const counts = new Map();
+  for (const item of result) counts.set(item.key, (counts.get(item.key) || 0) + 1);
+  for (const item of result) if (counts.get(item.key) > 1) item.key = `catalog:${item.routeKey}`;
+  return result.sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
 }
 
 export function addCatalogPlaceholder(meta, { aliases = [], externalSource = "CATALOG", externalId = "", render = true } = {}) {
@@ -354,7 +365,7 @@ function currentSeriesChapters() {
   const entry = libraryEntryById(source.libraryId);
   if (!entry) return [];
   const key = entry.seriesKey || librarySeriesKey(entry.title);
-  const series = buildLibrarySeries().find((item) => item.key === key);
+  const series = buildLibrarySeries().find((item) => item.sources.includes(entry));
   if (!series) return [];
   const chapters = [];
   [...series.seasons.entries()]
@@ -396,7 +407,7 @@ export function currentChapterSources() {
   const currentEpisode = currentEntry?.episodes?.find((episode) => Number(episode.fileIndex) === Number(source.fileIndex));
   if (!currentEntry || !currentEpisode) return [];
   const seriesKey = currentEntry.seriesKey || librarySeriesKey(currentEntry.title);
-  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  const series = buildLibrarySeries().find((item) => item.sources.includes(currentEntry));
   if (!series) return [];
   if (series.type === "movie") {
     return [...series.seasons.values()].flatMap((items) => items).concat(series.extras || []).sort(compareLibrarySourceRefsByPeers);
@@ -449,9 +460,10 @@ export async function resolveCatalogMetaForLibrarySeries(series) {
 
 export function updateLibrarySeriesEntries(seriesKey, updater) {
   let changed = false;
+  const qualified = String(seriesKey).startsWith('catalog:');
   state.library.forEach((entry) => {
     const key = entry.seriesKey || librarySeriesKey(entry.title);
-    if (key !== seriesKey) return;
+    if (qualified ? `catalog:${verifiedVideoWorkKey(entry)}` !== seriesKey : key !== seriesKey) return;
     updater(entry);
     changed = true;
   });

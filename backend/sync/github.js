@@ -42,8 +42,16 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
     const data = await response.json().catch(() => ({}));
     if (response.ok) return { data, etag: response.headers.get("etag") || "", link: response.headers.get("link") || "" };
     const remaining = response.headers.get("x-ratelimit-remaining");
-    if ((response.status === 403 || response.status === 429) && (remaining === "0" || response.headers.get("retry-after")))
-      throw githubError("GitHub's request limit is reached; LVL tries again later", response.status, "rate-limited");
+    if ((response.status === 403 || response.status === 429) && (remaining === "0" || response.headers.get("retry-after") || response.status === 429)) {
+      const retry = response.headers.get("retry-after");
+      const seconds = retry && /^\d+$/.test(retry) ? Number(retry) * 1000
+        : retry ? Date.parse(retry) - Date.now() : NaN;
+      const reset = Number(response.headers.get("x-ratelimit-reset")) * 1000 - Date.now();
+      const error = githubError("GitHub's request limit is reached; LVL tries again later", response.status, "rate-limited");
+      error.retryAfterMs = Math.max(30_000, Math.min(15 * 60_000,
+        Number.isFinite(seconds) && seconds > 0 ? seconds : Number.isFinite(reset) && reset > 0 ? reset : 5 * 60_000));
+      throw error;
+    }
     if (response.status === 401) throw githubError("The GitHub sign-in ended", 401, "signed-out");
     throw githubError(data.message || `GitHub answered HTTP ${response.status}`, response.status, response.status === 404 ? "not-found" : "");
   }

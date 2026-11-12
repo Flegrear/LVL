@@ -5,7 +5,7 @@ import { escapeHtml, toast } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
 import { comicKey, formatLabel, libraryEntry, loadLibrary } from "./comics-render.js";
-import { bindComicAbout, comicAboutMarkup, mangaBlocks } from "./comics-manga.js";
+import { bindComicAbout, comicAboutMarkup, mangaBlocks, resumeComicReading, resumeReaderQuery } from "./comics-manga.js";
 import { chapterSortPreference, groupPreference, saveChapterSortPreference, saveGroupPreference } from "./comics-chapters.js";
 import { pushScore } from "./comics-tracking.js";
 import { mountMangaScore } from "./comics-score.js";
@@ -37,17 +37,34 @@ export function loadComicTitle(id, ctx) {
   return entry.pending;
 }
 
-export function describeComic(comic, { index = null, inLibrary = false } = {}) {
+// Title artwork comes from AniList (https) or LVL's own signed/archived
+// images. Never let an imported source URL become executable image markup.
+// An archive cover is a useful recovery path if a remote URL expires, with
+// the existing image-fallback handler handling the failed request once.
+function comicCoverUrl(value) {
+  const url = String(value || "").trim();
+  if (/^https:\/\/[^\s/?#@]+(?:[/?#][^\s]*)?$/i.test(url)) return url;
+  if (/^\/api\/reader\/files\/f[0-9a-f]{16}\/pages\/0$/.test(url)) return url;
+  if (/^\/api\/comics\/ext\/image\?[^#\s]+$/.test(url)) return url;
+  return "";
+}
+
+export function describeComic(comic, { index = null, inLibrary = false, files = [] } = {}) {
   const chapters = index?.chapterCount || comic.chapters || 0;
   const volumes = (index?.volumes || []).filter((group) => group.volume).length || comic.volumes || 0;
   const credits = (comic.staff || []).filter((person) => /^(?:story|art|story & art|original (?:story|creator))\b/i.test(person.role || ""))
     .map((person) => person.name).filter(Boolean).slice(0, 2);
+  const archive = files.find((file) => /^f[0-9a-f]{16}$/.test(String(file?.id || "")) && !file.error);
+  const archiveCover = archive ? `/api/reader/files/${archive.id}/pages/0` : "";
+  const remoteCover = comicCoverUrl(comic.cover);
+  const poster = remoteCover || archiveCover;
   return {
     comicsHero: true,
     kind: t(formatLabel(comic)),
     name: comic.title,
     subtitle: comic.aliases?.[0] && comic.aliases[0] !== comic.title ? comic.aliases[0] : "",
-    poster: comic.cover || "",
+    poster,
+    posterFallback: poster && poster !== archiveCover ? archiveCover : "",
     backdrop: comic.banner || comic.cover || "",
     description: String(comic.description || "").split(/\n{2,}/).filter(Boolean).join(" "),
     genres: (comic.genres || []).slice(0, 6).map((genre) => t(genre)),
@@ -69,7 +86,8 @@ export const comicTitleSubject = {
     if (!known) { void loadComicTitle(id, ctx); return null; }
     if (known.state === "loading") return null;
     if (known.state === "missing" || !known.comic) return { missing: true };
-    return { ...describeComic(known.comic, { index: known.index, inLibrary: Boolean(libraryEntry(id)) || known.comic.local }),
+    return { ...describeComic(known.comic, { index: known.index, files: known.files,
+      inLibrary: Boolean(libraryEntry(id)) || known.comic.local }),
       aboutHtml: comicAboutMarkup(known.comic, known.files, known.index) };
   },
   // The hero's floating Resume control and LVL score. Library status now
@@ -96,6 +114,7 @@ export const comicTitleSubject = {
     }
     if (!parts.hero.dataset.comicsBound) {
       parts.hero.dataset.comicsBound = "1";
+      let resumeSerial = 0;
       parts.hero.addEventListener("click", (event) => {
         const order = event.target.closest("[data-comic-sort-order]");
         if (order) {
@@ -111,9 +130,23 @@ export const comicTitleSubject = {
         }
         const button = event.target.closest("[data-comic-continue]");
         if (!button) return;
-        const block = mangaBlocks.get(button.dataset.comicContinue);
-        if (block?.element.isConnected) { block.element.scrollIntoView({ block: "start", behavior: "smooth" }); void block.continueReading(); }
-        else toast(t("The chapter list is still loading."));
+        const targetId = button.dataset.comicContinue;
+        const block = mangaBlocks.get(targetId);
+        if (block?.element.isConnected) { void block.continueReading(); return; }
+        // Hero Resume works while the chapter list is still loading.
+        const serial = ++resumeSerial;
+        const startRoute = window.location.pathname + window.location.search;
+        const isCurrent = () => serial === resumeSerial && aboutFor.id === targetId && button.isConnected &&
+          window.location.pathname + window.location.search === startRoute;
+        void resumeComicReading(targetId, null, {
+          isCurrent,
+          open: (target) => ctx.switchView("comic", { query: resumeReaderQuery(targetId, target) }),
+          onEmpty: () => toast(t("The chapter list is still loading.")),
+          onUnavailable: (target) => {
+            toast(t(target.reason || "The saved source is unavailable. Choose a source to continue."));
+            ctx.openFeatureTitle({ feature: "comics", item: targetId, historyMode: "replace" });
+          },
+        }).catch((error) => { if (isCurrent()) toast(t(error?.message || "Couldn't load reading progress.")); });
       });
       parts.hero.addEventListener("change", (event) => {
         if (!event.target.matches("[data-comic-group-volumes]")) return;

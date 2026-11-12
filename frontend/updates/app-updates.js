@@ -1,6 +1,6 @@
 // Updates: the update card, notifications and the changelog.
 import { toast } from "../ui/ui.js";
-import { updateIsActive, updateView } from "./update-view.js";
+import { ANDROID_APK_HANDOFF, androidApkInstall, updateIsActive, updateView } from "./update-view.js";
 import { settingsView } from "../../app.js";
 import { $, setToolStatus } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
@@ -73,6 +73,19 @@ function readUpdatePending() {
   }
   return pending;
 }
+// A replacement may terminate the whole Android process before any browser
+// poll records the download. Only the native signed installed-package journal
+// (not PackageInstaller's unverified success callback) may recover that notice.
+function nativeConfirmedCompletion(report) {
+  const apk = report?.apkInstall;
+  const version = typeof apk?.version === "string" ? apk.version : "";
+  if (!report?.installed || apk?.phase !== "confirmed" || !/^\d+\.\d+\.\d+$/.test(version)
+      || String(report.installedVersion || "") !== version) return null;
+  const acknowledged = readStoredJson(UPDATE_ACKNOWLEDGED_KEY)?.version;
+  if (acknowledged === version || appVersionAdvances(version, acknowledged)) return null;
+  return { from: null, to: version, at: Number(apk.createdAtMillis) || Date.now(),
+    active: false, completed: true, source: "verified-native-apk" };
+}
 function acknowledgeUpdateCompletion(version) {
   const pending = readUpdatePending();
   if (pending?.to === version) writeStoredJson(UPDATE_PENDING_KEY, null);
@@ -109,7 +122,15 @@ function paintUpdateProgress(holder, view, label = "") {
 }
 export function paintAppUpdateCard() {
   const report = appUpdateSettingsSnapshot;
-  const pending = readUpdatePending();
+  let pending = readUpdatePending();
+  const confirmed = nativeConfirmedCompletion(report);
+  if (confirmed && (!pending || (pending.to !== confirmed.to
+      && appVersionAdvances(pending.to, confirmed.to)))) {
+    // The signed installed version wins over a genuinely stale earlier
+    // browser attempt. Never erase another window's newer in-flight version.
+    writeStoredJson(UPDATE_PENDING_KEY, confirmed);
+    pending = confirmed;
+  }
   const view = updateView({ report, downSince: appUpdateDownSince, pending,
     loadedVersion: loadedServerVersion || "",
     later: readStoredJson(UPDATE_LATER_KEY), now: Date.now() });
@@ -117,7 +138,8 @@ export function paintAppUpdateCard() {
   // Remember the update across the reload, so the new window can say it worked.
   if ((view.phase === "downloading" || view.phase === "installing") && report?.installedVersion
       && !(pending?.to === view.version && pending.active))
-    writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version, at: Date.now(), active: true });
+    writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version,
+      at: Date.now(), active: true, androidApk: androidApkInstall(report) });
   else if (view.phase === "ready" && report?.update?.installsWhenIdle && report?.installedVersion && pending?.to !== view.version)
     writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version, at: Date.now(), active: false });
   else if (view.phase === "ready" && pending?.active && pending.to !== view.version)
@@ -189,15 +211,18 @@ function paintAppUpdateSettings(report) {
   let failure = false;
   if (installed) {
     if (view.phase === "downloading") message = `Downloading LVL ${view.version}.`;
-    else if (updating) message = report?.update?.pendingConfirmation
-      ? "Waiting for you to confirm the update in Android."
+    else if (updating) message = androidApkInstall(report)
+      ? (report?.update?.pendingConfirmation ? `Waiting for Android installation confirmation. ${ANDROID_APK_HANDOFF}`
+        : ANDROID_APK_HANDOFF)
       : "Installing the update. LVL restarts on its own when it's done.";
     else if (view.phase === "failed") { message = view.detail; failure = true; }
     else if (view.phase === "updated") message = `LVL updated to ${view.version}.`;
     else if (report.checking) message = "Checking the update feed…";
     else if (report.available) message = automatic
       ? `LVL ${report.availableVersion} is available. It installs by itself when no video is open, or select Install now.`
-      : `LVL ${report.availableVersion} is available. Select Install to update; LVL restarts on its own.`;
+      : androidApkInstall(report)
+        ? `LVL ${report.availableVersion} is available. Select Install to update. ${ANDROID_APK_HANDOFF}`
+        : `LVL ${report.availableVersion} is available. Select Install to update; LVL restarts on its own.`;
     else if (report?.error && manualAppUpdateCheck) { message = `Update check failed: ${report.error}`; failure = !report?.checking; }
     else if (report.lastCheckedAt) message = "No newer version found at the last check.";
     else message = "No checks completed yet. Check now, or enable automatic checks.";
@@ -266,9 +291,13 @@ export function wireAppUpdateSettings() {
   $("#settings-app-updates-install")?.addEventListener("click", async () => {
     if (appUpdateSettingsBusy || !appUpdateSettingsSnapshot?.available) return;
     appUpdateSettingsBusy = true;
+    const androidApk = androidApkInstall(appUpdateSettingsSnapshot);
+    setToolStatus("#settings-app-updates-status", androidApk ? ANDROID_APK_HANDOFF
+      : "Installing the update. LVL restarts on its own when it's done.");
     try {
       paintAppUpdateSettings(await postJson("/api/app-updates/install", {}));
-      setToolStatus("#settings-app-updates-status", "Installing the update. LVL restarts on its own when it's done.");
+      setToolStatus("#settings-app-updates-status", androidApk ? ANDROID_APK_HANDOFF
+        : "Installing the update. LVL restarts on its own when it's done.");
     } catch (error) {
       setToolStatus("#settings-app-updates-status", error.message || "Couldn't start the verified update", true);
     } finally {
@@ -450,6 +479,10 @@ export async function renderBundledChangelog(history) {
 export async function startAppUpdateFromCard(url, body) {
   if (appUpdateSettingsBusy) return;
   appUpdateSettingsBusy = true;
+  if (androidApkInstall(appUpdateSettingsSnapshot) && url === "/api/app-updates/install") {
+    const detail = $("#app-update-card-detail");
+    if (detail) detail.textContent = ANDROID_APK_HANDOFF;
+  }
   try {
     paintAppUpdateSettings(await postJson(url, body));
   } catch (error) {

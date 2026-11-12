@@ -12,7 +12,7 @@ import { mangaForAnime } from "./anime-links.js";
 import { createSourcesStore } from "./sources-store.js";
 import { createComicDownloads } from "./torrent-downloads.js";
 import { createImageCache, createMangaDexReader } from "./remote-reading.js";
-import { handleSourceRoutes } from "./sources-routes.js";
+import { describeRemoteChapter, handleSourceRoutes } from "./sources-routes.js";
 import { createTracking, importEntries, newChapters } from "./tracking.js";
 import { fetchWikipediaList, mergeIndex, plausibleList } from "./chapter-index.js";
 import { availability, chapterCandidates, createLinkedSources } from "./linked-sources.js";
@@ -325,6 +325,34 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       }
       sourceDeps.onProgress = onProgress;
 
+      // Read positions belong to local/remote progress; this resolves only
+      // the last reader that was actually opened. A removed favorite, missing
+      // file, or changed link remains a recoverable saved target.
+      async function resolveResume(workId, target) {
+        const readerId = target.readerId;
+        const unavailable = (reason, sourceId = null) => ({
+          ...target, status: "unavailable", sourceId, reason,
+        });
+        if (readerId.startsWith("f")) {
+          const file = local.file(readerId);
+          if (!file || file.work_id !== workId || file.error)
+            return unavailable("The saved local chapter is unavailable. Check its folder or choose a source.", "local");
+          return { ...target, status: "ready", sourceId: "local",
+            chapter: file.chapter ?? null, volume: file.volume ?? null };
+        }
+        const stored = ext.chapter(readerId);
+        if (!stored) return unavailable("The saved source chapter is no longer available. Choose a source.");
+        const sourceId = stored.sourceId;
+        if (!ext.favorite(sourceId) || !sourceDeps.linked.list(workId).some((link) =>
+          link.kind === "ext" && link.sourceId === sourceId))
+          return unavailable("The saved source is no longer linked or available. Choose a source.", sourceId);
+        const described = await describeRemoteChapter(workId, readerId, sourceDeps).catch(() => null);
+        if (!described || described.sourceId !== sourceId || !described.chapter)
+          return unavailable("The saved chapter could not be verified on its source. Refresh or choose a source.", sourceId);
+        return { ...target, status: "ready", sourceId, chapter: described.chapter,
+          volume: described.volume ?? null };
+      }
+
       // Settings › Comics › Enable Comics. Off: every route but the settings answers 409, and
       // the folder scans, comic downloads, the source browser and the extension runner stop.
       const comicsOn = () => store.settings().enabled;
@@ -346,6 +374,25 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
           return ctx.json(res, 409, { error: "Comics is turned off. Turn it on in Settings › Comics.", code: "comics-off" }), true;
         }
         if (path === "/api/comics/import/mihon" || path === "/api/comics/import/mihon/apply") return (await mihonImport.handle(req, res, path, ctx), true);
+        const resume = /^\/api\/comics\/work\/(anilist-[1-9]\d{0,9}|local-[0-9a-f]{12})\/resume$/.exec(path);
+        if (resume) {
+          if (req.method !== "GET" && req.method !== "POST") return ctx.methodNotAllowed(res, ["GET", "POST"]), true;
+          if (req.method === "GET") {
+            const target = local.resumeTarget(resume[1]);
+            return ctx.json(res, 200, target ? await resolveResume(resume[1], target) : { status: "none" }), true;
+          }
+          let input;
+          try { input = await ctx.readJsonBody(req, 4096); }
+          catch { return ctx.json(res, 400, { error: "Invalid JSON body" }), true; }
+          const readerId = String(input?.readerId || "");
+          if (!/^(?:f[0-9a-f]{16}|ex-[0-9a-f]{20})$/.test(readerId))
+            return ctx.json(res, 400, { error: "Invalid reader" }), true;
+          const checked = await resolveResume(resume[1], { readerId, page: 0, pages: 0, finished: false });
+          if (checked.status !== "ready")
+            return ctx.json(res, 409, { error: checked.reason, target: checked }), true;
+          local.recordResume(resume[1], readerId);
+          return ctx.json(res, 200, { saved: true }), true;
+        }
         if (await handleLocalRoutes(req, res, url, { ctx, local, ensureEntry, rescan, onProgress, marks })) return true;
         if (await handleSourceRoutes(req, res, url, sourceDeps)) return true;
         const tracked = /^\/api\/comics\/work\/(anilist-[1-9]\d{0,9}|local-[0-9a-f]{12})\/(ratings|read)$/.exec(path);

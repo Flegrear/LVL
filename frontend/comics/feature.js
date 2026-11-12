@@ -15,7 +15,7 @@ import { readerChapterPosition } from "../reader/reader-core.js";
 import { COMIC_SETTINGS_SECTIONS, COMIC_HOME_SECTIONS, COMIC_HOOKS, TITLE_SECTIONS } from "./comics-extensions.js";
 import { sourceLanguages } from "./comics-sources.js";
 import { flattenIndex, mergeSourceChapters } from "./comics-chapters.js";
-import { preloadChapterImages } from "./comics-chapter-preload.js";
+import { preloadChapterImages, requestChapterPreloadJson } from "./comics-chapter-preload.js";
 import { knownAnimeCatalog, matchLibraryAnime, openComic as openComicTitle } from "./comics-links.js";
 import { comicTitleSubject, comicTitles, loadComicTitle } from "./comics-title-subject.js";
 import { joinedToVideo } from "../../shared/reading/franchise.js";
@@ -33,6 +33,18 @@ let readerRoute = null;
 let readerGeneration = 0;
 let navigationGeneration = 0;
 let pendingReaderKey = "";
+const resumeRecords = new Map();
+function rememberMountedReader(route) {
+  // Two rapid source changes may finish HTTP requests out of order. Serialize
+  // only the small per-work session pointer; chapter pages still save normally.
+  const previous = resumeRecords.get(route.id) || Promise.resolve();
+  const saved = previous.catch(() => {}).then(() => comicsApi.recordResume(route.id, route.read));
+  resumeRecords.set(route.id, saved);
+  void saved.finally(() => {
+    if (resumeRecords.get(route.id) === saved) resumeRecords.delete(route.id);
+  }).catch(() => {});
+  void saved.catch(() => {});
+}
 // reader.js calls saveSoon(true) synchronously inside close(). During an
 // accepted handover reader already points to the *new* instance, so only the
 // previous mounted instance may finish its last forced save in this window.
@@ -54,6 +66,26 @@ export function parseComicQuery(search = "") {
   // page: null when the address has none (the reader then resumes the saved page).
   const page = /^\d{1,6}$/.test(params.get("page") || "") ? Math.min(100_000, Number(params.get("page"))) : null;
   return { id, read, page, back: params.get("back") === "1", tab };
+}
+
+export function resumeExpectation(search = "") {
+  const params = new URLSearchParams(search);
+  if (params.get("resume") !== "1") return null;
+  const sourceId = params.get("source") || "";
+  const rawChapter = params.get("chapter");
+  const rawVolume = params.get("volume");
+  const validNumber = (value) => /^\d{1,5}(?:\.\d{1,3})?$/.test(value || "");
+  if (sourceId !== "local" && !/^-?\d{1,20}$/.test(sourceId) ||
+      (sourceId !== "local" && !validNumber(rawChapter)) ||
+      (rawChapter !== null && !validNumber(rawChapter)) ||
+      (rawVolume !== null && rawVolume !== "" && !validNumber(rawVolume)))
+    throw Error("The saved chapter's source or volume could not be verified.");
+  return {
+    ...(rawChapter === null ? {} : { chapter: rawChapter }),
+    ...(rawVolume === null ? {} : { volume: rawVolume === "" ? null : rawVolume }),
+    sourceId,
+    resume: true,
+  };
 }
 
 // at: the page to open (null resumes the saved page).
@@ -121,9 +153,17 @@ const routeIsCurrent = (route) => {
 // A remote source's returned chapter ID has no chapter/volume in /chapter's
 // candidate payload. Ask the *actual reader* endpoint to prove its identity.
 // Never open a file from another work, an empty archive, or a wrong volume.
-function verifyReaderInfo(route, info, target = null) {
+export function verifyReaderInfo(route, info, target = null) {
   if (!readerIdValid(route.read) || info?.workId !== route.id || info.file?.id !== route.read || !(Number(info.pages) > 0))
     throw Error("The selected chapter could not be verified.");
+  if (target?.sourceId && (route.read.startsWith("ex-")
+    ? info.sourceId !== target.sourceId : target.sourceId !== "local"))
+    throw Error("The saved chapter belongs to a different source.");
+  if (target?.resume && target.volume !== undefined) {
+    const actual = route.read.startsWith("ex-") ? info.volume : info.file?.volume;
+    if (!sameVolume(actual, target.volume))
+      throw Error("The saved source returned a different volume.");
+  }
   if (target?.chapter === null || target?.chapter === undefined || target?.chapter === "") return;
   if (route.read.startsWith("ex-")) {
     if (!sameUnit(info.chapter, target.chapter)) throw Error("The selected source returned a different chapter.");
@@ -158,7 +198,7 @@ function verifyReaderInfo(route, info, target = null) {
 // onPage during its first render, *before* its promise resolves. Keeping its
 // callbacks gated means the old route/page/reader survives metadata and render
 // failures, and no staging progress is persisted.
-async function prepareReader(section, ctx, route, isAllowed, target = null, targetName = null, cascadeNotice = false) {
+async function prepareReader(section, ctx, route, isAllowed, target = null, targetName = null, cascadeNotice = false, awaitFirstPage = false, awaitLastPage = false) {
   const data = readerData(route.id, ctx);
   await data.loaded;
   if (!isAllowed()) return null;
@@ -189,40 +229,46 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
   const preloadNextChapters = async ({ targets = [], count = 0, signal, isCurrent = () => true } = {}) => {
     const allowed = () => owns() && !signal?.aborted && isCurrent();
     if (!allowed() || !count) return;
-    // A direct reader URL after app restart may not have a transient
-    // `readerNames` entry. The verified source lookup ties `info.sourceId`
-    // to this exact `ex-` chapter and its linked work.
-    const sourceId = route.read.startsWith("ex-")
-      ? (info.sourceId || (readerNames.get(route.read) || known).sourceId || "") : "local";
+    // A direct reader URL after app restart may lack a transient readerNames
+    // entry. The actual reader endpoint is authoritative for this provider;
+    // stale display labels or saved candidate names are never source proof.
+    const sourceId = route.read.startsWith("ex-") ? (info.sourceId || "") : "local";
     if (route.read.startsWith("ex-") && !sourceId) return; // never infer a provider from a shared display name
     const list = await chaptersReady;
     if (!allowed()) return;
+    const metadata = (id) => requestChapterPreloadJson(id.startsWith("f")
+      ? `/api/reader/files/${encodeURIComponent(id)}`
+      : `/api/reader/remote/${encodeURIComponent(id)}?${new URLSearchParams({ work: route.id, name: "", describe: "1" })}`,
+    { signal });
     await preloadChapterImages({ targets: targets.slice(0, count), signal, isCurrent: allowed,
       resolve: async (next) => {
         if (!allowed()) return null;
         if (next.file) {
           if (!/^f[0-9a-f]{16}$/.test(next.file)) return null;
-          const metadata = await comicsApi.readerFile(next.file, { workId: route.id });
+          const nextInfo = await metadata(next.file);
           if (!allowed()) return null;
-          verifyReaderInfo({ id: route.id, read: next.file }, metadata);
-          return { readerId: next.file, pages: Number(metadata.pages) || 0 };
+          verifyReaderInfo({ id: route.id, read: next.file }, nextInfo, { sourceId: "local" });
+          return { readerId: next.file, pages: Number(nextInfo.pages) || 0 };
         }
         if (next.chapter === undefined || next.chapter === null || !sourceId) return null;
         const at = readerChapterPosition(list, { chapter: next.chapter, volume: next.volume ?? null });
         if (at.index < 0) return null;
-        const { candidates } = await comicsApi.candidates(route.id, String(next.chapter), next.volume ?? "", langs);
+        const { candidates } = await requestChapterPreloadJson(
+          `/api/comics/work/${encodeURIComponent(route.id)}/chapter?${new URLSearchParams({
+            chapter: String(next.chapter), volume: next.volume ?? "", langs: langs.join(","),
+          })}`, { signal }) || {};
         if (!allowed()) return null;
         const candidatesOnSource = (candidates || []).filter((candidate) =>
           readerIdValid(candidate.readerId) && candidate.sourceId === sourceId
           && candidate.kind === (route.read.startsWith("ex-") ? "ext" : "local"));
         for (const candidate of candidatesOnSource) {
           try {
-            const metadata = await comicsApi.readerFile(candidate.readerId, { workId: route.id, describe: candidate.readerId.startsWith("ex-") });
+            const nextInfo = await metadata(candidate.readerId);
             if (!allowed()) return null;
-            verifyReaderInfo({ id: route.id, read: candidate.readerId }, metadata,
+            verifyReaderInfo({ id: route.id, read: candidate.readerId }, nextInfo,
               { chapter: String(next.chapter), volume: next.volume ?? null,
-                ambiguous: list.filter((item) => sameUnit(item.chapter, next.chapter)).length > 1 });
-            return { readerId: candidate.readerId, pages: Number(metadata.pages) || 0 };
+                sourceId, ambiguous: list.filter((item) => sameUnit(item.chapter, next.chapter)).length > 1 });
+            return { readerId: candidate.readerId, pages: Number(nextInfo.pages) || 0 };
           } catch { /* wrong-volume or unreadable candidate: never prefetch it */ }
         }
         return null;
@@ -288,15 +334,19 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
         const kind = route.read.startsWith("ex-") ? "ext" : "local";
         const currentIdentity = readerNames.get(route.read) || known;
         const currentSource = currentIdentity.source || info.source || "";
+        // Automatic chapter continuation requires the currently opened unit's
+        // authoritative source ID. A remembered/displayed name is not proof.
+        const verifiedSourceId = kind === "ext" ? (info.sourceId || "") : "local";
         const currentSourceId = route.read.startsWith("ex-")
           ? (info.sourceId || currentIdentity.sourceId || "") : "local";
         const others = response.candidates.filter((entry) => readerIdValid(entry.readerId) && entry.readerId !== route.read
           && entry.kind === (entry.readerId.startsWith("ex-") ? "ext" : "local"));
-        const sameSource = others.filter((entry) => entry.kind === kind && (currentSourceId
-          ? entry.sourceId === currentSourceId : currentSource && entry.name === currentSource));
+        const sameSource = others.filter((entry) => entry.kind === kind && (strictSource
+          ? verifiedSourceId && entry.sourceId === verifiedSourceId
+          : currentSourceId ? entry.sourceId === currentSourceId : currentSource && entry.name === currentSource));
         // A scroll-driven automatic chapter transition must never silently
         // switch to another provider. Manual Next keeps its fallback choices.
-        const choices = strictSource ? (currentSourceId ? sameSource : []) : [
+        const choices = strictSource ? (verifiedSourceId ? sameSource : []) : [
           ...sameSource,
           ...others.filter((entry) => entry.kind === kind), ...others,
         ];
@@ -304,17 +354,41 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
         let lastError = null;
         for (const choice of new Map(choices.map((entry) => [entry.readerId, entry])).values()) {
           if (!valid()) return false;
+          if (choice.kind === "ext" && !choice.sourceId) continue;
           const label = { label: `${data.comic?.title || ""} · ${t("Chapter {number}", { number: unit.chapter })}`, chapter: unit.chapter, volume: unit.volume, source: choice.name || "", sourceId: choice.sourceId || "" };
           try {
             // A candidate's default page=0 means "no explicit position";
             // the reader then resumes an unfinished saved chapter page.
             const at = startAtBeginning ? 0 : Number(choice.page) > 0 ? Number(choice.page) : null;
-            const moved = await handoverReader(section, ctx, { id: route.id, read: choice.readerId, page: at }, valid, unit, label, true, strictSource);
+            const verifiedUnit = { ...unit, sourceId: choice.kind === "ext" ? choice.sourceId : "local" };
+            const moved = await handoverReader(section, ctx, { id: route.id, read: choice.readerId, page: at }, valid, verifiedUnit, label, true, strictSource);
             if (moved || !valid()) return moved;
           } catch (error) { lastError = error; }
         }
         if (!valid()) return false;
         throw lastError || Error(t("No chosen source has this chapter yet."));
+      },
+      onCascadeBack: async (back, { isCurrent = () => true } = {}) => {
+        // The retained previous tail is inert. Re-entering it must resolve the
+        // exact old reader, work, provider, volume and page before it can own
+        // progress again. Never substitute a candidate with a matching title.
+        const serial = ++navigationGeneration;
+        const valid = () => owns() && navigationGeneration === serial && isCurrent();
+        if (!valid() || back?.workId !== route.id || !readerIdValid(back.fileId) ||
+            back.fileId === route.read || !Number.isSafeInteger(back.page) ||
+            back.page < 0 || back.page >= back.pages ||
+            (back.fileId.startsWith("ex-") && !back.sourceId)) return false;
+        const list = await chaptersReady;
+        if (!valid()) return false;
+        let target = { sourceId: back.fileId.startsWith("ex-") ? back.sourceId : "local" };
+        if (back.chapter !== null && back.chapter !== undefined && back.chapter !== "") {
+          const unit = indexedReaderUnit(list, back.chapter, back.volume ?? null,
+            { allowUnlisted: !back.fileId.startsWith("ex-") });
+          target = { ...unit, sourceId: target.sourceId };
+        } else if (back.fileId.startsWith("ex-")) return false;
+        if (!valid()) return false;
+        return handoverReader(section, ctx, { id: route.id, read: back.fileId, page: back.page },
+          valid, target, null, true, false, back);
       },
       onPreloadChapters: preloadNextChapters,
       api: {
@@ -348,12 +422,20 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
       },
     });
     if (!isAllowed()) { instance?.close({ keepUrl: true }); return null; }
+    if (awaitFirstPage && !(await instance.waitForFirstPage({ timeoutMs: 12000, isCurrent: isAllowed }))) {
+      instance.close({ keepUrl: true });
+      return null; // an unready head must never replace the readable old strip
+    }
+    if (awaitLastPage && !(await instance.waitForCascadeTail({ timeoutMs: 12000, isCurrent: isAllowed }))) {
+      instance.close({ keepUrl: true });
+      return null; // a following preview must not overtake the old last page
+    }
     const root = stage.querySelector(".reader");
     if (!root) throw Error("The selected reader did not open.");
     return { instance, root, key, route, mounted: (generation) => { born = generation; mounted = true; } };
   } catch (error) {
     instance?.close({ keepUrl: true });
-    // D's openReader now owns teardown of partial initialization failures.
+    // openReader owns teardown when initialization fails before returning an instance.
     // This is only a defensive discarded-stage DOM guard, not partial-handle
     // cleanup; a normal close above is for a fully returned instance only.
     stage.querySelector(".reader")?.remove();
@@ -361,7 +443,7 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
   }
 }
 
-async function handoverReader(section, ctx, route, valid, unit = null, targetName = null, replaceUrl = false, cascadeNotice = false) {
+async function handoverReader(section, ctx, route, valid, unit = null, targetName = null, replaceUrl = false, cascadeNotice = false, reverseBridge = null) {
   const previous = reader;
   const previousKey = readerKey;
   const previousRoute = readerRoute ? { ...readerRoute } : null;
@@ -372,7 +454,8 @@ async function handoverReader(section, ctx, route, valid, unit = null, targetNam
   let prepared = null;
   let committed = false;
   try {
-    prepared = await prepareReader(section, ctx, route, valid, unit, targetName, cascadeNotice);
+    prepared = await prepareReader(section, ctx, route, valid, unit, targetName, cascadeNotice,
+      cascadeNotice || Boolean(reverseBridge), Boolean(reverseBridge));
     if (!prepared || !valid()) { prepared?.instance.close({ keepUrl: true }); return false; }
     section.append(prepared.root);
     reader = prepared.instance;
@@ -385,6 +468,20 @@ async function handoverReader(section, ctx, route, valid, unit = null, targetNam
         if (accepted === false) throw Error("The selected chapter route was rejected.");
       }
       if (!routeIsCurrent(route)) throw Error("The selected reader route was not accepted.");
+      if ((cascadeNotice || reverseBridge) && previous) {
+        const oldRoot = [...section.querySelectorAll(".reader")].find(element => element !== prepared.root);
+        if (oldRoot) prepared.instance.inheritCascadeChrome?.(oldRoot.classList.contains("is-chrome-hidden"));
+      }
+      if (cascadeNotice && previous) {
+        const tail = previous.snapshotCascadeEdge?.("tail");
+        if (!tail || !prepared.instance.attachCascadeBridge?.(tail, { side: "before" }))
+          throw Error("The next chapter's scroll bridge is not ready.");
+      } else if (reverseBridge && previous) {
+        if (reverseBridge.fileId !== route.read || reverseBridge.workId !== route.id) throw Error("Invalid previous chapter bridge.");
+        const head = previous.snapshotCascadeEdge?.("head");
+        if (!head || !prepared.instance.attachCascadeBridge?.(head, { side: "after", point: reverseBridge }))
+          throw Error("The previous chapter's scroll bridge is not ready.");
+      }
     } catch (error) {
       reader = previous;
       readerKey = previousKey;
@@ -401,6 +498,8 @@ async function handoverReader(section, ctx, route, valid, unit = null, targetNam
     prepared.mounted(newGeneration);
     committed = true;
     closeMountedReader(previous);
+    if (cascadeNotice || reverseBridge) prepared.instance.activateCascadeChrome?.();
+    rememberMountedReader(route);
     if (targetName) readerNames.set(route.read, targetName);
     else if (!readerNames.get(route.read)?.chapter && unit?.chapter)
       readerNames.set(route.read, { chapter: String(unit.chapter), volume: unit.volume ?? null, source: "" });
@@ -437,8 +536,9 @@ async function syncReader(section, ctx, route) {
   // target ID matches; the previous callback may now have been cancelled.
   const serial = ++navigationGeneration;
   const valid = () => navigationGeneration === serial && routeIsCurrent(route) && ctx.viewActive?.("comic") !== false;
+  const strictResume = new URLSearchParams(window.location.search).get("resume") === "1";
   try {
-    return await handoverReader(section, ctx, route, valid);
+    return await handoverReader(section, ctx, route, valid, resumeExpectation(window.location.search));
   } catch (error) {
     if (navigationGeneration !== serial) return false;
     if (reader && readerRoute && routeIsCurrent(readerRoute)) {
@@ -447,6 +547,11 @@ async function syncReader(section, ctx, route) {
     }
     if (!valid()) return false;
     if (reader) { toast(t(error?.message || "Cannot open the selected chapter.")); return false; }
+    if (strictResume) {
+      toast(t(`${error?.message || "The saved chapter is unavailable."} Choose a source from this comic to continue.`));
+      leaveReader(ctx, route);
+      return false;
+    }
     // Explicit first-open links retain their historic source fallback. Failed
     // Next/Previous and other handovers NEVER call leaveReader or go Home.
     failedReaders.add(route.read);

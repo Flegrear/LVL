@@ -1,6 +1,7 @@
 import { buttonMarkup, escapeHtml, refreshImages, toast } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
+import { readSourceChoice, reconcileFavoriteSource, sourceChoice, sourceChoices, watchFavoriteSource } from "./comics-source-filter.js";
 
 export function createProviderSession(fetchPage) {
   let revision = 0;
@@ -50,7 +51,7 @@ const card = (item, opened) => `<article class="comic-provider-card"><div class=
 
 export const providerBrowserMarkup = () => `<section class="comic-provider" data-comic-provider aria-label="${escapeHtml(t("Browse a source"))}">
   <div class="comic-provider__header"><h2>${escapeHtml(t("Browse a source"))}</h2><span>${escapeHtml(t("Choose a provider to see its titles."))}</span></div>
-  <div class="comic-provider__tools"><label>${escapeHtml(t("Source"))}<select data-provider-source><option value="">${escapeHtml(t("Choose source"))}</option></select></label>
+  <div class="comic-provider__tools"><button type="button" class="ui-btn ui-btn--ghost ui-btn--sm comic-provider__choose-source" data-provider-open-filter>${escapeHtml(t("Select source in filters"))}</button>
   <div class="comic-provider__modes" role="group" aria-label="${escapeHtml(t("Browse mode"))}">
   ${["popular", "latest", "search"].map((mode) => `<button type="button" class="ui-btn ui-btn--sm ui-btn--ghost" data-provider-mode="${mode}" aria-pressed="${mode === "popular"}">${escapeHtml(t(({ popular: "Popular", latest: "Latest", search: "Search" })[mode]))}</button>`).join("")}</div>
   <form data-provider-query role="search" hidden><input type="search" maxlength="80" aria-label="${escapeHtml(t("Search this source"))}" placeholder="${escapeHtml(t("Search this source"))}" /><button type="submit" class="ui-btn ui-btn--primary ui-btn--sm">${escapeHtml(t("Search"))}</button></form></div>
@@ -60,17 +61,19 @@ export const providerBrowserMarkup = () => `<section class="comic-provider" data
 
 export function mountProviderBrowser(section, ctx) {
   if (!section) return;
-  const sourceField = section.querySelector("[data-provider-source]");
   const queryForm = section.querySelector("[data-provider-query]");
   const status = section.querySelector(".comic-provider__status");
   const grid = section.querySelector(".comic-provider__grid");
   const more = section.querySelector("[data-provider-more]");
   const session = createProviderSession((params) => comicsApi.providerBrowse(params));
   let sources = new Map();
+  let selectedSource = readSourceChoice();
   let favoritesLoaded = false;
+  let favoriteRevision = 0;
   let generation = 0;
+  const localListeners = new AbortController();
   const opened = new Map();
-  const currentSource = () => sources.get(sourceField.value);
+  const currentSource = () => sources.get(selectedSource);
   const paint = () => {
     if (!section.isConnected) return;
     const state = session.snapshot();
@@ -90,35 +93,68 @@ export function mountProviderBrowser(section, ctx) {
     const mode = section.querySelector("[data-provider-mode][aria-pressed=true]")?.dataset.providerMode || "popular";
     const query = queryForm.querySelector("input").value.trim();
     if (mode === "search" && !query) {
-      session.reset({ sourceId: sourceField.value, mode, query });
+      session.reset({ sourceId: selectedSource, mode, query });
       paint();
       status.textContent = t("Enter a title to search this source.");
       return;
     }
     const request = ++generation;
-    const promise = append ? session.more() : session.load({ sourceId: sourceField.value, mode, query });
+    const promise = append ? session.more() : session.load({ sourceId: selectedSource, mode, query });
     paint();
     await promise;
-    if (request === generation) paint();
+    if (request === generation && sourceLifecycle.isActive()) paint();
   };
-  comicsApi.favorites().then(({ favorites = [] }) => {
-    if (!section.isConnected) return;
-    sources = new Map(favorites.map((item) => [String(item.id), item]));
-    favoritesLoaded = true;
-    sourceField.insertAdjacentHTML("beforeend", favorites.map((item) => `<option value="${escapeHtml(item.id)}">${escapeHtml([item.name, item.lang, item.host].filter(Boolean).join(" · "))}</option>`).join(""));
-    paint();
-  }).catch((error) => { if (section.isConnected) status.textContent = error.message; });
-  sourceField.addEventListener("change", () => {
+  const applyChoice = (id, { fromFavorites = false } = {}) => {
+    const next = sourceChoice(id, [...sources.values()]);
+    if (!fromFavorites && next === selectedSource) return;
+    selectedSource = next;
     ++generation;
-    if (!sourceField.value) { session.reset({ sourceId: "", mode: session.snapshot().mode }); return paint(); }
-    void load();
+    session.reset({ sourceId: selectedSource, mode: session.snapshot().mode });
+    paint();
+    if (selectedSource && session.snapshot().mode !== "search") void load();
+    if (selectedSource && session.snapshot().mode === "search" && queryForm.querySelector("input").value.trim()) void load();
+  };
+  const onSourceChanged = (event) => {
+    if (Array.isArray(event.detail?.favorites)) {
+      ++favoriteRevision;
+      sources = new Map(sourceChoices(event.detail.favorites).map((item) => [String(item.id), item]));
+      favoritesLoaded = true;
+    }
+    if (favoritesLoaded) applyChoice(event.detail?.sourceId || "");
+  };
+  const sourceLifecycle = watchFavoriteSource(section, onSourceChanged, () => {
+    localListeners.abort();
+    ++generation;
+    session.reset({ sourceId: "", mode: session.snapshot().mode });
   });
+  const initialFavoritesRevision = favoriteRevision;
+  comicsApi.favorites().then(({ favorites = [] }) => {
+    if (!sourceLifecycle.isActive() || initialFavoritesRevision !== favoriteRevision) return;
+    sources = new Map(sourceChoices(favorites).map((item) => [String(item.id), item]));
+    favoritesLoaded = true;
+    applyChoice(reconcileFavoriteSource([...sources.values()]), { fromFavorites: true });
+  }).catch((error) => { if (sourceLifecycle.isActive()) status.textContent = error.message; });
   section.addEventListener("click", async (event) => {
+    if (event.target.closest("[data-provider-open-filter]")) {
+      const home = section.closest(".comics-home-body");
+      const disclosure = home?.querySelector(".phone-catalog-disclosure");
+      const expand = disclosure?.querySelector(".phone-catalog-disclosure__toggle");
+      if (expand?.getAttribute("aria-expanded") === "false" && !disclosure.hidden) expand.click();
+      const source = home?.querySelector("[data-comic-browser-source-filter] summary");
+      if (!source) {
+        status.textContent = t(!favoritesLoaded ? "Comics filters are still loading."
+          : !sources.size ? "Add favorite sources in Settings › Comics." : "Comics filters are still loading.");
+        return;
+      }
+      source?.focus({ preventScroll: true });
+      if (source?.parentElement) source.parentElement.open = true;
+      return;
+    }
     const mode = event.target.closest("[data-provider-mode]");
     if (mode) {
       for (const button of section.querySelectorAll("[data-provider-mode]")) button.setAttribute("aria-pressed", String(button === mode));
       ++generation;
-      session.reset({ sourceId: sourceField.value, mode: mode.dataset.providerMode });
+      session.reset({ sourceId: selectedSource, mode: mode.dataset.providerMode });
       paint();
       if (mode.dataset.providerMode !== "search") void load();
       else queryForm.querySelector("input").focus();
@@ -129,19 +165,19 @@ export function mountProviderBrowser(section, ctx) {
     if (!button || !currentSource()) return;
     const item = session.snapshot().items.find((entry) => entry.path === button.dataset.providerAdd);
     if (!item) return;
-    const sourceId = sourceField.value;
+    const sourceId = selectedSource;
     const request = generation;
     button.disabled = true;
     try {
       const reply = await comicsApi.providerAdd({ sourceId, path: item.path, title: item.title, cover: item.cover });
       opened.set(`${sourceId}\n${item.path}`, reply.workId);
-      if (request !== generation || sourceId !== sourceField.value) return;
+      if (!sourceLifecycle.isActive() || request !== generation || sourceId !== selectedSource) return;
       paint();
       if (!section.isConnected) return;
       await ctx?.openFeatureTitle?.({ feature: "comics", item: reply.workId });
     } catch (error) { toast(error.message); button.disabled = false; }
-  });
-  queryForm.addEventListener("submit", (event) => { event.preventDefault(); void load(); });
+  }, { signal: localListeners.signal });
+  queryForm.addEventListener("submit", (event) => { event.preventDefault(); void load(); }, { signal: localListeners.signal });
   paint();
   return session;
 }

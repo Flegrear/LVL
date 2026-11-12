@@ -11,6 +11,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
@@ -165,6 +166,10 @@ class AppUpdater(private val context: Context, private val server: Server) {
                     put("phase", it.phase)
                     put("inProgress", it.pending)
                     put("pendingConfirmation", it.awaitingConfirmation)
+                    put("createdAtMillis", it.createdAtMillis)
+                    if (it.lastStatusCode != null) put("lastStatusCode", it.lastStatusCode)
+                    else put("lastStatusCode", JsonNull)
+                    put("timeline", buildJsonArray { it.timeline.forEach { event -> add(JsonPrimitive(event)) } })
                     put("message", it.message)
                 }
             } ?: JsonNull)

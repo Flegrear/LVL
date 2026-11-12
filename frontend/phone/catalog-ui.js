@@ -7,7 +7,7 @@ const currentSeason = () => ["WINTER", "SPRING", "SUMMER", "FALL"][Math.floor(ne
 export function discoveryDefaults(kind, year = new Date().getFullYear(), season = currentSeason()) {
   return kind === "anime"
     ? { search: "", year: String(year), season, sort: "POPULARITY_DESC", format: "TV", status: "", genre: "" }
-    : { q: "", type: "", sort: "POPULARITY_DESC", status: "", genre: "", year: String(year) };
+    : { q: "", type: "", sort: "POPULARITY_DESC", status: "", genre: "", year: String(year), source: "" };
 }
 
 // The grid and shelf use actual CSS gap/gutter dimensions. Keep complete three
@@ -24,7 +24,7 @@ function selectedLabel(control) {
   const selected = control?.selectedOptions?.[0] || control?.options?.[control.selectedIndex];
   return String(selected?.textContent || control?.value || "").trim();
 }
-const humanize = (name) => ({ year: "Year", season: "Season", type: "Type", format: "Format", status: "Status", genre: "Genre", sort: "Rank", search: "Title", q: "Title" })[name] || name;
+const humanize = (name) => ({ year: "Year", season: "Season", type: "Type", format: "Format", status: "Status", genre: "Genre", sort: "Rank", search: "Title", q: "Title", source: "Source" })[name] || name;
 
 // Derive an active summary from the LIVE production inputs. In particular,
 // hidden local title queries may be nonempty from a prior desktop session:
@@ -44,6 +44,8 @@ export function discoveryFilterSummary(form, kind, defaults = discoveryDefaults(
     let label = "";
     if (name === "search" || name === "q") {
       if (value.trim()) label = `Title: ${value}`;
+    } else if (name === "source") {
+      if (value) label = `Source: ${String(control.dataset?.sourceLabel || value)}`;
     } else {
       label = `${humanize(name)}: ${selectedLabel(control)}`;
     }

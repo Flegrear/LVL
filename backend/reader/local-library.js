@@ -37,6 +37,11 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     CREATE TABLE IF NOT EXISTS comic_remote_progress (
       work_id TEXT NOT NULL, file_id TEXT NOT NULL, page INTEGER NOT NULL, pages INTEGER NOT NULL,
       finished INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (work_id, file_id));
+    -- A reading-session pointer, never a second page/finished authority.
+    -- Updated only when a verified reader opens; imports and chapter browsing
+    -- cannot replace the last chapter/source the user actually opened.
+    CREATE TABLE IF NOT EXISTS comic_resume_sessions (
+      work_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, opened_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS comic_read_units (work_id TEXT NOT NULL, unit_id TEXT NOT NULL, volume TEXT, chapter TEXT, finished_at INTEGER NOT NULL, PRIMARY KEY (work_id, unit_id));
   `);
   // Old records have exactly one known owner; migrate only that association.
@@ -85,6 +90,11 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     progressOf: db.prepare("SELECT * FROM comic_progress WHERE work_id = ?"),
     remoteProgress: db.prepare("SELECT * FROM comic_remote_progress WHERE work_id = ? AND file_id = ?"),
     remoteProgressOf: db.prepare("SELECT * FROM comic_remote_progress WHERE work_id = ?"),
+    resumeOf: db.prepare("SELECT file_id, opened_at FROM comic_resume_sessions WHERE work_id = ?"),
+    rememberResume: db.prepare(`INSERT INTO comic_resume_sessions (work_id, file_id, opened_at) VALUES (?, ?, ?)
+      ON CONFLICT(work_id) DO UPDATE SET file_id = excluded.file_id, opened_at = MAX(comic_resume_sessions.opened_at + 1, excluded.opened_at)`),
+    forgetResumeFile: db.prepare("DELETE FROM comic_resume_sessions WHERE file_id = ?"),
+    forgetResumeWork: db.prepare("DELETE FROM comic_resume_sessions WHERE work_id = ?"),
     remoteSave: db.prepare(`INSERT INTO comic_remote_progress (work_id, file_id, page, pages, finished, updated_at)
       VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(work_id, file_id) DO UPDATE SET
       page = excluded.page, pages = excluded.pages,
@@ -110,6 +120,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
   const folderGenerations = new Map();
   const liveFolder = (root, generation) => (folderGenerations.get(root) || 0) === generation && Boolean(q.folderPresent.get(root));
   const deleteFileHistory = (id) => {
+    q.forgetResumeFile.run(id);
     q.deleteProgress.run(id);
     q.deleteRemote.run(id);
     q.deleteReadUnit.run(id);
@@ -119,6 +130,13 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
   const transferReadState = (id, fromWorkId, toWorkId) => {
     if (!fromWorkId || fromWorkId === toWorkId) return;
     db.prepare("UPDATE comic_progress SET work_id = ? WHERE file_id = ? AND work_id = ?").run(toWorkId, id, fromWorkId);
+    const savedResume = q.resumeOf.get(fromWorkId);
+    if (savedResume?.file_id === id) {
+      const prior = q.resumeOf.get(toWorkId);
+      if (!prior || Number(prior.opened_at) <= Number(savedResume.opened_at))
+        q.rememberResume.run(toWorkId, id, savedResume.opened_at);
+      q.forgetResumeWork.run(fromWorkId);
+    }
     db.prepare(`INSERT OR IGNORE INTO comic_read_units (work_id, unit_id, volume, chapter, finished_at)
       SELECT ?, unit_id, volume, chapter, finished_at FROM comic_read_units
       WHERE work_id = ? AND unit_id = ?`).run(toWorkId, fromWorkId, id);
@@ -140,6 +158,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     if (q.file.get(next) || occupiedHistory) return false;
     if (!db.prepare("UPDATE comic_files SET id = ? WHERE id = ?").run(next, previous).changes) return false;
     db.prepare("UPDATE comic_progress SET file_id = ? WHERE file_id = ?").run(next, previous);
+    db.prepare("UPDATE comic_resume_sessions SET file_id = ? WHERE file_id = ?").run(next, previous);
     q.deleteProgress.run(previous);
     db.prepare(`INSERT OR IGNORE INTO comic_read_units (work_id, unit_id, volume, chapter, finished_at)
       SELECT work_id, ?, volume, chapter, finished_at FROM comic_read_units WHERE unit_id = ?`).run(next, previous);
@@ -498,6 +517,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     // Hide a local title: its files stay on disk but are no longer listed.
     removeLocal(id) {
       db.prepare("UPDATE comic_files SET work_id = NULL, match = 'ignored' WHERE work_id = ?").run(String(id));
+      q.forgetResumeWork.run(String(id));
       return q.deleteLocal.run(String(id)).changes > 0;
     },
     // Move every file of fromWorkId to toWorkId ("anilist-N", or null for a new local title).
@@ -563,6 +583,39 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         if (!prior || Number(row.updated_at) > Number(prior.updated_at)) scoped.set(row.file_id, row);
       }
       return [...existing.filter((row) => !EXT_CHAPTER_ID.test(row.file_id)), ...scoped.values()];
+    },
+    // A saved reader takes precedence over numeric chapter order and imported
+    // timestamps. Older installations still have a deterministic progress-only
+    // fallback, so no progress row or source selection is migrated or discarded.
+    resumeTarget(workId) {
+      const owner = String(workId);
+      if (!WORK_ID.test(owner)) return null;
+      const existing = q.progressOf.all(owner);
+      const scoped = new Map(q.remoteProgressOf.all(owner).map((row) => [row.file_id, row]));
+      for (const row of existing.filter((item) => EXT_CHAPTER_ID.test(item.file_id))) {
+        const prior = scoped.get(row.file_id);
+        if (!prior || Number(row.updated_at) > Number(prior.updated_at)) scoped.set(row.file_id, row);
+      }
+      const all = [...existing.filter((row) => !EXT_CHAPTER_ID.test(row.file_id)), ...scoped.values()];
+      const session = q.resumeOf.get(owner);
+      const row = session ? all.find((item) => item.file_id === session.file_id) : [...all].sort((a, b) =>
+        Number(b.updated_at) - Number(a.updated_at) || String(b.file_id).localeCompare(String(a.file_id)))[0];
+      if (!session && !row) return null;
+      return {
+        readerId: String(session?.file_id || row.file_id),
+        page: row ? Math.max(0, Math.min(Number(row.page) || 0, Math.max(1, Number(row.pages) || 1) - 1)) : 0,
+        pages: Number(row?.pages) || 0, finished: Boolean(row?.finished),
+        updatedAt: Number(row?.updated_at || session?.opened_at || 0),
+      };
+    },
+    // Called by the server only after confirming file/work or live linked
+    // source/chapter ownership; it never changes the page/progress tables.
+    recordResume(workId, readerId) {
+      const owner = String(workId);
+      const id = String(readerId);
+      if (!WORK_ID.test(owner) || (!EXT_CHAPTER_ID.test(id) && !/^f[0-9a-f]{16}$/.test(id))) return false;
+      q.rememberResume.run(owner, id, now());
+      return true;
     },
     // Chapters read from a source: id is "ex-<20 hex>" (see backend/comics/ext-sources.js).
     saveRemoteProgress({ id, workId, page, pages, chapter = null, volume = null }) {

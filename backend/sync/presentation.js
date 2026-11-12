@@ -6,6 +6,7 @@ export function syncCommitMessage(path, text) {
   if (!Array.isArray(data?.changes)) return fallback;
   if (path.startsWith("snapshots/")) return `LVL sync: Save device snapshot\n\nFile: ${path}`;
   const titles = new Set();
+  const episodes = new Set();
   const counts = new Map();
   const labels = {
     "video.progress": ["playback position", "playback positions"],
@@ -22,6 +23,9 @@ export function syncCommitMessage(path, text) {
       const cleaned = title.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/\s+/g, " ").trim();
       if (cleaned) titles.add(cleaned);
     }
+    const episode = value?.context?.episode;
+    if (typeof episode === "string" && /^S\d{2,3}E\d{2,4}$/.test(episode))
+      episodes.add(episode);
     const label = value === null ? ["removed record", "removed records"]
       : change?.type === "video.watched"
         ? (value?.watched ? ["episode marked watched", "episodes marked watched"]
@@ -34,7 +38,12 @@ export function syncCommitMessage(path, text) {
   if (!summary) return fallback;
   const fullTitle = [...titles][0];
   const title = fullTitle && (Array.from(fullTitle).length > 80 ? Array.from(fullTitle).slice(0, 79).join("") + "…" : fullTitle);
-  const subject = `LVL sync: ${title ? `${title}${titles.size > 1 ? ` (+${titles.size - 1} titles)` : ""} — ` : ""}${summary}`;
+  // Up to three verified chapter labels fit on a useful GitHub history line.
+  // A large multi-series or encrypted batch uses the existing privacy-safe
+  // generic summary rather than exposing or guessing chapter identities.
+  const chapterLabel = titles.size === 1 && episodes.size > 0 && episodes.size <= 3
+    ? ` (${[...episodes].sort().join(", ")})` : "";
+  const subject = `LVL sync: ${title ? `${title}${titles.size > 1 ? ` (+${titles.size - 1} titles)` : ""}${chapterLabel} — ` : ""}${summary}`;
   const characters = Array.from(subject);
   return `${characters.length > 160 ? characters.slice(0, 159).join("") + "…" : subject}\n\nFile: ${path}`;
 }

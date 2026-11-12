@@ -1,5 +1,6 @@
 // The Library page: cards, continue watching, menus and removal.
 import { normalizeText } from "../../shared/subtitles/subtitle-text.js";
+import { videoProgressComplete } from "../../shared/sync/video-state.js";
 import {
   artworkFallback, bindShelves, buttonMarkup, cardMarkup, emptyMarkup, escapeHtml, icon,
   iconButtonMarkup, metaMarkup, refreshImages, setActiveTab, shelfMarkup, toast,
@@ -92,7 +93,7 @@ export function libraryDialogChapterMarkup(series, chapter, thumbs, { movie = fa
   const number = match ? `Chapter ${Number(match[2])}` : movie ? "Movie" : "Video";
   const progress = sources.map(({ episode }) => episode.progress).filter((item) => item?.durationMs > 0).sort((a, b) => b.updatedAt - a.updatedAt)[0];
   const watched = !explicitlyUnwatchedChapter(series, code)
-    && (Boolean(progress?.finished) || (!movie && manuallyWatchedChapter(series, code)));
+    && (videoProgressComplete(progress) || (!movie && manuallyWatchedChapter(series, code)));
   const ratio = progress && !watched ? Math.min(1, progress.positionMs / progress.durationMs) : 0;
   const art = catalog?.thumbnail
     ? `<img src="${escapeHtml(catalog.thumbnail)}" alt="" loading="lazy" decoding="async" data-fallback="wide" data-fallback-title="${escapeHtml(series.title)}" />`
@@ -103,11 +104,14 @@ export function libraryDialogChapterMarkup(series, chapter, thumbs, { movie = fa
   const origin = libraryOriginText(details);
   const resumeAt = ratio ? Math.max(0, progress.positionMs - 5000) : 0;
   const playLabel = ratio ? "Resume" : "Play";
+  const released = /^\d{4}-\d{2}-\d{2}$/.test(String(catalog?.released || "")) ? catalog.released : "";
+  const duration = progress?.durationMs > 0 ? `${Math.max(1, Math.round(progress.durationMs / 60_000))} min` : "";
+  const progressLabel = watched ? "Watched" : ratio ? `${Math.round(ratio * 100)}% played` : "";
   return `<li class="lib-chapter${open ? " is-open" : ""}${watched ? " is-watched" : ""}" data-chapter-key="${escapeHtml(key)}"${match && !movie ? ` data-chapter-code="${escapeHtml(code)}" tabindex="0" aria-keyshortcuts="Shift+F10"` : ""}>
     <div class="lib-chapter-row">
       <span class="lib-chapter-thumb">${art}${ratio ? `<span class="lib-chapter-progress" aria-hidden="true"><span style="width:${Math.round(ratio * 100)}%"></span></span>` : ""}${watched ? `<span class="lib-chapter-watched" aria-hidden="true">${icon("check")}</span>` : ""}</span>
       <div class="lib-chapter-copy">
-        <span class="lib-chapter-facts">${metaMarkup([number, details.quality !== "UNKNOWN" ? details.quality : "", libraryCodecLabel(details.codec), watched ? "Watched" : ratio ? `${Math.max(1, Math.round((progress.durationMs - progress.positionMs) / 60_000))} min left` : ""])}</span>
+        <span class="lib-chapter-facts">${metaMarkup([number, released, duration, progressLabel, details.quality !== "UNKNOWN" ? details.quality : "", libraryCodecLabel(details.codec)])}</span>
         <strong>${escapeHtml(title)}</strong>
         <small class="lib-chapter-origin" title="${escapeHtml(details.releaseName)}">${origin.pack ? '<span class="lib-origin-kind">From a pack</span>' : ""}<span class="lib-origin-release">${escapeHtml(origin.release)}</span><span class="lib-origin-provider">${escapeHtml(details.providers)}</span></small>
       </div>
@@ -226,7 +230,8 @@ function seriesResumePoint(series) {
       const progress = episode.progress;
       if (!progress?.updatedAt || !(progress.durationMs > 0)) continue;
       const unwatched = explicitlyUnwatchedChapter(series, String(episode.code || "").toUpperCase());
-      const finished = !unwatched && (progress.finished || manuallyWatchedChapter(series, String(episode.code || "").toUpperCase()));
+      const reached = videoProgressComplete(progress);
+      const finished = !unwatched && (reached || manuallyWatchedChapter(series, String(episode.code || "").toUpperCase()));
       const item = { entry, episode, progress: { ...progress, finished } };
       if (!best || progress.updatedAt > best.progress.updatedAt) best = item;
       if (!finished && (!unfinished || progress.updatedAt > unfinished.progress.updatedAt)) unfinished = item;
@@ -259,7 +264,10 @@ export function seriesNextUp(series) {
   const point = seriesResumePoint(series);
   const chapters = series.type === "movie" ? [] : libraryOrderedChapters(series);
   const watched = chapter => !explicitlyUnwatchedChapter(series, chapter.code)
-    && (manuallyWatchedChapter(series, chapter.code) || chapter.sources.some(ref => ref.episode.progress?.finished));
+    && (manuallyWatchedChapter(series, chapter.code) || chapter.sources.some(ref => {
+      const progress = ref.episode.progress;
+      return videoProgressComplete(progress);
+    }));
   const wasExplicitlyUnwatched = point && explicitlyUnwatchedChapter(series, String(point.episode.code || "").toUpperCase());
   if (point && (!point.progress.finished || wasExplicitlyUnwatched)) {
     const name = libraryChapterName(point.episode);
@@ -341,7 +349,7 @@ function librarySeasonChapterCodes(series) {
 function librarySeasonAllWatched(series, codes) {
   return codes.length > 0 && codes.every((code) => !explicitlyUnwatchedChapter(series, code)
     && (isLibraryTitleMarkedWatched(series) || manuallyWatchedChapter(series, code) || series.sources.some((entry) =>
-      (entry.episodes || []).some((episode) => String(episode.code || "").toUpperCase() === code && episode.progress?.finished))));
+      (entry.episodes || []).some((episode) => String(episode.code || "").toUpperCase() === code && videoProgressComplete(episode.progress)))));
 }
 
 function renderLibrarySeasonActions(series) {
@@ -358,7 +366,7 @@ function renderLibrarySeasonActions(series) {
 export function setLibrarySeasonWatched(series, season, watched) {
   const codes = librarySeasonChapterCodes(series).get(season);
   if (!codes?.size) return false;
-  const entries = state.library.filter((entry) => (entry.seriesKey || librarySeriesKey(entry.title)) === series.key);
+  const entries = (series.sources || []).filter((entry) => state.library.includes(entry));
   const anchor = entries.find((entry) => entry.id === state.currentSource?.libraryId) || entries[0];
   if (!anchor) return false;
   const now = Date.now();
@@ -434,7 +442,7 @@ function libraryWatchedSummary(series) {
       const code = String(episode.code || "").toUpperCase();
       if (!valid(code) || !episode.progress) continue;
       const progress = episode.progress;
-      const amount = progress.finished ? 1 : Number(progress.durationMs) > 0
+      const amount = videoProgressComplete(progress) ? 1 : Number(progress.durationMs) > 0
         ? Math.max(0, Math.min(1, Number(progress.positionMs || 0) / Number(progress.durationMs))) : 0;
       progressByCode.set(code, Math.max(progressByCode.get(code) || 0, amount));
     }
@@ -474,13 +482,15 @@ function libraryProgressRatio(series, summary = null) {
     if (manuallyWatchedChapter(series, chapter.code)) return total + 1;
     return total + Math.max(0, ...chapter.sources.map(ref => {
       const progress = ref.episode.progress;
-      return progress?.finished ? 1 : progress?.durationMs > 0 ? Math.max(0, Math.min(1, progress.positionMs / progress.durationMs)) : 0;
+      const complete = videoProgressComplete(progress);
+      return complete ? 1 : progress?.durationMs > 0 ? Math.max(0, Math.min(1, progress.positionMs / progress.durationMs)) : 0;
     }));
   }, 0) / chapters.length;
   const progress = [...(series.sources || []).flatMap((entry) => entry.episodes || [])
     .map((episode) => episode.progress).filter((item) => item?.durationMs > 0)];
   if (!progress.length) return 0;
-  return progress.reduce((sum, item) => sum + (item.finished ? 1 : Math.max(0, Math.min(1, item.positionMs / item.durationMs))), 0) / progress.length;
+  return progress.reduce((sum, item) => sum + (videoProgressComplete(item)
+    ? 1 : Math.max(0, Math.min(1, item.positionMs / item.durationMs))), 0) / progress.length;
 }
 
 // The sharpest version of a Library title's cover for a card: catalog posters as a 300–780 px
@@ -633,7 +643,9 @@ export function renderLibrary() {
   const status = libraryView.status;
   const query = normalizeText(libraryView.query || "");
   const filteredByCategoryAndSearch = all
-    .filter((series) => libraryView.filter === "all" || groups[libraryView.filter]?.includes(series))
+    // Each title already has a category for this render. Looking it up avoids
+    // scanning the full category array once per Library title on large shelves.
+    .filter((series) => libraryView.filter === "all" || categories.get(series.key) === libraryView.filter)
     .filter((series) => !query || [series.title, ...(series.aliases || [])].some((name) => normalizeText(name).includes(query)));
   const libraryStatus = (series) => {
     const local = (series.sources || []).map((entry) => entry.trackingStatus)
@@ -695,7 +707,7 @@ export function renderLibrary() {
     list.innerHTML = [
       ["series", "Series"], ["movie", "Movies"], ["anime", "Anime"],
     ].map(([kind, heading]) => {
-      const items = shown.filter((series) => groups[kind].includes(series));
+      const items = shown.filter((series) => categories.get(series.key) === kind);
       if (!items.length) return "";
       return `<section class="lib-category" aria-label="${heading}"><header class="lib-category__head"><h2>${heading}</h2><span class="lib-category__count">${items.length}</span></header><div class="ui-grid lib-grid">${items.map(card).join("")}</div></section>`;
     }).join("") + featureGroups.filter((group) => group.shown).map((group) => {
@@ -741,7 +753,8 @@ let pendingLibraryRemoval = null;
 export function openLibraryRemoveDialog(series) {
   const dialog = $("#library-remove-dialog");
   if (!series || !dialog) return;
-  pendingLibraryRemoval = { key: series.key, title: series.title };
+  pendingLibraryRemoval = { key: series.key, title: series.title,
+    sourceIds: (series.sources || []).map((entry) => entry.id) };
   if (!dialog.open) dialog.showModal();
   $("#library-remove-cancel")?.focus();
 }
@@ -759,7 +772,9 @@ export function confirmLibraryRemoval({ removeChapters = false } = {}) {
   closeLibraryRemoveDialog();
   // Recheck the saved key at confirmation; a stale dialog cannot affect a
   // different series. Only the explicitly destructive option drops chapters.
-  const matches = (entry) => (entry.seriesKey || librarySeriesKey(entry.title)) === removing.key;
+  const ids = new Set(removing.sourceIds || []);
+  const matches = (entry) => ids.size ? ids.has(entry.id)
+    : (entry.seriesKey || librarySeriesKey(entry.title)) === removing.key;
   if (!state.library.some((entry) => matches(entry) && entry.libraryHidden !== true)) return;
   if (removeChapters) state.library = state.library.filter((entry) => !matches(entry));
   else for (const entry of state.library) if (matches(entry)) entry.libraryHidden = true;

@@ -1,6 +1,7 @@
 // Watched and unwatched episodes, progress, and AniList unwatch.
 import { confirmDialog, toast } from "../ui/ui.js";
 import { chapterWatchStatus } from "../../shared/media/series-sources.js";
+import { videoProgressComplete, verifiedVideoEpisodeKey } from "../../shared/sync/video-state.js";
 import { seriesAniList } from "../anilist/anilist-library.js";
 import {
   ANILIST_SAVE_PROGRESS, ANILIST_SINGLE_PROGRESS_QUERY, anilistGraphql, readAniListAccount,
@@ -46,16 +47,18 @@ export function recordWatchProgress({ force = false, positionSeconds = null, pla
   if (!durationMs || positionMs < 5000) return;
   const now = Date.now();
   const code = String(current.episode.code || "").toUpperCase();
-  const key = current.entry.seriesKey || librarySeriesKey(current.entry.title);
+  const series = buildLibrarySeries().find((item) => item.sources.includes(current.entry));
+  const key = series?.key || current.entry.seriesKey || librarySeriesKey(current.entry.title);
   const completionKey = `${key}\0${code}`;
-  const manuallyUnwatched = explicitlyUnwatchedChapter({ key }, code);
+  const manuallyUnwatched = explicitlyUnwatchedChapter(series || { key }, code);
   if (manuallyUnwatched && positionMs <= durationMs * 0.8) explicitUnwatchCompletionArmed.add(completionKey);
-  const finished = positionMs >= durationMs * 0.92
+  const finished = videoProgressComplete({ positionMs, durationMs })
     && (!manuallyUnwatched || explicitUnwatchCompletionArmed.has(completionKey));
   current.episode.progress = { positionMs, durationMs, updatedAt: now, finished };
   if (current.episode.progress.finished) {
     explicitUnwatchCompletionArmed.delete(completionKey);
-    for (const entry of state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === key)) {
+    for (const entry of series?.sources || state.library.filter((item) =>
+      (item.seriesKey || librarySeriesKey(item.title)) === key)) {
       if (entry.watchedChapters?.[code] === false) {
         entry.watchedChapters = { ...entry.watchedChapters };
         delete entry.watchedChapters[code];
@@ -67,7 +70,6 @@ export function recordWatchProgress({ force = false, positionSeconds = null, pla
   // Real playback (not merely loading a planned anime) promotes only Planning
   // to Watching. Keep the user's other explicit tracking choices unchanged.
   if ((playing ?? !video.paused) && positionMs >= 5000) {
-    const series = buildLibrarySeries().find((item) => item.key === key);
     if (series?.mediaKind === "anime" && watchTrackingStatus(series) === "PLANNING") {
       setWatchTrackingStatus(key, "CURRENT", { automatic: true });
     }
@@ -103,10 +105,15 @@ export function resolveChapterManualIntent(entries, rawCode) {
     const priority = origin?.source === "local" ? 2 : !origin?.source ? 1 : 0;
     const timestamp = Math.max(0, Number(entry?.watchedChapterUpdatedAt?.[code]) || 0,
       Number(origin?.updatedAt) || 0, typeof mark === "number" ? mark : 0);
-    const choice = { watched: mark !== false, priority, timestamp };
+    const stamp = String(entry?.watchedChapterSyncStamps?.[code] || "");
+    const choice = { watched: mark !== false, priority, timestamp, stamp };
+    // Accepted sync actions have a causal HLC winner. Comparing raw clock
+    // times again could reverse it when two devices' wall clocks disagree.
+    const newer = selected && stamp && selected.stamp && stamp !== selected.stamp
+      ? stamp > selected.stamp : timestamp > (selected?.timestamp || 0);
     if (!selected || choice.priority > selected.priority
-      || (choice.priority === selected.priority && (choice.timestamp > selected.timestamp
-        || (choice.timestamp === selected.timestamp && !choice.watched && selected.watched))))
+      || (choice.priority === selected.priority && (newer
+        || stamp === selected.stamp && timestamp === selected.timestamp && !choice.watched && selected.watched)))
       selected = choice;
   }
   return selected ? selected.watched : null;
@@ -114,8 +121,10 @@ export function resolveChapterManualIntent(entries, rawCode) {
 
 function librarySeriesManualIntent(series, code) {
   if (!series?.key) return null;
-  return resolveChapterManualIntent(state.library.filter((item) =>
-    (item.seriesKey || librarySeriesKey(item.title)) === series.key), code);
+  // The Library builder already groups sources through a verified catalog ID
+  // when one exists. Use that exact group rather than recomputing a title key.
+  return resolveChapterManualIntent(Array.isArray(series.sources) ? series.sources
+    : state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key), code);
 }
 
 export function explicitlyUnwatchedChapter(series, code) {
@@ -135,7 +144,9 @@ function markWatchEpisodeUnwatched(series, code) {
   if (!series || !/^S\d{2}E\d{2,4}$/.test(normalized)) return false;
   if (typeof invalidateAutoNextAfterEpisodeEdit === "function") invalidateAutoNextAfterEpisodeEdit(series, normalized);
   explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
-  const entries = state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const identity = verifiedVideoEpisodeKey(series, normalized);
+  const entries = state.library.filter((item) => identity ? verifiedVideoEpisodeKey(item, normalized) === identity
+    : (item.seriesKey || librarySeriesKey(item.title)) === series.key);
   const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
   if (!anchor) return false;
   for (const entry of entries) {
@@ -315,7 +326,9 @@ function markWatchEpisodeWatched(series, code, saved = null) {
   if (!series || !/^S\d{2}E\d{2,4}$/.test(normalized)) return false;
   if (typeof invalidateAutoNextAfterEpisodeEdit === "function") invalidateAutoNextAfterEpisodeEdit(series, normalized);
   explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
-  const entries = state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const identity = verifiedVideoEpisodeKey(series, normalized);
+  const entries = state.library.filter((item) => identity ? verifiedVideoEpisodeKey(item, normalized) === identity
+    : (item.seriesKey || librarySeriesKey(item.title)) === series.key);
   const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
   if (!anchor) return false;
   savePendingAniListUnwatches(pendingAniListUnwatches().filter((item) =>
@@ -330,9 +343,9 @@ function markWatchEpisodeWatched(series, code, saved = null) {
   anchor.watchedChapters = { ...(anchor.watchedChapters || {}), [normalized]: now };
   anchor.watchedChapterOrigins = { ...(anchor.watchedChapterOrigins || {}), [normalized]: { source: "local", updatedAt: now } };
   for (const { episode } of saved?.sources || []) {
-    if (!episode) continue;
-    const durationMs = Math.max(1, Number(episode.progress?.durationMs) || 0, Number(episode.progress?.positionMs) || 0);
-    episode.progress = { ...episode.progress, positionMs: durationMs, durationMs, updatedAt: now, finished: true };
+    // A manual watched mark is the complete intent. No invented media duration
+    // or playback position is needed (and legacy unknown-duration files exist).
+    if (episode) delete episode.progress;
   }
   saveLibrary();
   return true;

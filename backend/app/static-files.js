@@ -75,6 +75,7 @@ export const PUBLIC_ASSETS = new Map([
   ["/shared/html.js", { file: "shared/html.js", cacheControl: "no-cache" }],
   ["/shared/media/audio-policy.js", { file: "shared/media/audio-policy.js", cacheControl: "no-cache" }],
   ["/shared/media/video-profile.js", { file: "shared/media/video-profile.js", cacheControl: "no-cache" }],
+  ["/shared/sync/video-state.js", { file: "shared/sync/video-state.js", cacheControl: "no-cache" }],
   ["/frontend/player/playback-recovery.js", { file: "frontend/player/playback-recovery.js", cacheControl: "no-cache" }],
   ["/frontend/player/playback-diagnostics.js", { file: "frontend/player/playback-diagnostics.js", cacheControl: "no-cache" }],
   ["/frontend/styles/styles.css", { file: "frontend/styles/styles.css", cacheControl: "no-cache" }],

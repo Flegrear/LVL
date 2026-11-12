@@ -95,6 +95,27 @@ export function createSyncJournal(db) {
         throw error;
       }
     },
+    // Reauthentication may replace an expired token while an immutable
+    // publication is still journaled. The repository/device scope must remain
+    // identical; rebind only its credential checkpoint under the same SQLite
+    // writer transaction so the outbox can resume without losing its identity.
+    rebindCheckpoint(operationId, previous, next, persistCredentials) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        assertSupportedSchema();
+        assertCheckpoint(previous);
+        const raw = read.get()?.operation_json;
+        const operation = raw ? JSON.parse(raw) : null;
+        if (!operation || operation.operationId !== operationId || operation.baseCheckpoint !== previous)
+          throw Object.assign(new Error("Pending sync checkpoint changed during sign-in recovery"), { code: "sync_generation_changed" });
+        persistCredentials();
+        write.run(JSON.stringify({ ...operation, baseCheckpoint: next }));
+        db.exec("COMMIT");
+      } catch (error) {
+        db.exec("ROLLBACK");
+        throw error;
+      }
+    },
     clear() { clear.run(); },
     commit(operationId, apply, expectedCheckpoint = undefined) {
       db.exec("BEGIN IMMEDIATE");

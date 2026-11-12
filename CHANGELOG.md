@@ -1,5 +1,14 @@
 # LVL Changelog
 
+## 0.3.2 — 2026-11-12
+
+- Fix watched and partially watched episodes syncing across devices without losing newer changes.
+- Refresh Library progress when changes arrive from another device.
+- Improve Android update installation handoff, startup status and completed-update notices.
+- Align episode details and improve Library responsiveness on phones.
+- Resume Comics from the saved chapter, source and reading position.
+- Improve continuous chapter reading and place favorite Comic sources within Comics filters.
+
 ## 0.3.1 — 2026-11-11
 
 - Fix loading timelines showing a buffered fragment as the full episode.

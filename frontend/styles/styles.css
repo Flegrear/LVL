@@ -3237,15 +3237,32 @@ textarea.ui-input.magnet-input { min-height:84px; font:500 12px/1.5 var(--font-m
   .ui-search.lib-search { flex:1; }
   .lib-grid { --ui-grid-min:118px; gap:20px 10px; }
   .app-dialog__body { padding:24px 16px 20px; }
-  .lib-chapter-row { grid-template-columns:104px minmax(0,1fr); gap:10px 12px; padding:12px; }
-  .lib-chapter-actions { grid-column:1 / -1; justify-content:flex-end; }
+  /* Keep each Library episode's art and copy aligned at the top. At 320px
+     the remaining copy column is narrow, so metadata and actions may wrap. */
+  .lib-chapter-row { grid-template-columns:clamp(88px, 27vw, 112px) minmax(0,1fr); gap:12px; align-items:start; padding:12px; }
+  .lib-chapter-row > .lib-chapter-thumb { width:100%; align-self:start; }
+  .lib-chapter-copy { min-width:0; align-content:start; gap:6px; }
+  .lib-chapter-copy strong { display:-webkit-box; overflow:hidden; white-space:normal; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-height:1.4; }
+  .lib-chapter-facts .ui-meta { display:flex; flex-wrap:wrap; gap:5px 9px; align-items:baseline; min-width:0; }
+  .lib-chapter-facts .ui-meta > * { white-space:normal; overflow-wrap:anywhere; min-width:0; }
+  .lib-chapter-facts .ui-meta > * + *::before { display:none; }
+  .lib-chapter-origin { min-width:0; max-width:100%; }
+  .lib-chapter-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; justify-content:flex-start; align-items:stretch; min-width:0; gap:8px; }
+  .lib-chapter-actions .ui-btn { flex:0 1 auto; min-width:0; min-height:42px; height:auto; padding:7px 10px; white-space:normal; overflow-wrap:anywhere; text-align:center; }
   .lib-chapter-sources { padding:0 12px 12px; }
   .catalog-shell { --catalog-pad:12px; padding:0 var(--catalog-pad) 18px; }
   .catalog-search-head { padding:40px 40px 14px 0; }
   #catalog-results.catalog-results { --ui-grid-min:118px; gap:20px 10px; }
-  .catalog-chapter-row { grid-template-columns:104px minmax(0,1fr); gap:10px 12px; padding:12px; }
-  .catalog-chapter-actions { grid-column:1 / -1; justify-content:flex-end; }
-  .catalog-chapter-actions .ui-btn { flex:0 1 auto; }
+  .catalog-chapter-row { grid-template-columns:clamp(88px, 27vw, 112px) minmax(0,1fr); gap:12px; align-items:start; padding:12px; }
+  .catalog-chapter-row > .catalog-chapter-thumb { width:100%; align-self:start; }
+  .catalog-chapter-copy { min-width:0; align-content:start; }
+  .catalog-chapter-copy strong { display:-webkit-box; overflow:hidden; white-space:normal; overflow-wrap:anywhere; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-height:1.4; }
+  .catalog-chapter-code { min-width:0; }
+  .catalog-chapter-code .ui-meta { display:flex; flex-wrap:wrap; gap:5px 9px; min-width:0; }
+  .catalog-chapter-code .ui-meta > * { white-space:normal; overflow-wrap:anywhere; min-width:0; }
+  .catalog-chapter-code .ui-meta > * + *::before { display:none; }
+  .catalog-chapter-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; justify-content:flex-start; align-items:stretch; gap:8px; min-width:0; }
+  .catalog-chapter-actions .ui-btn { flex:0 1 auto; min-width:0; min-height:42px; height:auto; padding:7px 10px; white-space:normal; overflow-wrap:anywhere; text-align:center; }
   .catalog-chapter-sources { padding:0 12px 12px; }
   .catalog-stream-row { grid-template-columns:minmax(0,1fr); gap:10px; }
   .catalog-stream-rank { display:none; }
@@ -3606,8 +3623,10 @@ textarea.ui-input.magnet-input { min-height:84px; font:500 12px/1.5 var(--font-m
   .title-facts > div { grid-template-columns:104px minmax(0,1fr); gap:12px; }
   .title-section__title { font-size:24px; }
   .title-related-movies__grid { grid-template-columns:repeat(auto-fill,minmax(102px,1fr)); gap:12px; }
-  .title-page .catalog-chapter-row { grid-template-columns:120px minmax(0,1fr); gap:10px 12px; padding:12px; }
-  .title-page .catalog-chapter-actions { grid-column:1 / -1; justify-content:flex-end; }
+  .title-page .catalog-chapter-row { grid-template-columns:clamp(88px, 27vw, 112px) minmax(0,1fr); gap:12px; align-items:start; padding:12px; }
+  .title-page .catalog-chapter-actions { grid-column:1 / -1; justify-content:flex-start; }
+  .title-page .catalog-chapter-actions .title-mark-watched,
+  .title-page .lib-chapter-actions .title-mark-watched { white-space:normal; }
   .title-page .catalog-chapter-sources { padding:0 12px 12px; }
 }
 
