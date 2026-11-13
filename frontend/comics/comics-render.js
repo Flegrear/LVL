@@ -1,9 +1,9 @@
 // Comics renderers for the Home "Comics" tab, the main Library (Comics filter
 // and "All") and search. Every dynamic string is escaped.
-import { bindShelves, buttonMarkup, cardMarkup, emptyMarkup, escapeHtml, refreshImages, shelfMarkup, skeletonShelfMarkup } from "../ui/ui.js";
+import { bindShelves, buttonMarkup, cardMarkup, emptyMarkup, escapeHtml, markupSignature, refreshImages, shelfMarkup, skeletonShelfMarkup } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
-import { comicBrowserMarkup, featuredSlides, mountComicBrowser, showFeatured } from "./comics-browser.js";
+import { comicBrowserMarkup, featuredSlides, hasMountedFeatured, mountComicBrowser, showFeatured } from "./comics-browser.js";
 import { providerBrowserMarkup, mountProviderBrowser } from "./comics-provider.js";
 import { WORK_ID } from "../../shared/reading/ids.js";
 
@@ -78,26 +78,47 @@ export const errorMarkup = (ctx, message) => emptyMarkup({
   action: buttonMarkup({ label: "Try again", icon: "refresh", attrs: { "data-comics-action": "retry" } }),
 });
 
+// The Home tab is revisited after every Library navigation. Keep the mounted
+// provider and shelves until real catalog data changes; replacing ~150 cards
+// and their decoded covers on each visit stalls the Android WebView.
+let mountedComicHome = null;
+const extraMarkupByBody = new WeakMap();
+
 // Home "Comics" tab, laid out like the anime section: a featured carousel, the
 // discovery browser first (as the anime tab's), your rows (Continue reading, New
 // chapters), then AniList rows. isCurrent() stops a slow response from painting over a page the user already left.
 export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => true, extraShelves = [] } = {}) {
-  if (!rows) return;
+  if (!rows || !isCurrent()) return;
   rows.setAttribute("aria-busy", "true");
-  rows.innerHTML = "<div class=\"comics-home-body\">" + providerBrowserMarkup() + skeletonShelfMarkup() + skeletonShelfMarkup() + "</div>";
-  const body = rows.querySelector(".comics-home-body");
+  let body = rows.querySelector(":scope > .comics-home-body");
+  const reused = Boolean(body?.querySelector("#comic-browser") && mountedComicHome?.body === body);
+  if (!reused) {
+    rows.innerHTML = "<div class=\"comics-home-body\">" + providerBrowserMarkup() + skeletonShelfMarkup() + skeletonShelfMarkup() + "</div>";
+    body = rows.querySelector(".comics-home-body");
+    mountProviderBrowser(body.querySelector("[data-comic-provider]"), ctx);
+  }
   const provider = body.querySelector("[data-comic-provider]");
-  mountProviderBrowser(provider, ctx);
-  if (hero) hero.hidden = true;
+  // Keep a valid Comics hero visible while the existing shelves refresh.
+  // If the user just switched from All/Anime, conceal that unrelated hero.
+  if (hero && !hasMountedFeatured(hero)) hero.hidden = true;
   let data;
   try {
     [data] = await Promise.all([comicsApi.home(), loadLibrary().catch(() => null)]);
   } catch (error) {
     if (isCurrent()) {
       rows.removeAttribute("aria-busy");
-      body.innerHTML = errorMarkup(ctx, error.message) + comicBrowserMarkup();
-      body.prepend(provider);
-      mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary: (comic) => Boolean(libraryEntry(comic)) });
+      if (reused) {
+        const oldNotice = body.querySelector("[data-comics-catalog-error]");
+        oldNotice?.remove();
+        const notice = document.createElement("div");
+        notice.dataset.comicsCatalogError = "true";
+        notice.innerHTML = errorMarkup(ctx, error.message);
+        provider.after(notice);
+      } else {
+        body.innerHTML = errorMarkup(ctx, error.message) + comicBrowserMarkup();
+        body.prepend(provider);
+        mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary: (comic) => Boolean(libraryEntry(comic)) });
+      }
     }
     return undefined;
   }
@@ -112,18 +133,50 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
     if (cards.length) shelves.push(shelfMarkup({ id: `comics-${section.id}`, title: tr(ctx, section.title), cards }));
   }
   rows.removeAttribute("aria-busy");
-  body.innerHTML = shelves.join("");
-  body.prepend(provider);
+  const nextMarkup = shelves.join("");
+  const signature = markupSignature(nextMarkup);
+  body.querySelector("[data-comics-catalog-error]")?.remove();
+  const unchanged = reused && mountedComicHome?.signature === signature;
+  if (!unchanged) {
+    body.innerHTML = nextMarkup;
+    body.prepend(provider);
+    mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary });
+    bindShelves(body);
+    refreshImages(body);
+    mountedComicHome = { body, signature };
+    extraMarkupByBody.delete(body);
+  }
+  // The shared hero can have been overwritten by All/Anime independently of
+  // Comics shelves. Always reconcile it, even for unchanged shelf markup.
   showFeatured(hero, featuredSlides(sections, { inLibrary }));
-  mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary });
-  bindShelves(body);
-  refreshImages(body);
   for (const extra of extraShelves) {
-    Promise.resolve(extra()).then((markup) => {
-      if (!markup || !isCurrent() || !body.isConnected) return;
+    Promise.resolve().then(extra).then((markup) => {
+      if (!isCurrent() || !body.isConnected) return;
+      // Extra shelves have their own live data; update those without replacing
+      // a user's active filters, scrolling positions or unrelated card rows.
+      const template = document.createElement("template");
+      template.innerHTML = markup || "";
+      const shelf = template.content.firstElementChild;
+      const key = shelf?.id || "comics-new";
+      const existing = body.querySelector(`#${CSS.escape(key)}`);
+      const previous = extraMarkupByBody.get(body) || new Map();
+      if (!markup) {
+        existing?.remove();
+        previous.delete(key);
+        extraMarkupByBody.set(body, previous);
+        return;
+      }
+      const extraSignature = markupSignature(markup);
+      if (existing && previous.get(key) === extraSignature) return;
+      if (!shelf) return;
+      if (existing) existing.replaceWith(shelf);
+      else {
       const anchor = body.querySelector("#comics-reading") || body.querySelector("#comic-browser");
-      if (anchor) anchor.insertAdjacentHTML("afterend", markup);
-      else body.insertAdjacentHTML("afterbegin", markup);
+        if (anchor) anchor.after(shelf);
+        else body.prepend(shelf);
+      }
+      previous.set(key, extraSignature);
+      extraMarkupByBody.set(body, previous);
       bindShelves(body);
       refreshImages(body);
     }).catch(() => {});

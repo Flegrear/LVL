@@ -1,7 +1,8 @@
 // Home: rows, hero and catalog loading.
 import {
   bindHero, bindShelves, buttonMarkup, cardLibraryActionMarkup, cardMarkup, emptyMarkup,
-  heroDetailsButtonMarkup, heroLibraryButtonMarkup, heroMarkup, refreshImages, setActiveTab,
+  captureMountedMarkup, heroDetailsButtonMarkup, heroLibraryButtonMarkup, heroMarkup, markupSignature,
+  mountedMarkupMatches, refreshImages, setActiveTab,
   shelfMarkup, skeletonHeroMarkup, skeletonShelfMarkup, toast,
 } from "../ui/ui.js";
 import {
@@ -28,6 +29,11 @@ let homeHeroController = null;
 let homeCatalogError = "";
 let homeRenderedCategory = "";
 let homeSavedPlace = null;
+let mountedLibraryRecommendations = null;
+// Keep the already mounted shelves when an unchanged catalog is revisited.
+// Retaining their DOM avoids decoding/reflowing hundreds of cards on Android,
+// and preserves the viewer's row scroll, focused action and current hero slide.
+let mountedHomeMarkup = null;
 
 function rebuildHomeTitleIndex() {
   homeTitleIndex = new Map();
@@ -149,6 +155,7 @@ export function renderLibraryRecommendations(seriesGroups = buildLibrarySeries()
   const section = $("#library-recommendations");
   if (!section) return;
   if (!state.homeLoaded) {
+    mountedLibraryRecommendations = null;
     section.innerHTML = homeCatalogError
       ? shelfMarkup({
         id: "library-recommended",
@@ -160,17 +167,22 @@ export function renderLibraryRecommendations(seriesGroups = buildLibrarySeries()
   }
   const isInLibrary = homeLibraryMembership(seriesGroups);
   const picks = libraryRecommendations(state.homeCatalog, { seed: state.homeCatalog.seed, isInLibrary });
-  section.innerHTML = shelfMarkup({
+  const markup = shelfMarkup({
     id: "library-recommended",
     title: "Recommended next",
     cards: picks.map((meta) => cardMarkup(catalogCardItem(meta), { inLibrary: false })),
     empty: emptyMarkup({ title: "No new recommendations", compact: true }),
   });
+  const signature = markupSignature(markup);
+  if (mountedMarkupMatches(mountedLibraryRecommendations, section, signature)) return;
+  section.innerHTML = markup;
+  mountedLibraryRecommendations = captureMountedMarkup(section, signature);
   bindShelves(section);
   refreshImages(section);
 }
 
 function renderHomeLoading(hero, rows) {
+  mountedHomeMarkup = null;
   homeHeroController?.destroy();
   homeHeroController = null;
   homeRenderedCategory = "";
@@ -181,6 +193,7 @@ function renderHomeLoading(hero, rows) {
 }
 
 function renderHomeError(hero, rows, message) {
+  mountedHomeMarkup = null;
   homeHeroController?.destroy();
   homeHeroController = null;
   homeRenderedCategory = "";
@@ -259,6 +272,7 @@ export function renderHome() {
   // A feature category (Comics…) renders its own hero and rows, without the video catalog.
   const homePage = $("#view-home");
   if (typeof clientFeatures !== "undefined" && clientFeatures.homeCategoryIds.includes(homeBrowseCategory)) {
+    mountedHomeMarkup = null;
     homeHeroController?.destroy();
     homeHeroController = null;
     rows.removeAttribute("aria-busy");
@@ -282,18 +296,14 @@ export function renderHome() {
     isInLibrary,
     library: homeLibraryItems(librarySeries),
   });
-  homeHeroController?.destroy();
-  hero.innerHTML = heroMarkup(homeHeroSlides(feed.hero, isInLibrary));
-  hero.hidden = feed.hero.length === 0;
-  homeHeroController = feed.hero.length ? bindHero(hero) : null;
-  rows.removeAttribute("aria-busy");
+  const heroHtml = heroMarkup(homeHeroSlides(feed.hero, isInLibrary));
   const rowMarkup = feed.rows.map((row) => homeRowMarkup(row, { category: feed.category, isInLibrary }));
   if (feed.category === "anime") {
     const topIndex = feed.rows.findIndex((row) => row.id === "top-anime");
     if (topIndex >= 0) rowMarkup[topIndex] = animeBrowserMarkup();
     else rowMarkup.unshift(animeBrowserMarkup());
   }
-  rows.innerHTML = feed.rows.length || feed.category === "anime"
+  const rowsHtml = feed.rows.length || feed.category === "anime"
     ? rowMarkup.join("")
     : emptyMarkup({
       icon: "film",
@@ -301,6 +311,26 @@ export function renderHome() {
       text: "The catalog came back empty. Try again in a moment.",
       action: buttonMarkup({ label: "Try again", icon: "refresh", attrs: { "data-ui-action": "retry" } }),
     });
+  const rowsSignature = markupSignature(rowsHtml);
+  const heroSignature = markupSignature(heroHtml);
+  if (homeRenderedCategory === feed.category
+    && mountedMarkupMatches(mountedHomeMarkup?.rows, rows, rowsSignature)
+    && mountedMarkupMatches(mountedHomeMarkup?.hero, hero, heroSignature, { allowEmpty: true })
+    && (!feed.hero.length || homeHeroController)) {
+    rows.removeAttribute("aria-busy");
+    restoreHomePlace(place, hero, feed);
+    return;
+  }
+  homeHeroController?.destroy();
+  hero.innerHTML = heroHtml;
+  hero.hidden = feed.hero.length === 0;
+  homeHeroController = feed.hero.length ? bindHero(hero) : null;
+  rows.removeAttribute("aria-busy");
+  rows.innerHTML = rowsHtml;
+  mountedHomeMarkup = {
+    rows: captureMountedMarkup(rows, rowsSignature),
+    hero: captureMountedMarkup(hero, heroSignature),
+  };
   bindShelves(rows);
   refreshImages(hero);
   refreshImages(rows);
@@ -315,24 +345,24 @@ export function renderHome() {
 export async function loadHomeCatalog({ force = false, rotate = false } = {}) {
   if (state.homeLoaded && rotate) {
     state.homeCatalog.seed = (Number(state.homeCatalog.seed) || 0) + 1;
-    renderHome();
+    if ($("#view-home")?.classList.contains("is-active")) renderHome();
     if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
     toast("Fresh picks shuffled in");
     return;
   }
   const fresh = state.homeLoaded && Date.now() - state.homeCatalogUpdatedAt < HOME_CATALOG_REFRESH_MS;
   if (fresh && !force) {
-    renderHome();
+    if ($("#view-home")?.classList.contains("is-active")) renderHome();
     if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
     return;
   }
   if (homeCatalogLoadPromise) {
-    if (!state.homeLoaded) renderHome();
+    if (!state.homeLoaded && $("#view-home")?.classList.contains("is-active")) renderHome();
     return homeCatalogLoadPromise;
   }
   if (!state.homeLoaded) {
     homeCatalogError = "";
-    renderHome();
+    if ($("#view-home")?.classList.contains("is-active")) renderHome();
   }
   homeCatalogLoadPromise = (async () => {
     try {
@@ -350,7 +380,7 @@ export async function loadHomeCatalog({ force = false, rotate = false } = {}) {
       homeCatalogError = "";
       state.homeLoaded = true;
       state.homeCatalogUpdatedAt = Date.now();
-      renderHome();
+      if ($("#view-home")?.classList.contains("is-active")) renderHome();
       if ($("#view-watch")?.classList.contains("is-active")) renderWatchChapters();
       if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
     } catch (error) {
@@ -358,7 +388,7 @@ export async function loadHomeCatalog({ force = false, rotate = false } = {}) {
         toast(error.message || "Could not refresh the Home catalog", { tone: "error" });
       } else {
         homeCatalogError = error.message || "Could not load the Home catalog.";
-        renderHome();
+        if ($("#view-home")?.classList.contains("is-active")) renderHome();
         if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
       }
     }

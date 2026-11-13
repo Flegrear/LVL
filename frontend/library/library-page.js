@@ -3,7 +3,8 @@ import { normalizeText } from "../../shared/subtitles/subtitle-text.js";
 import { videoProgressComplete } from "../../shared/sync/video-state.js";
 import {
   artworkFallback, bindShelves, buttonMarkup, cardMarkup, emptyMarkup, escapeHtml, icon,
-  iconButtonMarkup, metaMarkup, refreshImages, setActiveTab, shelfMarkup, toast,
+  captureMountedMarkup, iconButtonMarkup, markupSignature, metaMarkup, mountedMarkupMatches,
+  refreshImages, setActiveTab, shelfMarkup, toast,
 } from "../ui/ui.js";
 import {
   boundedPosterUrl, libraryCategory, metahubVariant, preferredPosterArt, sharperPoster,
@@ -586,6 +587,19 @@ function renderLibraryContinue(all) {
   refreshImages(section);
 }
 
+// A route change calls renderLibrary even when the Library itself is unchanged.
+// Avoid replacing all poster nodes in that case (and losing their decoded art).
+let lastLibraryMount = null;
+let lastLibraryGrouped = null;
+function updateLibraryCards(list, markup, grouped = false) {
+  const signature = markupSignature(markup);
+  if (lastLibraryGrouped === grouped && mountedMarkupMatches(lastLibraryMount, list, signature)) return false;
+  list.innerHTML = markup;
+  lastLibraryMount = captureMountedMarkup(list, signature);
+  lastLibraryGrouped = grouped;
+  return true;
+}
+
 export function renderLibrary() {
   const list = $("#library-list");
   if (!list) return;
@@ -633,6 +647,8 @@ export function renderLibrary() {
     if (name.textContent !== text) name.textContent = text;
   });
   if (typeof clientFeatures !== "undefined" && clientFeatures.showLibraryFilter(libraryView.filter, list, featureOptions)) {
+    lastLibraryMount = null;
+    lastLibraryGrouped = null;
     if (libraryPage) libraryPage.dataset.featureFilter = libraryView.filter;
     paintStatusCounts(clientFeatures.libraryFilterStatuses(libraryView.filter, featureOptions), clientFeatures.libraryStatusLabels(libraryView.filter));
     return;
@@ -687,24 +703,24 @@ export function renderLibrary() {
   renderLibraryContinue(shown);
   if (!all.length && !featureShown) {
     list.classList.remove("is-grouped");
-    list.innerHTML = emptyMarkup({
+    updateLibraryCards(list, emptyMarkup({
       icon: "library",
       title: "Your Library is empty",
       text: "Add a movie or series to watch it with subtitles and turn its lines into cards.",
       action: buttonMarkup({ label: "Add a title", variant: "primary", icon: "plus", attrs: { "data-library-empty": "add" } }),
-    });
+    }));
     return;
   }
   if (!shown.length && !featureShown) {
     list.classList.remove("is-grouped");
-    list.innerHTML = emptyMarkup({ compact: true, icon: "search", title: "No matches", text: libraryView.query ? `Nothing in your Library matches "${libraryView.query}".` : status !== "any" ? `No titles match ${ANILIST_STATUS_LABELS[status]?.toLowerCase() || "this status"}.` : "Nothing here yet." });
+    updateLibraryCards(list, emptyMarkup({ compact: true, icon: "search", title: "No matches", text: libraryView.query ? `Nothing in your Library matches "${libraryView.query}".` : status !== "any" ? `No titles match ${ANILIST_STATUS_LABELS[status]?.toLowerCase() || "this status"}.` : "Nothing here yet." }));
     return;
   }
   const card = (series) => cardMarkup(libraryCardItem(series, categories.get(series.key), cachedWatchedSummary(series)), { primaryAction: "library", actionsMarkup: libraryMoreButton(series) });
   const grouped = libraryView.filter === "all";
   list.classList.toggle("is-grouped", grouped);
   if (grouped) {
-    list.innerHTML = [
+    const markup = [
       ["series", "Series"], ["movie", "Movies"], ["anime", "Anime"],
     ].map(([kind, heading]) => {
       const items = shown.filter((series) => categories.get(series.key) === kind);
@@ -714,10 +730,10 @@ export function renderLibrary() {
       const heading = escapeHtml(t(group.label));
       return `<section class="lib-category" aria-label="${heading}" data-feature="${escapeHtml(group.id)}"><header class="lib-category__head"><h2>${heading}</h2><span class="lib-category__count">${group.shown}</span></header><div class="ui-grid lib-grid">${group.html}</div></section>`;
     }).join("");
+    if (updateLibraryCards(list, markup, grouped)) refreshImages(list);
   } else {
-    list.innerHTML = shown.map(card).join("");
+    if (updateLibraryCards(list, shown.map(card).join(""), grouped)) refreshImages(list);
   }
-  refreshImages(list);
 }
 
 export async function resumeLibrarySeries(seriesKey) {

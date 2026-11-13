@@ -22,6 +22,7 @@ export const syncServerFeature = {
     if (!ctx.appState || !ctx.recs) throw new Error("Sync needs the app state and ratings stores");
     const service = createSyncService({
       db: ctx.db, getMeta: ctx.getMeta, setMeta: ctx.setMeta, github: createGitHub(), app: GITHUB_APP,
+      repoName: process.env.LVL_SYNC_REPO_NAME || undefined,
       local: createLocalData({ appState: ctx.appState, db: ctx.db, recs: ctx.recs }),
     });
     // LVL's own refusals keep their status (400, 503); anything GitHub answered is a 502.

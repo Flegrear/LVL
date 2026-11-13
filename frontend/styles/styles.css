@@ -372,12 +372,17 @@ html.lvl-popup-window #floating-player-close { pointer-events:auto; }
 .watch-player-main,.watch-player-main > .video-frame { min-width:0; }
 .watch-player-main { container:watch-player-main / inline-size; }
 .watch-skip-options { display:flex; flex-wrap:wrap; gap:4px; align-items:center; width:max-content; max-width:100%; padding:0; border:0; border-radius:0; background:transparent; margin-top:6px; }
+.watch-player-layout.is-theater .watch-skip-options { visibility:hidden; pointer-events:none; margin-bottom:8px; padding-bottom:8px; }
 .watch-skip-action { display:inline-flex; align-items:center; gap:6px; min-height:30px; padding:6px 10px; border:0; border-radius:6px; background:#0b0b0b; color:#858585; font:600 12px/1.2 var(--font-sans); cursor:pointer; }
 .watch-skip-action::before { content:"✓"; display:inline-block; flex:0 0 13px; width:13px; text-align:center; color:transparent; font:800 15px/1 var(--font-sans); }
 .watch-skip-action[aria-pressed="true"] { color:#fff; background:#171717; }
 .watch-skip-action[aria-pressed="true"]::before { color:#fff; }
 .watch-skip-action:hover { color:#fff; background:#202020; }
 .watch-skip-action:focus-visible { outline:2px solid #fff; outline-offset:2px; }
+.library-save-notice { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin:0 0 16px; padding:14px 16px; border:1px solid var(--ui-border,#303030); border-radius:var(--ui-radius-md,10px); background:var(--ui-surface-raised,#171717); font:400 12px/1.5 var(--font-sans); }
+.library-save-notice__copy { display:grid; gap:3px; flex:1 1 220px; min-width:0; color:var(--ui-text-muted,#a3a3a3); }
+.library-save-notice__copy strong { color:var(--ui-text,#f5f5f5); font-weight:600; }
+.library-save-notice > button { flex:0 0 auto; }
 /* Compact controls by actual player-column width, including when the chapter
    rail is alongside it. Viewport-only breakpoints missed narrow desktops. */
 @container watch-player-main (max-width:900px) {

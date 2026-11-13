@@ -78,6 +78,10 @@ class MainActivity : Activity() {
     private var stopped = false
     @Volatile private var waiting = false
     @Volatile private var waitGeneration = 0
+    @Volatile private var latestHealthPhase = "STARTUP"
+    private val debugConnectionDiagnostics by lazy {
+        (applicationInfo.flags and ApplicationInfo.FLAG_DEBUGGABLE) != 0
+    }
     private var ignoredFailureRevision: Long? = null
     @Volatile private var cookieReady = false
     @Volatile private var cookiePending = false
@@ -101,6 +105,18 @@ class MainActivity : Activity() {
 
     private fun startup(event: String) {
         Log.i("LVL-Startup", "event=$event t_ms=${SystemClock.elapsedRealtime()}")
+    }
+
+    /** Called on the UI thread only for changed phases, never for the 450 ms healthy samples. */
+    private fun debugUiTransition(phase: String, queuedAt: Long, generation: Int, eligible: Boolean) {
+        if (!debugConnectionDiagnostics) return
+        val overlayVisible = statusBox.visibility == View.VISIBLE &&
+            status.text.toString() == getString(R.string.reconnecting)
+        Log.w("LVL-Connection",
+            "event=ui_transition queued_phase=$phase current_phase=$latestHealthPhase " +
+                "generation=$generation current_generation=$waitGeneration " +
+                "queue_ms=${SystemClock.elapsedRealtime() - queuedAt} eligible=$eligible " +
+                "overlay_visible=$overlayVisible cookie_ready=$cookieReady")
     }
 
     private val mediaReceiver = object : BroadcastReceiver() {
@@ -248,12 +264,35 @@ class MainActivity : Activity() {
         thread(name = "lvl-proof-renewal", isDaemon = true) {
             val health = ActiveConnectionHealth()
             var lastDecision = ActiveConnectionHealth.Decision.RESTORED
+            var lastDiagnosticAt = 0L
+            var lastDiagnosticKind = ""
+            var priorProbeFailed = false
+            val observer: ((ServerIdentity.ProbeObservation) -> Unit)? =
+                if (debugConnectionDiagnostics) probeObserver@{ outcome ->
+                    val failed = outcome.status != ServerIdentity.ProbeStatus.VERIFIED
+                    val beganFailure = failed && !priorProbeFailed
+                    priorProbeFailed = failed
+                    if (outcome.status == ServerIdentity.ProbeStatus.VERIFIED && outcome.elapsedMs < 500L)
+                        return@probeObserver
+                    val kind = "${outcome.status}:${outcome.stage}:${outcome.reason}:${outcome.exceptionClass}"
+                    val now = SystemClock.elapsedRealtime()
+                    if (beganFailure || kind != lastDiagnosticKind || now - lastDiagnosticAt >= 15_000L) {
+                        Log.w("LVL-Connection",
+                            "event=probe_${if (outcome.status == ServerIdentity.ProbeStatus.VERIFIED) "slow" else "failure"} " +
+                                "verdict=${outcome.status} kind=${outcome.exceptionClass ?: "none"} " +
+                                "stage=${outcome.stage} reason=${outcome.reason} " +
+                                "http_status=${outcome.httpStatus ?: 0} elapsed_ms=${outcome.elapsedMs} " +
+                                "generation=$generation")
+                        lastDiagnosticKind = kind
+                        lastDiagnosticAt = now
+                    }
+                } else null
             while (generation == waitGeneration && !isDestroyed && !isFinishing &&
                 ServerService.isCurrentChild(child)) {
                 try { Thread.sleep(450) } catch (_: InterruptedException) { return@thread }
                 if (generation != waitGeneration || !ServerService.isCurrentChild(child)) break
                 val probeStartedAt = SystemClock.elapsedRealtime()
-                val sample = runCatching { child.identity.probeStatus(ServerService.PORT) }
+                val sample = runCatching { child.identity.probeStatus(ServerService.PORT, observer) }
                     .getOrDefault(ServerIdentity.ProbeStatus.UNAVAILABLE)
                 if (generation != waitGeneration || !ServerService.isCurrentChild(child)) break
                 val authenticated = sample == ServerIdentity.ProbeStatus.VERIFIED
@@ -261,6 +300,7 @@ class MainActivity : Activity() {
                 val now = SystemClock.elapsedRealtime()
                 val childAlive = ServerService.isCurrentChild(child)
                 val decision = health.observe(now, sample, childAlive)
+                latestHealthPhase = decision.name
                 val changed = decision != lastDecision
                 if (changed) {
                     // Transition-only diagnostics: neither the bearer nor the
@@ -273,8 +313,9 @@ class MainActivity : Activity() {
                 if (decision != ActiveConnectionHealth.Decision.RESTORED) {
                     val queuedAt = SystemClock.elapsedRealtime()
                     main.post {
-                        if (generation == waitGeneration && authenticatedChild === child &&
-                            !isDestroyed && !isFinishing) {
+                        val eligible = generation == waitGeneration && authenticatedChild === child &&
+                            !isDestroyed && !isFinishing
+                        if (eligible) {
                             val mainDelay = SystemClock.elapsedRealtime() - queuedAt
                             if (changed && mainDelay >= 1_000L)
                                 Log.w("LVL-Connection", "phase=${decision.name} main_delay_ms=$mainDelay")
@@ -287,14 +328,16 @@ class MainActivity : Activity() {
                                 else -> Unit
                             }
                         }
+                        if (changed) debugUiTransition(decision.name, queuedAt, generation, eligible)
                     }
                     if (decision == ActiveConnectionHealth.Decision.TERMINAL) return@thread
                     continue
                 }
                 val queuedAt = SystemClock.elapsedRealtime()
                 main.post {
-                    if (generation == waitGeneration && authenticatedChild === child &&
-                        !isDestroyed && !isFinishing) {
+                    val eligible = generation == waitGeneration && authenticatedChild === child &&
+                        !isDestroyed && !isFinishing
+                    if (eligible) {
                         val mainDelay = SystemClock.elapsedRealtime() - queuedAt
                         if (changed && mainDelay >= 1_000L)
                             Log.w("LVL-Connection", "phase=RESTORED main_delay_ms=$mainDelay")
@@ -304,6 +347,7 @@ class MainActivity : Activity() {
                         retryFailedMainFrame(child)
                         maybeRevealWeb()
                     }
+                    if (changed) debugUiTransition("RESTORED", queuedAt, generation, eligible)
                 }
             }
             if (generation == waitGeneration && authenticatedChild === child) {
@@ -407,6 +451,7 @@ class MainActivity : Activity() {
         statusBox.visibility = View.VISIBLE
         status.text = getString(R.string.reconnecting)
         web.loadUrl(url)
+        debugUiTransition("MAIN_FRAME_RETRY", SystemClock.elapsedRealtime(), waitGeneration, true)
     }
 
     private fun maybeNavigate() {
@@ -845,6 +890,7 @@ class MainActivity : Activity() {
                         suspendAuthenticatedPage(child, waitGeneration, showOverlay = true)
                     }
                 } else showStartupFailure()
+                debugUiTransition("MAIN_FRAME_ERROR", SystemClock.elapsedRealtime(), waitGeneration, true)
             }
         }
 

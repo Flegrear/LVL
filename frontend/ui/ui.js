@@ -8,6 +8,32 @@ import { escapeHtml } from "../../shared/html.js";
 
 export { escapeHtml };
 
+// A short comparison key for freshly generated markup. This lets route
+// renderers retain existing DOM without caching a second full HTML copy.
+export function markupSignature(value) {
+  const input = String(value || "");
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (let index = 0; index < input.length; index++) {
+    const code = input.charCodeAt(index);
+    first = Math.imul(first ^ code, 16777619);
+    second = Math.imul(second ^ (code + (index & 255)), 2246822519);
+  }
+  return `${input.length}:${first >>> 0}:${second >>> 0}`;
+}
+
+// A markup signature alone cannot prove a renderer still owns a container:
+// another category or extension can replace it with different DOM. Track the
+// first actual mounted node to preserve work only while that node survives.
+export function captureMountedMarkup(container, signature) {
+  return { container, signature, first: container?.firstChild || null };
+}
+export function mountedMarkupMatches(snapshot, container, signature, { allowEmpty = false } = {}) {
+  return Boolean(snapshot && snapshot.container === container && snapshot.signature === signature
+    && (snapshot.first ? snapshot.first === container?.firstChild
+      : allowEmpty && !container?.firstChild));
+}
+
 function attrs(map = {}) {
   return Object.entries(map)
     .filter(([key, value]) => /^[a-z][a-z0-9:_-]*$/i.test(key) && value !== undefined && value !== null && value !== false)

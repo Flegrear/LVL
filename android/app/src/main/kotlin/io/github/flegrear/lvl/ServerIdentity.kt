@@ -22,6 +22,18 @@ import javax.crypto.spec.SecretKeySpec
  */
 class ServerIdentity private constructor(private val key: ByteArray) {
     enum class ProbeStatus { VERIFIED, UNAVAILABLE, REJECTED }
+    enum class ProbeStage { OPEN_CONNECTION, HTTP_RESPONSE, VERIFY_PROOF }
+    enum class ProbeReason { VERIFIED, HTTP_STATUS, INVALID_PROOF, TRANSPORT_FAILURE }
+
+    /** Safe observation only: no URL, challenge, signed proof, cookie, or exception message. */
+    data class ProbeObservation(
+        val status: ProbeStatus,
+        val elapsedMs: Long,
+        val stage: ProbeStage,
+        val reason: ProbeReason,
+        val exceptionClass: String? = null,
+        val httpStatus: Int? = null,
+    )
 
     val childEnvironmentKey: String = encoder.encodeToString(key)
 
@@ -40,12 +52,30 @@ class ServerIdentity private constructor(private val key: ByteArray) {
     /** A fresh challenge for *each* HTTP attempt; no secret or proof is logged/persisted. */
     fun probe(port: Int): Boolean = probeStatus(port) == ProbeStatus.VERIFIED
 
-    fun probeStatus(port: Int): ProbeStatus {
+    fun probeStatus(port: Int): ProbeStatus = probeStatus(port, null)
+
+    /** Observation must never influence authentication or change a transport failure's verdict. */
+    fun probeStatus(port: Int, observer: ((ProbeObservation) -> Unit)?): ProbeStatus {
+        val startedNs = if (observer != null) System.nanoTime() else 0L
+        fun observed(
+            status: ProbeStatus,
+            stage: ProbeStage,
+            reason: ProbeReason,
+            error: Exception? = null,
+            httpStatus: Int? = null,
+        ): ProbeStatus {
+            if (observer != null) runCatching {
+                observer(ProbeObservation(status, (System.nanoTime() - startedNs) / 1_000_000L,
+                    stage, reason, error?.javaClass?.simpleName, httpStatus))
+            }
+            return status
+        }
         val challenge = newChallenge()
         val connection = try {
             URI("http://127.0.0.1:$port/api/health").toURL().openConnection() as HttpURLConnection
-        } catch (_: Exception) {
-            return ProbeStatus.UNAVAILABLE
+        } catch (error: Exception) {
+            return observed(ProbeStatus.UNAVAILABLE, ProbeStage.OPEN_CONNECTION,
+                ProbeReason.TRANSPORT_FAILURE, error)
         }
         connection.apply {
             connectTimeout = 1000
@@ -57,14 +87,20 @@ class ServerIdentity private constructor(private val key: ByteArray) {
             requestMethod = "GET"
             setRequestProperty("X-LVL-Android-Challenge", challenge)
         }
+        var stage = ProbeStage.HTTP_RESPONSE
         return try {
+            val responseCode = connection.responseCode
+            if (responseCode == 200) stage = ProbeStage.VERIFY_PROOF
+            // HttpURLConnection caches responseCode; the second read sends no new request.
             if (connection.responseCode == 200 && verify(challenge, connection.getHeaderField("X-LVL-Android-Proof")))
-                ProbeStatus.VERIFIED
-            else ProbeStatus.REJECTED
-        } catch (_: Exception) {
+                observed(ProbeStatus.VERIFIED, stage, ProbeReason.VERIFIED, httpStatus = responseCode)
+            else observed(ProbeStatus.REJECTED, stage,
+                if (responseCode == 200) ProbeReason.INVALID_PROOF else ProbeReason.HTTP_STATUS,
+                httpStatus = responseCode)
+        } catch (error: Exception) {
             // A timeout or refused connection is not a forged health response.
             // Both are unauthenticated; callers may distinguish their recovery UX.
-            ProbeStatus.UNAVAILABLE
+            observed(ProbeStatus.UNAVAILABLE, stage, ProbeReason.TRANSPORT_FAILURE, error)
         } finally {
             connection.disconnect()
         }

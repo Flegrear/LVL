@@ -226,9 +226,18 @@ export function createLocalData({ appState, db, recs, log = console }) {
           // context is the only safe account identity still available.
           const sharedIdentity = !entry ? verifiedContext
             : identity && (verifiedContext === identity || !context?.catalogId) ? identity : null;
-          const matches = sharedIdentity ? library.filter((item) =>
-            verifiedVideoEpisodeKey(item, code) === sharedIdentity) : entry ? [entry] : [];
-          if (!matches.length) continue;
+          // A tombstone retires ONE source's old watched record. It is not an
+          // explicit "unwatch" for every source with the same verified chapter.
+          // Such a chapter-wide choice is represented by watched:false. In
+          // particular, completion compaction can retire an old torrent's true
+          // record after a new explicit false was published by the catalog card.
+          const matches = change.value === null ? entry ? [entry] : []
+            : sharedIdentity ? library.filter((item) =>
+              verifiedVideoEpisodeKey(item, code) === sharedIdentity) : entry ? [entry] : [];
+          if (!matches.length) {
+            if (change.value === null) appliedNow.push(change);
+            continue;
+          }
           // Imported completions do not acquire a new origin after the
           // original account-bound source has been removed.
           if (imported && !entry) continue;
@@ -243,6 +252,10 @@ export function createLocalData({ appState, db, recs, log = console }) {
             const prior = target.watchedChapterSyncStamps?.[code];
             if (prior && compareStamps(prior, change.at) >= 0) continue;
             const replica = target.watchedChapterReplicas?.[code];
+            // The source being retired may already display a newer choice
+            // copied from a different record. Its own tombstone must not
+            // destroy that independently authored watched/unwatched choice.
+            if (change.value === null && replica?.sourceId && replica.sourceId !== id) continue;
             const localChoice = videoWatchedChoice(target, code);
             if (target !== entry && target.watchedChapterOrigins?.[code]?.source === "local"
               && !prior && localChoice !== null) continue;

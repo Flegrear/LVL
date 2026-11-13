@@ -1,5 +1,6 @@
 // LVL's saved state: the server's copy of the app state (sections, revisions, conflicts) and the local copies it falls back on.
 import { normalizeLearningLocale } from "../../shared/settings/language-settings.js";
+import { parseStamp } from "../../shared/sync/clock.js";
 import { localCopyUnloaded, POPUP_HANDOFF, renderAll, state, uiLanguage } from "../../app.js";
 import { legacyPreferencesSnapshot, preserveLegacyPreferences } from "./legacy-preferences.js";
 import { fetchJson, postJson } from "./http.js";
@@ -107,6 +108,45 @@ const persistentAppRetryAfter = new Map();
 const persistentAppOwnPendingSections = new Set();
 const PERSISTENT_CAS_SECTIONS = new Set(["cards", "known", "library", "preferences"]);
 const APP_DB_TAB_LIBRARY_PENDING_KEY = "blackline-db-library-pending-tab-v1";
+// Android can recreate its WebView after a package force-stop without restoring
+// sessionStorage. The browser cache already owns the pending full Library; only
+// a small, verified pre-edit tracking certificate needs durable storage.
+const APP_DB_LIBRARY_RECOVERY_KEY = "blackline-db-library-tracking-recovery-v1";
+
+function persistentLibraryCacheFingerprint(value) {
+  // Four independent 32-bit lanes tie a sparse certificate to the exact
+  // serialized browser cache without keeping a second full Library copy.
+  // This is an accidental-mismatch guard, not a security signature.
+  if (typeof value !== "string") return null;
+  let a = 2166136261, b = 2246822519, c = 3266489917, d = 668265263;
+  for (let i = 0; i < value.length; i++) {
+    const code = value.charCodeAt(i);
+    a = Math.imul(a ^ code, 16777619);
+    b = Math.imul(b ^ (code + i), 2246822519);
+    c = Math.imul(c ^ (code + (i >>> 8)), 3266489917);
+    d = Math.imul(d ^ (code + (i & 255)), 668265263);
+  }
+  return [value.length, a >>> 0, b >>> 0, c >>> 0, d >>> 0].join(":");
+}
+
+function clearDurableLibraryRecovery() {
+  try { localStorage.removeItem(APP_DB_LIBRARY_RECOVERY_KEY); } catch {}
+}
+
+function readDurableLibraryRecovery() {
+  try {
+    const certificate = JSON.parse(localStorage.getItem(APP_DB_LIBRARY_RECOVERY_KEY) || "null");
+    const cached = localStorage.getItem("blackline-library");
+    if (certificate?.version !== 1 || !Number.isSafeInteger(certificate.expectedUpdatedAt)
+      || certificate.expectedUpdatedAt < 0 || !certificate.trackingBaseline
+      || certificate.cacheFingerprint !== persistentLibraryCacheFingerprint(cached)) return null;
+    const value = JSON.parse(cached);
+    if (!Array.isArray(value) || !restoreTrackingRecoveryBaseline(value, certificate.trackingBaseline))
+      return null;
+    return { value, expectedUpdatedAt: certificate.expectedUpdatedAt,
+      trackingBaseline: certificate.trackingBaseline };
+  } catch { return null; }
+}
 
 function persistentDirtySections() {
   const withTabPending = (sections) => {
@@ -203,6 +243,85 @@ function recordUnreflectedPersistentLibraryWrite(visibleBase, submitted, saved) 
   }
 }
 
+// A crashed tab can recover tracking-only edits after another SQLite revision
+// without remembering a second full Library. Preserve only the PRE-EDIT values
+// of the fields actually touched, and certify them exclusively while this tab
+// still holds a verified SQLite view baseline. Any structural/source/title
+// mutation makes the compact certificate unavailable.
+const TRACKING_RECOVERY_FIELDS = ["watchedChapters", "watchedChapterUpdatedAt",
+  "watchedChapterOrigins", "watchedChapterSyncStamps", "watchedChapterReplicas",
+  "lastPlayedAt", "lastPlayedFileIndex"];
+
+function trackingRecoveryBaseline(base, pending) {
+  if (!Array.isArray(base) || !Array.isArray(pending) || base.length !== pending.length) return null;
+  const records = [];
+  for (let i = 0; i < base.length; i++) {
+    const was = base[i], mine = pending[i];
+    if (!was || !mine || was.id == null || was.id !== mine.id
+      || !Array.isArray(was.episodes) || !Array.isArray(mine.episodes)) return null;
+    const strip = item => {
+      const result = copyPersistentLibrary([item])[0];
+      for (const field of TRACKING_RECOVERY_FIELDS) delete result[field];
+      for (const episode of result.episodes) delete episode.progress;
+      return result;
+    };
+    if (!sameLibraryContent([strip(was)], [strip(mine)])) return null;
+    const fields = {};
+    for (const field of TRACKING_RECOVERY_FIELDS) {
+      if (Object.hasOwn(was, field) === Object.hasOwn(mine, field)
+        && JSON.stringify(was[field]) === JSON.stringify(mine[field])) continue;
+      fields[field] = { present: Object.hasOwn(was, field), value: was[field] };
+    }
+    const episodes = [];
+    for (let e = 0; e < was.episodes.length; e++) {
+      const prior = was.episodes[e], current = mine.episodes[e];
+      if (prior.fileIndex !== current.fileIndex) return null;
+      if (Object.hasOwn(prior, "progress") === Object.hasOwn(current, "progress")
+        && JSON.stringify(prior.progress) === JSON.stringify(current.progress)) continue;
+      episodes.push({ fileIndex: prior.fileIndex,
+        present: Object.hasOwn(prior, "progress"), value: prior.progress });
+    }
+    if (Object.keys(fields).length || episodes.length) records.push({ id: String(was.id), fields, episodes });
+  }
+  if (!records.length) return null;
+  const certificate = { version: 1, records };
+  // Even very large watch histories must not create another substantial cache.
+  return JSON.stringify(certificate).length <= 32_768 ? certificate : null;
+}
+
+function restoreTrackingRecoveryBaseline(pending, certificate) {
+  if (!Array.isArray(pending) || certificate?.version !== 1
+    || !Array.isArray(certificate.records) || certificate.records.length > pending.length) return null;
+  const base = copyPersistentLibrary(pending);
+  const touched = new Set();
+  for (const record of certificate.records) {
+    if (!record || typeof record.id !== "string" || touched.has(record.id)
+      || !record.fields || typeof record.fields !== "object"
+      || !Array.isArray(record.episodes)) return null;
+    const entry = base.find(item => String(item?.id) === record.id);
+    if (!entry) return null;
+    touched.add(record.id);
+    for (const [field, before] of Object.entries(record.fields)) {
+      if (!TRACKING_RECOVERY_FIELDS.includes(field) || !before || typeof before.present !== "boolean") return null;
+      if (before.present) entry[field] = before.value;
+      else delete entry[field];
+    }
+    const episodes = new Set();
+    for (const before of record.episodes) {
+      if (!Number.isSafeInteger(before?.fileIndex) || episodes.has(before.fileIndex)
+        || typeof before.present !== "boolean") return null;
+      const episode = entry.episodes?.find(item => item.fileIndex === before.fileIndex);
+      if (!episode) return null;
+      episodes.add(before.fileIndex);
+      if (before.present) episode.progress = before.value;
+      else delete episode.progress;
+    }
+  }
+  // A malformed or stale sparse certificate cannot authorize replay.
+  const check = trackingRecoveryBaseline(base, pending);
+  return check && JSON.stringify(check) === JSON.stringify(certificate) ? base : null;
+}
+
 function preservePendingLibraryForTab(items) {
   // localStorage is shared between LVL tabs. A tab-local shadow means another
   // tab's browser-cache write cannot erase this tab's pending Library intent.
@@ -230,6 +349,8 @@ function preservePendingLibraryForTab(items) {
         && !persistentAppPartialLibrarySaves.has("library")
         && visibleBaseVerified
         && certifiedBaseRevision !== null;
+      const trackingBaseline = safeToReplay
+        ? trackingRecoveryBaseline(persistentAppAcceptedSnapshots.get("library"), items) : null;
       sessionStorage.setItem(APP_DB_TAB_LIBRARY_PENDING_KEY, JSON.stringify({
         value: copyPersistentLibrary(items),
         expectedUpdatedAt: revision ?? null,
@@ -239,13 +360,25 @@ function preservePendingLibraryForTab(items) {
         // pristine tab-owned SQLite baseline, separately from its pending data.
         certifiedBaseRevision: safeToReplay ? certifiedBaseRevision : null,
         safeToReplay,
+        ...(trackingBaseline ? { trackingBaseline } : {}),
       }));
+      // The full pending bytes are already written by saveLibrary into the
+      // ordinary local cache. Persist only the certified pre-edit tracking
+      // fields, and only when that cache is the exact pending Library.
+      const cached = localStorage.getItem("blackline-library");
+      if (safeToReplay && trackingBaseline && cached === JSON.stringify(items)) {
+        localStorage.setItem(APP_DB_LIBRARY_RECOVERY_KEY, JSON.stringify({
+          version: 1, expectedUpdatedAt: certifiedBaseRevision,
+          trackingBaseline, cacheFingerprint: persistentLibraryCacheFingerprint(cached),
+        }));
+      } else clearDurableLibraryRecovery();
     }
   } catch { /* SQLite and the normal local copy remain independent fallbacks. */ }
 }
 
 function invalidatePersistentLibraryReplay() {
   persistentAppPartialLibrarySaves.add("library");
+  clearDurableLibraryRecovery();
   try {
     if (typeof sessionStorage === "undefined") return;
     const raw = sessionStorage.getItem(APP_DB_TAB_LIBRARY_PENDING_KEY);
@@ -265,6 +398,7 @@ function invalidatePersistentLibraryReplay() {
 function clearPendingLibraryForTab() {
   persistentAppOwnPendingSections.delete("library");
   try { if (typeof sessionStorage !== "undefined") sessionStorage.removeItem(APP_DB_TAB_LIBRARY_PENDING_KEY); } catch {}
+  clearDurableLibraryRecovery();
 }
 
 function hasPendingLibraryForTab() {
@@ -279,13 +413,40 @@ function alertPersistentLibraryConflict() {
   if (!parent) return;
   let alert = document.getElementById("library-persistence-conflict");
   if (!alert) {
-    alert = document.createElement("p");
+    alert = document.createElement("div");
     alert.id = "library-persistence-conflict";
+    alert.className = "library-save-notice";
     alert.setAttribute("role", "alert");
-    alert.style.cssText = "padding:12px 16px;border:1px solid #777;color:#fff;background:#161616;margin:0 0 12px";
     parent.prepend(alert);
   }
-  alert.textContent = "Saved changes could not be merged with edits in this window. Export the library to keep those edits, or use the saved Library to replace this unsaved copy. ";
+  alert.textContent = "";
+  const message = document.createElement("span");
+  message.className = "library-save-notice__copy";
+  const heading = document.createElement("strong");
+  heading.textContent = "Library changes need review";
+  const detail = document.createElement("span");
+  detail.textContent = "Unsaved edits are kept here. Download them before choosing the saved Library.";
+  message.append(heading, detail);
+  alert.append(message);
+  const download = document.createElement("button");
+  download.type = "button";
+  download.className = "ui-btn ui-btn--secondary ui-btn--sm";
+  download.textContent = "Download unsaved copy";
+  download.addEventListener("click", () => {
+    // The older unsaved snapshot may contain renames/additions/deletions that
+    // cannot be proven safe to replay. Let the person retain those exact bytes
+    // before choosing the current SQLite Library; no automatic loss occurs.
+    const contents = JSON.stringify(copyPersistentLibrary(state.library), null, 2);
+    const url = URL.createObjectURL(new Blob([contents], { type: "application/json" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `lvl-unsaved-library-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  });
+  alert.append(download);
   const recover = document.createElement("button");
   recover.type = "button";
   recover.className = "ui-btn ui-btn--secondary ui-btn--sm";
@@ -342,11 +503,55 @@ function sameLibraryContent(a, b) {
     && JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
 }
 
-function rebasePersistentPlayback(base, local, remote) {
+function acceptedLibraryCoversPendingWatchChoices(local, accepted) {
+  // An uncertified legacy conflict may become completely resolved after the
+  // person makes a NEW post-receipt watch choice that the backend accepts.
+  // Never clear an unknown source, title, progress, delete or catalog edit.
+  if (!Array.isArray(local) || !Array.isArray(accepted) || local.length !== accepted.length) return false;
+  const watchedFields = ["watchedChapters", "watchedChapterUpdatedAt", "watchedChapterOrigins",
+    "watchedChapterSyncStamps", "watchedChapterReplicas"];
+  const watched = item => item === false ? false
+    : item === true || typeof item === "number" && Number.isFinite(item) && item > 0 ? true : null;
+  for (let index = 0; index < local.length; index++) {
+    const mine = local[index], saved = accepted[index];
+    if (!mine || !saved || mine.id == null || mine.id !== saved.id) return false;
+    const a = copyPersistentLibrary([mine])[0], b = copyPersistentLibrary([saved])[0];
+    for (const field of [...watchedFields, "updatedAt"]) {
+      delete a[field];
+      delete b[field];
+    }
+    if (!sameLibraryContent([a], [b])) return false;
+    if (mine.updatedAt !== saved.updatedAt && (!Number.isSafeInteger(mine.updatedAt)
+      || !Number.isSafeInteger(saved.updatedAt))) return false;
+    for (const field of watchedFields)
+      if (mine[field] !== undefined && (!mine[field] || typeof mine[field] !== "object"
+        || Array.isArray(mine[field]))) return false;
+    for (const code of Object.keys(mine.watchedChapters || {})) {
+      if (!/^S\d{2}E\d{2,4}$/.test(code) || watched(mine.watchedChapters[code]) === null
+        || watched(mine.watchedChapters[code]) !== watched(saved.watchedChapters?.[code])) return false;
+    }
+    // A metadata-only or deletion-like local entry without its watched choice
+    // cannot be distinguished from an older unsaved edit without a certificate.
+    for (const field of watchedFields.slice(1))
+      for (const code of Object.keys(mine[field] || {}))
+        if (!Object.hasOwn(mine.watchedChapters || {}, code)
+          && JSON.stringify(mine[field]?.[code]) !== JSON.stringify(saved[field]?.[code])) return false;
+  }
+  return true;
+}
+
+function rebasePersistentPlayback(base, local, remote, { revision } = {}) {
   if (!base || !local || !remote || ![base.episodes, local.episodes, remote.episodes].every(Array.isArray)) return null;
   const equal = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+  const samePlayhead = (a, b) => a == null && b == null
+    || a != null && b != null
+      && Number(a.positionMs) === Number(b.positionMs)
+      && Number(a.durationMs) === Number(b.durationMs);
   const expected = copyPersistentLibrary([base])[0];
   const next = copyPersistentLibrary([remote])[0];
+  let receivedPlaybackWins = false;
+  let locallyChosenPlaybackFileIndex = null;
+  let locallyChosenPlaybackUpdatedAt = null;
   // A watch flag, its author and its timestamp are one episode edit. Different
   // episodes can change on both devices without conflicting over the whole title.
   // A sync stamp and its replica identify the causal author of a watched
@@ -363,6 +568,7 @@ function rebasePersistentPlayback(base, local, remote) {
     if (!/^S\d{2}E\d{2,4}$/.test(code)) return null;
     const was = bundle(base, code), mine = bundle(local, code), theirs = bundle(remote, code);
     if (equal(was, mine)) continue;
+    let localChoiceAfterReceipt = false;
     if (!equal(was, theirs) && !equal(mine, theirs)) {
       const watched = entry => {
         const choice = entry.watchedChapters?.[code];
@@ -370,16 +576,57 @@ function rebasePersistentPlayback(base, local, remote) {
           : choice === true || typeof choice === "number" && Number.isFinite(choice) && choice > 0 ? true : null;
       };
       // Two tabs may explicitly confirm the same watched choice at different
-      // times. Accept the already-saved causality for that idempotent choice;
-      // opposing watched/unwatched decisions still need a real user choice.
+      // times. Accept the already-saved causality for that idempotent choice.
       if (watched(local) !== null && watched(local) === watched(remote)) continue;
-      return null;
+      // A legacy pending choice with no certified pre-edit baseline is unsafe.
+      // A *new* explicit choice after this tab's SQLite receipt, however, has
+      // its own verified before/after in this live tab. Reasserting that same
+      // truth may merge with a remote chapter that has NO opposing watch record.
+      const localActionAt = local.watchedChapterUpdatedAt?.[code]
+        ?? (typeof local.watchedChapters?.[code] === "number"
+          ? local.watchedChapters[code] : local.watchedChapterOrigins?.[code]?.updatedAt);
+      const previousActionAt = base.watchedChapterUpdatedAt?.[code]
+        ?? (typeof base.watchedChapters?.[code] === "number"
+          ? base.watchedChapters[code] : base.watchedChapterOrigins?.[code]?.updatedAt);
+      const verifiedReassertion = watched(local) !== null && watched(local) === watched(base)
+        && watched(remote) === null && !Object.keys(theirs).length
+        && local.watchedChapterOrigins?.[code]?.source === "local"
+        && !local.watchedChapterSyncStamps?.[code]
+        && Number.isSafeInteger(localActionAt) && Number.isSafeInteger(previousActionAt)
+        && Number.isSafeInteger(revision) && localActionAt > revision
+        && localActionAt > previousActionAt;
+      if (verifiedReassertion) localChoiceAfterReceipt = true;
+      else {
+      // For opposing choices, the accepted remote stamp must have advanced
+      // from the verified baseline. Compare the local action with this
+      // device's SQLite receipt revision, not the two devices' wall clocks.
+      // No baseline stamp means legacy/ambiguous intent: keep it for review.
+      const prior = base.watchedChapterSyncStamps?.[code];
+      const accepted = remote.watchedChapterSyncStamps?.[code];
+      const localStamp = local.watchedChapterSyncStamps?.[code];
+      const localAt = local.watchedChapterUpdatedAt?.[code];
+      if (watched(local) === null || watched(remote) === null
+        || typeof parseStamp !== "function" || !parseStamp(prior) || !parseStamp(accepted) || accepted <= prior
+        || !Number.isSafeInteger(revision) || !Number.isSafeInteger(localAt)) return null;
+      if (localAt <= revision) continue; // older pending choice yields to accepted remote
+      if (local.watchedChapterOrigins?.[code]?.source !== "local"
+        || localStamp !== prior && (!parseStamp(localStamp) || localStamp <= accepted)) return null;
+      localChoiceAfterReceipt = localStamp === prior;
+      }
     }
     for (const field of tracking) {
       if (Object.hasOwn(local[field] || {}, code)) {
         next[field] = next[field] || {};
         next[field][code] = local[field][code];
       } else if (next[field]) delete next[field][code];
+    }
+    if (localChoiceAfterReceipt) {
+      // Frontend watch/unwatch updates the choice and local receipt timestamp;
+      // the sync service allocates its HLC stamp only when publishing it.
+      // Do not attach the previous accepted stamp or copied replica to this
+      // distinct local intent before the backend supplies its next record.
+      if (next.watchedChapterSyncStamps) delete next.watchedChapterSyncStamps[code];
+      if (next.watchedChapterReplicas) delete next.watchedChapterReplicas[code];
     }
   }
   for (const field of tracking) {
@@ -400,10 +647,38 @@ function rebasePersistentPlayback(base, local, remote) {
       continue;
     }
     if (!incoming) return null;
-    if (!equal(was.progress, episode.progress)) {
-      if (!equal(was.progress, incoming.progress) && !equal(episode.progress, incoming.progress)) return null;
-      if (Object.hasOwn(episode, "progress")) incoming.progress = episode.progress;
-      else delete incoming.progress;
+    const localMoved = !samePlayhead(was.progress, episode.progress);
+    const remoteMoved = !samePlayhead(was.progress, incoming.progress);
+    if (remoteMoved && !localMoved) receivedPlaybackWins = true;
+    if (localMoved) {
+      const competing = !samePlayhead(was.progress, incoming.progress)
+        && !samePlayhead(episode.progress, incoming.progress);
+      if (competing) {
+        // SQLite already holds an account-accepted causal winner. A pending
+        // browser position based on the older revision must not turn that
+        // normal sync update into an indefinite whole-Library conflict.
+        // Compare the pending action to this device's SQLite receipt revision,
+        // never to another device's wall clock. An action made after receipt
+        // is a new local intent; an older one yields to the accepted position.
+        const accepted = incoming.progress?.syncStamp;
+        const prior = was.progress?.syncStamp;
+        if (!parseStamp(accepted) || parseStamp(prior) && accepted <= prior
+          || !Number.isSafeInteger(revision) || !Number.isSafeInteger(episode.progress?.updatedAt)) return null;
+        if (episode.progress.updatedAt > revision) {
+          incoming.progress = episode.progress;
+          locallyChosenPlaybackFileIndex = episode.fileIndex;
+          locallyChosenPlaybackUpdatedAt = episode.progress.updatedAt;
+          receivedPlaybackWins = false;
+        }
+        else receivedPlaybackWins = true;
+      } else if (!samePlayhead(episode.progress, incoming.progress)) {
+        // Merely attaching a sync stamp to the old position does not compete
+        // with actual new playback authored in this window.
+        if (Object.hasOwn(episode, "progress")) incoming.progress = episode.progress;
+        else delete incoming.progress;
+        locallyChosenPlaybackFileIndex = episode.fileIndex;
+        locallyChosenPlaybackUpdatedAt = episode.progress?.updatedAt ?? null;
+      }
     }
     if (Object.hasOwn(episode, "progress")) was.progress = episode.progress;
     else delete was.progress;
@@ -495,13 +770,29 @@ function rebasePersistentPlayback(base, local, remote) {
   // No unrecognized local episode identity mutation or structural rewrite may
   // slip through the explicit field and per-chapter ownership checks above.
   if (!equal(expected, local)) return null;
-  if (Number(local.lastPlayedAt || 0) >= Number(remote.lastPlayedAt || 0))
+  // lastPlayedAt belongs to the chosen playback intent. A remote phone's
+  // clock can be far ahead or behind this PC, so raw timestamp ordering is
+  // never evidence that its playhead won. Leave accepted metadata intact when
+  // the local change was merely a timestamp/stamp enrichment.
+  const localPlaybackChosen = locallyChosenPlaybackFileIndex !== null
+    && Number(local.lastPlayedFileIndex) === Number(locallyChosenPlaybackFileIndex);
+  const remotePlaybackChanged = base.episodes.some(prior => {
+    const incoming = remote.episodes.find(item => item.fileIndex === prior.fileIndex);
+    return incoming && !samePlayhead(prior.progress, incoming.progress);
+  });
+  const localLastPlayedAfterAccepted = localPlaybackChosen && (!remotePlaybackChanged
+    || Number.isSafeInteger(revision) && Number.isSafeInteger(locallyChosenPlaybackUpdatedAt)
+      && locallyChosenPlaybackUpdatedAt > revision);
+  if (localLastPlayedAfterAccepted || !receivedPlaybackWins && !remotePlaybackChanged
+    && ["lastPlayedAt", "lastPlayedFileIndex"].some(key => !sameField(base, local, key))
+    && ["lastPlayedAt", "lastPlayedFileIndex"].every(key => sameField(base, remote, key)))
     for (const key of ["lastPlayedAt", "lastPlayedFileIndex"])
       if (Object.hasOwn(local, key)) next[key] = local[key];
+      else delete next[key];
   return next;
 }
 
-function rebasePersistentLibrary(base, local, remote) {
+function rebasePersistentLibrary(base, local, remote, options = {}) {
   // Proven playback and disjoint episode edits can cross incoming changes.
   // Competing edits and deletions retain their conflict checks.
   if (![base, local, remote].every(Array.isArray)) return null;
@@ -516,7 +807,7 @@ function rebasePersistentLibrary(base, local, remote) {
     const was = before.get(id), mine = current.get(id), theirs = disk.get(id);
     if (equal(was, mine)) continue;
     if (!equal(was, theirs) && !equal(mine, theirs)) {
-      const playback = rebasePersistentPlayback(was, mine, theirs);
+      const playback = rebasePersistentPlayback(was, mine, theirs, options);
       if (!playback) return null;
       changes.set(id, playback);
     } else changes.set(id, mine);
@@ -581,7 +872,7 @@ function persistBlockedLibraryChange(section, submittedValue, generation) {
     if (!before || JSON.stringify(before) === JSON.stringify(submittedValue)) return;
     const disk = await fetchJson("/api/app-state/library");
     if (persistentAppWriteGenerations.get(section) !== generation) return;
-    const rebased = rebasePersistentLibrary(before, submittedValue, disk?.value);
+    const rebased = rebasePersistentLibrary(before, submittedValue, disk?.value, { revision: disk?.updatedAt });
     if (!rebased || !Number.isSafeInteger(disk?.updatedAt)) {
       console.warn("The new Library edit also conflicts with another tab; all unsaved changes remain in the browser.");
       return;
@@ -598,6 +889,24 @@ function persistBlockedLibraryChange(section, submittedValue, generation) {
       persistentAppAcceptedSnapshots.set(section, copyPersistentLibrary(rebased));
       if (persistentAppWriteGenerations.get(section) === generation)
         persistentAppConflictViewBaselines.set(section, copyPersistentLibrary(submittedValue));
+      if (persistentAppWriteGenerations.get(section) === generation
+        && sameLibraryContent(state.library, submittedValue)
+        && acceptedLibraryCoversPendingWatchChoices(submittedValue, rebased)) {
+        state.library = copyPersistentLibrary(rebased);
+        persistentAppLibraryViewBaseline = copyPersistentLibrary(rebased);
+        persistentAppLibraryViewRevision = Number(result.updatedAt);
+        persistentAppUnreflectedLibraryWrites.clear();
+        persistentAppUnresolvedConflicts.delete(section);
+        persistentAppConflictViewBaselines.delete(section);
+        persistentAppPartialLibrarySaves.delete(section);
+        clearPendingLibraryForTab();
+        setPersistentSectionDirty(section, false);
+        storeLocalCopy("blackline-library", state.library);
+        if (typeof document !== "undefined") document.getElementById("library-persistence-conflict")?.remove();
+        if (viewActive("library")) renderLibrary();
+        if (viewActive("title")) refreshTitlePage();
+        if (viewActive("watch")) renderWatchChapters();
+      }
       // Do NOT clear the original conflict flag/dirty marker or replace the
       // visible Library: its earlier unresolved edits still need attention.
     } catch (error) {
@@ -676,7 +985,8 @@ export function persistAppSection(section, value, { immediate = false, merge = f
           // revision, to prove what THIS generation actually changed.
           const effectiveBase = applyUnreflectedPersistentLibraryWrites(libraryViewBaseAtGeneration);
           if (!Array.isArray(effectiveBase) || !Array.isArray(confirmed)
-            || !(candidate = rebasePersistentLibrary(effectiveBase, submittedValue, confirmed))) {
+            || !(candidate = rebasePersistentLibrary(effectiveBase, submittedValue, confirmed,
+              { revision: persistentAppSectionRevisions.get(section) }))) {
             persistentAppUnresolvedConflicts.add(section);
             invalidatePersistentLibraryReplay();
             persistentAppConflictViewBaselines.set(section, copyPersistentLibrary(submittedValue));
@@ -696,7 +1006,7 @@ export function persistAppSection(section, value, { immediate = false, merge = f
           const disk = await fetchJson("/api/app-state/library");
           if (persistentAppWriteGenerations.get(section) !== generation) return null;
           const baseline = confirmedBaseForRetry;
-          const rebased = rebasePersistentLibrary(baseline, candidate, disk?.value);
+          const rebased = rebasePersistentLibrary(baseline, candidate, disk?.value, { revision: disk?.updatedAt });
           if (!rebased || !Number.isSafeInteger(disk?.updatedAt)) {
             if (typeof persistentAppUnresolvedConflicts !== "undefined")
               persistentAppUnresolvedConflicts.add(section);
@@ -719,7 +1029,7 @@ export function persistAppSection(section, value, { immediate = false, merge = f
               const latest = await fetchJson("/api/app-state/library");
               if (persistentAppWriteGenerations.get(section) !== generation) return null;
               if (Number.isSafeInteger(latest?.updatedAt)
-                && rebasePersistentLibrary(disk.value, rebased, latest?.value)) {
+                && rebasePersistentLibrary(disk.value, rebased, latest?.value, { revision: latest?.updatedAt })) {
                 invalidatePersistentLibraryReplay();
                 persistentAppRetryAfter.set(section, Date.now() + 10_000);
                 console.warn("Library changed again during a safe edit. Retrying after a short delay.");
@@ -861,6 +1171,7 @@ export async function hydratePersistentAppState() {
   let tabPendingRevision = null;
   let tabPendingSafeToReplay = false;
   let tabPendingValue = null;
+  let tabPendingTrackingBaseline = null;
   try {
     if (typeof sessionStorage !== "undefined") {
       const pending = sessionStorage.getItem(APP_DB_TAB_LIBRARY_PENDING_KEY);
@@ -875,11 +1186,26 @@ export async function hydratePersistentAppState() {
           tabPendingSafeToReplay = parsed?.safeToReplay === true
             && tabPendingRevision !== null
             && parsed?.certifiedBaseRevision === tabPendingRevision;
+          tabPendingTrackingBaseline = parsed?.trackingBaseline ?? null;
           state.library = copyPersistentLibrary(candidate);
         }
       }
     }
   } catch {}
+  // A freshly created Android WebView has no old sessionStorage. Recover a
+  // tracking-only intent from its existing local Library cache solely when a
+  // prior verified SQLite view issued a matching sparse certificate.
+  if (!tabPendingValue && (persistentAppWriteGenerations.get("library") || 0) === 0) {
+    const durable = readDurableLibraryRecovery();
+    if (durable && sameLibraryContent(state.library, durable.value)) {
+      tabPendingValue = copyPersistentLibrary(durable.value);
+      tabPendingRevision = durable.expectedUpdatedAt;
+      tabPendingSafeToReplay = true;
+      tabPendingTrackingBaseline = durable.trackingBaseline;
+      persistentAppOwnPendingSections.add("library");
+      setPersistentSectionDirty("library", true, "replace", tabPendingRevision);
+    }
+  }
   const localSnapshot = persistentAppSnapshot();
   // persistentAppSnapshot exposes live array references. Capture the actual
   // pre-hydration Library contents now, before a user can unshift a new title
@@ -955,17 +1281,26 @@ export async function hydratePersistentAppState() {
     payload = await fetchJson("/api/app-state");
     applyPersistentSectionRevisions(payload?.revisions);
     if (tabPendingValue && tabPendingSafeToReplay && tabPendingRevision !== null
-      && (persistentAppWriteGenerations.get("library") || 0) === 0
-      && Number(payload?.revisions?.library) === tabPendingRevision) {
-      // An interrupted PUT can be safely retried ONLY if SQLite still has the
-      // exact revision previously verified by this tab. A concurrent write
-      // causes 409 and is NEVER replaced with a later revision.
+      && (persistentAppWriteGenerations.get("library") || 0) === 0) {
+      // An exact revision still permits direct replay. If SQLite advanced,
+      // replay only a certified tracking-only delta reconstructed from its
+      // sparse PRE-EDIT baseline, through the normal three-way reducer.
+      // Old shadows and structural/ambiguous changes have no such permission.
+      const diskRevision = Number(payload?.revisions?.library);
+      let recoveryValue = diskRevision === tabPendingRevision ? tabPendingValue : null;
+      if (!recoveryValue && Number.isSafeInteger(diskRevision) && tabPendingTrackingBaseline
+        && Array.isArray(payload?.state?.library)) {
+        const base = restoreTrackingRecoveryBaseline(tabPendingValue, tabPendingTrackingBaseline);
+        if (base) recoveryValue = rebasePersistentLibrary(base, tabPendingValue, payload.state.library,
+          { revision: diskRevision });
+      }
+      if (recoveryValue && Number.isSafeInteger(diskRevision)) {
       try {
         const recovered = await postJson("/api/app-state/library", {
-          value: tabPendingValue, merge: false, expectedUpdatedAt: tabPendingRevision,
+          value: recoveryValue, merge: false, expectedUpdatedAt: diskRevision,
         });
         if (Number.isFinite(Number(recovered?.updatedAt))) {
-          payload.state.library = copyPersistentLibrary(tabPendingValue);
+          payload.state.library = copyPersistentLibrary(recoveryValue);
           payload.revisions.library = Number(recovered.updatedAt);
           persistentAppSectionRevisions.set("library", Number(recovered.updatedAt));
           // A user may edit during the network round trip. Do not discard the
@@ -978,6 +1313,7 @@ export async function hydratePersistentAppState() {
       } catch (error) {
         // The submitted data stays in sessionStorage and the visible Library.
         console.warn("An unsaved Library change could not be restored automatically:", error);
+      }
       }
     }
     if (Array.isArray(payload?.state?.library) && typeof persistentAppAcceptedSnapshots !== "undefined")
@@ -995,7 +1331,8 @@ export async function hydratePersistentAppState() {
         if (section === "library"
           && (persistentAppWriteGenerations.get(section) || 0) > 0
           && persistentAppSectionRevisions.has(section)) {
-          const rebased = rebasePersistentLibrary(originalLibraryBaseline, localOverlay.library, payload.state.library);
+          const rebased = rebasePersistentLibrary(originalLibraryBaseline, localOverlay.library, payload.state.library,
+            { revision: payload.revisions?.library });
           if (rebased) {
             payload.state.library = rebased;
             setPersistentSectionDirty(section, true, "replace", persistentAppSectionRevisions.get(section));
@@ -1147,7 +1484,8 @@ export async function flushLibraryPersistenceBeforeSync() {
     if (Date.now() >= deadline) break;
   }
   if (!persistentAppStateReady || persistentAppWriteChains.has("library")
-    || persistentAppWriteTimers.has("library") || persistentDirtySections().has("library")
+    || persistentAppWriteTimers.has("library")
+    || persistentAppOwnPendingSections.has("library") || hasPendingLibraryForTab()
     || persistentAppUnresolvedConflicts.has("library"))
     throw new Error("Library changes are still saving or require conflict resolution before Sync now.");
 }

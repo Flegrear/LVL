@@ -2,7 +2,7 @@
 // browser (filters bar, results grid, Load more), for comics in general, from
 // AniList through /api/comics/browse. Adult titles never appear. Cards open the
 // comic like any comic card (data-comics-open). Also the featured carousel.
-import { bindHero, buttonMarkup, escapeHtml, heroMarkup, refreshImages } from "../ui/ui.js";
+import { bindHero, buttonMarkup, escapeHtml, heroMarkup, markupSignature, refreshImages } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
 import { formatLabel } from "./comics-render.js";
@@ -192,6 +192,14 @@ export function mountComicBrowser(section, { inLibrary = () => false } = {}) {
 // Featured comics: a carousel like Home's, from the trending and new rows (only titles with a banner).
 let heroController = null;
 let heroWatch = null;
+let featuredHero = null;
+let featuredViewport = null;
+let featuredSignature = null;
+// Home's other categories share the hero node, but replace its descendants.
+// An unchanged Comics shelf must not be mistaken for an unchanged hero.
+export function hasMountedFeatured(hero) {
+  return Boolean(hero && hero === featuredHero && featuredViewport && hero.contains(featuredViewport));
+}
 export function featuredSlides(sections, { limit = 6, inLibrary = () => false } = {}) {
   const pool = ["trending", "new"].flatMap((id) => sections.find((section) => section.id === id)?.items || []);
   const seen = new Set();
@@ -204,24 +212,51 @@ export function featuredSlides(sections, { limit = 6, inLibrary = () => false } 
   }));
 }
 export function showFeatured(hero, slides) {
-  heroController?.destroy();
-  heroController = null;
-  heroWatch?.disconnect();
-  heroWatch = null;
-  if (!hero) return;
-  hero.innerHTML = slides.length ? heroMarkup(slides, { label: t("Featured comics") }) : "";
-  hero.hidden = !slides.length;
-  if (!slides.length) return;
-  heroController = bindHero(hero);
-  refreshImages(hero);
-  // Home's other tabs draw their own carousel here: stop this one when its slides are replaced.
-  const viewport = hero.querySelector(".ui-hero__viewport");
-  heroWatch = new MutationObserver(() => {
-    if (hero.contains(viewport)) return;
+  if (hero) {
+    const markup = slides.length ? heroMarkup(slides, { label: t("Featured comics") }) : "";
+    const signature = markupSignature(markup);
+    const same = hero === featuredHero && featuredSignature === signature
+      && (slides.length ? hasMountedFeatured(hero) : !hero.firstElementChild);
+    if (same) {
+      // A previous render may have temporarily concealed the shared hero.
+      hero.hidden = !slides.length;
+      return;
+    }
     heroController?.destroy();
     heroController = null;
     heroWatch?.disconnect();
     heroWatch = null;
+    featuredHero = hero;
+    featuredViewport = null;
+    featuredSignature = signature;
+    hero.innerHTML = markup;
+    hero.hidden = !slides.length;
+    if (!slides.length) return;
+  } else {
+    heroController?.destroy();
+    heroController = null;
+    heroWatch?.disconnect();
+    heroWatch = null;
+    featuredHero = null;
+    featuredViewport = null;
+    featuredSignature = null;
+    return;
+  }
+  heroController = bindHero(hero);
+  refreshImages(hero);
+  // Home's other tabs draw their own carousel here: stop this one when its slides are replaced.
+  const viewport = hero.querySelector(".ui-hero__viewport");
+  featuredViewport = viewport;
+  const watch = new MutationObserver(() => {
+    if (hero.contains(viewport)) return;
+    if (heroWatch !== watch) return;
+    heroController?.destroy();
+    heroController = null;
+    heroWatch?.disconnect();
+    heroWatch = null;
+    featuredViewport = null;
+    featuredSignature = null;
   });
+  heroWatch = watch;
   heroWatch.observe(hero, { childList: true });
 }

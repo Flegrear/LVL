@@ -809,7 +809,7 @@ namespace LanguageVideoLearner
                 string isolatedProfile = File.Exists(Path.Combine(root, "installed-app.json"))
                     ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "LVL", "browser-profile")
                     : Environment.GetEnvironmentVariable("LANGUAGE_VIDEO_LEARNER_BROWSER_PROFILE_DIR");
-                string appArguments = "--app=" + url;
+                string appArguments = "--start-fullscreen --app=" + url;
                 if (browser != null && !string.IsNullOrWhiteSpace(isolatedProfile))
                 {
                     Directory.CreateDirectory(isolatedProfile);
