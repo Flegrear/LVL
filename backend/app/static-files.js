@@ -82,6 +82,7 @@ export const PUBLIC_ASSETS = new Map([
   ["/frontend/styles/styles.css", { file: "frontend/styles/styles.css", cacheControl: "no-cache" }],
   ["/frontend/styles/ui.css", { file: "frontend/styles/ui.css", cacheControl: "no-cache" }],
   ["/frontend/ui/ui.js", { file: "frontend/ui/ui.js", cacheControl: "no-cache" }],
+  ["/frontend/ui/focus-lifecycle.js", { file: "frontend/ui/focus-lifecycle.js", cacheControl: "no-cache" }],
   ["/frontend/catalog/home-feed.js", { file: "frontend/catalog/home-feed.js", cacheControl: "no-cache" }],
   ["/shared/media/series-sources.js", { file: "shared/media/series-sources.js", cacheControl: "no-cache" }],
   ["/shared/subtitles/subtitle-sync.js", { file: "shared/subtitles/subtitle-sync.js", cacheControl: "no-cache" }],

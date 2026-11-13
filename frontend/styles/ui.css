@@ -18,6 +18,7 @@
   --ui-line: #202020;
   --ui-line-strong: #2a2a2a;
   --ui-line-hover: #4a4a4a;
+  --ui-border-content: var(--ui-line);
   /* Text */
   --ui-text: #fff;
   --ui-text-2: #d8d8d8;
@@ -27,6 +28,7 @@
   /* Inverse: active and primary states */
   --ui-inverse: #f2f2f2;
   --ui-inverse-text: #080808;
+  --ui-focus-ring: 2px solid var(--ui-text);
   /* Learning accents (same meaning as the Study/Watch views) */
   --ui-known: #72e7a8;
   --ui-review: #ffd36b;
@@ -36,6 +38,8 @@
   /* Type */
   --ui-font-sans: var(--font-sans);
   --ui-font-mono: var(--font-mono);
+  --ui-type-card-title: 600 13px/1.3 var(--ui-font-sans);
+  --ui-type-row-title: 500 15px/1.3 var(--ui-font-sans);
   /* Shape and depth */
   --ui-radius-xs: 4px;
   --ui-radius-sm: 6px;
@@ -55,6 +59,7 @@
   --ui-gutter: clamp(16px, 3.4vw, 48px);
   --ui-card-w: clamp(128px, 12.6vw, 190px);
   --ui-topbar-h: 64px;
+  --ui-space-3: 12px;
 }
 
 /* ---------------------------------------------------------------- Utilities */
@@ -540,8 +545,9 @@ input.ui-range::-webkit-slider-thumb {
 input.ui-range::-moz-range-track { height: 4px; border-radius: 999px; background: var(--ui-line-strong); }
 input.ui-range::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--ui-text); }
 input.ui-range::-moz-range-thumb { width: 14px; height: 14px; border: 0; border-radius: 50%; background: var(--ui-text); }
-input.ui-range:focus-visible { outline: none; }
-input.ui-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(--ui-bg), 0 0 0 4px var(--ui-text); }
+/* Whole-input keyboard focus works in both WebKit and Gecko, independent of
+   their separate range thumb pseudo-elements. */
+input.ui-range:focus-visible { outline: var(--ui-focus-ring); outline-offset: 2px; border-radius: var(--ui-radius-sm); }
 
 /* ---------------------------------------------------------------- Data display */
 
@@ -609,12 +615,12 @@ input.ui-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(-
 .ui-progress { width: 100%; height: 4px; overflow: hidden; border-radius: var(--ui-radius-pill); background: var(--ui-line-strong); }
 .ui-progress > span { display: block; width: var(--ui-progress, 0%); height: 100%; border-radius: inherit; background: var(--ui-text); transition: width var(--ui-medium) var(--ui-ease); }
 
-.ui-list { width: 100%; margin: 0; padding: 0; overflow: hidden; border: 1px solid var(--ui-line); border-radius: var(--ui-radius-lg); background: var(--ui-surface); list-style: none; }
+.ui-list { width: 100%; margin: 0; padding: 0; overflow: hidden; border: 1px solid var(--ui-border-content); border-radius: var(--ui-radius-lg); background: var(--ui-surface); list-style: none; }
 .ui-row {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
   align-items: center;
-  gap: 12px;
+  gap: var(--ui-space-3);
   min-height: 54px;
   padding: 8px 14px;
   border-bottom: 1px solid var(--ui-line-subtle);
@@ -623,7 +629,7 @@ input.ui-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(-
 .ui-row:last-child { border-bottom: 0; }
 .ui-row:hover { background: var(--ui-surface-2); }
 .ui-row__lead { color: var(--ui-muted); font: 600 11px/1 var(--ui-font-mono); }
-.ui-row__title { display: block; overflow: hidden; color: var(--ui-text); font: 500 15px/1.3 var(--ui-font-sans); text-overflow: ellipsis; white-space: nowrap; }
+.ui-row__title { display: block; overflow: hidden; color: var(--ui-text); font: var(--ui-type-row-title); text-overflow: ellipsis; white-space: nowrap; }
 .ui-row__sub { display: block; margin-top: 3px; overflow: hidden; color: var(--ui-muted); font: 500 12px/1.3 var(--ui-font-sans); text-overflow: ellipsis; white-space: nowrap; }
 .ui-row__trail { display: flex; align-items: center; gap: 8px; color: var(--ui-text-3); font: 600 12px/1 var(--ui-font-mono); }
 
@@ -710,7 +716,7 @@ input.ui-range:focus-visible::-webkit-slider-thumb { box-shadow: 0 0 0 2px var(-
 .ui-card__body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; min-width: 0; max-width: 100%; padding: 10px 2px 0; }
 .ui-card__body.ui-card__hit:focus-visible { outline: 2px solid var(--ui-text); outline-offset: 3px; }
 .ui-card__body.ui-card__hit:hover .ui-card__title { text-decoration: underline; text-underline-offset: 2px; }
-.ui-card__title { min-width: 0; overflow: hidden; color: var(--ui-text); font: 600 13px/1.3 var(--ui-font-sans); text-overflow: ellipsis; white-space: nowrap; }
+.ui-card__title { min-width: 0; overflow: hidden; color: var(--ui-text); font: var(--ui-type-card-title); text-overflow: ellipsis; white-space: nowrap; }
 .ui-card__meta { display: block; min-width: 0; max-width: 100%; overflow: hidden; }
 .ui-card__meta .ui-meta { width: 100%; flex-wrap: nowrap; overflow: hidden; }
 .ui-card__meta .ui-meta > * { min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }

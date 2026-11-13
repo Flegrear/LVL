@@ -2,7 +2,7 @@
 // browser (filters bar, results grid, Load more), for comics in general, from
 // AniList through /api/comics/browse. Adult titles never appear. Cards open the
 // comic like any comic card (data-comics-open). Also the featured carousel.
-import { bindHero, buttonMarkup, escapeHtml, heroMarkup, markupSignature, refreshImages } from "../ui/ui.js";
+import { bindHero, buttonMarkup, captureMountedMarkup, escapeHtml, heroMarkup, markupSignature, mountedMarkupMatches, refreshImages } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
 import { formatLabel } from "./comics-render.js";
@@ -49,6 +49,10 @@ export function comicBrowserCardMarkup(comic, { inLibrary = false } = {}) {
     + `<strong>${escapeHtml(comic.title)}</strong><span>${escapeHtml(meta)}</span></button>`;
 }
 
+// Loading and pagination also repaint the status/buttons. Preserve real image
+// nodes when the ordered card markup has not changed; a different renderer can
+// replace the grid or its first child, in which case it no longer owns the DOM.
+const mountedBrowserGrids = new WeakMap();
 function paintResults(section, inLibrary) {
   if (!section?.isConnected) return;
   const status = section.querySelector(".anime-browser-status");
@@ -56,12 +60,17 @@ function paintResults(section, inLibrary) {
   const more = section.querySelector("[data-comic-browser-more]");
   status.textContent = state.error || (state.loading ? t("Loading comics from AniList…") : state.loaded ? t("{count} comics", { count: state.items.length }) : "");
   status.classList.toggle("is-error", Boolean(state.error));
-  grid.innerHTML = state.items.map((comic) => comicBrowserCardMarkup(comic, { inLibrary: inLibrary(comic) })).join("")
+  const markup = state.items.map((comic) => comicBrowserCardMarkup(comic, { inLibrary: inLibrary(comic) })).join("")
     || (state.loaded && !state.loading ? `<p class="anime-browser-empty">${escapeHtml(t("No comics matched these filters."))}</p>` : "");
+  const signature = markupSignature(markup);
+  if (!mountedMarkupMatches(mountedBrowserGrids.get(grid), grid, signature, { allowEmpty: true })) {
+    grid.innerHTML = markup;
+    mountedBrowserGrids.set(grid, captureMountedMarkup(grid, signature));
+    refreshImages(grid);
+  }
   more.hidden = !state.hasNextPage || Boolean(state.error);
   more.disabled = state.loading;
   more.querySelector("span").textContent = t(state.loading ? "Loading…" : "Load more");
-  refreshImages(grid);
 }
 
 async function load(section, inLibrary, { append = false } = {}) {

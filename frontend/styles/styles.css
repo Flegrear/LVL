@@ -618,6 +618,10 @@ html.lvl-popup-window #floating-player-close { pointer-events:auto; }
 .player-up-next__actions { display:flex; justify-content:flex-end; gap:8px; }
 .player-up-next__actions .ui-btn { min-height:29px; padding:5px 12px; }
 @media (max-width:440px) { .player-up-next { bottom:76px; } .player-up-next__image { flex-basis:88px; width:88px; height:54px; } }
+/* Measured at 29px on 320/360/412px coarse-pointer viewports; keep desktop density. */
+@media (hover:none) and (pointer:coarse) {
+  .player-up-next__actions .ui-btn { min-height:40px; }
+}
 .player-placeholder { position:absolute; inset:0; display:block; overflow:hidden; background:#000; }
 .has-video .player-placeholder { display:none; }
 .subtitle-overlay { pointer-events:none; position:absolute; left:50%; bottom:var(--subtitle-bottom,16%); width:min(90%,1040px); transform:translateX(-50%); display:grid; gap:7px; text-align:center; z-index:6; }
@@ -3731,7 +3735,8 @@ textarea.ui-input.magnet-input { min-height:84px; font:500 12px/1.5 var(--font-m
 .title-lvl-score-row .title-rating-season__head { gap:8px; }
 .title-lvl-score-value { display:inline-flex; align-items:center; gap:1px; margin-left:auto; white-space:nowrap; font:650 13px/1 var(--font-sans); font-variant-numeric:tabular-nums; }
 .title-lvl-score-value input { width:calc(5ch + 16px); min-width:calc(5ch + 16px); height:30px; padding:2px 4px; border:0; border-radius:3px; background:#000; color:#fff; caret-color:#fff; font:650 13px/1 var(--font-sans); text-align:right; font-variant-numeric:tabular-nums; }
-.title-lvl-score-value input:focus,.title-lvl-score-value input:focus-visible { border:0; outline:0; box-shadow:none; }
+.title-lvl-score-value input:focus { border:0; box-shadow:none; }
+.title-lvl-score-value input:focus-visible { outline:var(--ui-focus-ring,2px solid #fff); outline-offset:1px; }
 .title-watch-status-slot select:focus-visible { outline:2px solid #fff; outline-offset:1px; }
 .title-lvl-score-clear { width:22px; height:28px; padding:0; border:0; border-radius:5px; background:transparent; color:#aaa; font:600 17px/1 var(--font-sans); cursor:pointer; }
 .title-lvl-score-clear:hover,.title-lvl-score-clear:focus-visible { color:#fff; background:#242424; }
