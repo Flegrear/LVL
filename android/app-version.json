@@ -4,15 +4,12 @@
   "desktopSourceVersion": "0.3.3",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Recover conflicting Library sync edits while retaining newer local changes.",
-    "Refresh remote Library updates and preserve the latest reading and watch progress.",
-    "Keep unchanged Comics catalog cards mounted across loading updates.",
-    "Show sharper verified Comics covers when available, with MangaDex credit and fallback art.",
-    "Preserve keyboard focus and unfinished Settings edits through panel refreshes.",
-    "Keep the main phone fullscreen actions visible and move secondary actions into More.",
-    "Search Comics from Home or Library, with safer canceled searches and keyboard selection.",
-    "Sort Comics by added date, title or reading progress and restore video sorting when switching views.",
-    "Show reader page counts, clearer phone chapter controls and final chapters verified for the selected source.",
-    "Keep Calendar episode labels accurate when season data is missing or providers correct repeated releases."
+    "Recover Library sync conflicts, refresh remote changes and preserve newer reading and watch progress.",
+    "Retain unchanged Comics cards and show sharper verified covers with MangaDex credit or fallback artwork.",
+    "Search Comics from Home or Library and sort by date, title or reading progress while preserving video sorting.",
+    "Show reader page counts, clearer chapter navigation and final chapters verified against the selected source.",
+    "Preserve keyboard focus and Settings drafts, with secondary phone fullscreen actions under More.",
+    "Correct Calendar episode labels when season metadata is missing or release records are revised.",
+    "Coalesce Android torrent request scheduling into bounded peer sweeps while yielding to other event-loop work."
   ]
 }

@@ -4,15 +4,13 @@
 
 *Local candidate; not released. Frequent Android reconnect interruptions remain under diagnosis, and physical-device acceptance is pending.*
 
-- Recover Library sync conflicts and refresh remote changes while retaining newer local progress.
-- Keep unchanged Comics discovery cards mounted across loading and status updates.
-- Offer sharper catalog covers when an exact MangaDex title and artwork match is verified, with visible credit and AniList fallback.
-- Preserve keyboard focus, current input and unfinished Settings edits when panels refresh.
-- Improve phone fullscreen access to secondary player actions through More.
-- Search public Comics titles from Home and Library, open matches by click or Enter, and discard outdated search responses.
-- Sort saved Comics by recent activity, date added, title or source-specific reading progress; restore video sorting when switching to All, with Spanish labels.
-- Show reader page counts and clearer phone chapter navigation, and recognize verified final chapters within the selected source.
-- Correct Calendar episode labels when a season is unknown or providers repeat or revise release records.
+- Recover Library sync conflicts, refresh remote changes and preserve newer watch and reading progress.
+- Retain unchanged Comics cards and show sharper verified MangaDex covers with credit and AniList fallback.
+- Preserve keyboard focus, Settings drafts and Windows panel layout; keep secondary phone fullscreen actions in More.
+- Search Comics from Home or Library with canceled-request safety, and sort Comics by activity, date, title or reading progress while restoring video sorting.
+- Display reader page counts, clearer chapter controls and verified final chapters for the selected source.
+- Correct Calendar episode labels when season metadata is missing or providers revise repeated releases.
+- Coalesce Android torrent peer request sweeps with bounded scheduling to yield to other event-loop work.
 
 ## 0.3.2 — 2026-11-12
 
