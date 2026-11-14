@@ -99,7 +99,10 @@ export function upsertLibrarySession(session, magnet = "", {
       episodeTitle: identity.title,
       sourceTag: label?.code ? `${seriesTitle} · ${label.code}` : sourceTagFor(file, seriesTitle),
       extra: isExtra && !label?.code,
-      analysis: previous?.analysis || { words: [], phrases: [], updatedAt: null },
+      // Reopening a legacy episode with no analysis must not synthesize a
+      // metadata edit that would block an otherwise safe concurrent CAS.
+      ...(previous ? (Object.hasOwn(previous, "analysis") ? { analysis: previous.analysis } : {})
+        : { analysis: { words: [], phrases: [], updatedAt: null } }),
       // Saved per episode: subtitle sync models and where you stopped watching.
       ...(previous?.subtitleSync ? { subtitleSync: previous.subtitleSync } : {}),
       ...(previous?.progress ? { progress: previous.progress } : {}),
@@ -134,6 +137,10 @@ export function upsertLibrarySession(session, magnet = "", {
     watchedChapters: existing?.watchedChapters || {},
     ...(existing?.watchedChapterOrigins ? { watchedChapterOrigins: existing.watchedChapterOrigins } : {}),
     ...(existing?.watchedChapterUpdatedAt ? { watchedChapterUpdatedAt: existing.watchedChapterUpdatedAt } : {}),
+    // Sync stamps and replicas are the causal identity of each watched choice.
+    // They must survive a regular source reopen along with its value and origin.
+    ...(existing?.watchedChapterSyncStamps ? { watchedChapterSyncStamps: existing.watchedChapterSyncStamps } : {}),
+    ...(existing?.watchedChapterReplicas ? { watchedChapterReplicas: existing.watchedChapterReplicas } : {}),
     aliases: [...new Set([...(Array.isArray(existing?.aliases) ? existing.aliases : []), ...(Array.isArray(anchorSeries?.aliases) ? anchorSeries.aliases : []), ...(Array.isArray(aliases) ? aliases : [])].map((value) => String(value || "").trim()).filter(Boolean))].slice(0, 20),
     sourceMeta: normalizeLibrarySourceMeta(sourceMeta, existing?.sourceMeta),
     addedAt: existing?.addedAt || Date.now(),

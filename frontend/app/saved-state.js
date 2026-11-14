@@ -767,9 +767,16 @@ function rebasePersistentPlayback(base, local, remote, { revision } = {}) {
     if (Object.hasOwn(local, "updatedAt")) expected.updatedAt = local.updatedAt;
     else delete expected.updatedAt;
   }
-  // No unrecognized local episode identity mutation or structural rewrite may
-  // slip through the explicit field and per-chapter ownership checks above.
-  if (!equal(expected, local)) return null;
+  // A source reopen rebuilds otherwise identical episode objects in canonical
+  // field order. JSON property insertion order is not a user edit; compare
+  // actual values so harmless reconstruction does not block a disjoint CAS.
+  // Unknown metadata values and structural changes still fail this guard.
+  const canonical = value => Array.isArray(value) ? value.map(canonical)
+    : value && typeof value === "object"
+      ? Object.fromEntries(Object.keys(value).filter(key => value[key] !== undefined)
+        .sort().map(key => [key, canonical(value[key])]))
+      : value;
+  if (JSON.stringify(canonical(expected)) !== JSON.stringify(canonical(local))) return null;
   // lastPlayedAt belongs to the chosen playback intent. A remote phone's
   // clock can be far ahead or behind this PC, so raw timestamp ordering is
   // never evidence that its playhead won. Leave accepted metadata intact when
