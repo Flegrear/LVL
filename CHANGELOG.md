@@ -2,8 +2,6 @@
 
 ## 0.3.3 — 2026-11-14
 
-*Local candidate; not released. Frequent Android reconnect interruptions remain under diagnosis, and physical-device acceptance is pending.*
-
 - Recover Library sync conflicts, refresh remote changes and preserve newer watch and reading progress.
 - Retain unchanged Comics cards and show sharper verified MangaDex covers with credit and AniList fallback.
 - Preserve keyboard focus, Settings drafts and Windows panel layout; keep secondary phone fullscreen actions in More.
