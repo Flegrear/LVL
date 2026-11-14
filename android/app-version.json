@@ -9,6 +9,10 @@
     "Keep unchanged Comics catalog cards mounted across loading updates.",
     "Show sharper verified Comics covers when available, with MangaDex credit and fallback art.",
     "Preserve keyboard focus and unfinished Settings edits through panel refreshes.",
-    "Keep the main phone fullscreen actions visible and move secondary actions into More."
+    "Keep the main phone fullscreen actions visible and move secondary actions into More.",
+    "Search Comics from Home or Library, with safer canceled searches and keyboard selection.",
+    "Sort Comics by added date, title or reading progress and restore video sorting when switching views.",
+    "Show reader page counts, clearer phone chapter controls and final chapters verified for the selected source.",
+    "Keep Calendar episode labels accurate when season data is missing or providers correct repeated releases."
   ]
 }

@@ -1,18 +1,44 @@
 // Comics section: calls to the local /api/comics routes.
 const TIMEOUT_MS = 30_000;
 
+function signalWithTimeout(signal, timeoutMs) {
+  if (!signal) return { signal: AbortSignal.timeout(timeoutMs), dispose() {} };
+  const controller = new AbortController();
+  if (signal.aborted) {
+    controller.abort(signal.reason);
+    return { signal: controller.signal, dispose() {} };
+  }
+  const onAbort = () => controller.abort(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  const timer = setTimeout(() => controller.abort(new DOMException("The operation was aborted due to timeout", "TimeoutError")), timeoutMs);
+  return {
+    signal: controller.signal,
+    dispose() {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 async function call(url, { method = "GET", body, timeoutMs = TIMEOUT_MS, signal } = {}) {
-  const response = await fetch(url, {
-    method,
-    headers: body === undefined ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-    signal: signal
-      ? (typeof AbortSignal.any === "function" ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : signal)
-      : AbortSignal.timeout(timeoutMs),
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(payload?.error || `Request failed (${response.status})`), { status: response.status });
-  return payload;
+  const request = signalWithTimeout(signal, timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: body === undefined ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" },
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: request.signal,
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (request.signal.aborted) throw request.signal.reason;
+    if (!response.ok) throw Object.assign(new Error(payload?.error || `Request failed (${response.status})`), { status: response.status });
+    return payload;
+  } catch (error) {
+    if (request.signal.aborted) throw request.signal.reason;
+    throw error;
+  } finally {
+    request.dispose();
+  }
 }
 
 export const comicsApi = Object.freeze({

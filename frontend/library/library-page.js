@@ -634,14 +634,22 @@ export function renderLibrary() {
   // sync before that handoff, including after All → Comics → All navigation.
   const sort = $("#library-sort");
   const comicsSort = libraryView.filter === "comics";
+  const comicsSearch = $("#library-search-comics");
+  if (comicsSearch) comicsSearch.hidden = !comicsSort;
   const watchedOption = sort?.querySelector('option[value="watched"]');
   if (watchedOption) {
     // Comics entries have update timestamps, but no last-read timestamp.
     watchedOption.hidden = comicsSort;
     watchedOption.disabled = comicsSort;
   }
-  const unfinishedOption = sort?.querySelector('option[value="unfinished"]');
-  if (unfinishedOption) unfinishedOption.textContent = comicsSort ? t("Unread") : "Unwatched first";
+  const sortLabels = {
+    recent: "Recent", added: "Recently added", title: "Title (A–Z)", "title-desc": "Title (Z–A)",
+    watched: "Recently watched", unfinished: comicsSort ? "Unread" : "Unwatched first", progress: "Most progress",
+  };
+  for (const [value, label] of Object.entries(sortLabels)) {
+    const option = sort?.querySelector(`option[value="${value}"]`);
+    if (option) option.textContent = t(label);
+  }
   const selectedSort = comicsSort && libraryView.sort === "watched" ? "recent" : libraryView.sort;
   if (sort && sort.value !== selectedSort) sort.value = selectedSort;
   // A feature filter (Manga, Books…) fills the list itself. data-feature-filter

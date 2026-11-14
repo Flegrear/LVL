@@ -129,7 +129,7 @@ function comicLocalMatches(query) {
   const needle = query.toLocaleLowerCase();
   return (typeof cachedEntries === "function" ? cachedEntries() : [])
     .map((entry) => ({ ...entry.work, id: entry.id || entry.work?.id }))
-    .filter((comic) => comicKey(comic) && [comic.title, ...(comic.aliases || [])]
+    .filter((comic) => comicKey(comic) && [comic.title, ...(Array.isArray(comic.aliases) ? comic.aliases : [])]
       .some((title) => String(title || "").toLocaleLowerCase().includes(needle)))
     .sort((a, b) => Number(!a.title?.toLocaleLowerCase().startsWith(needle)) - Number(!b.title?.toLocaleLowerCase().startsWith(needle)))
     .slice(0, 12);
@@ -226,7 +226,11 @@ export function closeCatalogSearch({ restoreFocus = false } = {}) {
   cancelCatalogSearch();
   state.catalogResults = [];
   catalogSearchKindActive = "video";
-  if (restoreFocus) $(({ "topbar-catalog-search-host": "#home-search-title", "section-catalog-search-host": "#section-search-title" })[host] || "#section-search-title")?.focus();
+  if (restoreFocus) $(({
+    "topbar-catalog-search-host": "#home-search-title",
+    "section-catalog-search-host": "#section-search-title",
+    "library-catalog-search-host": "#library-search-comics",
+  })[host] || "#section-search-title")?.focus();
 }
 
 export function openCatalogSearch(source = "topbar") {

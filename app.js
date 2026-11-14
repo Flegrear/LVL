@@ -573,6 +573,18 @@ $("#catalog-search-form").addEventListener("submit", searchCatalogTitles);
 $("#catalog-search-input").addEventListener("input", queueCatalogSearch);
 $("#home-search-title")?.addEventListener("click", () => openCatalogSearch("topbar"));
 $("#section-search-title")?.addEventListener("click", () => openCatalogSearch("section"));
+// The Library's regular input filters saved titles. Comics also exposes the
+// same public catalog magnifier used on Home, so unsaved manga can be found.
+const libraryComicsSearch = document.createElement("button");
+libraryComicsSearch.id = "library-search-comics";
+libraryComicsSearch.type = "button";
+libraryComicsSearch.className = "ui-icon-btn";
+libraryComicsSearch.hidden = true;
+libraryComicsSearch.setAttribute("aria-label", t("Search comics"));
+libraryComicsSearch.setAttribute("data-i18n-aria-label", "Search comics");
+libraryComicsSearch.innerHTML = '<svg class="ui-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>';
+$("#library-search")?.closest(".lib-search")?.after(libraryComicsSearch);
+libraryComicsSearch.addEventListener("click", () => openCatalogSearch("library"));
 $("#catalog-search-shell")?.addEventListener("keydown", (event) => {
   const results = [...$("#catalog-results").querySelectorAll(".catalog-search-result")];
   if (event.key === "Escape") {

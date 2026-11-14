@@ -26,7 +26,7 @@ export const COMICS_ES = Object.freeze({
   "No chapter list yet": "Aún no hay lista de capítulos", "Featured comics": "Cómics destacados", "One-shot": "One-shot",
   "Local files": "Archivos locales", Releasing: "En publicación", Finished: "Finalizado", "On hiatus": "En pausa", Cancelled: "Cancelado",
   "Not yet released": "Sin publicar", "AniList score": "Puntuación de AniList", "{listed} of {total} chapters listed": "{listed} de {total} capítulos en la lista",
-  "Your files": "Tus archivos", Read: "Leer", Continue: "Continuar", Resume: "Reanudar", "Page {page} of {pages}": "Página {page} de {pages}",
+  "Your files": "Tus archivos", Read: "Leer", Continue: "Continuar", Resume: "Reanudar",
   "Match to AniList": "Asociar con AniList", "Not this series": "No es esta serie",
   Reader: "Lector", Back: "Volver", Layout: "Diseño", "One page": "Una página", "Two pages": "Dos páginas", Vertical: "Vertical",
   "Reading mode": "Modo de lectura", General: "General", Filters: "Filtros", Paged: "Paginado", "Long strip": "Tira larga", "Long strip with gaps": "Tira larga con espacios",
