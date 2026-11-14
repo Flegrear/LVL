@@ -963,8 +963,8 @@ function featureTitleHeroMarkup(info) {
       ${info.description ? `<details class="comic-detail-hero__description"><summary>${escapeHtml(info.description)}</summary><p>${escapeHtml(info.description)}</p></details>` : ""}
       ${info.genres?.length ? `<ul class="title-genres" aria-label="Genres">${info.genres.map((genre) => `<li>${escapeHtml(genre)}</li>`).join("")}</ul>` : ""}
     </div>
-    <div class="comic-detail-hero__resume">${actions}</div>
-  </div>`;
+  </div>
+  <div class="comic-detail-hero__resume">${actions}</div>`;
   return `<div class="title-hero${info.backdrop ? " has-backdrop" : ""}">
     <div class="title-hero__media" aria-hidden="true">${info.backdrop ? `<img class="title-hero__backdrop" src="${escapeHtml(info.backdrop)}" alt="" decoding="async" fetchpriority="high" />` : ""}</div>
     <div class="title-hero__shade" aria-hidden="true"></div>

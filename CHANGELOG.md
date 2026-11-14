@@ -1,5 +1,14 @@
 # LVL Changelog
 
+## 0.3.4 — 2026-11-14
+
+*Local candidate, pending integration and Android acceptance.*
+
+- Simplify the Android update status to Updating during active installs, while preserving confirmation, progress and recovery controls.
+- Keep Resume buttons directly tappable on phone title pages without activating nearby content.
+- Remove the dark background behind the Comics page count while retaining readable text.
+- Use outer quarters for Comics page navigation and the middle for reader controls, including RTL and vertical reading.
+
 ## 0.3.3 — 2026-11-14
 
 - Recover Library sync conflicts, refresh remote changes and preserve newer watch and reading progress.

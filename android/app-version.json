@@ -1,15 +1,12 @@
 {
-  "version": "0.2.4",
-  "versionCode": 212,
-  "desktopSourceVersion": "0.3.3",
+  "version": "0.2.5",
+  "versionCode": 213,
+  "desktopSourceVersion": "0.3.4",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Recover Library sync conflicts, refresh remote changes and preserve newer reading and watch progress.",
-    "Retain unchanged Comics cards and show sharper verified covers with MangaDex credit or fallback artwork.",
-    "Search Comics from Home or Library and sort by date, title or reading progress while preserving video sorting.",
-    "Show reader page counts, clearer chapter navigation and final chapters verified against the selected source.",
-    "Preserve keyboard focus and Settings drafts, with secondary phone fullscreen actions under More.",
-    "Correct Calendar episode labels when season metadata is missing or release records are revised.",
-    "Coalesce Android torrent request scheduling into bounded peer sweeps while yielding to other event-loop work."
+    "Show a concise Updating state during Android app updates while keeping download progress and installation confirmation.",
+    "Restore reliable Resume taps on title pages without activating content underneath.",
+    "Make Comics page counts transparent and readable without a dark background.",
+    "Navigate Comics using outer screen quarters and toggle controls from the center, respecting reading direction."
   ]
 }

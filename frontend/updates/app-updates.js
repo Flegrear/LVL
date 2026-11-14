@@ -1,6 +1,6 @@
 // Updates: the update card, notifications and the changelog.
 import { toast } from "../ui/ui.js";
-import { ANDROID_APK_HANDOFF, androidApkInstall, updateIsActive, updateView } from "./update-view.js";
+import { ANDROID_APK_HANDOFF, androidApkInstall, updateCardPresentation, updateIsActive, updateView } from "./update-view.js";
 import { settingsView } from "../../app.js";
 import { $, setToolStatus } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
@@ -54,6 +54,7 @@ export const UPDATE_LATER_KEY = "lvl-update-later-v1";
 const UPDATE_ACKNOWLEDGED_KEY = "lvl-update-acknowledged-v1";
 const UPDATE_PENDING_MAX_AGE_MS = 2 * 24 * 60 * 60_000;
 export let appUpdateView = { phase: "idle" };
+const androidUpdateUi = () => Boolean(window.LvlAndroid || document.documentElement.classList.contains("lvl-android"));
 let appUpdateDownSince = null;
 let appUpdatePollTimer = null;
 export const appUpdateCardClosed = new Set();
@@ -154,8 +155,12 @@ export function paintAppUpdateCard() {
     && !(view.phase === "ready" && (view.snoozed || watching || !updateNotificationsEnabled()));
   card.hidden = !show;
   if (!show) return view;
-  $("#app-update-card-title").textContent = view.title;
-  $("#app-update-card-detail").textContent = view.detail || "";
+  const shown = updateCardPresentation(view, { android: androidUpdateUi(),
+    pendingConfirmation: report?.update?.pendingConfirmation === true });
+  $("#app-update-card-title").textContent = shown.title;
+  const detail = $("#app-update-card-detail");
+  detail.textContent = shown.detail;
+  detail.hidden = !shown.detail;
   paintUpdateProgress($("#app-update-card-progress"), view);
   const install = $("#app-update-card-install"), retry = $("#app-update-card-retry");
   const notes = $("#app-update-card-notes"), later = $("#app-update-card-later");
@@ -206,11 +211,18 @@ function paintAppUpdateSettings(report) {
   }
   const version = $("#settings-app-updates-version");
   if (version) version.textContent = installed ? String(report.installedVersion || "—") : "Source build";
-  paintUpdateProgress($("#settings-app-updates-progress"), view, view.detail || "");
+  const androidUpdating = androidUpdateUi() && updating;
+  // The Settings bar keeps its bytes and percentage without the long APK handoff.
+  const progressLabel = androidUpdating
+    ? (view.phase === "downloading" ? String(view.detail || "").replace(ANDROID_APK_HANDOFF, "").trim()
+      : report?.update?.pendingConfirmation ? "Confirm installation in Android." : "")
+    : view.detail || "";
+  paintUpdateProgress($("#settings-app-updates-progress"), view, progressLabel);
   let message = "";
   let failure = false;
   if (installed) {
-    if (view.phase === "downloading") message = `Downloading LVL ${view.version}.`;
+    if (androidUpdating) message = report?.update?.pendingConfirmation ? "Updating · Confirm installation in Android." : "Updating";
+    else if (view.phase === "downloading") message = `Downloading LVL ${view.version}.`;
     else if (updating) message = androidApkInstall(report)
       ? (report?.update?.pendingConfirmation ? `Waiting for Android installation confirmation. ${ANDROID_APK_HANDOFF}`
         : ANDROID_APK_HANDOFF)
@@ -292,11 +304,11 @@ export function wireAppUpdateSettings() {
     if (appUpdateSettingsBusy || !appUpdateSettingsSnapshot?.available) return;
     appUpdateSettingsBusy = true;
     const androidApk = androidApkInstall(appUpdateSettingsSnapshot);
-    setToolStatus("#settings-app-updates-status", androidApk ? ANDROID_APK_HANDOFF
+    setToolStatus("#settings-app-updates-status", androidApk && androidUpdateUi() ? "Updating" : androidApk ? ANDROID_APK_HANDOFF
       : "Installing the update. LVL restarts on its own when it's done.");
     try {
       paintAppUpdateSettings(await postJson("/api/app-updates/install", {}));
-      setToolStatus("#settings-app-updates-status", androidApk ? ANDROID_APK_HANDOFF
+      setToolStatus("#settings-app-updates-status", androidApk && androidUpdateUi() ? "Updating" : androidApk ? ANDROID_APK_HANDOFF
         : "Installing the update. LVL restarts on its own when it's done.");
     } catch (error) {
       setToolStatus("#settings-app-updates-status", error.message || "Couldn't start the verified update", true);
@@ -479,9 +491,11 @@ export async function renderBundledChangelog(history) {
 export async function startAppUpdateFromCard(url, body) {
   if (appUpdateSettingsBusy) return;
   appUpdateSettingsBusy = true;
-  if (androidApkInstall(appUpdateSettingsSnapshot) && url === "/api/app-updates/install") {
+  if (androidUpdateUi() && androidApkInstall(appUpdateSettingsSnapshot) && url === "/api/app-updates/install") {
+    const title = $("#app-update-card-title");
     const detail = $("#app-update-card-detail");
-    if (detail) detail.textContent = ANDROID_APK_HANDOFF;
+    if (title) title.textContent = "Updating";
+    if (detail) detail.textContent = "";
   }
   try {
     paintAppUpdateSettings(await postJson(url, body));

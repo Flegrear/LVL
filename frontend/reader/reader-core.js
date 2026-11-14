@@ -331,13 +331,29 @@ export function createReaderScrollIntentController(stage, { onScroll, enterImmer
   };
 }
 
-// The middle 60% toggles the HUD; only the outer 20% on either side turns
-// pages (or scrolls the strip). These ratios work in portrait and landscape.
+// Desktop reader clicks retain their original 20/60/20 horizontal behavior.
 export function clickAction(x, width, mode) {
   if (!(width > 0)) return "bars";
   const fraction = x / width;
   if (fraction >= 0.2 && fraction <= 0.8) return "bars";
   const left = fraction < 0.2;
+  return (mode.direction === "rtl") === left ? "next" : "prev";
+}
+
+// Android page taps follow the reading axis, not always the screen width.
+// Vertical strips: top quarter goes back/up, bottom quarter forward/down.
+// Paged/spread: horizontal quarters turn in the selected LTR/RTL direction.
+// Both exact 25% and 75% boundaries belong to the central HUD zone.
+export function readerAndroidTapAction({ x, y, width, height } = {}, mode = {}) {
+  const vertical = mode.layout === "vertical";
+  const position = vertical ? y : x;
+  const extent = vertical ? height : width;
+  if (!Number.isFinite(position) || !Number.isFinite(extent) || extent <= 0
+      || position < 0 || position > extent) return "bars";
+  const fraction = position / extent;
+  if (fraction >= 0.25 && fraction <= 0.75) return "bars";
+  if (vertical) return fraction < 0.25 ? "prev" : "next";
+  const left = fraction < 0.25;
   return (mode.direction === "rtl") === left ? "next" : "prev";
 }
 

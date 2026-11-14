@@ -4,7 +4,7 @@
 // Pages come from api.pageUrl(id, n); progress is saved per page.
 import { escapeHtml } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
-import { atEnd, cascadeBridgePageWindow, cascadeBridgeSameOwner, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderTapGuard, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, knownLatestReaderChapter, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, readerPageCount, readerSourceAtLatest, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
+import { atEnd, cascadeBridgePageWindow, cascadeBridgeSameOwner, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderTapGuard, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, knownLatestReaderChapter, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerAndroidTapAction, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, readerPageCount, readerSourceAtLatest, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
 import { createOrderedReaderPages, readerPageAtOffset } from "./reader-page-window.js";
 
 const COMFORT_KEY = "lvl-reader-comfort-v1";
@@ -1244,7 +1244,13 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     if (event.target.closest('button, a, input, select, textarea, label, [contenteditable], [role="button"]')) return undefined;
     if (tapGuard.blocked() || window.getSelection?.()?.toString().trim()) return undefined;
     const box = stage.getBoundingClientRect();
-    const selected = zoom > 1 ? "bars" : clickAction(event.clientX - box.left, box.width, mode);
+    const android = document.documentElement.classList.contains("lvl-android");
+    const selected = zoom > 1 ? "bars" : android
+      ? readerAndroidTapAction({
+        x: event.clientX - box.left, y: event.clientY - box.top,
+        width: box.width, height: box.height,
+      }, mode)
+      : clickAction(event.clientX - box.left, box.width, mode);
     if (selected !== "bars") enterImmersive({ gesture: true });
     return actions[selected]?.();
   }, { signal: listeners.signal });

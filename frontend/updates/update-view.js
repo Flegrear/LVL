@@ -17,6 +17,13 @@ const ACTIVE = new Set(["downloading", "installing", "restarting"]);
 
 export const updateIsActive = (view) => ACTIVE.has(view?.phase);
 
+// The update phase and detailed Settings progress remain unchanged. Android's
+// floating card uses a short active label and native confirmation cue.
+export function updateCardPresentation(view, { android = false, pendingConfirmation = false } = {}) {
+  if (!android || !updateIsActive(view)) return { title: view?.title || "", detail: view?.detail || "" };
+  return { title: "Updating", detail: pendingConfirmation ? "Confirm installation in Android." : "" };
+}
+
 export function formatUpdateBytes(bytes) {
   const value = Math.max(0, Number(bytes) || 0);
   if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(1)} GB`;

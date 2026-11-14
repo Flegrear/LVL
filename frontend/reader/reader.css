@@ -186,7 +186,8 @@
 .reader.is-chrome-hidden[data-page-number="on"] .reader__page-counter:not(:empty) {
   position:absolute; z-index:3; left:50%; bottom:max(12px, env(safe-area-inset-bottom, 0px));
   display:block; transform:translateX(-50%); padding:5px 10px;
-  border-radius:999px; background:rgba(0,0,0,.65); color:#fff;
+  color:#fff; background:transparent;
+  text-shadow:0 1px 2px rgba(0,0,0,.96), 0 0 5px rgba(0,0,0,.86);
   font:600 12px/1.3 var(--ui-font-sans); font-variant-numeric:tabular-nums;
   white-space:nowrap; pointer-events:none; user-select:none;
 }
