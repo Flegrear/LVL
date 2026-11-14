@@ -72,8 +72,8 @@ const episodeInteger = (value, minimum = 0) => {
   return Number.isSafeInteger(number) && number >= minimum ? number : null;
 };
 
-// Reconcile corrected provider schedule records by immutable title/episode
-// identity, rather than an individual airing record ID or its former date.
+// Reconcile repeated provider schedule records by media/episode identity,
+// rather than by the individual airing record ID or former air date.
 const releaseUnitKey = (event) => {
   if (event.source === "AniList" && event.providerId && /^EP [1-9]\d*$/.test(event.code))
     return `anilist:${event.providerId}:${event.code}`;
@@ -91,10 +91,19 @@ function reconcileRelease(map, event) {
   const current = map.get(key);
   const original = providerRecordNumber(current || {});
   const replacement = providerRecordNumber(event);
-  // Within one provider's snapshot a higher provider record ID is the latest
-  // correction; equal IDs receive their latest payload. Do not use air time as
-  // episode identity, since rescheduling is exactly what this corrects.
-  if (!current || original === null || replacement === null || replacement >= original)
+  // A higher record ID has no verified chronology or "most recent correction"
+  // meaning. Use it only as a stable tie-break inside a contradictory snapshot.
+  // Equal IDs with differing schedules similarly use a stable timestamp/date
+  // tie-break. The refreshed provider snapshot itself supersedes older caches.
+  const prefer = !current
+    || (original !== null && replacement !== null && original !== replacement
+      ? replacement > original
+      : current.id !== event.id ? String(event.id) > String(current.id)
+        : (event.timestamp || 0) !== (current.timestamp || 0)
+          ? (event.timestamp || 0) > (current.timestamp || 0)
+          : event.date !== current.date ? event.date > current.date
+            : String(event.episodeTitle || "") > String(current.episodeTitle || ""));
+  if (prefer)
     map.set(key, event);
 }
 

@@ -10,6 +10,16 @@ const CATALOG_CACHE_TTL_MS = 10 * 60 * 1000;
 // The chapter list is metadata only, so it can list long anime seasons in full.
 const MAX_SEASON_LIST_EPISODES = 2000;
 
+// Cinemeta omits season on some videos. Numeric coercion would turn missing,
+// blank or boolean values into season zero, falsely inventing specials.
+const catalogEpisodeInteger = (value, minimum = 0) => {
+  if (typeof value === "string") {
+    if (!/^\d+$/.test(value.trim())) return null;
+    value = Number(value);
+  }
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= minimum ? value : null;
+};
+
 const catalogSearchCache = new Map();
 
 const homeCatalogCache = new Map();
@@ -321,17 +331,29 @@ export async function catalogMeta(req, res, url) {
   if (type === "series") {
     const seasons = new Map();
     for (const video of Array.isArray(meta.videos) ? meta.videos : []) {
-      const season = Number(video.season);
-      const episode = Number(video.episode ?? video.number);
-      const videoId = validateImdbId(video.id, { allowVideoId: true });
-      if (!Number.isInteger(season) || season < 0 || !Number.isInteger(episode) || episode < 1 || !videoId) continue;
-      const record = seasons.get(season) || { season, count: 0, episodes: [] };
+      const season = catalogEpisodeInteger(video?.season);
+      const episode = catalogEpisodeInteger(video?.episode ?? video?.number, 1);
+      const videoId = validateImdbId(video?.id, { allowVideoId: true });
+      // An ID suffix alone is not evidence that an absent provider season is
+      // authoritative. Unknown-season videos are left out of season groups.
+      if (season === null || episode === null || !videoId) continue;
+      const record = seasons.get(season) || { season, count: 0, episodes: [], seen: new Set() };
+      if (record.seen.has(episode)) {
+        // For duplicate provider records choose one supplied ID deterministically,
+        // independent of the order Cinemeta returned the duplicate rows.
+        const existing = record.episodes.findIndex((item) => item.episode === episode);
+        if (existing >= 0 && videoId < record.episodes[existing].id)
+          record.episodes[existing] = catalogEpisodeRecord(video, videoId, episode);
+        continue;
+      }
+      record.seen.add(episode);
       record.count += 1;
       if (record.episodes.length < MAX_SEASON_LIST_EPISODES) record.episodes.push(catalogEpisodeRecord(video, videoId, episode));
       seasons.set(season, record);
     }
     normalized.seasons = [...seasons.values()]
-      .map((record) => ({ ...record, episodes: record.episodes.sort((a, b) => a.episode - b.episode) }))
+      .map((record) => ({ season: record.season, count: record.count,
+        episodes: record.episodes.sort((a, b) => a.episode - b.episode) }))
       .sort((a, b) => a.season - b.season);
   }
   json(res, 200, { meta: normalized });

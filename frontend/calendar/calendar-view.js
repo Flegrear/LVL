@@ -38,12 +38,18 @@ const calendarEventUnit = (event) => {
     return `${event.source}:${event.providerId}:${String(event.code).toUpperCase()}`;
   return event.id;
 };
-const newerProviderRecord = (current, next) => {
+// Stable ordering for contradictory records in one snapshot. Record IDs do
+// not prove which broadcast date was edited most recently.
+const preferProviderDuplicate = (current, next) => {
   const first = /:(\d+)$/.exec(current.id || "");
   const second = /:(\d+)$/.exec(next.id || "");
   if (first && second && current.source === next.source && Number(first[1]) !== Number(second[1]))
     return Number(second[1]) > Number(first[1]);
-  return true;
+  if (next.id !== current.id) return String(next.id) > String(current.id);
+  if ((next.timestamp || 0) !== (current.timestamp || 0))
+    return (next.timestamp || 0) > (current.timestamp || 0);
+  if (next.date !== current.date) return String(next.date || "") > String(current.date || "");
+  return String(next.episodeTitle || "") > String(current.episodeTitle || "");
 };
 const episodeWatched = (series, code) => {
   const marks = (series.sources || []).map((entry) => entry.watchedChapters?.[code]);
@@ -313,7 +319,7 @@ export function createCalendarView({
       const prior = sourced[matchIndex];
       const priority = (item) => (item.timestamp ? 2 : 0)
         + (item.type === "anime" && item.source === "AniList" ? 1 : 0);
-      const preferNext = event.source === prior.source ? newerProviderRecord(prior, event)
+      const preferNext = event.source === prior.source ? preferProviderDuplicate(prior, event)
         : priority(event) > priority(prior);
       if (preferNext) sourced[matchIndex] = event;
       sourcedUnits.set(unit, matchIndex);
