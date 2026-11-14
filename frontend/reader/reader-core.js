@@ -66,6 +66,32 @@ export function readerChapterNeighbours(chapters = [], current = {}) {
     next: index >= 0 && index + 1 < items.length ? at(index + 1) : null };
 }
 
+// The aggregate index can still be loading, missing, or ambiguous. None of
+// those states proves that the chapter is the latest one on its source.
+export function knownLatestReaderChapter(fileId, info = {}) {
+  // Local neighbours come from the scanned folder. A remote merged index
+  // cannot establish a provider's last unit; use readerSourceAtLatest instead.
+  return /^f[0-9a-f]{16}$/.test(fileId) && !info.next;
+}
+
+// A shared index merges chapters from multiple providers. A successful source
+// listing may prove the current reader is its last unit even when another
+// provider has later chapters. Unknown or failed listings never prove an end.
+export function readerSourceAtLatest(chapters, current, listing, readerId, sourceId) {
+  if (!sourceId || !readerId || !Array.isArray(chapters) || !chapters.length
+      || !Array.isArray(listing?.units) || !Array.isArray(listing?.sources)) return null;
+  const providers = listing.sources.filter((entry) => entry.sourceId === sourceId);
+  if (!providers.length || providers.some((entry) => entry.error)) return null;
+  const units = listing.units.filter((entry) => entry.sourceId === sourceId);
+  if (!units.some((entry) => entry.id === readerId)) return null;
+  const position = readerChapterPosition(chapters, current).index;
+  if (position < 0) return null;
+  const positions = units.map((entry) =>
+    readerChapterPosition(chapters, { chapter: entry.chapter, volume: entry.volume ?? null }).index);
+  if (positions.some((index) => index < 0)) return null;
+  return !positions.some((index) => index > position);
+}
+
 export const MAX_NEXT_CHAPTER_PRELOAD = 3;
 // A cascade handover may keep only the immediately adjacent chapter's two
 // edge images; the existing active reader remains the sole progress owner.
@@ -188,6 +214,15 @@ export function spreadOf(page, pages, { offset = false, wide = null } = {}) {
   if (pages <= 1 || page <= 0) return [0];
   const at = Math.min(page, pages - 1);
   return spreadsFor(pages, { offset, wide }).find((group) => group.includes(at)) || [at];
+}
+
+// The visible count is a one-based page identity, even when a spread shows
+// two pages. Unknown page totals never produce a misleading "1 / 0".
+export function readerPageCount(page, pages, mode = {}) {
+  if (!Number.isSafeInteger(pages) || pages < 1) return "";
+  const current = Number.isSafeInteger(page) ? Math.max(0, Math.min(pages - 1, page)) : 0;
+  const shown = mode.layout === "double" ? spreadOf(current, pages, mode) : [current];
+  return `${shown.map((number) => number + 1).join("–")} / ${pages}`;
 }
 
 export function step(page, delta, pages, mode) {

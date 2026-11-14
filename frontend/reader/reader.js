@@ -4,7 +4,7 @@
 // Pages come from api.pageUrl(id, n); progress is saved per page.
 import { escapeHtml } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
-import { atEnd, cascadeBridgePageWindow, cascadeBridgeSameOwner, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderTapGuard, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
+import { atEnd, cascadeBridgePageWindow, cascadeBridgeSameOwner, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderTapGuard, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, knownLatestReaderChapter, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, readerPageCount, readerSourceAtLatest, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
 import { createOrderedReaderPages, readerPageAtOffset } from "./reader-page-window.js";
 
 const COMFORT_KEY = "lvl-reader-comfort-v1";
@@ -38,6 +38,7 @@ const ICONS = {
 };
 const svg = (name) => `<svg class="reader__icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">${ICONS[name]}</svg>`;
 const iconButton = (name, label, extra = "") => `<button class="reader__icon-btn" type="button" data-reader="${name}" aria-label="${escapeHtml(t(label))}" title="${escapeHtml(t(label))}"${extra}>${svg(name)}</button>`;
+const mobilePageButton = (side) => `<button class="reader__icon-btn reader__page-arrow" type="button" data-reader="${side}" aria-label="${escapeHtml(t(side === "left" ? "Previous page" : "Next page"))}">${svg(side)}<span class="reader__page-arrow-label" aria-hidden="true"></span></button>`;
 
 const option = (kind, value, label) => `<button class="reader__choice" type="button" data-reader-choice="${kind}" data-choice-value="${value}" aria-pressed="false">${escapeHtml(t(label))}</button>`;
 const choiceGroup = (kind, items) => `<div class="reader__choices" role="group">${items.map(([value, label]) => option(kind, value, label)).join("")}</div>`;
@@ -60,19 +61,19 @@ export function readerMarkup(comic, pages) {
     + `<section class="reader__main">`
     + `<header class="reader__bar"><button class="reader__mobile-back reader__icon-btn" type="button" data-reader="close" aria-label="${escapeHtml(t("Back to series"))}">${svg("back")}</button>${iconButton("sidebar", "Chapters", ' aria-expanded="true"')}`
     + `<div class="reader__heading"><strong>${escapeHtml(comic.title || "")}</strong><span class="reader__chapter-title"></span></div>`
-    + `<div class="reader__pager">${iconButton("left", "Page to the left")}<span class="reader__count" aria-live="polite"></span>${iconButton("right", "Page to the right")}</div>`
+    + `<div class="reader__pager">${iconButton("left", "Page to the left")}<span class="reader__count" aria-live="off"></span>${iconButton("right", "Page to the right")}</div>`
     + `<div class="reader__tools">${iconButton("fullscreen", "Fullscreen")}`
     + `<select class="reader__select" data-reader="fit" aria-label="${escapeHtml(t("Page size"))}">${fits.map(([value, label]) => `<option value="${value}">${escapeHtml(t(label))}</option>`).join("")}</select>`
     + `</div></header>`
     + `<main class="reader__stage" tabindex="0" aria-label="${escapeHtml(t("Reader pages. Tap the middle or press Escape to show controls."))}"></main>`
-    + `<div class="reader__page-counter" aria-hidden="true"></div>`
-    + `<footer class="reader__foot"><div class="reader__mobile-pages">${iconButton("left", "Page to the left")}<span class="reader__mobile-count" aria-live="off"></span>${iconButton("right", "Page to the right")}</div><div class="reader__progress"><span class="reader__end-num" data-reader-start>1</span><span class="reader__mobile-current"></span>`
+    + `<div class="reader__page-counter" aria-live="off"></div>`
+    + `<footer class="reader__foot"><div class="reader__mobile-pages">${mobilePageButton("left")}<span class="reader__mobile-count" aria-live="off"></span>${mobilePageButton("right")}</div><div class="reader__progress"><span class="reader__end-num" data-reader-start>1</span><span class="reader__mobile-current"></span>`
     + `<input class="reader__slider" type="range" min="1" max="${Math.max(1, pages)}" aria-label="${escapeHtml(t("Page"))}" /><span class="reader__end-num" data-reader-last>${Math.max(1, pages)}</span></div>`
     + `<div class="reader__footrow"><button class="reader__chapter-btn reader__back-footer" type="button" data-reader="close" aria-label="${escapeHtml(t("Back to series"))}">${svg("back")}<span>${escapeHtml(t("Back"))}</span></button>`
-    + `<button class="reader__chapter-btn" type="button" data-reader="prevChapter">${svg("left")}<span>${escapeHtml(t("Previous"))}</span></button>`
+    + `<button class="reader__chapter-btn" type="button" data-reader="prevChapter">${svg("left")}<span>${escapeHtml(t("Previous chapter"))}</span></button>`
     + `<div class="reader__strip"><button class="reader__strip-toggle" type="button" data-reader="previews" aria-pressed="true">${svg("collapse")}<span data-previews-label>${escapeHtml(t("Hide pages"))}</span></button>`
     + `<div class="reader__thumbs" role="list" aria-label="${escapeHtml(t("Pages"))}"></div></div>`
-    + `<button class="reader__chapter-btn" type="button" data-reader="nextChapter"><span>${escapeHtml(t("Next"))}</span>${svg("right")}</button>`
+    + `<button class="reader__chapter-btn" type="button" data-reader="nextChapter"><span>${escapeHtml(t("Next chapter"))}</span>${svg("right")}</button>`
     + `<div class="reader__icons"><div class="reader__modes" role="group" aria-label="${escapeHtml(t("Reading mode"))}">${iconButton("single", "One page", ' aria-pressed="false"')}${iconButton("double", "Two pages", ' aria-pressed="false"')}${iconButton("vertical", "Cascade", ' aria-pressed="false"')}</div>`
     + `${iconButton("reading", "Reading mode", ' aria-expanded="false"')}`
     + `${iconButton("comfort", "Comfort", ' aria-expanded="false"')}${iconButton("direction", "Reading direction")}${iconButton("settings", "Reader settings", ' aria-expanded="false"')}</div></div><p class="reader__transition-status" role="status" aria-live="polite" hidden></p></footer>`
@@ -95,8 +96,8 @@ export function readerMarkup(comic, pages) {
     + settingSwitch("pageNumber", "Show page number") + settingSwitch("previews", "Page previews") + preloadSetting()
     + `<button type="button" class="reader__sheet-action" data-reader="fullscreen">${svg("fullscreen")}${escapeHtml(t("Fullscreen"))}</button>`
     + `<h3>${escapeHtml(t("Chapters"))}</h3><div class="reader__sheet-chapters">`
-    + `<button type="button" class="reader__sheet-action" data-reader="prevChapter">${svg("left")}${escapeHtml(t("Previous"))}</button>`
-    + `<button type="button" class="reader__sheet-action" data-reader="nextChapter">${escapeHtml(t("Next"))}${svg("right")}</button></div></div>`
+    + `<button type="button" class="reader__sheet-action" data-reader="prevChapter">${svg("left")}${escapeHtml(t("Previous chapter"))}</button>`
+    + `<button type="button" class="reader__sheet-action" data-reader="nextChapter">${escapeHtml(t("Next chapter"))}${svg("right")}</button></div></div>`
     + `<div class="reader__sheet-panel" data-reader-sheet-panel="filters" hidden><h3>${escapeHtml(t("Brightness"))}</h3>`
     + `<label class="reader__sheet-range"><input type="range" min="0" max="100" step="1" data-comfort="brightness" aria-label="${escapeHtml(t("Brightness"))}" /><output data-reader-brightness>100%</output></label>`
     + `<h3>${escapeHtml(t("Color temperature"))}</h3>`
@@ -109,12 +110,13 @@ export function readerMarkup(comic, pages) {
 
 // options: { fileId, page, comic, api: { readerFile, saveProgress, pageUrl }, chapter, chapters (array or promise of
 //   [{ chapter, volume, title, cover }]), source (name of what's open), sources() -> [{ readerId, name, lang, page }]
+//   sourceUnits (optional source availability promise with units and source errors),
 //   (this chapter elsewhere), onSource(readerId, page), onChapter(chapter, {volume,isCurrent}),
 //   onPreloadChapters({ targets, count, source, workId, signal, isCurrent }),
 //   onClose(), onPage(fileId, page), onOpenFile(fileId) }. A source's exact volume
 //   can come from options.volume or the verified reader metadata. Missing volume
 //   (undefined) means unknown; explicit null means this unit has no volume.
-export async function openReader(host, { fileId, page = null, comic = {}, api, chapter = null, volume = undefined, chapters = [], source = "", sources = null, onSource, onChapter, onPreloadChapters, onCascadeBack, onClose, onPage, onOpenFile, cascadeNotice = false }) {
+export async function openReader(host, { fileId, page = null, comic = {}, api, chapter = null, volume = undefined, chapters = [], source = "", sources = null, sourceUnits = null, onSource, onChapter, onPreloadChapters, onCascadeBack, onClose, onPage, onOpenFile, cascadeNotice = false }) {
   const info = await api.readerFile(fileId);
   // Opened from its address alone: the server says which chapter and source this is.
   if (chapter === null || chapter === undefined) chapter = info.chapter ?? info.file?.chapter ?? null;
@@ -132,6 +134,8 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     stripGaps: storedDisplay?.stripGaps === true };
   let current = startPage(page, info.file?.progress, pages);
   let chapterList = Array.isArray(chapters) ? chapters : [];
+  let sourceListing = null;
+  let sourceLastCache = null;
   // Only a scroll-driven, successfully verified chapter handover gets an
   // inline chapter-start banner. Normal opens/resumes must keep their page.
   const showCascadeStart = Boolean(cascadeNotice && page === 0);
@@ -484,6 +488,15 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     return { prev: near.prev, next: near.next };
   }
 
+  const lastOnThisSource = () => {
+    if (!/^ex-[0-9a-f]{20}$/.test(fileId)) return null;
+    if (sourceLastCache?.chapters === chapterList && sourceLastCache?.listing === sourceListing)
+      return sourceLastCache.value;
+    const value = readerSourceAtLatest(chapterList, { chapter, volume }, sourceListing, fileId, info.sourceId);
+    sourceLastCache = { chapters: chapterList, listing: sourceListing, value };
+    return value;
+  };
+
   function cascadeChapterLabel(target) {
     if (target?.chapter !== null && target?.chapter !== undefined && String(target.chapter).trim())
       return t("Chapter {number}", { number: String(target.chapter) });
@@ -635,7 +648,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       start.innerHTML = `<span>${escapeHtml(t("Chapter start"))}</span><strong>${escapeHtml(cascadeChapterLabel({ chapter, volume }))}</strong>`;
       stage.prepend(start);
     }
-    const next = chapterTargets().next;
+    const next = lastOnThisSource() === true ? null : chapterTargets().next;
     if (!next) return;
     const boundary = document.createElement("section");
     boundary.className = "reader__chapter-boundary";
@@ -674,7 +687,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     const targets = nextChapterPreloadTargets(chapterList, { chapter, volume }, preloadChapters);
     if (!targets.length && /^f[0-9a-f]{16}$/.test(fileId) && info.next)
       targets.push({ file: info.next });
-    if (!targets.length) return;
+    if (lastOnThisSource() === true || !targets.length) return;
     const controller = new AbortController();
     preloadController = controller;
     const isCurrent = () => !closed && root.isConnected && preloadController === controller && !controller.signal.aborted;
@@ -765,6 +778,13 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     root.dataset.layout = mode.layout;
     root.dataset.direction = mode.direction;
     root.dataset.fit = mode.fit;
+    for (const side of ["left", "right"]) {
+      const arrow = root.querySelector(`.reader__mobile-pages [data-reader="${side}"]`);
+      const label = t((side === "left") === (mode.direction === "rtl") ? "Next page" : "Previous page");
+      arrow.setAttribute("aria-label", label);
+      arrow.title = label;
+      arrow.querySelector(".reader__page-arrow-label").textContent = label;
+    }
     root.querySelector('[data-reader="fit"]').value = mode.fit;
     root.querySelector('button[data-reader="single"]').setAttribute("aria-pressed", String(mode.layout === "single"));
     root.querySelector('button[data-reader="vertical"]').setAttribute("aria-pressed", String(mode.layout === "vertical"));
@@ -895,12 +915,15 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   }
 
   function updateCount() {
-    const shown = mode.layout === "double" ? spreadOf(current, pages, pairing()) : [current];
-    count.textContent = `${shown.map((n) => n + 1).join("–")} / ${pages}`;
-    const pageText = `${shown.map((n) => n + 1).join("–")} / ${pages}`;
+    const shown = pages > 0 ? (mode.layout === "double" ? spreadOf(current, pages, pairing()) : [current]) : [];
+    const pageText = readerPageCount(current, pages, pairing());
+    count.textContent = pageText;
     root.querySelector(".reader__mobile-count").textContent = pageText;
-    root.querySelector(".reader__mobile-current").textContent = String(current + 1);
-    root.querySelector(".reader__page-counter").textContent = pageText;
+    root.querySelector(".reader__mobile-current").textContent = pageText;
+    const floatingCount = root.querySelector(".reader__page-counter");
+    floatingCount.textContent = pageText;
+    floatingCount.setAttribute("aria-label", pageText
+      ? t("Page {page} of {pages}", { page: shown.map((n) => n + 1).join("–"), pages }) : "");
     slider.value = String(current + 1);
     // Progress and previews read left to right in every mode; only pages turn right to left.
     for (const thumb of thumbs.querySelectorAll('[aria-current="true"]')) thumb.removeAttribute("aria-current");
@@ -925,8 +948,16 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     }
     const end = document.createElement("div");
     end.className = "reader__endcard";
-    const next = chapterTargets().next;
-    end.innerHTML = `<p>${escapeHtml(root.querySelector(".reader__chapter-title").textContent ? t("End of {name}", { name: root.querySelector(".reader__chapter-title").textContent }) : t("End"))}</p>`
+    const next = lastOnThisSource() === true ? null : chapterTargets().next;
+    const knownLatest = lastOnThisSource() === true || (
+      !next && knownLatestReaderChapter(fileId, info));
+    const chapterName = root.querySelector(".reader__chapter-title").textContent
+      || (chapter == null ? t("Chapter") : t("Chapter {number}", { number: String(chapter) }));
+    const message = failed && next
+      ? t("Couldn't open the next chapter. Choose Next chapter to try another source.")
+      : knownLatest ? `${t("Last")} ${t("Chapter").toLocaleLowerCase()}`
+        : t("End of {name}", { name: chapterName });
+    end.innerHTML = `<p>${escapeHtml(message)}</p>`
       + (next ? `<button class="ui-btn ui-btn--primary" type="button" data-reader="nextChapter">${escapeHtml(t("Next chapter"))}</button>` : "")
       + `<button class="ui-btn ui-btn--secondary" type="button" data-reader="close">${escapeHtml(t("Back to series"))}</button>`;
     stage.querySelector(".reader__endcard")?.remove();
@@ -1027,7 +1058,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
 
   async function openAutoNext() {
     if (closed || autoAdvancing) return false;
-    const target = chapterTargets().next;
+    const target = lastOnThisSource() === true ? null : chapterTargets().next;
     if (!target) { showEnd(); return false; }
     // A genuine bottom-edge gesture may overtake the queued scroll rAF. Save
     // the verified terminal page of this chapter *before* starting the async
@@ -1444,7 +1475,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     verticalLoader.progress(low);
     updateCount();
     saveSoon();
-    if (low >= pages - 1 && !chapterTargets().next) showEnd();
+    if (low >= pages - 1 && (lastOnThisSource() === true || !chapterTargets().next)) showEnd();
   }
   scrollIntent = createReaderScrollIntentController(stage, { enterImmersive, onScroll: () => {
     if (mode.layout !== "vertical" || scrollFrame) return;
@@ -1500,7 +1531,15 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       chapterList = list;
       paintChapters();
       scheduleChapterPreloads();
+      if (stage.querySelector(".reader__endcard") && atEnd(current, pages, pairing())) showEnd();
     }
+  }).catch(() => {});
+  if (sourceUnits) Promise.resolve(sourceUnits).then((available) => {
+    if (closed) return;
+    sourceListing = available;
+    renderCascadeMarkers();
+    scheduleChapterPreloads();
+    if (stage.querySelector(".reader__endcard") && atEnd(current, pages, pairing())) showEnd();
   }).catch(() => {});
   root.focus();
   saveSoon();

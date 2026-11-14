@@ -630,10 +630,25 @@ export function renderLibrary() {
   const counts = { all: all.length, series: groups.series.length, movie: groups.movie.length, anime: groups.anime.length };
   document.querySelectorAll("[data-library-count]").forEach((node) => { node.textContent = counts[node.dataset.libraryCount] ? String(counts[node.dataset.libraryCount]) : ""; });
   setActiveTab($("#library-filter"), libraryView.filter);
+  // Feature filters paint the list and return early. Keep the shared select in
+  // sync before that handoff, including after All → Comics → All navigation.
+  const sort = $("#library-sort");
+  const comicsSort = libraryView.filter === "comics";
+  const watchedOption = sort?.querySelector('option[value="watched"]');
+  if (watchedOption) {
+    // Comics entries have update timestamps, but no last-read timestamp.
+    watchedOption.hidden = comicsSort;
+    watchedOption.disabled = comicsSort;
+  }
+  const unfinishedOption = sort?.querySelector('option[value="unfinished"]');
+  if (unfinishedOption) unfinishedOption.textContent = comicsSort ? t("Unread") : "Unwatched first";
+  const selectedSort = comicsSort && libraryView.sort === "watched" ? "recent" : libraryView.sort;
+  if (sort && sort.value !== selectedSort) sort.value = selectedSort;
   // A feature filter (Manga, Books…) fills the list itself. data-feature-filter
   // lets its stylesheet hide video-only parts (Continue watching, picks).
   const libraryPage = $("#view-library");
   const featureOptions = { query: libraryView.query, sort: libraryView.sort, status: libraryView.status };
+  featureOptions.sort = selectedSort;
   const paintStatusCounts = (counts, labels = {}) => $$("#library-status-filter [data-library-status]").forEach((button) => {
     const key = button.dataset.libraryStatus;
     button.setAttribute("aria-pressed", String(key === libraryView.status));
@@ -654,8 +669,6 @@ export function renderLibrary() {
     return;
   }
   if (libraryPage) delete libraryPage.dataset.featureFilter;
-  const sort = $("#library-sort");
-  if (sort && sort.value !== libraryView.sort) sort.value = libraryView.sort;
   const status = libraryView.status;
   const query = normalizeText(libraryView.query || "");
   const filteredByCategoryAndSearch = all

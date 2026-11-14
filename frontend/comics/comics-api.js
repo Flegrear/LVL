@@ -1,12 +1,14 @@
 // Comics section: calls to the local /api/comics routes.
 const TIMEOUT_MS = 30_000;
 
-async function call(url, { method = "GET", body, timeoutMs = TIMEOUT_MS } = {}) {
+async function call(url, { method = "GET", body, timeoutMs = TIMEOUT_MS, signal } = {}) {
   const response = await fetch(url, {
     method,
     headers: body === undefined ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" },
     body: body === undefined ? undefined : JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: signal
+      ? (typeof AbortSignal.any === "function" ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : signal)
+      : AbortSignal.timeout(timeoutMs),
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw Object.assign(new Error(payload?.error || `Request failed (${response.status})`), { status: response.status });
@@ -15,7 +17,7 @@ async function call(url, { method = "GET", body, timeoutMs = TIMEOUT_MS } = {}) 
 
 export const comicsApi = Object.freeze({
   home: () => call("/api/comics/home"),
-  search: ({ q = "", genre = "", page = 1 } = {}) => call(`/api/comics/search?${new URLSearchParams({ q, genre, page: String(page) })}`),
+  search: ({ q = "", genre = "", page = 1 } = {}, { signal } = {}) => call(`/api/comics/search?${new URLSearchParams({ q, genre, page: String(page) })}`, { signal }),
   browse: (filters = {}) => call(`/api/comics/browse?${new URLSearchParams(Object.entries(filters).filter(([, value]) => value !== "" && value !== undefined && value !== null).map(([key, value]) => [key, String(value)]))}`),
   work: (id) => call(`/api/comics/work/${encodeURIComponent(id)}`),
   units: (id) => call(`/api/comics/work/${encodeURIComponent(id)}/units`),

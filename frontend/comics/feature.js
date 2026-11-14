@@ -101,16 +101,19 @@ function readerData(id, ctx) {
   if (page.id === id && page.data) return page.data;
   page.id = id;
   const loading = loadComicTitle(id, ctx).then(() => comicTitles.get(id));
+  const availabilityReady = loading.then(async (known) => {
+    try { return await comicsApi.availability(id, sourceLanguages(ctx.preferences?.() || {}, known?.comic || {})); }
+    catch { return null; }
+  });
   page.data = {
     id,
     loaded: loading,
+    availabilityReady,
     // The title page's list: the index plus chapters only the chosen sources have (0, 21.5).
     chaptersReady: loading.then(async (known) => {
       const items = flattenIndex(known?.index);
-      try {
-        const { chapters } = await comicsApi.availability(id, sourceLanguages(ctx.preferences?.() || {}, known?.comic || {}));
-        return mergeSourceChapters(items, chapters || []);
-      } catch { return items; }
+      const availability = await availabilityReady;
+      return mergeSourceChapters(items, availability?.chapters || []);
     }),
     get comic() { return comicTitles.get(id)?.comic || {}; },
   };
@@ -291,6 +294,7 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
       fileId: route.read, page: route.page, comic: data.comic,
       chapter: currentChapter, volume: currentVolume, cascadeNotice,
       chapters: chaptersReady,
+      sourceUnits: data.availabilityReady,
       source: known.source || info.source || (route.read.startsWith("f") ? t("Your file") : ""),
       sources: currentChapter !== null || route.read.startsWith("ex-") ? async () => {
         if (!owns()) return [];

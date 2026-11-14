@@ -26,16 +26,17 @@ export const comicKey = (value) => {
   return Number.isInteger(id) && id > 0 ? `anilist-${id}` : (typeof value?.id === "string" ? comicKey(value.id) : "");
 };
 export function loadLibrary({ force = false } = {}) {
+  // A return from the reader may already be refreshing progress. A sort that
+  // happens during that request must wait for it, not reuse the older cache.
+  if (library.pending) return library.pending;
   if (library.loaded && !force) return Promise.resolve(library.entries);
-  if (!library.pending) {
-    library.pending = comicsApi.library()
-      .then((payload) => {
-        library.entries = new Map((payload.entries || []).map((entry) => [comicKey(entry.id || entry), entry]));
-        library.loaded = true;
-        return library.entries;
-      })
-      .finally(() => { library.pending = null; });
-  }
+  library.pending = comicsApi.library()
+    .then((payload) => {
+      library.entries = new Map((payload.entries || []).map((entry) => [comicKey(entry.id || entry), entry]));
+      library.loaded = true;
+      return library.entries;
+    })
+    .finally(() => { library.pending = null; });
   return library.pending;
 }
 export const libraryEntry = (key) => library.entries.get(comicKey(key)) || null;
@@ -204,20 +205,45 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
   return undefined;
 }
 
-// Video Library sort values map to comics: title, title-desc, added; the rest by last change.
+// Keep the shared Library sort values. Source-specific readChapters is the
+// highest finished chapter, not a percentage or an AniList chapter count.
 export function sortEntries(entries, sort = "recent") {
   const list = [...entries];
-  const byTitle = (a, b) => String(a.work?.title || "").localeCompare(String(b.work?.title || ""), undefined, { sensitivity: "base", numeric: true });
+  const compareText = (a, b) => String(a || "").localeCompare(String(b || ""), undefined, { sensitivity: "base", numeric: true });
+  const byId = (a, b) => compareText(a.id || a.work?.id, b.id || b.work?.id);
+  const byTitle = (a, b) => compareText(a.work?.title, b.work?.title) || byId(a, b);
+  // Missing dates/read positions remain unknown and come after known values.
+  const known = (value, { positive = false } = {}) => {
+    if (value === null || value === undefined || value === "") return null;
+    const number = Number(value);
+    return Number.isFinite(number) && (positive ? number > 0 : number >= 0) ? number : null;
+  };
+  const byNumber = (a, b, getter, ascending = false) => {
+    const left = known(getter(a));
+    const right = known(getter(b));
+    if (left === null) return right === null ? byTitle(a, b) : 1;
+    if (right === null) return -1;
+    return (ascending ? left - right : right - left) || byTitle(a, b);
+  };
+  const date = (entry, field) => known(entry[field], { positive: true });
   if (sort === "title") return list.sort(byTitle);
-  if (sort === "title-desc") return list.sort((a, b) => byTitle(b, a));
-  if (sort === "added") return list.sort((a, b) => b.addedAt - a.addedAt || byTitle(a, b));
-  return list.sort((a, b) => b.updatedAt - a.updatedAt || byTitle(a, b));
+  if (sort === "title-desc") return list.sort((a, b) => compareText(b.work?.title, a.work?.title) || byId(a, b));
+  if (sort === "added") return list.sort((a, b) => byNumber(a, b, (item) => date(item, "addedAt")));
+  if (["progress", "unfinished"].includes(sort) && list.some((item) => known(item.readChapters) !== null))
+    return list.sort((a, b) => byNumber(a, b, (item) => item.readChapters, sort === "unfinished"));
+  // No last-read timestamp exists in the Comics Library payload. In All,
+  // "Recently watched" falls back to the last Comics update, like Recent.
+  return list.sort((a, b) => byNumber(a, b, (item) => date(item, "updatedAt") ?? date(item, "addedAt")));
 }
 
 export function filterEntries(entries, { query = "", status = "any" } = {}) {
-  const needle = String(query || "").trim().toLowerCase();
+  // Fold Latin accents for searching, while preserving Japanese voiced kana
+  // (their combining marks must not be mistaken for removable accents).
+  const fold = (value) => String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+  const needle = fold(query).trim();
   return entries.filter((entry) => (status === "any" || !status || entry.status === status)
-    && (!needle || [entry.work?.title, ...(entry.work?.aliases || [])].some((name) => String(name || "").toLowerCase().includes(needle))));
+    && (!needle || [entry.work?.title, ...(Array.isArray(entry.work?.aliases) ? entry.work.aliases : [])]
+      .some((name) => fold(name).includes(needle))));
 }
 
 // Status counts after the search but before the status filter, like the video Library.
@@ -247,16 +273,23 @@ export function libraryGroup(options = {}, ctx, onLoaded = () => {}, { joined = 
 }
 
 // Main Library "Comics" filter.
+const previousComicsLibraryView = new WeakMap();
 export async function renderComicsLibrary(list, ctx, { query = "", sort = "recent", status = "any", isCurrent = () => true } = {}) {
   if (!list) return;
+  const previous = previousComicsLibraryView.get(list);
+  const sortOnly = previous && previous.query === query && previous.status === status
+    && previous.sort !== sort && list.closest?.("#view-library")?.dataset?.featureFilter === "comics";
   list.classList.remove("is-grouped");
   try {
-    await loadLibrary({ force: true });
+    // Sorting an already-visible list changes order only; returning from the
+    // reader or changing filters still refreshes the source's live state.
+    await loadLibrary({ force: !sortOnly });
   } catch (error) {
     if (isCurrent()) list.innerHTML = errorMarkup(ctx, error.message);
     return;
   }
   if (!isCurrent()) return;
+  previousComicsLibraryView.set(list, { query, sort, status });
   const entries = sortEntries(filterEntries([...library.entries.values()], { query, status }), sort);
   list.innerHTML = entries.length
     ? entries.map((entry) => libraryCard(entry, ctx, { progress: true })).join("")

@@ -63,6 +63,40 @@ const validImage = (url) => typeof url === "string" && /^https:\/\//.test(url) ?
 const isoDate = (milliseconds) => new Date(milliseconds).toISOString().slice(0, 10);
 const safeText = (value, max = 180) => String(value || "").replace(/\s+/g, " ").trim().slice(0, max);
 const imdbId = (value) => /^tt\d{5,12}$/.test(String(value || "")) ? value : "";
+// An omitted season is unknown. Number(null), Number("") and Number(" ")
+// would all be zero, incorrectly labelling ordinary episodes as specials.
+const episodeInteger = (value, minimum = 0) => {
+  if (value === null || value === undefined || typeof value === "boolean"
+    || (typeof value === "string" && !/^\d+$/.test(value.trim()))) return null;
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number >= minimum ? number : null;
+};
+
+// Reconcile corrected provider schedule records by immutable title/episode
+// identity, rather than an individual airing record ID or its former date.
+const releaseUnitKey = (event) => {
+  if (event.source === "AniList" && event.providerId && /^EP [1-9]\d*$/.test(event.code))
+    return `anilist:${event.providerId}:${event.code}`;
+  if (event.source === "TVmaze" && event.providerId
+    && /^(?:S\d+E\d+|EP [1-9]\d*)$/.test(event.code))
+    return `tvmaze:${event.providerId}:${event.code}`;
+  return event.id;
+};
+const providerRecordNumber = (event) => {
+  const suffix = /:(\d+)$/.exec(event.id || "");
+  return suffix ? Number(suffix[1]) : null;
+};
+function reconcileRelease(map, event) {
+  const key = releaseUnitKey(event);
+  const current = map.get(key);
+  const original = providerRecordNumber(current || {});
+  const replacement = providerRecordNumber(event);
+  // Within one provider's snapshot a higher provider record ID is the latest
+  // correction; equal IDs receive their latest payload. Do not use air time as
+  // episode identity, since rescheduling is exactly what this corrects.
+  if (!current || original === null || replacement === null || replacement >= original)
+    map.set(key, event);
+}
 
 export function normalizeAniListAiring(row) {
   const media = row?.media;
@@ -88,10 +122,11 @@ export function normalizeTvmazeAiring(row) {
   const hasTime = Number.isFinite(stamp);
   const date = hasTime ? isoDate(stamp) : row.airdate;
   if (!releaseRange(date, date)) return null;
-  const season = Number(row.season);
-  const episode = Number(row.number);
-  const code = Number.isInteger(season) && Number.isInteger(episode) && episode > 0
-    ? `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}` : "Episode";
+  const season = episodeInteger(row.season);
+  const episode = episodeInteger(row.number, 1);
+  const code = episode !== null
+    ? season !== null ? `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`
+      : `EP ${episode}` : "Episode";
   return {
     id: `tvmaze:${row.id}`, providerId: String(show.id),
     catalogId: imdbId(show.externals?.imdb),
@@ -322,11 +357,12 @@ export function createReleaseCalendarService({
       // Library; no TVmaze shows or TMDb films belong in this view.
       try {
         const result = await anime(range);
+        const events = new Map();
+        for (const event of result.events) if (event.type === "anime"
+          && event.date >= isoDate(range.start - DAY_MS)
+          && event.date <= isoDate(range.end + DAY_MS)) reconcileRelease(events, event);
         return {
-          events: result.events.filter((event) => event.type === "anime"
-            && event.date >= isoDate(range.start - DAY_MS)
-            && event.date <= isoDate(range.end + DAY_MS))
-            .sort((a, b) => a.timestamp - b.timestamp || a.title.localeCompare(b.title)),
+          events: [...events.values()].sort((a, b) => a.timestamp - b.timestamp || a.title.localeCompare(b.title)),
           coverage: { AniList: { status: result.complete ? "ok" : "partial" } },
           updatedAt: new Date(now()).toISOString(),
         };
@@ -364,7 +400,7 @@ export function createReleaseCalendarService({
       coverage[provider] = { status: item.needsKey ? "needs_key" : item.complete ? "ok" : "partial" };
       for (const event of item.events) {
         if (event.date >= isoDate(range.start - DAY_MS) && event.date <= isoDate(range.end + DAY_MS))
-          events.set(event.id, event.source === "AniList" && linkedById?.has(Number(event.providerId))
+          reconcileRelease(events, event.source === "AniList" && linkedById?.has(Number(event.providerId))
             ? { ...event, linkedAniListIds: linkedById.get(Number(event.providerId)) } : event);
       }
     });
@@ -373,7 +409,7 @@ export function createReleaseCalendarService({
     if (entries[3]?.status === "fulfilled") {
       for (const event of entries[3].value) {
         if (event.date >= isoDate(range.start - DAY_MS) && event.date <= isoDate(range.end + DAY_MS))
-          events.set(event.id, event);
+          reconcileRelease(events, event);
       }
     } else if (entries[3] && coverage.AniList?.status === "ok") coverage.AniList.status = "partial";
     if (family && !linkedById && coverage.AniList?.status === "ok") coverage.AniList.status = "partial";

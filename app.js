@@ -617,6 +617,7 @@ bindTabs($("#home-tabs"), {
   onChange: (value) => {
     ++animeBrowser.openRequestId;
     window.clearTimeout(animeBrowserPrefetchTimer);
+    if (catalogSearchIsOpen()) closeCatalogSearch();
     homeBrowseCategory = typeof clientFeatures !== "undefined" && clientFeatures.homeCategoryIds.includes(value)
       ? value : normalizeHomeCategory(value);
     localStorage.setItem("blackline-home-filter", homeBrowseCategory);
@@ -718,6 +719,8 @@ $("#anilist-import-form")?.addEventListener("submit", async (event) => {
   }
 });
 $("#catalog-results")?.addEventListener("click", (event) => {
+  const comic = event.target.closest(".catalog-search-result[data-comics-open]");
+  if (comic) { closeCatalogSearch(); return; }
   const holder = event.target.closest(".catalog-search-result[data-title-id]");
   if (holder) openCatalogResult(holder.dataset.titleId);
 });
@@ -885,6 +888,7 @@ $("#subtitle-preview-rotate")?.addEventListener("click", () => {
   });
   bindTabs($("#library-filter"), {
     onChange: (value) => {
+      if (catalogSearchIsOpen()) closeCatalogSearch();
       libraryView.filter = ["series", "movie", "anime", ...clientFeatures.libraryFilterIds].includes(value) ? value : "all";
       saveLibraryView();
       renderLibrary();

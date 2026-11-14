@@ -183,6 +183,13 @@
 .reader__endcard { position:absolute; inset:auto 50% 24px auto; transform:translateX(50%); display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:12px 16px; border-radius:var(--ui-radius-md); background:rgba(0,0,0,.88); color:#fff; }
 .reader[data-layout="vertical"] .reader__endcard, .reader[data-fit="width"] .reader__endcard { position:sticky; bottom:24px; transform:none; inset:auto; margin:24px auto; width:max-content; }
 .reader__endcard p { margin:0 8px 0 0; }
+.reader.is-chrome-hidden[data-page-number="on"] .reader__page-counter:not(:empty) {
+  position:absolute; z-index:3; left:50%; bottom:max(12px, env(safe-area-inset-bottom, 0px));
+  display:block; transform:translateX(-50%); padding:5px 10px;
+  border-radius:999px; background:rgba(0,0,0,.65); color:#fff;
+  font:600 12px/1.3 var(--ui-font-sans); font-variant-numeric:tabular-nums;
+  white-space:nowrap; pointer-events:none; user-select:none;
+}
 
 /* Bottom bar: progress, chapter buttons, page strip, settings */
 .reader__foot { grid-row:3; display:grid; gap:6px; padding:8px 12px 10px; border-top:1px solid var(--reader-line); }
@@ -248,6 +255,8 @@
   .reader__back-footer { grid-column:1; grid-row:1; }
   .reader__footrow > [data-reader="prevChapter"] { grid-column:2; grid-row:1; justify-self:start; min-width:0; }
   .reader__footrow > [data-reader="nextChapter"] { grid-column:3; grid-row:1; justify-self:end; min-width:0; }
+  .reader__footrow > [data-reader="prevChapter"],
+  .reader__footrow > [data-reader="nextChapter"] { min-height:44px; height:auto; }
   .reader__strip { grid-column:1 / -1; grid-row:2; }
   .reader__icons { grid-column:1 / -1; grid-row:3; justify-content:center; }
 }
@@ -258,6 +267,8 @@
   .reader__footrow { column-gap:8px; }
   .reader__footrow > [data-reader="prevChapter"],
   .reader__footrow > [data-reader="nextChapter"] { padding-inline:8px; }
+  .reader__footrow > [data-reader="prevChapter"] span,
+  .reader__footrow > [data-reader="nextChapter"] span { max-width:88px; overflow-wrap:normal; }
 }
 
 /* Android Comics: reading area is edge-to-edge. Navigation and page controls
@@ -295,9 +306,15 @@
   }
   html.lvl-android .reader__mobile-pages {
     position:absolute; inset:22px 9px auto; z-index:1;
-    display:grid; grid-template-columns:44px minmax(0,1fr) 44px;
+    display:grid; grid-template-columns:78px minmax(0,1fr) 78px;
     justify-items:center; align-items:center; gap:8px; pointer-events:none;
   }
+  html.lvl-android .reader__mobile-pages .reader__page-arrow {
+    display:flex; flex-direction:column; justify-content:center; align-items:center;
+    gap:1px; width:78px; height:58px; min-height:58px; padding:0 2px;
+    font:600 10px/1.15 var(--ui-font-sans); text-align:center;
+  }
+  html.lvl-android .reader__page-arrow-label { display:block; white-space:nowrap; }
   html.lvl-android .reader__mobile-pages .reader__icon-btn,
   html.lvl-android .reader__mobile-pages .reader__icon-btn:hover,
   html.lvl-android .reader__mobile-pages .reader__icon-btn:focus-visible {
@@ -308,9 +325,10 @@
   html.lvl-android .reader__mobile-count { display:none; }
   html.lvl-android .reader__progress [data-reader-start] { display:none; }
   html.lvl-android .reader__mobile-current { display:block; min-width:2ch; font:600 12px/1 var(--ui-font-sans); font-variant-numeric:tabular-nums; color:#eee; }
+  html.lvl-android .reader__progress [data-reader-last] { display:none; }
   html.lvl-android .reader__progress {
-    display:flex; align-items:center; gap:10px; min-height:44px;
-    margin:0 48px; padding:4px 0;
+    display:flex; align-items:center; gap:8px; min-height:58px;
+    margin:0 82px; padding:4px 0;
     border:0; border-radius:0; background:transparent;
   }
   html.lvl-android .reader__slider { min-height:22px; accent-color:#eee; }
@@ -335,6 +353,7 @@
   html.lvl-android .reader__icons .reader__icon-btn { width:46px; height:46px; color:#eee; }
   html.lvl-android .reader__transition-status { text-align:center; color:#eee; }
   html.lvl-android .reader__page-counter { display:none; }
+  html.lvl-android .reader.is-chrome-hidden[data-page-number="on"] .reader__page-counter:not(:empty) { display:block; }
   html.lvl-android .reader[data-page-number="off"] .reader__mobile-current,
   html.lvl-android .reader[data-page-number="off"] .reader__end-num { display:none; }
   html.lvl-android .reader__sheet-shade {

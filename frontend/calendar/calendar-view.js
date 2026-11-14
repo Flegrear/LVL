@@ -28,6 +28,23 @@ const asDay = (dateKey) => {
 };
 const chapterCode = (season, episode) => `S${String(season).padStart(2, "0")}E${String(episode).padStart(2, "0")}`;
 const episodeNumber = (code) => Number(/^(?:EP\s+|S\d{2,3}E)(\d+)$/i.exec(String(code || ""))?.[1]) || 0;
+const seasonEpisodeCode = (code) => /^S\d{2,3}E\d{2,4}$/i.test(String(code || ""));
+// Episode unit identity must survive changes to an airing record ID or date.
+// Unknown AniList season numbering remains tied to its own media ID.
+const calendarEventUnit = (event) => {
+  if (event.matchedByVerifiedId && event.seriesKey && seasonEpisodeCode(event.code))
+    return `catalog:${event.catalogId || event.seriesKey}:${event.code.toUpperCase()}`;
+  if (["AniList", "TVmaze"].includes(event.source) && event.providerId && episodeNumber(event.code))
+    return `${event.source}:${event.providerId}:${String(event.code).toUpperCase()}`;
+  return event.id;
+};
+const newerProviderRecord = (current, next) => {
+  const first = /:(\d+)$/.exec(current.id || "");
+  const second = /:(\d+)$/.exec(next.id || "");
+  if (first && second && current.source === next.source && Number(first[1]) !== Number(second[1]))
+    return Number(second[1]) > Number(first[1]);
+  return true;
+};
 const episodeWatched = (series, code) => {
   const marks = (series.sources || []).map((entry) => entry.watchedChapters?.[code]);
   if (marks.includes(false)) return false; // Manual undo has priority.
@@ -117,22 +134,25 @@ export function calendarMatchLibrary(events = [], library = []) {
   return events.map((event) => {
     const family = [...new Set((event.source === "AniList" && Array.isArray(event.linkedAniListIds)
       ? event.linkedAniListIds : []).map((id) => byAnime.get(String(id))).filter(Boolean))];
-    const match = (event.catalogId && byCatalog.get(event.catalogId))
+    const verifiedMatch = (event.catalogId && byCatalog.get(event.catalogId))
       || (event.source === "AniList" && byAnime.get(String(event.providerId)))
       || (family.length === 1 && family[0])
-      || (event.source === "TMDb" && byTmdb.get(String(event.providerId)))
+      || (event.source === "TMDb" && byTmdb.get(String(event.providerId)));
+    const match = verifiedMatch
       || byTitleYear.get(`${event.type === "movie" ? "movie" : "series"}:${event.premiereYear || event.date.slice(0, 4)}:${comparableTitle(event.title)}`);
     const compatible = match && (event.type === "movie" ? match.type === "movie"
       : match.type !== "movie" && (event.type !== "anime" || match.mediaKind === "anime"));
     if (!compatible) return { ...event, inMyList: false };
+    const matchedByVerifiedId = Boolean(verifiedMatch && verifiedMatch === match);
     const code = String(event.code || "");
     return { ...event, inMyList: true, title: event.source === "AniList" ? event.title || match.title : match.title || event.title,
       type: match.type === "movie" ? "movie" : match.mediaKind === "anime" ? "anime" : "series",
       artwork: event.source === "AniList" ? event.artwork || match.coverUrl : match.coverUrl || event.artwork,
       fallbackArtwork: event.source === "AniList" ? match.coverUrl || "" : event.artwork || "",
       seriesKey: match.key,
-      catalogId: match.catalogId || event.catalogId || "",
-      watched: /^S\d{2}E\d{2,3}$/.test(code) ? episodeWatched(match, code) : false };
+      matchedByVerifiedId,
+      catalogId: matchedByVerifiedId ? match.catalogId || event.catalogId || "" : event.catalogId || "",
+      watched: matchedByVerifiedId && /^S\d{2}E\d{2,3}$/.test(code) ? episodeWatched(match, code) : false };
   });
 }
 
@@ -253,7 +273,7 @@ export function createCalendarView({
       .filter((event) => event.inMyList)
       .map((event) => {
         const dated = event.timestamp ? { ...event, date: calendarDateKey(new Date(event.timestamp)) } : event;
-        if (calendarTorrentLookup(dated)) return dated;
+        if (!dated.matchedByVerifiedId || calendarTorrentLookup(dated)) return dated;
         // A catalog date uniquely identifying one saved chapter can resolve
         // AniList's absolute EP numbering without guessing a season mapping.
         const candidates = realEvents.filter((local) => local.catalogId && local.catalogId === dated.catalogId
@@ -274,30 +294,35 @@ export function createCalendarView({
       sameNumberCount.set(key, (sameNumberCount.get(key) || 0) + 1);
     }
     const sourced = [];
+    const sourcedUnits = new Map();
     for (const event of mapped) {
       const episode = episodeNumber(event.code);
-      const matchIndex = sourced.findIndex((previous) => {
+      const unit = calendarEventUnit(event);
+      let matchIndex = sourcedUnits.has(unit) ? sourcedUnits.get(unit) : -1;
+      if (matchIndex < 0) matchIndex = sourced.findIndex((previous) => {
         if (!event.seriesKey || previous.seriesKey !== event.seriesKey || previous.date !== event.date
-          || previous.type !== event.type) return false;
-        if (/^S\d{2,3}E\d{2,4}$/i.test(event.code) && previous.code === event.code) return true;
+          || previous.type !== event.type || !event.matchedByVerifiedId || !previous.matchedByVerifiedId) return false;
+        if (seasonEpisodeCode(event.code) && previous.code === event.code) return true;
         const crossProvider = (event.source === "AniList" && previous.source === "TVmaze")
           || (event.source === "TVmaze" && previous.source === "AniList");
         return crossProvider && event.type === "anime" && episode > 0
           && episode === episodeNumber(previous.code)
           && sameNumberCount.get(`${event.seriesKey}:${event.date}:${episode}`) === 2;
       });
-      if (matchIndex < 0) { sourced.push(event); continue; }
+      if (matchIndex < 0) { sourcedUnits.set(unit, sourced.length); sourced.push(event); continue; }
       const prior = sourced[matchIndex];
       const priority = (item) => (item.timestamp ? 2 : 0)
         + (item.type === "anime" && item.source === "AniList" ? 1 : 0);
-      if (priority(event) > priority(prior)) sourced[matchIndex] = event;
+      const preferNext = event.source === prior.source ? newerProviderRecord(prior, event)
+        : priority(event) > priority(prior);
+      if (preferNext) sourced[matchIndex] = event;
+      sourcedUnits.set(unit, matchIndex);
     }
-    const seen = new Set(sourced.map((event) => `${comparableTitle(event.title)}:${event.code}:${event.date}`));
+    const verifiedUnits = new Set(sourced.filter((event) => event.matchedByVerifiedId && seasonEpisodeCode(event.code))
+      .map((event) => `${event.catalogId}:${event.code.toUpperCase()}`));
     const local = realEvents.filter((event) => {
       if (matchedLocal.has(event.id)) return false;
-      const key = `${comparableTitle(event.title)}:${event.code}:${event.date}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
+      if (verifiedUnits.has(`${event.catalogId}:${event.code.toUpperCase()}`)) return false;
       return true;
     }).map((event) => ({ ...event, inMyList: true }));
     mergedEvents = [...sourced, ...local]
@@ -440,7 +465,8 @@ export function createCalendarView({
       const rows = new Map();
       coverage = {};
       for (const result of successes) {
-        for (const event of result?.events || []) if (event?.id && validCalendarDate(event.date)) rows.set(event.id, event);
+        for (const event of result?.events || []) if (event?.id && validCalendarDate(event.date))
+          rows.set(calendarEventUnit(event), event);
         for (const [provider, info] of Object.entries(result?.coverage || {})) {
           const existing = coverage[provider]?.status;
           const status = info?.status || "unavailable";
