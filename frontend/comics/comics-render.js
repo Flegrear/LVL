@@ -3,6 +3,7 @@
 import { bindShelves, buttonMarkup, cardMarkup, emptyMarkup, escapeHtml, markupSignature, refreshImages, shelfMarkup, skeletonShelfMarkup } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
+import { catalogArtworkMark, disposeCatalogArtwork, mountCatalogArtwork } from "./comics-artwork.js";
 import { comicBrowserMarkup, featuredSlides, hasMountedFeatured, mountComicBrowser, showFeatured } from "./comics-browser.js";
 import { providerBrowserMarkup, mountProviderBrowser } from "./comics-provider.js";
 import { WORK_ID } from "../../shared/reading/ids.js";
@@ -51,7 +52,7 @@ export function formatLabel(comic) {
   return ({ KR: "Manhwa", CN: "Manhua", TW: "Manhua" })[comic?.country] || "Manga";
 }
 
-export function comicCardMarkup(comic, ctx, { badge = "", files = 0, read = 0 } = {}) {
+export function comicCardMarkup(comic, ctx, { badge = "", files = 0, read = 0, catalogOnly = false } = {}) {
   const key = comicKey(comic?.id && String(comic.id).startsWith("local-") ? comic.id : comic);
   if (!key) return "";
   // read: the highest chapter finished (Library Comics filter only). The chip replaces the
@@ -63,12 +64,16 @@ export function comicCardMarkup(comic, ctx, { badge = "", files = 0, read = 0 } 
     : total ? tr(ctx, "{count} chapters", { count: total }) : "";
   const meta = [tr(ctx, formatLabel(comic)), comic.year ? String(comic.year) : "", chapterChip,
     files === 1 ? tr(ctx, "1 file") : files ? tr(ctx, "{count} files", { count: files }) : ""].filter(Boolean);
-  const html = cardMarkup({
+  let html = cardMarkup({
     title: comic.title, image: comic.cover, meta, badge,
     rating: Number.isFinite(comic.score) && comic.score > 0 ? comic.score.toFixed(1) : "",
     // At least 2%, so one chapter of 224 still shows as started.
     progress: done && total ? Math.min(1, Math.max(0.02, done / total)) : 0,
   }, { inLibrary: Boolean(libraryEntry(key)) });
+  // Library and selected/local covers keep their own art. Catalog-only
+  // portraits opt into a lazy check after the current AniList image decodes.
+  const artwork = catalogOnly ? catalogArtworkMark(comic.anilistId, comic.cover) : null;
+  if (artwork) html = html.replace('class="ui-card__img"', `class="ui-card__img" data-comics-art-id="${artwork.id}" data-comics-art-original="${escapeHtml(artwork.url)}"`);
   // No data-title-id / data-series-key: core's video card handlers ignore these cards.
   return html.replace("<article class=\"", `<article data-comic-id="${escapeHtml(key)}" class="`);
 }
@@ -93,6 +98,9 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
   let body = rows.querySelector(":scope > .comics-home-body");
   const reused = Boolean(body?.querySelector("#comic-browser") && mountedComicHome?.body === body);
   if (!reused) {
+    mountedComicHome?.watch?.disconnect();
+    if (mountedComicHome?.body && mountedComicHome.body !== body) disposeCatalogArtwork(mountedComicHome.body);
+    if (body) disposeCatalogArtwork(body);
     rows.innerHTML = "<div class=\"comics-home-body\">" + providerBrowserMarkup() + skeletonShelfMarkup() + skeletonShelfMarkup() + "</div>";
     body = rows.querySelector(".comics-home-body");
     mountProviderBrowser(body.querySelector("[data-comic-provider]"), ctx);
@@ -115,6 +123,7 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
         notice.innerHTML = errorMarkup(ctx, error.message);
         provider.after(notice);
       } else {
+        disposeCatalogArtwork(body);
         body.innerHTML = errorMarkup(ctx, error.message) + comicBrowserMarkup();
         body.prepend(provider);
         mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary: (comic) => Boolean(libraryEntry(comic)) });
@@ -129,7 +138,7 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
   const shelves = [comicBrowserMarkup()];
   if (reading.length) shelves.push(shelfMarkup({ id: "comics-reading", title: tr(ctx, "Continue reading"), cards: reading.map((entry) => libraryCard(entry, ctx)).filter(Boolean) }));
   for (const section of sections) {
-    const cards = (section.items || []).map((comic) => comicCardMarkup(comic, ctx)).filter(Boolean);
+    const cards = (section.items || []).map((comic) => comicCardMarkup(comic, ctx, { catalogOnly: true })).filter(Boolean);
     if (cards.length) shelves.push(shelfMarkup({ id: `comics-${section.id}`, title: tr(ctx, section.title), cards }));
   }
   rows.removeAttribute("aria-busy");
@@ -138,12 +147,21 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
   body.querySelector("[data-comics-catalog-error]")?.remove();
   const unchanged = reused && mountedComicHome?.signature === signature;
   if (!unchanged) {
+    mountedComicHome?.watch?.disconnect();
+    disposeCatalogArtwork(body);
     body.innerHTML = nextMarkup;
     body.prepend(provider);
     mountComicBrowser(body.querySelector("#comic-browser"), { inLibrary });
     bindShelves(body);
     refreshImages(body);
-    mountedComicHome = { body, signature };
+    mountCatalogArtwork(body);
+    // A parent Home/Anime tab can replace `rows` without calling this renderer.
+    // Observe only that known root's direct replacement, then release its art.
+    const watch = typeof MutationObserver === "function" ? new MutationObserver(() => {
+      if (!body.isConnected) { disposeCatalogArtwork(body); watch.disconnect(); }
+    }) : null;
+    watch?.observe(rows, { childList: true });
+    mountedComicHome = { body, signature, watch };
     extraMarkupByBody.delete(body);
   }
   // The shared hero can have been overwritten by All/Anime independently of
@@ -161,6 +179,7 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
       const existing = body.querySelector(`#${CSS.escape(key)}`);
       const previous = extraMarkupByBody.get(body) || new Map();
       if (!markup) {
+        if (existing) disposeCatalogArtwork(existing);
         existing?.remove();
         previous.delete(key);
         extraMarkupByBody.set(body, previous);
@@ -169,7 +188,7 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
       const extraSignature = markupSignature(markup);
       if (existing && previous.get(key) === extraSignature) return;
       if (!shelf) return;
-      if (existing) existing.replaceWith(shelf);
+      if (existing) { disposeCatalogArtwork(existing); existing.replaceWith(shelf); }
       else {
       const anchor = body.querySelector("#comics-reading") || body.querySelector("#comic-browser");
         if (anchor) anchor.after(shelf);
@@ -179,6 +198,7 @@ export async function renderComicsHome({ hero, rows }, ctx, { isCurrent = () => 
       extraMarkupByBody.set(body, previous);
       bindShelves(body);
       refreshImages(body);
+      mountCatalogArtwork(body);
     }).catch(() => {});
   }
   return undefined;

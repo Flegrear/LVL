@@ -1,6 +1,7 @@
 // Phone-only player popover lifecycle. This module does not own playback,
 // caption visibility, track selection, seeking, or the tap/double-tap gesture.
 // Those actions stay in app.js / phone-layout / player-seeking.
+import { translateUi } from "../ui/ui-i18n.js";
 
 export const CAPTION_APPEARANCE_FIELDS = Object.freeze([
   "subtitle-style-font",
@@ -34,9 +35,8 @@ export function portraitPlayerControlGeometry(width, { gutter = 10 } = {}) {
   });
 }
 
-// Keep a single fullscreen transport row. Secondary controls remain in the
-// original DOM for ordinary playback; fullscreen does not expose an overflow
-// drawer or download metrics.
+// The original controls move into a single labelled overflow surface when
+// fullscreen cannot fit them. Its trigger always counts toward the width.
 export const FULLSCREEN_ESSENTIAL_CONTROLS = Object.freeze([
   "player-seek-back", "compat-play", "player-seek-forward",
   "player-audio-switcher", "player-toggle-subs", "player-fullscreen",
@@ -96,7 +96,10 @@ export function installPhonePlayerControls({
   const timeline = controls.querySelector?.(".player-timeline-row");
   const time = doc.getElementById("compat-time");
   const timeParent = time?.parentElement;
+  const timeOriginalNextSibling = time?.nextSibling ?? null;
+  const timeOriginalIndex = timeParent ? [...(timeParent.childNodes || timeParent.children || [])].indexOf(time) : -1;
   const originalRowChildren = row ? [...row.children] : [];
+  let rowInFullscreen = false;
   const manager = doc.getElementById("player-subtitle-dialog");
   const appearance = doc.getElementById("subtitle-style-dialog");
   const appearanceControls = appearance?.querySelector?.(".subtitle-style-controls");
@@ -107,18 +110,73 @@ export function installPhonePlayerControls({
     "player-audio-menu", "player-speed-menu"].map((id) => doc.getElementById(id)).filter(Boolean);
   let disposed = false;
   const root = doc.documentElement;
+  const moreButton = doc.createElement("button");
+  moreButton.id = "phone-player-more";
+  moreButton.type = "button";
+  moreButton.className = "player-tool phone-player-more-trigger";
+  moreButton.textContent = "⋯";
+  moreButton.hidden = true;
+  moreButton.setAttribute("aria-label", "More playback controls");
+  moreButton.setAttribute("data-i18n-aria-label", "More playback controls");
+  moreButton.setAttribute("aria-controls", "phone-player-more-panel");
+  moreButton.setAttribute("aria-expanded", "false");
+  const morePanel = doc.createElement("div");
+  morePanel.id = "phone-player-more-panel";
+  morePanel.className = "player-popover phone-player-more-panel";
+  morePanel.hidden = true;
+  morePanel.setAttribute("role", "group");
+  morePanel.setAttribute("aria-label", "More playback controls");
+  morePanel.setAttribute("data-i18n-aria-label", "More playback controls");
+  const moreHeading = doc.createElement("div");
+  moreHeading.className = "phone-player-more-heading";
+  moreHeading.textContent = "More controls";
+  moreHeading.setAttribute("data-i18n", "More controls");
+  morePanel.append(moreHeading);
+  translateUi(moreButton);
+  translateUi(morePanel);
+  let lastOverflowFocus = null;
+
+  const closeMore = ({ focusReturn = false } = {}) => {
+    if (morePanel.hidden) return false;
+    morePanel.hidden = true;
+    moreButton.setAttribute("aria-expanded", "false");
+    if (focusReturn && moreButton.isConnected) moreButton.focus?.();
+    return true;
+  };
+  const openMore = () => {
+    for (const node of popovers) node.hidden = true;
+    closePopovers?.();
+    morePanel.hidden = false;
+    moreButton.setAttribute("aria-expanded", "true");
+    const first = [...morePanel.children].find((node) =>
+      node !== moreHeading && !node.hidden && !node.disabled && (node.matches?.("button, input, select") || node.querySelector?.("button, input, select")));
+    (first?.matches?.("button, input, select") ? first : first?.querySelector?.("button, input, select"))?.focus?.();
+  };
+  moreButton.addEventListener("click", (event) => {
+    event.stopPropagation?.();
+    if (morePanel.hidden) openMore();
+    else closeMore({ focusReturn: true });
+  });
+  moreButton.addEventListener("keydown", (event) => {
+    if (!["Enter", " ", "Spacebar"].includes(event.key) || event.repeat) return;
+    event.preventDefault?.();
+    moreButton.click();
+  });
+  morePanel.addEventListener("focusin", (event) => {
+    if (event.target !== morePanel) lastOverflowFocus = event.target;
+  });
 
   const expanded = (value) => {
     for (const button of triggers) button?.setAttribute?.("aria-expanded", String(value));
   };
   const hasPopover = () => popovers.some((node) => !node.hidden);
   const hasDialog = () => Boolean(manager?.open || appearance?.open);
-  const isOpen = () => hasPopover() || hasDialog();
+  const isOpen = () => hasPopover() || hasDialog() || !morePanel.hidden;
   const dismiss = ({ includeDialogs = true, reason = "outside" } = {}) => {
     if (disposed) return false;
     const menusOpen = hasPopover();
     const dialogsOpen = includeDialogs && hasDialog();
-    const hadOpen = menusOpen || dialogsOpen;
+    const hadOpen = menusOpen || dialogsOpen || !morePanel.hidden;
     if (!hadOpen) return false;
     // Delegate all ordinary menus to the existing shared close routine. Do
     // not alter the selected captions or saved appearance settings here.
@@ -127,6 +185,7 @@ export function installPhonePlayerControls({
       for (const node of popovers) node.hidden = true;
       expanded(false);
     }
+    closeMore();
     if (dialogsOpen) {
       for (const dialog of [appearance, manager]) {
         if (dialog?.open) dialog.close?.();
@@ -148,15 +207,37 @@ export function installPhonePlayerControls({
       }
       return;
     }
-    if (nodeInside(event.target, [...popovers, ...triggers, manager, appearance])) return;
+    if (nodeInside(event.target, [...popovers, ...triggers, manager, appearance, moreButton, morePanel])) return;
     // Do not intercept player taps or B's double tap/drag gestures. A
     // pointerdown on the video closes the menu immediately and still reaches
     // the existing video gesture controller.
     dismiss({ reason: event.target === video ? "video" : "outside" });
   };
+  const dismissTop = () => {
+    // Native dialogs have priority; leave the parent overflow invoker
+    // connected so the browser can restore focus to its original element.
+    if (hasDialog()) {
+      const dialog = appearance?.open ? appearance : manager;
+      dialog?.close?.();
+      if (lastOverflowFocus?.isConnected && !morePanel.hidden && !doc.activeElement?.closest?.("dialog[open]"))
+        lastOverflowFocus.focus?.();
+      return true;
+    }
+    if (hasPopover()) {
+      closePopovers?.();
+      for (const node of popovers) node.hidden = true;
+      expanded(false);
+      if (!morePanel.hidden && lastOverflowFocus?.isConnected) lastOverflowFocus.focus?.();
+      return true;
+    }
+    return closeMore({ focusReturn: true });
+  };
   const onKeyDown = (event) => {
     if (!touch() || !["Escape", "BrowserBack", "GoBack"].includes(event.key) || !isOpen()) return;
-    dismiss({ reason: "escape-or-back" });
+    // The speed list has its own Arrow/Escape semantics and focus return.
+    if (event.key === "Escape" && popovers.at(-1)?.hidden === false
+        && popovers.at(-1)?.contains?.(event.target)) return;
+    dismissTop();
     event.preventDefault?.();
     // Prevent an Escape handled here from also closing the floating player,
     // or a Back from navigating after dismissing only the panel.
@@ -168,7 +249,7 @@ export function installPhonePlayerControls({
     // Keep the original audio menu and its parent controls interactive until
     // an explicit outside tap, Back or navigation closes it.
     if (touch() && frame.classList.contains("controls-hidden") &&
-        doc.getElementById("player-audio-menu")?.hidden === false) {
+        (hasPopover() || !morePanel.hidden)) {
       frame.classList.remove("controls-hidden");
       return;
     }
@@ -180,13 +261,33 @@ export function installPhonePlayerControls({
       // dismissal still closes both dialogs and menus.
       dismiss({ reason: "controls-hidden", includeDialogs: false });
   };
-  // Keep original controls and their listeners/state. Only the timestamp moves
-  // beside the fullscreen timeline; leaving fullscreen restores its parent.
+  // Original nodes and listeners survive every fullscreen/resize cycle.
   const restoreRow = () => {
-    if (!row) return;
-    for (const node of originalRowChildren) node.classList?.remove("phone-fullscreen-extra");
-    if (time && timeParent) timeParent.append(time);
+    if (!row || !rowInFullscreen) return;
+    const focusBeforeRestore = doc.activeElement;
+    const focusWasInOverflow = focusBeforeRestore === moreButton
+      || morePanel.contains?.(focusBeforeRestore);
+    rowInFullscreen = false;
+    closeMore();
+    if (hasPopover()) closePopovers?.();
+    for (const node of originalRowChildren) {
+      node.classList?.remove("phone-fullscreen-extra");
+      row.append(node);
+    }
+    moreButton.remove?.();
+    morePanel.remove?.();
+    if (time && timeParent) {
+      const siblings = [...(timeParent.childNodes || timeParent.children || [])].filter((node) => node !== time);
+      const originalNextIsPresent = timeOriginalNextSibling &&
+        (timeOriginalNextSibling.parentNode === timeParent || timeOriginalNextSibling.parentElement === timeParent);
+      const before = originalNextIsPresent ? timeOriginalNextSibling : siblings[timeOriginalIndex] || null;
+      if (before && timeParent.insertBefore) timeParent.insertBefore(time, before);
+      else timeParent.append(time);
+    }
     delete row.dataset.fullscreenSingleRow;
+    if (focusWasInOverflow) doc.getElementById("player-fullscreen")?.focus?.();
+    else if (focusBeforeRestore?.isConnected && originalRowChildren.some((node) =>
+      node === focusBeforeRestore || node.contains?.(focusBeforeRestore))) focusBeforeRestore.focus?.();
   };
   const syncFullscreenRow = () => {
     if (!row || !touch()) return;
@@ -198,18 +299,46 @@ export function installPhonePlayerControls({
       || Number(frame.clientWidth) || Math.max(0, Number(win.innerWidth) - 28);
     const target = Number(win.innerWidth) <= 360 ? 40 : 44;
     const budget = fullscreenPlayerRowBudget(rectWidth, { target });
+    const focusedBeforeLayout = doc.activeElement;
     const byId = new Map(originalRowChildren.filter((node) => node.id).map((node) => [node.id, node]));
-    const essential = FULLSCREEN_ESSENTIAL_CONTROLS.map((id) => byId.get(id)).filter(Boolean);
-    const inline = new Set(essential);
+    // Reserve one full target for More before allocating visible actions.
+    // At 320px the row fits five controls + More; audio moves into More.
+    const inlineLimit = Math.max(0, budget.capacity - 1);
+    const inline = new Set();
+    const orderedEssentials = ["player-seek-back", "compat-play", "player-seek-forward",
+      "player-fullscreen", "player-toggle-subs", "player-audio-switcher"];
+    for (const id of orderedEssentials) {
+      const node = byId.get(id);
+      if (node && !node.hidden && inline.size < inlineLimit) inline.add(node);
+    }
     const speed = originalRowChildren.find((node) => node.classList?.contains("player-speed"));
     const priority = [...FULLSCREEN_PRIORITY_CONTROLS.map((id) => byId.get(id)), speed].filter(Boolean);
     for (const node of priority) {
-      if (inline.size >= Math.max(essential.length, budget.capacity)) break;
+      if (inline.size >= inlineLimit) break;
       if (!node.hidden) inline.add(node);
     }
     if (time && timeline) timeline.append(time);
-    for (const node of originalRowChildren)
+    controls.append(morePanel);
+    translateUi(morePanel);
+    translateUi(moreButton);
+    for (const node of originalRowChildren) {
       node.classList?.toggle("phone-fullscreen-extra", !inline.has(node));
+      if (inline.has(node)) row.append(node);
+      else morePanel.append(node);
+    }
+    row.append(moreButton);
+    moreButton.hidden = false;
+    rowInFullscreen = true;
+    if (morePanel.hidden === false && morePanel.children.length <= 1) closeMore({ focusReturn: true });
+    if (focusedBeforeLayout === moreButton && moreButton.isConnected) moreButton.focus?.();
+    if (focusedBeforeLayout?.isConnected && focusedBeforeLayout !== doc.activeElement) {
+      const movedInline = [...inline].some((node) => node.contains?.(focusedBeforeLayout)
+        || node === focusedBeforeLayout);
+      if (movedInline || (!morePanel.hidden && morePanel.contains?.(focusedBeforeLayout)))
+        focusedBeforeLayout.focus?.();
+      else if (morePanel.hidden && originalRowChildren.some((node) => node.contains?.(focusedBeforeLayout)
+        || node === focusedBeforeLayout)) moreButton.focus?.();
+    }
     row.dataset.fullscreenSingleRow = "true";
   };
   const syncFullscreen = () => {
@@ -270,7 +399,7 @@ export function installPhonePlayerControls({
     onNavigation: onNavigate,
     onAppearanceOpened: onDialogOpen,
     onFullscreenChange: syncFullscreen,
-    onAndroidBack() { return dismiss({ reason: "android-back" }); },
+    onAndroidBack() { return touch() && isOpen() ? dismissTop() : false; },
     dispose() {
       if (disposed) return;
       dismiss({ reason: "dispose" });

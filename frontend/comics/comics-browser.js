@@ -5,6 +5,7 @@
 import { bindHero, buttonMarkup, captureMountedMarkup, escapeHtml, heroMarkup, markupSignature, mountedMarkupMatches, refreshImages } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
+import { catalogArtworkMark, disposeCatalogArtwork, mountCatalogArtwork } from "./comics-artwork.js";
 import { formatLabel } from "./comics-render.js";
 import { sourceFilterMarkup } from "./comics-sources.js";
 import { readSourceChoice, reconcileFavoriteSource, selectFavoriteSource, sourceChoice, sourceChoices, watchFavoriteSource } from "./comics-source-filter.js";
@@ -43,8 +44,10 @@ export function comicBrowserMarkup(filters = state.filters, { year = new Date().
 
 export function comicBrowserCardMarkup(comic, { inLibrary = false } = {}) {
   const meta = [t(formatLabel(comic)), comic.year ? String(comic.year) : "", Number(comic.score) > 0 ? `${Number(comic.score).toFixed(1)}/10` : ""].filter(Boolean).join(" - ");
+  const catalog = catalogArtworkMark(comic.anilistId, comic.cover);
+  const imageAttrs = catalog ? ` data-comics-art-id="${catalog.id}" data-comics-art-original="${escapeHtml(catalog.url)}"` : "";
   return `<button class="anime-browser-card comic-browser-card" type="button" data-comics-open="${escapeHtml(String(comic.anilistId))}">`
-    + `<span class="anime-browser-art">${comic.cover ? `<img src="${escapeHtml(comic.cover)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(comic.title)}" />` : ""}`
+    + `<span class="anime-browser-art">${comic.cover ? `<img src="${escapeHtml(comic.cover)}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(comic.title)}"${imageAttrs} />` : ""}`
     + (inLibrary ? `<span class="comic-browser-badge">${escapeHtml(t("In Library"))}</span>` : "") + "</span>"
     + `<strong>${escapeHtml(comic.title)}</strong><span>${escapeHtml(meta)}</span></button>`;
 }
@@ -64,9 +67,11 @@ function paintResults(section, inLibrary) {
     || (state.loaded && !state.loading ? `<p class="anime-browser-empty">${escapeHtml(t("No comics matched these filters."))}</p>` : "");
   const signature = markupSignature(markup);
   if (!mountedMarkupMatches(mountedBrowserGrids.get(grid), grid, signature, { allowEmpty: true })) {
+    disposeCatalogArtwork(grid);
     grid.innerHTML = markup;
     mountedBrowserGrids.set(grid, captureMountedMarkup(grid, signature));
     refreshImages(grid);
+    mountCatalogArtwork(grid);
   }
   more.hidden = !state.hasNextPage || Boolean(state.error);
   more.disabled = state.loading;
@@ -144,6 +149,7 @@ export function mountComicBrowser(section, { inLibrary = () => false } = {}) {
   };
   const sourceLifecycle = watchFavoriteSource(section, onSourceChange, () => {
     localListeners.abort();
+    disposeCatalogArtwork(section);
     if (state.loading) {
       ++state.requestId;
       state.loading = false;
@@ -170,6 +176,7 @@ export function mountComicBrowser(section, { inLibrary = () => false } = {}) {
     if (event.target.closest("[data-comic-browser-more]") && !state.loading) void load(section, inLibrary, { append: true });
     if (event.target.closest("[data-comic-browser-reset]")) {
       sourceLifecycle.dispose();
+      disposeCatalogArtwork(section);
       selectedSource = "";
       selectFavoriteSource("", favorites);
       state.filters = { ...DEFAULT_FILTERS };

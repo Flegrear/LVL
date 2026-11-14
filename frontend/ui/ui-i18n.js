@@ -18,6 +18,7 @@ const SPANISH = {
   "All": "Todo", "Movies": "Películas", "TV Shows": "Series", "Series": "Series", "Anime": "Anime", "Movie": "Película", "TV": "TV",
   "Search titles": "Buscar títulos", "Shuffle picks": "Mezclar recomendaciones", "Open Library": "Abrir biblioteca", "Featured titles": "Títulos destacados",
   "Add a title": "Añadir un título", "Magnet link": "Enlace magnet", "More library actions": "Más acciones de biblioteca",
+  "More playback controls": "Más controles de reproducción", "More controls": "Más controles",
   "Play a video file": "Reproducir un archivo de vídeo", "Import a library": "Importar una biblioteca", "Export the library": "Exportar la biblioteca",
   "Filter your library": "Filtrar tu biblioteca", "Sort": "Ordenar", "Recent": "Recientes", "Recently added": "Añadidos recientemente", "Title": "Título",
   "Status": "Estado", "Any": "Cualquiera", "Watching": "Viendo", "Completed": "Completado", "Plan to watch": "Pendiente", "Paused": "En pausa", "Dropped": "Abandonado",

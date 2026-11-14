@@ -3,6 +3,7 @@
 import { createComicsStore, COMIC_STATUSES } from "./comics-store.js";
 import { DETAILS_QUERY, SEARCH_QUERY, browseQuery, browseVariables, homeQuery, normalizeComic, normalizeDetails, normalizeHome, searchQuery } from "./anilist-manga.js";
 import { createMangaDexClient } from "./mangadex.js";
+import { createCatalogArtworkResolver } from "./artwork.js";
 import { compareUnitNumbers } from "../../shared/reading/units.js";
 import { mainAnimeRelation } from "../../shared/reading/franchise.js";
 import { createLocalLibrary } from "../reader/local-library.js";
@@ -30,6 +31,18 @@ import { createChapterMarks } from "./chapter-marks.js";
 import nodePath from "node:path";
 
 const HOUR = 60 * 60 * 1000;
+const ARTWORK_DEADLINE_MS = 17_000; // includes catalog lookup, identity verification and original image
+async function withinArtworkDeadline(run, budgetMs = ARTWORK_DEADLINE_MS,
+  { now = Date.now, schedule = setTimeout, unschedule = clearTimeout } = {}) {
+  const deadline = now() + budgetMs;
+  let timer;
+  try {
+    return await Promise.race([run(deadline), new Promise((_, reject) => {
+      timer = schedule(() => reject(Object.assign(new Error("Catalog artwork deadline elapsed"), { status: 504 })), budgetMs);
+      timer.unref?.();
+    })]);
+  } finally { unschedule(timer); }
+}
 export const COMICS_CACHE_MS = Object.freeze({ home: 12 * HOUR, search: HOUR, details: 7 * 24 * HOUR, units: 24 * HOUR });
 // 9: Wikipedia lists split into parts ("Lists of One Piece chapters") are read part by part.
 // 10: indexes built while Wikipedia refused requests are no longer kept for a day.
@@ -45,6 +58,7 @@ export const COMICS_ASSETS = Object.freeze([
   asset("frontend/comics/comics-api.js"),
   asset("frontend/comics/comics-render.js"),
   asset("frontend/comics/comics-browser.js"),
+  asset("frontend/comics/comics-artwork.js"),
   asset("frontend/comics/comics-provider.js"),
   asset("frontend/comics/comics-manga.js"),
   asset("frontend/comics/comics-video.js"),
@@ -83,6 +97,9 @@ function cardSnapshot(comic) {
 
 export function createComicsServerFeature({ mangadexFactory = () => createMangaDexClient(), now = Date.now,
   mangadexReaderFactory = () => createMangaDexReader(),
+  artworkFactory = (options) => createCatalogArtworkResolver(options),
+  artworkDeadlineMs = ARTWORK_DEADLINE_MS,
+  artworkTiming = {},
   downloadsFactory = (options) => createComicDownloads(options), wikipediaFetch = (titles) => fetchWikipediaList(titles),
   repositoryFetch = (repoUrl) => fetchRepository(repoUrl), remoteFactory = () => createRemoteFetch(),
   browserFactory = (options) => (process.env.LVL_EXT_HOST_SOCKET ? createAppBrowser({ dataDir: options.dir }) : createSourceBrowser(options)),
@@ -97,6 +114,16 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       const mangadex = mangadexFactory();
       const anilist = ctx.anilist;
       const inflight = new Map();
+      const catalogSnapshots = new Map();
+      function rememberCatalog(items) {
+        for (const comic of items || []) {
+          const id = Number(comic?.anilistId);
+          if (!Number.isSafeInteger(id) || id < 1 || !comic?.title || comic?.hidden) continue;
+          catalogSnapshots.delete(id);
+          catalogSnapshots.set(id, { title: comic.title, aliases: Array.isArray(comic.aliases) ? comic.aliases : [], at: Date.now() });
+          while (catalogSnapshots.size > 256) catalogSnapshots.delete(catalogSnapshots.keys().next().value);
+        }
+      }
 
       // background: a stale copy is answered at once while the fresh one loads (chosen
       // sources' chapter lists: an hour-old list beats every chapter panel waiting on the site).
@@ -257,6 +284,8 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       const sources = createSourcesStore({ db: ctx.db, now });
       const mangadexReader = mangadexReaderFactory();
       const images = createImageCache({ dir: nodePath.join(ctx.dataRoot || ".", "comics-cache") });
+      const catalogArtwork = typeof mangadex?.findArtworkByAniList === "function"
+        ? artworkFactory({ mangadex, imageCache: images, now }) : null;
       // Sites behind a browser check (Cloudflare) go through a headless browser, like Mihon's WebView;
       // in LVL's Android app the app itself is that browser (app-browser.js).
       const sourceBrowser = browserFactory({ dir: nodePath.join(ctx.dataRoot || ".", "runtime", "source-browser") });
@@ -457,6 +486,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
             const adult = showAdult();
             const result = await cached(`home2${adultTag()}`, COMICS_CACHE_MS.home, async () =>
               ({ sections: normalizeHome(await anilist.query(homeQuery(undefined, { adult }), { perPage: 20, pool: 50 }), { adult }) }));
+            for (const section of result.value.sections || []) rememberCatalog(section.items);
             ctx.json(res, 200, { ...result.value, fetchedAt: result.fetchedAt, stale: result.stale });
           } catch (error) { fail(res, error); }
           return true;
@@ -472,6 +502,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
               const data = await anilist.query(browseQuery(parsed.variables, { adult }), parsed.variables);
               return { items: (data?.Page?.media || []).map((media) => normalizeComic(media, { adult })).filter(Boolean), hasNextPage: Boolean(data?.Page?.pageInfo?.hasNextPage) };
             });
+            rememberCatalog(result.value.items);
             ctx.json(res, 200, { ...result.value, page: parsed.variables.page, stale: result.stale });
           } catch (error) { fail(res, error); }
           return true;
@@ -489,6 +520,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
               const data = await anilist.query(searchQuery({ adult }), variables);
               return { items: (data?.Page?.media || []).map((media) => normalizeComic(media, { adult })).filter(Boolean), hasNextPage: Boolean(data?.Page?.pageInfo?.hasNextPage) };
             });
+            rememberCatalog(result.value.items);
             ctx.json(res, 200, { ...result.value, page, stale: result.stale });
           } catch (error) { fail(res, error); }
           return true;
@@ -504,9 +536,40 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
           }
           const wasOn = comicsOn();
           const saved = store.saveSettings(input || {});
+          if (Object.hasOwn(input || {}, "showAdult")) catalogSnapshots.clear();
           if (wasOn && !saved.enabled) pause();
           else if (!wasOn && saved.enabled) startLocal();
           return ctx.json(res, 200, saved), true;
+        }
+        // The URL accepts only a canonical AniList ID; titles come from our
+        // AniList details cache and the MangaDex numeric crosswalk is mandatory.
+        // The lookup is lazy: Home and browse never wait for cover probing.
+        const artwork = /^\/api\/comics\/work\/anilist-([1-9]\d{0,9})\/artwork$/.exec(path);
+        if (artwork) {
+          if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
+          if (!catalogArtwork) return ctx.json(res, 404, { error: "Catalog artwork is unavailable" }), true;
+          const id = Number(artwork[1]);
+          try {
+            const image = await withinArtworkDeadline(async deadline => {
+              const snapshot = catalogSnapshots.get(id);
+              const comic = snapshot && Date.now() - snapshot.at < HOUR ? { ...snapshot, anilistId: id } : (await details(id)).value;
+              if (!comic || comic.hidden || comic.anilistId !== id)
+                throw Object.assign(new Error("This title isn't available"), { status: 404 });
+              const candidate = await catalogArtwork.find(id, [comic.title, ...(comic.aliases || [])], { deadline });
+              if (!candidate) throw Object.assign(new Error("No verified cover for this title"), { status: 404 });
+              return catalogArtwork.image(candidate, { deadline });
+            }, artworkDeadlineMs, artworkTiming);
+            res.writeHead(200, {
+              "Content-Type": image.type, "Content-Length": image.buffer.length,
+              "Cache-Control": "private, max-age=21600",
+              "X-Content-Type-Options": "nosniff",
+              "X-LVL-Cover-Width": String(image.width),
+              "X-LVL-Cover-Height": String(image.height),
+              "X-LVL-Cover-Source": "MangaDex",
+            });
+            res.end(image.buffer);
+          } catch (error) { fail(res, error); }
+          return true;
         }
         const cover = /^\/api\/comics\/work\/([^/]+)\/cover\/(\d{1,5}(?:\.\d{1,2})?)$/.exec(path);
         if (cover) {

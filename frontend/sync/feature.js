@@ -2,6 +2,7 @@
 // three places a synced copy can live; picking one shows its steps. The server does the work
 // (backend/sync); this card shows the current step and refreshes while it is on screen.
 import { buttonMarkup, confirmDialog, escapeHtml as esc, icon, toast } from "../ui/ui.js";
+import { captureFocus } from "../ui/focus-lifecycle.js";
 
 const CHOICE_KEY = "lvl-sync-option-v1";
 const TAB_PENDING_LIBRARY_KEY = "blackline-db-library-pending-tab-v1";
@@ -24,8 +25,8 @@ const ago = (ms) => {
   if (seconds < 3600) return `${Math.round(seconds / 60)} min ago`;
   return new Date(ms).toLocaleString(document.documentElement.lang || undefined, { dateStyle: "medium", timeStyle: "short" });
 };
-const action = (label, name, variant = "secondary", extra = {}) => buttonMarkup({ label, variant, size: "sm", attrs: { "data-sync": name, ...extra } });
-const external = (href, label, variant = "secondary") => `<a class="ui-btn ui-btn--${variant} ui-btn--sm sync-link" href="${esc(href)}" target="_blank" rel="noopener noreferrer"><span>${esc(label)}</span>${icon("arrow-right")}</a>`;
+const action = (label, name, variant = "secondary", extra = {}) => buttonMarkup({ label, variant, size: "sm", attrs: { "data-sync": name, "data-focus-key": `sync-action:${name}`, ...extra } });
+const external = (href, label, variant = "secondary") => `<a class="ui-btn ui-btn--${variant} ui-btn--sm sync-link" data-focus-key="sync-link:${esc(href)}" href="${esc(href)}" target="_blank" rel="noopener noreferrer"><span>${esc(label)}</span>${icon("arrow-right")}</a>`;
 const line = (text, { error = false, busy = false } = {}) => (text
   ? `<p class="ui-status${error ? " ui-status--error" : ""}"${error ? ' role="alert"' : ""}>${busy ? '<span class="sync-spinner" aria-hidden="true"></span>' : ""}<span>${esc(text)}</span></p>` : "");
 const errorLine = (status) => line(status.lastError, { error: true });
@@ -66,8 +67,8 @@ function tokenSetup(status) {
     { title: "Create a token for it", text: "Under Repository access choose Only select repositories › lvl-sync. Contents: Read and write.", action: external(NEW_TOKEN_URL, "Create") },
     { title: "Paste the token", text: "It stays on this device and is only sent to GitHub." },
   ]) + `<form class="sync-form" data-sync-form="token" autocomplete="off">`
-    + field("Token", '<input name="token" type="password" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required />')
-    + buttonMarkup({ label: "Connect", variant: "primary", type: "submit" }) + "</form>";
+    + field("Token", '<input name="token" type="password" data-focus-key="sync-token" autocomplete="off" spellcheck="false" placeholder="github_pat_…" required />')
+    + buttonMarkup({ label: "Connect", variant: "primary", type: "submit", attrs: { "data-focus-key": "sync-submit-token" } }) + "</form>";
 }
 
 // Signed in: who and where, with Disconnect.
@@ -84,7 +85,7 @@ function githubPanel(status, ui) {
       return tokenSetup(status) + (status.appReady ? action("Sign in with GitHub instead", "hide-token", "ghost") : "") + errorLine(status);
     }
     return `<div class="sync-signin">${action("Sign in with GitHub", "start", "primary")}`
-      + `<label class="ui-switch settings-switch-row" for="sync-renew"><input id="sync-renew" type="checkbox" checked /><span class="ui-switch__track" aria-hidden="true"></span>`
+      + `<label class="ui-switch settings-switch-row" for="sync-renew"><input id="sync-renew" data-focus-key="sync-renew" type="checkbox"${ui.renew ? " checked" : ""} /><span class="ui-switch__track" aria-hidden="true"></span>`
       + `<span class="settings-learning-copy"><strong>Renew the sign-in by itself</strong><small>Each sign-in lasts 8 hours and renews while LVL runs. Off: it lasts until you disconnect.</small></span></label></div>`
       + action("Use a token instead", "show-token", "ghost") + errorLine(status);
   }
@@ -105,19 +106,19 @@ function githubPanel(status, ui) {
   if (status.step === "options") {
     return account(status) + `<p class="settings-hint">LVL keeps your tracking list in ${repoLink(status)} as plain files you can read on GitHub.</p>`
       + `<form class="sync-start" data-sync-form="begin" autocomplete="off">`
-      + `<label class="ui-switch settings-switch-row" for="sync-encrypt"><input id="sync-encrypt" name="encrypt" type="checkbox"${ui.encrypt ? " checked" : ""} />`
+      + `<label class="ui-switch settings-switch-row" for="sync-encrypt"><input id="sync-encrypt" name="encrypt" data-focus-key="sync-encrypt" type="checkbox"${ui.encrypt ? " checked" : ""} />`
       + `<span class="ui-switch__track" aria-hidden="true"></span><span class="settings-learning-copy"><strong>Encrypt with a passphrase</strong>`
       + `<small>Optional. GitHub then only stores unreadable files.</small></span></label>`
       + `<div class="sync-pass"${ui.encrypt ? "" : " hidden"}><div class="sync-pass__fields">`
-      + field("Passphrase", '<input name="pass" type="password" autocomplete="new-password" placeholder="At least 8 characters" />')
-      + field("The same again", '<input name="again" type="password" autocomplete="new-password" />') + "</div>"
+      + field("Passphrase", '<input name="pass" type="password" data-focus-key="sync-begin-pass" autocomplete="new-password" placeholder="At least 8 characters" />')
+      + field("The same again", '<input name="again" type="password" data-focus-key="sync-begin-again" autocomplete="new-password" />') + "</div>"
       + `<p class="settings-hint">You type it once on each device. If it's lost, the synced copy can't be read, but every device keeps its own data.</p></div>`
-      + `<div class="settings-actions">${buttonMarkup({ label: "Start syncing", variant: "primary", type: "submit" })}</div></form>` + errorLine(status);
+      + `<div class="settings-actions">${buttonMarkup({ label: "Start syncing", variant: "primary", type: "submit", attrs: { "data-focus-key": "sync-submit-begin" } })}</div></form>` + errorLine(status);
   }
   if (status.step === "passphrase") {
     return account(status) + `<p class="settings-hint">${repoLink(status)} is encrypted. Enter the passphrase you chose on your other device.</p>`
-      + `<form class="sync-form" data-sync-form="pass" autocomplete="off">${field("Passphrase", '<input name="pass" type="password" autocomplete="off" required />')}`
-      + buttonMarkup({ label: "Join", variant: "primary", type: "submit" }) + "</form>" + errorLine(status);
+      + `<form class="sync-form" data-sync-form="pass" autocomplete="off">${field("Passphrase", '<input name="pass" type="password" data-focus-key="sync-join-pass" autocomplete="off" required />')}`
+      + buttonMarkup({ label: "Join", variant: "primary", type: "submit", attrs: { "data-focus-key": "sync-submit-pass" } }) + "</form>" + errorLine(status);
   }
   const problems = [status.skippedFiles ? `${status.skippedFiles} unreadable file${status.skippedFiles === 1 ? "" : "s"} skipped` : "",
     status.refused ? `${status.refused} invalid change${status.refused === 1 ? "" : "s"} ignored` : ""].filter(Boolean).join(" · ");
@@ -133,7 +134,7 @@ function view(status, ui) {
   const connected = status.step !== "start";
   const picked = connected ? "github" : ui.choice;
   const chips = `<div class="ui-chip-row settings-sync-options" role="group" aria-label="Where LVL keeps the synced copy">${OPTIONS.map((option) =>
-    `<button type="button" class="ui-chip" data-sync-option="${option.id}" aria-pressed="${picked === option.id}"${connected && option.id !== "github" ? " disabled" : ""}>`
+    `<button type="button" class="ui-chip" data-sync-option="${option.id}" data-focus-key="sync-option:${option.id}" aria-pressed="${picked === option.id}"${connected && option.id !== "github" ? " disabled" : ""}>`
     + `${esc(option.label)}${option.ready ? "" : '<span class="ui-chip__count">Soon</span>'}</button>`).join("")}</div>`;
   if (!picked) return `<p class="settings-hint">Your Library, where you are in each video and chapter, your ratings and your comics, the same on every device. Choose where LVL keeps the synced copy.</p>${chips}`;
   const option = OPTIONS.find((item) => item.id === picked);
@@ -158,20 +159,36 @@ function mount(card, ctx) {
   const body = card.querySelector(".settings-sync-body");
   const badge = card.querySelector(".settings-sync-badge");
   let status = { step: "start" };
-  const ui = { choice: localStorage.getItem(CHOICE_KEY) || "", showToken: false, encrypt: false };
+  const ui = { choice: localStorage.getItem(CHOICE_KEY) || "", showToken: false, encrypt: false, renew: true };
   let shown = "";
   let timer = 0;
   let finding = false;
   let intent = 0;
+  let refreshRevision = 0;
+  let inputRevision = 0;
   let actionError = "";
-  const render = (force = false) => {
-    // Never redraw under the user's typing (a focused switch or button doesn't count).
-    const typing = body.contains(document.activeElement) && document.activeElement.matches('input[type="password"], input[type="text"], input:not([type])');
-    if (!force && typing) return;
+  const onVisibleTab = () => card.isConnected && !card.closest('[role="tabpanel"][hidden]');
+  const render = ({ discardSubmittedDraft = false } = {}) => {
+    if (!onVisibleTab()) return;
+    // A later status poll or action failure must not discard unsent credentials,
+    // even if focus moved to another control while the response was pending.
+    const editables = [...body.querySelectorAll('input[type="password"], input[type="text"], input:not([type]), textarea')];
+    if (!discardSubmittedDraft && (editables.includes(document.activeElement) || editables.some((input) => input.value))) return;
     const markup = view(status, ui);
     if (markup === shown) return;
+    const previous = card.ownerDocument.activeElement;
+    const owned = body.contains(previous);
+    const key = owned ? previous.getAttribute("data-focus-key") : null;
+    const ticket = captureFocus(body);
     shown = markup;
     body.innerHTML = markup;
+    const candidates = key === null ? [] : [...body.querySelectorAll("[data-focus-key]")]
+      .filter((node) => node.getAttribute("data-focus-key") === key);
+    const sameAction = candidates.length === 1 && !candidates[0].disabled && !candidates[0].hidden
+      && candidates[0].getClientRects().length > 0;
+    const heading = card.querySelector(".settings-card__head h2");
+    if (owned && !sameAction && heading) heading.tabIndex = -1;
+    ticket.restore({ fallback: owned && !sameAction ? heading : null });
     if (badge) {
       badge.textContent = status.step === "ready" ? "On" : status.step === "start" ? "" : "Setting up";
       badge.hidden = !badge.textContent;
@@ -179,12 +196,14 @@ function mount(card, ctx) {
   };
   const refresh = async () => {
     const requestIntent = intent;
+    const requestRevision = ++refreshRevision;
+    const isCurrent = () => onVisibleTab() && requestIntent === intent && requestRevision === refreshRevision;
     try {
       const next = await call("status");
-      if (requestIntent !== intent) return;
+      if (!isCurrent()) return;
       status = { ...next, lastError: actionError || next.lastError };
     } catch (error) {
-      if (requestIntent !== intent) return;
+      if (!isCurrent()) return;
       status = { ...status, lastError: actionError || error.message };
     }
     // LVL looks for lvl-sync by itself after sign-in, and again while it isn't there.
@@ -192,10 +211,10 @@ function mount(card, ctx) {
       finding = true;
       try {
         const found = await call("github/find", {});
-        if (requestIntent !== intent) return;
+        if (!isCurrent()) return;
         status = { ...found, lastError: actionError || found.lastError };
       } catch (error) {
-        if (requestIntent !== intent) return;
+        if (!isCurrent()) return;
         status = { ...status, lastError: actionError || error.message };
       } finally { finding = false; }
     }
@@ -208,24 +227,43 @@ function mount(card, ctx) {
     if (document.hidden || !card.offsetParent) { timer = window.setTimeout(loop, 5000); return; }
     void refresh().finally(() => { timer = window.setTimeout(loop, status.step === "device" || status.syncing ? 2000 : 5000); });
   };
-  const run = async (control, task) => {
+  const run = async (control, task, { form = null } = {}) => {
+    if (control?.dataset.syncPending || !card.isConnected) return;
     const actionIntent = ++intent;
-    if (control) control.disabled = true;
+    const submittedRevision = inputRevision;
+    if (control) {
+      control.dataset.syncPending = "1";
+      control.setAttribute("aria-disabled", "true");
+      control.setAttribute("aria-busy", "true");
+      // Native disabled would blur a focused action before the final redraw.
+      if (control.ownerDocument.activeElement !== control) control.disabled = true;
+    }
+    let completed = false;
     try {
       const next = await task();
-      if (actionIntent !== intent) return;
+      if (actionIntent !== intent || !card.isConnected) return;
       actionError = "";
       if (next) status = next;
+      completed = true;
     } catch (error) {
-      if (actionIntent !== intent) return;
+      if (actionIntent !== intent || !card.isConnected) return;
       actionError = error.message;
       status = { ...status, lastError: actionError };
+      toast(error.message);
     } finally {
-      if (control?.isConnected) control.disabled = false;
-      if (actionIntent === intent) render(true);
+      if (control?.isConnected) {
+        control.disabled = false;
+        delete control.dataset.syncPending;
+        control.removeAttribute("aria-disabled");
+        control.removeAttribute("aria-busy");
+      }
+      if (actionIntent === intent && card.isConnected)
+        render({ discardSubmittedDraft: completed && Boolean(form) && submittedRevision === inputRevision });
     }
   };
+  body.addEventListener("input", () => { inputRevision++; });
   body.addEventListener("change", (event) => {
+    if (event.target.id === "sync-renew") { ui.renew = event.target.checked; return; }
     if (event.target.name !== "encrypt") return;
     ui.encrypt = event.target.checked;
     const fields = body.querySelector(".sync-pass");
@@ -236,6 +274,7 @@ function mount(card, ctx) {
     if (!form) return;
     event.preventDefault();
     const submit = form.querySelector('[type="submit"]');
+    if (submit?.dataset.syncPending) return;
     const kind = form.dataset.syncForm;
     void run(submit, async () => {
       if (kind === "token") return call("github/token", { token: form.token.value.trim() });
@@ -245,20 +284,28 @@ function mount(card, ctx) {
         if (encrypt && form.pass.value !== form.again.value) throw new Error("The two passphrases are different");
         return call("start", { encrypt, passphrase: encrypt ? form.pass.value : "" });
       }
-    });
+    }, { form });
   });
   body.addEventListener("click", (event) => {
     const option = event.target.closest("[data-sync-option]");
     if (option && !option.disabled) {
+      // The user has chosen a different wizard surface; an older async action
+      // may finish on the server, but it no longer owns this visible form.
+      ++intent;
       ui.choice = option.dataset.syncOption;
       localStorage.setItem(CHOICE_KEY, ui.choice);
-      render(true);
+      render({ discardSubmittedDraft: true });
       return;
     }
     const target = event.target.closest("[data-sync]");
-    if (!target || target.disabled) return;
+    if (!target || target.disabled || target.dataset.syncPending) return;
     const name = target.dataset.sync;
-    if (name === "show-token" || name === "hide-token") { ui.showToken = name === "show-token"; render(true); return; }
+    if (name === "show-token" || name === "hide-token") {
+      ++intent;
+      ui.showToken = name === "show-token";
+      render({ discardSubmittedDraft: true });
+      return;
+    }
     void run(target, async () => {
       if (name === "start") return call("github/start", { renew: body.querySelector("#sync-renew")?.checked !== false });
       else if (name === "cancel") return call("github/cancel", {});

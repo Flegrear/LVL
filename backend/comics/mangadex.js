@@ -5,28 +5,59 @@
 // requests per second; this client sends at most four and honors Retry-After.
 
 import { normalizeUnitNumber, sortVolumes, countChapters } from "../../shared/reading/units.js";
+import { readBoundedResponse } from "./response-body.js";
 
 export const MANGADEX_API = "https://api.mangadex.org";
 const SAFE_RATINGS = ["safe", "suggestive"];
+const MANGA_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const COVER_FILENAME = /^[a-z0-9_-]{1,80}\.(?:jpe?g|png|webp)$/i;
+
+// The primary edition is explicitly linked by MangaDex. A matching title is
+// only a search hint; it never authorizes an artwork substitution.
+export function primaryCoverForAniList(manga, anilistId, included = []) {
+  if (String(manga?.attributes?.links?.al || "") !== String(anilistId)
+    || !MANGA_UUID.test(String(manga?.id || ""))) return null;
+  const relationship = manga?.relationships?.find((item) => item?.type === "cover_art");
+  if (!relationship || !MANGA_UUID.test(String(relationship.id || ""))) return null;
+  const expanded = included.find((item) => item?.type === "cover_art" && item.id === relationship.id);
+  const filename = String(expanded?.attributes?.fileName || relationship.attributes?.fileName || "");
+  if (!COVER_FILENAME.test(filename)) return null;
+  return { mangaId: manga.id, coverId: relationship.id, filename,
+    url: `https://uploads.mangadex.org/covers/${manga.id}/${filename}` };
+}
 
 export function createMangaDexClient({ endpoint = MANGADEX_API, fetchImpl = globalThis.fetch, minGapMs = 250, timeoutMs = 15_000,
   userAgent = "LVL (local app)", now = Date.now, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   let queue = Promise.resolve();
   let lastAt = 0;
 
-  async function send(pathAndQuery, attempt = 0) {
+  async function send(pathAndQuery, attempt = 0, options = {}) {
+    const remaining = options.deadline === undefined ? timeoutMs : options.deadline - now();
+    if (remaining <= 0) throw Object.assign(new Error("MangaDex request time budget elapsed"), { status: 504 });
     const wait = lastAt + minGapMs - now();
-    if (wait > 0) await sleep(wait);
+    if (wait > 0) {
+      if (options.deadline !== undefined && wait >= remaining) throw Object.assign(new Error("MangaDex request time budget elapsed"), { status: 504 });
+      await sleep(wait);
+    }
     lastAt = now();
     const response = await fetchImpl(`${endpoint}${pathAndQuery}`, {
       headers: { Accept: "application/json", "User-Agent": userAgent },
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(Math.max(1, Math.min(options.timeoutMs || timeoutMs, options.deadline === undefined ? timeoutMs : options.deadline - now()))),
     });
     if (response.status === 429 && attempt < 1) {
-      await sleep(Math.min(10, Math.max(1, Number(response.headers?.get?.("retry-after")) || 2)) * 1000);
-      return send(pathAndQuery, attempt + 1);
+      const retry = Math.min(10, Math.max(1, Number(response.headers?.get?.("retry-after")) || 2)) * 1000;
+      if (options.deadline !== undefined && retry >= options.deadline - now())
+        throw Object.assign(new Error("MangaDex rate limit exceeds artwork time budget"), { status: 429 });
+      await sleep(retry);
+      return send(pathAndQuery, attempt + 1, options);
     }
-    const payload = await response.json().catch(() => null);
+    // Artwork metadata requests have a finite retained-byte budget; ordinary
+    // existing aggregate/volume callers keep their prior response contract.
+    const payload = options.maxBytes
+      ? await readBoundedResponse(response, options.maxBytes, "MangaDex artwork metadata exceeds 512 KiB")
+        .then((bytes) => JSON.parse(bytes.toString("utf8"))).catch(() => null)
+      : await response.json().catch(() => null);
+    if (options.maxBytes && !payload) throw new Error("Invalid or oversized MangaDex artwork metadata");
     if (!response.ok || payload?.result === "error") {
       const message = payload?.errors?.[0]?.detail || `MangaDex answered HTTP ${response.status}`;
       throw Object.assign(new Error(message), { status: response.status });
@@ -34,13 +65,35 @@ export function createMangaDexClient({ endpoint = MANGADEX_API, fetchImpl = glob
     return payload || {};
   }
 
-  const request = (pathAndQuery) => {
-    const run = queue.then(() => send(pathAndQuery));
+  const request = (pathAndQuery, options) => {
+    const run = queue.then(() => send(pathAndQuery, 0, options));
     queue = run.catch(() => {});
     return run;
   };
 
   return {
+    // Catalog-only lookup. At most three different titles, thirty results per
+    // query (Bastard's verified exact match was beyond the old ten-result cap).
+    // Existing findByAniList keeps its original string-ID return contract.
+    async findArtworkByAniList(anilistId, titles = [], { deadline: outerDeadline } = {}) {
+      if (!/^[1-9]\d{0,9}$/.test(String(anilistId))) return null;
+      const tried = new Set();
+      const deadline = Math.min(now() + 10_000, outerDeadline ?? Infinity);
+      for (const title of titles) {
+        const query = String(title || "").trim().slice(0, 120);
+        if (!query || tried.has(query.toLowerCase()) || tried.size >= 3) continue;
+        tried.add(query.toLowerCase());
+        const params = new URLSearchParams({ title: query, limit: "30" });
+        params.append("includes[]", "cover_art");
+        for (const rating of SAFE_RATINGS) params.append("contentRating[]", rating);
+        const payload = await request(`/manga?${params}`, { deadline, timeoutMs: 5000, maxBytes: 512 * 1024 });
+        for (const manga of payload.data || []) {
+          const cover = primaryCoverForAniList(manga, anilistId, payload.included || []);
+          if (cover) return cover;
+        }
+      }
+      return null;
+    },
     /** MangaDex id of the series whose stored AniList link equals anilistId, or null. */
     async findByAniList(anilistId, titles = []) {
       const target = String(anilistId);

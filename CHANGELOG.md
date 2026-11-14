@@ -1,5 +1,15 @@
 # LVL Changelog
 
+## 0.3.3 — 2026-11-14
+
+*Local candidate; not released. Frequent Android reconnect interruptions remain under diagnosis, and physical-device acceptance is pending.*
+
+- Recover Library sync conflicts and refresh remote changes while retaining newer local progress.
+- Keep unchanged Comics discovery cards mounted across loading and status updates.
+- Offer sharper catalog covers when an exact MangaDex title and artwork match is verified, with visible credit and AniList fallback.
+- Preserve keyboard focus, current input and unfinished Settings edits when panels refresh.
+- Improve phone fullscreen access to secondary player actions through More.
+
 ## 0.3.2 — 2026-11-12
 
 - Fix watched and partially watched episodes syncing across devices without losing newer changes.

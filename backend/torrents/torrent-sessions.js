@@ -14,6 +14,7 @@ import { json, readJsonBody } from "../app/http-helpers.js";
 import { closeProgressiveReadyListeners } from "../streaming/torrent-stream.js";
 import { getCachedMediaProbe } from "../media/torrent-probe.js";
 import { invalidateSpeechWindowSession } from "../media/speech-activity.js";
+import { attachTorrentRequestScheduler } from "./request-scheduler.js";
 
 const MAX_MAGNET_LENGTH = 16 * 1024;
 const MAX_TORRENT_SESSIONS = 4;
@@ -346,6 +347,7 @@ export async function removeTorrentSession(id, { deleteFiles = false } = {}) {
   clearTimeout(session.slowTimer);
   clearInterval(session.resumeTimer);
   saveDownloadResume(session);
+  session.requestScheduler?.dispose();
   try {
     if (session.torrent && !session.torrent.destroyed) {
       await session.torrent.destroy({ destroyStore: !KEEP_DOWNLOADS });
@@ -685,12 +687,20 @@ export async function createTorrentSession(req, res) {
     return;
   }
 
+  // Browser/Windows torrents retain the original WebTorrent scheduling. The
+  // typeof fallback keeps older isolated source-extraction fixtures runnable.
+  const requestScheduler = KEEP_DOWNLOADS && typeof attachTorrentRequestScheduler === "function"
+    ? attachTorrentRequestScheduler(torrent, { enabled: true }) : null;
+  if (requestScheduler && !requestScheduler.supported)
+    console.warn(`Android torrent request scheduling unavailable: ${requestScheduler.reason}`);
+
   const displayName = (() => {
     try { return new URL(magnet).searchParams.get("dn") || ""; } catch { return ""; }
   })();
   const session = {
     id,
     torrent,
+    requestScheduler,
     infoHash,
     displayName,
     state: "resolving",
@@ -717,6 +727,7 @@ export async function createTorrentSession(req, res) {
     if (!safety.ok) {
       session.state = "error";
       session.error = `Torrent rejected: ${safety.reason}`;
+      session.requestScheduler?.dispose();
       return;
     }
     session.state = "ready";

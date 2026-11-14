@@ -1178,6 +1178,18 @@ window.addEventListener("resize", () => {
 frame.addEventListener("pointerenter", revealPlayerControls);
 frame.addEventListener("pointermove", revealPlayerControls);
 frame.addEventListener("pointerleave", hidePlayerControls);
+// Focus may enter an opacity-hidden control via Tab. Reveal in the same
+// focusin event, before the browser can paint the new focused element.
+const playerChrome = $("#compat-controls");
+frame.addEventListener("focusin", (event) => {
+  if (playerChrome?.contains(event.target)) revealPlayerControls();
+});
+frame.addEventListener("focusout", (event) => {
+  if (!playerChrome?.contains(event.target) || playerChrome.contains(event.relatedTarget)) return;
+  queueMicrotask(() => {
+    if (!playerChrome.contains(document.activeElement)) schedulePlayerControlsHide();
+  });
+});
 frame.addEventListener("click", (event) => {
   if (event.target === video) {
     togglePlayback();

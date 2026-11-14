@@ -735,6 +735,10 @@ export function clearPlayerControlsHideTimer() {
 export function hidePlayerControls() {
   clearPlayerControlsHideTimer();
   if (!frame.classList.contains("has-video")) return;
+  // Keyboard interaction owns the chrome until focus actually leaves it.
+  // An opacity-only hide would otherwise leave invisible tabbable buttons.
+  const chrome = $("#compat-controls");
+  if (chrome?.contains(document.activeElement)) return;
   frame.classList.add("controls-hidden");
   notifyPhonePlayerControlsHidden();
 }
@@ -742,6 +746,7 @@ export function hidePlayerControls() {
 export function schedulePlayerControlsHide() {
   clearPlayerControlsHideTimer();
   if (!frame.classList.contains("has-video")) return;
+  if ($("#compat-controls")?.contains(document.activeElement)) return;
   playerControlsHideTimer = window.setTimeout(() => hidePlayerControls(), 3000);
 }
 

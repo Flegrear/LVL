@@ -1,14 +1,14 @@
 {
-  "version": "0.2.3",
-  "versionCode": 211,
-  "desktopSourceVersion": "0.3.2",
+  "version": "0.2.4",
+  "versionCode": 212,
+  "desktopSourceVersion": "0.3.3",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Fix watched and partially watched episodes syncing across devices without losing newer changes.",
-    "Refresh Library progress when changes arrive from another device.",
-    "Improve Android update installation handoff, startup status and completed-update notices.",
-    "Align episode details and improve Library responsiveness on phones.",
-    "Resume Comics from the saved chapter, source and reading position.",
-    "Improve continuous chapter reading and place favorite Comic sources within Comics filters."
+    "Recover conflicting Library sync edits while retaining newer local changes.",
+    "Refresh remote Library updates and preserve the latest reading and watch progress.",
+    "Keep unchanged Comics catalog cards mounted across loading updates.",
+    "Show sharper verified Comics covers when available, with MangaDex credit and fallback art.",
+    "Preserve keyboard focus and unfinished Settings edits through panel refreshes.",
+    "Keep the main phone fullscreen actions visible and move secondary actions into More."
   ]
 }
