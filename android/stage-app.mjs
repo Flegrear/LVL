@@ -91,7 +91,7 @@ export function createAndroidReleaseNotice({ version, ffmpegLicense, webpLicense
   }
   const header = [
     `LVL for Android ${version} — native software and source notices`, "",
-    "LVL's original application code is licensed under MIT.",
+    "LVL's original application code is licensed under the BSD Zero Clause License (0BSD).",
     "Full terms and scope are included inside assets/lvl-app.zip under",
     "assets/licenses/LVL-LICENSE.txt and assets/licenses/LVL-NOTICE.txt.",
     "Application source: https://github.com/Flegrear/LVL",

@@ -1,14 +1,15 @@
 LVL — original application code
-SPDX-License-Identifier: MIT
+SPDX-License-Identifier: 0BSD
 
 Copyright (c) 2026 Flegrear
 
-LVL's original application code is licensed under the MIT License. You may
-use, modify, redistribute and sell it, including in closed-source projects,
-provided the copyright and permission notice are retained.
+LVL's original application code is licensed under the BSD Zero Clause License
+(0BSD). You may use, copy, modify and distribute it for any purpose, including
+commercially and in closed-source projects, without retaining an LVL copyright
+or license notice in your copies.
 
-The software is provided "AS IS", without warranty of any kind, as described
-in the complete MIT License.
+The software is provided "AS IS", with the warranty disclaimer described in
+the complete BSD Zero Clause License.
 
 The complete license is included alongside this notice as LVL-LICENSE.txt
 and in the source repository as LICENSE.txt.
