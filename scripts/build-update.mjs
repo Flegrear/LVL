@@ -180,6 +180,8 @@ function validatePackageMetadata(pkg, label) {
   versionParts(pkg.version);
   validateNpmFields(pkg, label);
   if (pkg.type !== undefined && typeof pkg.type !== "string") throw new Error(`Invalid ${label} module type`);
+  if (pkg.license !== undefined && (typeof pkg.license !== "string" || !pkg.license.trim()))
+    throw new Error(`Invalid ${label} package license schema`);
 }
 // npm's lockfile packages keys identify filesystem-relative locations, not
 // URLs or paths outside the project. The empty key denotes the root package;
@@ -458,11 +460,23 @@ export function buildUpdate({ repoRoot = DEFAULT_ROOT, fromVersion, fromRef = nu
   // have been validated. Never let diff iteration order mask a rejected source.
   const nativeReasons = [];
   if (!onlyVersionChanged(oldPackage, newPackage, from, to)) {
-    const nativePackageFields = ["dependencies", "optionalDependencies", "peerDependencies", "bundledDependencies", "bundleDependencies",
-      "engines", "scripts", "os", "cpu", "bin", "type", "packageManager"];
-    if (nativePackageFields.some((field) => stableJson(oldPackage[field]) !== stableJson(newPackage[field])))
-      nativeReasons.push("Full installer required: package.json changed installed dependencies, runtime or scripts");
-    else throw new Error("Package metadata changed outside the reviewed version-only patch contract");
+    // The reviewed MIT -> 0BSD migration is an installer incompatibility, not
+    // patch-compatible metadata. Only version and that exact license may differ.
+    const reviewedLicenseMigration = oldPackage.license === "MIT" && newPackage.license === "0BSD"
+      && onlyVersionChanged({ ...oldPackage, license: "0BSD" }, newPackage, from, to);
+    if (reviewedLicenseMigration) {
+      nativeReasons.push("Full installer required: package.json license migrated from MIT to 0BSD");
+    } else {
+      // No other license transition can be concealed by an otherwise native
+      // dependency or runtime change; those remain ordinary validation errors.
+      if (oldPackage.license !== newPackage.license)
+        throw new Error("Package metadata changed outside the reviewed version-only patch contract");
+      const nativePackageFields = ["dependencies", "optionalDependencies", "peerDependencies", "bundledDependencies", "bundleDependencies",
+        "engines", "scripts", "os", "cpu", "bin", "type", "packageManager"];
+      if (nativePackageFields.some((field) => stableJson(oldPackage[field]) !== stableJson(newPackage[field])))
+        nativeReasons.push("Full installer required: package.json changed installed dependencies, runtime or scripts");
+      else throw new Error("Package metadata changed outside the reviewed version-only patch contract");
+    }
   }
 
   const changed = changedEntries(root, oldCommit);

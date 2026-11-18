@@ -1,13 +1,15 @@
 # LVL Changelog
 
-## 0.3.4 — 2026-11-14
-
-*Local candidate, pending integration and Android acceptance.*
+## 0.3.4 — 2026-11-18
 
 - Simplify the Android update status to Updating during active installs, while preserving confirmation, progress and recovery controls.
 - Keep Resume buttons directly tappable on phone title pages without activating nearby content.
 - Remove the dark background behind the Comics page count while retaining readable text.
 - Use outer quarters for Comics page navigation and the middle for reader controls, including RTL and vertical reading.
+- Keep reading progress tied to the correct chapter and source during sync and reconnect.
+- Cancel pending embedded subtitle requests when playback leaves Watch without a floating player.
+- Preserve update handoff state and logs while the verified Windows installer starts.
+- License LVL’s first-party code under 0BSD.
 
 ## 0.3.3 — 2026-11-14
 
