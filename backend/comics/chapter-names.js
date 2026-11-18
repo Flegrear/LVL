@@ -17,6 +17,13 @@ export function chapterNumber(name, mangaTitle = "") {
   if (marked) return normalizeUnitNumber(marked[1]);
   const cleaned = text.replace(UNWANTED, " ");
   const plain = /(\d+(?:\.\d+)?)/.exec(cleaned);
+  // Unmarked "2024 Special"/"2024 Edition" is a dated or edition-only
+  // release label, not proof of Chapter 2024. Keep the long-standing bare
+  // numeric fallback for real titles such as "Frieren 140", and let explicit
+  // Chapter/Ch./# markers above authorize even a four-digit chapter number.
+  if (plain && /^(?:19|20)\d{2}$/.test(plain[1]) &&
+    /\b(?:special|extra|bonus|omake|edition|annual|year|anniversary)\b/i.test(cleaned))
+    return null;
   return plain ? normalizeUnitNumber(plain[1]) : null;
 }
 

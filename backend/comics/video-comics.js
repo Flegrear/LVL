@@ -14,14 +14,13 @@
 // - From the Library a comic opens the page it was added on with Comics open.
 import { localIdFor } from "../reader/local-library.js";
 import { normalizeSeriesName } from "../../shared/reading/release-name.js";
-import { WORK_ID } from "../../shared/reading/ids.js";
+import { WORK_ID, SOURCE_TITLE_KEY, isSyncableSourceTitleKey } from "../../shared/reading/ids.js";
 
 export const VIDEO_ID = /^tt\d{5,12}$/;
 export const VIDEO_TYPES = Object.freeze(["series", "movie"]);
 export const NOT_IN_LIBRARY = "NONE";
 // Comics read from their sources: made on a video page, or imported from Mihon.
-export const SOURCE_TITLE_KEY = /^(?:video:(tt\d{5,12})#\d{1,4}|mihon:-?\d{1,20}:\/.{1,280})$/;
-const SOURCE_KEY = SOURCE_TITLE_KEY;
+export { SOURCE_TITLE_KEY };
 const NAME_STOP = new Set(["the", "a", "an", "of", "and"]);
 
 const words = (title) => normalizeSeriesName(title).split(" ").filter(Boolean);
@@ -129,7 +128,7 @@ export function createVideoComics({ db, now = Date.now, local, linked }) {
     hide(workId, video, hidden = true) { q.hide.run(String(workId), video.id, video.type, video.title, hidden ? 1 : 0, now()); },
     showAll: (videoId) => q.showAll.run(String(videoId)).changes,
     // The source titles in the Library (a status was set or reading started) with at least one source.
-    libraryRows: () => local.localTitles().filter((row) => SOURCE_KEY.test(row.series_key) && row.status !== NOT_IN_LIBRARY && isSourceTitle(row.id) && sourceCount(row.id)),
+    libraryRows: () => local.localTitles().filter((row) => isSyncableSourceTitleKey(row.series_key) && row.status !== NOT_IN_LIBRARY && isSourceTitle(row.id) && sourceCount(row.id)),
   };
 }
 

@@ -19,28 +19,63 @@ export const SPEECH_SAMPLE_RATE = 16000;
  */
 export function createSubtitleCueLookup(boundsForCue) {
   const cached = new WeakMap();
+  // A track can be edited in place without a producer-supplied revision.
+  // Compare the original fields without constructing a joined string for
+  // every video frame. The snapshot arrays are allocated only on rebuild.
+  const contentsChanged = (index, cues, anchors) => {
+    for (let i = 0; i < cues.length; i++) {
+      if (!Object.is(index.cueStarts[i], cues[i]?.startMs)
+        || !Object.is(index.cueEnds[i], cues[i]?.endMs)) return true;
+    }
+    for (let i = 0; i < anchors.length; i++) {
+      const anchor = anchors[i];
+      const prior = index.anchorValues[i];
+      if (!Object.is(prior[0], anchor?.atMs)
+        || !Object.is(prior[1], anchor?.offsetMs)
+        || !Object.is(prior[2], anchor?.untilMs)) return true;
+    }
+    return false;
+  };
   return (track, currentMs) => {
     const cues = track?.cues;
     if (!Array.isArray(cues) || !cues.length || !Number.isFinite(currentMs)) return null;
+    const anchors = Array.isArray(track.syncAnchors) ? track.syncAnchors : [];
     let index = cached.get(track);
     if (!index || index.cues !== cues || index.length !== cues.length
       || index.first !== cues[0] || index.last !== cues.at(-1)
-      || index.anchors !== track.syncAnchors || index.anchorCount !== (track.syncAnchors?.length || 0)
+      || index.anchors !== track.syncAnchors || index.anchorCount !== anchors.length
+      || (!index?.immutable && contentsChanged(index, cues, anchors))
       || index.offset !== track.offsetMs || index.mode !== track.syncMode
       || index.exact !== track.exactMedia) {
       const starts = new Float64Array(cues.length);
       const ends = new Float64Array(cues.length);
       const prefixEnds = new Float64Array(cues.length);
+      const cueStarts = new Array(cues.length), cueEnds = new Array(cues.length);
       let ordered = true;
       for (let i = 0; i < cues.length; i++) {
+        cueStarts[i] = cues[i]?.startMs;
+        cueEnds[i] = cues[i]?.endMs;
         const bounds = boundsForCue(cues[i], track);
-        starts[i] = bounds.startMs;
-        ends[i] = bounds.endMs;
+        const valid = Number.isFinite(bounds?.startMs) && Number.isFinite(bounds?.endMs)
+          && bounds.endMs >= bounds.startMs;
+        starts[i] = valid ? bounds.startMs : Infinity;
+        ends[i] = valid ? bounds.endMs : -Infinity;
         prefixEnds[i] = Math.max(i ? prefixEnds[i - 1] : -Infinity, ends[i]);
-        if (i && starts[i] < starts[i - 1]) ordered = false;
+        if (!valid || (i && starts[i] < starts[i - 1])) ordered = false;
       }
+      // An explicitly immutable producer snapshot has no in-place mutation
+      // path: every cue/anchor and both container arrays are frozen. Verify
+      // this once while building the index, never on every playback frame.
+      // Existing mutable tracks still use the exhaustive field snapshots
+      // above, including middle-cue and middle-anchor edits without a rev.
+      const immutable = Object.isFrozen(cues) && Object.isFrozen(anchors)
+        && cues.every(cue => cue && Object.isFrozen(cue))
+        && anchors.every(anchor => anchor && Object.isFrozen(anchor));
       index = { cues, length: cues.length, first: cues[0], last: cues.at(-1),
-        anchors: track.syncAnchors, anchorCount: track.syncAnchors?.length || 0,
+        anchors: track.syncAnchors, anchorCount: anchors.length,
+        immutable,
+        cueStarts, cueEnds,
+        anchorValues: anchors.map((anchor) => [anchor?.atMs, anchor?.offsetMs, anchor?.untilMs]),
         offset: track.offsetMs, mode: track.syncMode, exact: track.exactMedia,
         starts, ends, prefixEnds, ordered };
       cached.set(track, index);
@@ -164,7 +199,7 @@ export function speechActivityFromLevels(levels, { frameMs = SPEECH_FRAME_MS } =
 /* ---------------------------------------------------------------- subtitle side */
 
 // Sound effects, music and captions in brackets are not speech: leave them out of the match.
-const NON_SPEECH = /^[\s\u3000]*(?:[(（[［【〈《].*[)）\]］】〉》]|[♪♫♬～〜].*)[\s\u3000]*$/su;
+const NON_SPEECH = /^(?:(?:\s*(?:\([^()]*\)|（[^（）]*）|\[[^\[\]]*\]|［[^［］]*］|【[^【】]*】|〈[^〈〉]*〉|《[^《》]*》))+\s*|\s*[♪♫♬～〜].*)$/su;
 
 export function isNonSpeechCue(text) {
   const value = String(text || "").replace(/<[^>]+>/g, "").trim();
@@ -522,14 +557,26 @@ export function offsetAt(model, atMs) {
 
 // All analysed windows as one timeline (video time); frames no window covered are -1.
 export function mergeActivity(windows, frameMs = SPEECH_FRAME_MS) {
-  const list = (windows || []).filter((item) => item?.activity?.length);
+  if (!Number.isFinite(frameMs) || frameMs <= 0) return null;
+  const list = (windows || []).filter((item) => item?.activity?.length
+    && Number.isFinite(item.startMs) && Number.isSafeInteger(item.activity.length));
   if (!list.length) return null;
-  const startMs = Math.min(...list.map((item) => item.startMs));
-  const endMs = Math.max(...list.map((item) => item.startMs + item.activity.length * frameMs));
-  const merged = new Int16Array(Math.round((endMs - startMs) / frameMs)).fill(-1);
+  let startMs = Infinity, endMs = -Infinity;
+  for (const item of list) {
+    startMs = Math.min(startMs, item.startMs);
+    endMs = Math.max(endMs, item.startMs + item.activity.length * frameMs);
+  }
+  const frames = Math.ceil((endMs - startMs) / frameMs);
+  // Six hours at 10ms costs about 4 MiB; a malicious distant window should
+  // not allocate an unbounded typed array or silently truncate its coverage.
+  if (!Number.isSafeInteger(frames) || frames < 1 || frames > 2_160_000) return null;
+  const merged = new Int16Array(frames).fill(-1);
   for (const item of list) {
     const offset = Math.round((item.startMs - startMs) / frameMs);
-    for (let index = 0; index < item.activity.length; index += 1) merged[offset + index] = Math.max(merged[offset + index], item.activity[index]);
+    for (let index = 0; index < item.activity.length; index += 1) {
+      const position = offset + index;
+      if (position >= 0 && position < frames) merged[position] = Math.max(merged[position], item.activity[index]);
+    }
   }
   return { startMs, frameMs, activity: merged };
 }
@@ -620,14 +667,33 @@ function scaledCues(cues, scale) {
  * or null. cache (a Map, optional) keeps estimates between calls as windows are added.
  */
 export function syncTrackToSpeech(windows, cues, { searchMs = 120_000, cache = null } = {}) {
+  // Cache entries represent the actual speech and cue contents, not merely
+  // their window start. A progressive extraction can mutate either in place.
+  const hashInput = (values) => {
+    let hash = 2166136261;
+    for (const value of values) {
+      const fragment = String(value);
+      for (let i = 0; i < fragment.length; i++) hash = Math.imul(hash ^ fragment.charCodeAt(i), 16777619);
+      hash = Math.imul(hash ^ 124, 16777619);
+    }
+    return (hash >>> 0).toString(36);
+  };
+  const cueKey = hashInput((cues || []).flatMap((cue) => [cue?.startMs, cue?.endMs, cue?.text]));
+  const windowsWithKeys = (windows || []).filter((item) => Number.isFinite(item?.startMs)
+    && item?.activity?.length).map((item) => ({
+      item, fingerprint: hashInput(item.activity),
+    }));
   const fits = [];
   for (const scale of FRAME_RATE_SCALES) {
     const scaled = scaledCues(cues, scale);
-    const estimates = (windows || []).map((item) => {
-      const key = `${item.startMs}:${scale}`;
+    const estimates = windowsWithKeys.map(({ item, fingerprint }) => {
+      const key = `${item.startMs}:${item.activity.length}:${fingerprint}:${cueKey}:${searchMs}:${scale}`;
       if (cache?.has(key)) return cache.get(key);
       const value = estimateSpeechOffset({ activity: item.activity, activityStartMs: item.startMs, cues: scaled, searchMs });
-      cache?.set(key, value);
+      if (cache) {
+        cache.set(key, value);
+        while (cache.size > 256) cache.delete(cache.keys().next().value);
+      }
       return value;
     });
     const model = syncModelFromEstimates(estimates, { cues: scaled });
@@ -636,7 +702,9 @@ export function syncTrackToSpeech(windows, cues, { searchMs = 120_000, cache = n
     const score = estimates.filter((item) => item.confident)
       .reduce((sum, item) => sum + (model.anchors.some((anchor) => Math.abs(anchor.offsetMs - item.peaks[0].offsetMs) <= 300) ? item.peaks[0].score : 0), 0);
     fits.push({ scale, model, score });
-    if (scale === 1 && model.mode === "constant" && estimates.filter((item) => item.strong).length >= 2) break; // clean unscaled fit
+    // Two apparently strong unscaled windows can also fit an alternate frame
+    // rate. Evaluate all known ratios before declaring the unscaled candidate
+    // the winner; the score/anchor consistency comparison below is the arbiter.
   }
   if (!fits.length) return null;
   const plain = fits.find((fit) => fit.scale === 1);
@@ -661,8 +729,9 @@ export function syncTrackToSpeech(windows, cues, { searchMs = 120_000, cache = n
   }
   const b = best.model.anchors[0].offsetMs;
   const starts = cues.map((cue) => Number(cue.startMs)).filter(Number.isFinite);
-  const first = Math.min(...starts);
-  const last = Math.max(...starts);
+  if (!starts.length) return null;
+  let first = Infinity, last = -Infinity;
+  for (const start of starts) { first = Math.min(first, start); last = Math.max(last, start); }
   return {
     scale: best.scale,
     model: {
@@ -698,7 +767,8 @@ export function pairedCues(cue, others) {
     let nearest = null;
     for (const other of others || []) {
       const distance = Math.abs(Number(other?.startMs) - start);
-      if (distance <= 500 && (!nearest || distance < Math.abs(Number(nearest.startMs) - start))) nearest = other;
+      if (Number(other?.endMs) > Number(other?.startMs) && distance <= 500
+        && (!nearest || distance < Math.abs(Number(nearest.startMs) - start))) nearest = other;
     }
     if (nearest) matches.push(nearest);
   }

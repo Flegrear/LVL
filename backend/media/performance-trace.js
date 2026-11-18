@@ -2,6 +2,7 @@
 // magnets, hashes or raw FFmpeg stderr. No overhead on untraced sessions.
 const MAX_EVENTS = 160;
 const MAX_TRACES = 3;
+const MAX_READERS = 48;
 const TTL_MS = 15 * 60_000;
 const enumValue = (value, choices) => typeof value === "string" && choices.includes(value) ? value : null;
 const VIDEO_CODECS = ["h264", "hevc", "av1", "vp8", "vp9", "mpeg4", "mpeg2video", "mpeg1video", "vc1", "prores", "theora", "wmv3", "mjpeg"];
@@ -30,12 +31,17 @@ export function createPlaybackTrace({ now = Date.now } = {}) {
   function start(id, fileIndex) {
     for (const key of traces.keys()) find(key);
     if (!find(id) && traces.size >= MAX_TRACES) traces.delete(traces.keys().next().value);
-    traces.set(id, { started: now(), touched: now(), fileIndex, events: [], readers: new Map(), nextReader: 0, plan: null, speed: null, conversionId: 0 });
+    traces.set(id, { started: now(), touched: now(), fileIndex, events: [], readers: new Map(), nextReader: 0, readerOverflows: 0, plan: null, speed: null, conversionId: 0 });
     event(id, "trace-started");
   }
   function reader(id, fileIndex, { start: offset = 0, end = null } = {}) {
     const trace = find(id);
     if (!trace || trace.fileIndex !== fileIndex) return { firstByte() {}, end() {} };
+    if (trace.readers.size >= MAX_READERS) {
+      trace.readerOverflows += 1;
+      event(id, "reader-overflow", { overflowCount: trace.readerOverflows });
+      return { firstByte() {}, end() {} };
+    }
     const number = ++trace.nextReader;
     const started = now();
     trace.readers.set(number, { offset, end, started });
@@ -94,10 +100,18 @@ export function createPlaybackTrace({ now = Date.now } = {}) {
     const pieceLength = Number(torrent?.pieceLength) || 0;
     const fileOffset = Number(file?.offset) || 0;
     const playheadOffset = activeReaders[0]?.offset ?? null;
-    const piece = playheadOffset === null || !pieceLength || !torrent?.bitfield ? null : Math.floor((fileOffset + playheadOffset) / pieceLength);
+    // Reader ranges describe requests, not a verified movie playhead. Do not
+    // query a bitfield with an attacker-controlled fractional/unsafe index.
+    const validOffset = Number.isSafeInteger(playheadOffset) && playheadOffset >= 0
+      && Number.isSafeInteger(fileOffset) && fileOffset >= 0
+      && Number.isSafeInteger(pieceLength) && pieceLength > 0
+      && Number.isSafeInteger(fileOffset + playheadOffset);
+    const piece = !validOffset || !torrent?.bitfield ? null
+      : Math.floor((fileOffset + playheadOffset) / pieceLength);
     return {
       enabled: true, elapsedMs: now() - trace.started, fileIndex: fileIndex ?? trace.fileIndex,
       readers: activeReaders, activeReaderCount: trace.readers.size,
+      readerOverflows: trace.readerOverflows,
       peers: typeof torrent?.numPeers === "number" ? torrent.numPeers : null,
       downloadBytesPerSecond: Number.isFinite(torrent?.downloadSpeed) ? torrent.downloadSpeed : null,
       observedReaderPiece: piece,

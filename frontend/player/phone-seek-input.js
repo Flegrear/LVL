@@ -8,6 +8,7 @@ export function createTimelineScrubController({
   range, frame = globalThis.window,
   onPreview, onCommit, onScrubbingChange = () => {},
   cancelObsoleteSeek = () => {},
+  captureOwner = () => null, isOwnerCurrent = () => true,
   onHidePreview = () => {},
   scheduleFrame = callback => frame.requestAnimationFrame(callback),
   cancelFrame = id => frame.cancelAnimationFrame(id),
@@ -17,6 +18,7 @@ export function createTimelineScrubController({
     throw new TypeError("Timeline scrub needs range, preview, commit and animation frame callbacks");
   let active = false, pointerId = null, scheduled = null, pending = null;
   let transaction = 0, lastCommit = null, disposed = false, ignoreChange = false;
+  let gestureOwner = null;
   let finishing = false, committing = false, restoredRangeValue = null;
   const value = () => clamp(range.value, range.max);
   const drain = () => {
@@ -37,6 +39,7 @@ export function createTimelineScrubController({
     ignoreChange = false;
     restoredRangeValue = null;
     pointerId = id;
+    gestureOwner = captureOwner();
     lastCommit = null;
     onScrubbingChange(true);
     preview(value());
@@ -73,6 +76,16 @@ export function createTimelineScrubController({
     return true;
   };
   const doCommit = seconds => {
+    // Accessibility/browser range changes can be a complete user action
+    // without pointerdown/input, so they claim the currently accepted owner.
+    if (gestureOwner === null) gestureOwner = captureOwner();
+    // A finger may still be moving when episode B replaces A, or while a
+    // decoder handoff takes ownership of the same source. A's range thumb must
+    // not commit a new movie-clock seek against B after an async transition.
+    if (!isOwnerCurrent(gestureOwner)) {
+      ignoreChange = true;
+      return false;
+    }
     const target = clamp(seconds, range.max);
     if (lastCommit && lastCommit.transaction === transaction && Math.abs(lastCommit.seconds - target) < 0.0005)
       return false;
@@ -126,6 +139,7 @@ export function createTimelineScrubController({
       // transaction, but a DIFFERENT target is a new action even without
       // pointerdown/input. Comparing transaction alone silently ate all
       // subsequent change-only seeks.
+      gestureOwner = captureOwner();
       doCommit(target);
     }
   };
@@ -155,6 +169,7 @@ export function createTimelineScrubController({
         onHidePreview();
       }
       transaction++;
+      gestureOwner = null;
       lastCommit = null;
       restoredRangeValue = null;
       ignoreChange = true; // late native change from cancelled source must not seek

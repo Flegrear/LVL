@@ -18,6 +18,19 @@ object Downloads {
     fun safeName(name: String): String =
         name.replace(UNSAFE, "_").trim().trimStart('.').take(120).ifBlank { "download" }
 
+    /** Each HTTPS DownloadManager request owns a different external destination. */
+    fun uniqueDownloadName(name: String, requestUuid: String): String {
+        require(Regex("[a-f0-9]{32}").matches(requestUuid)) { "Invalid download request identity" }
+        val clean = safeName(name)
+        val lastDot = clean.lastIndexOf('.')
+        val extension = if (lastDot > 0 && clean.length - lastDot in 2..16)
+            clean.substring(lastDot) else ""
+        val stem = (if (extension.isNotEmpty()) clean.dropLast(extension.length) else clean)
+            .take(120 - requestUuid.length - extension.length - 1)
+            .trimEnd('.', ' ', '_').ifBlank { "download" }
+        return "$stem-$requestUuid$extension"
+    }
+
     /**
      * The document bridge is limited to 50 MiB. Validate the *encoded* length
      * and every character before opening a pending MediaStore row. Decode to

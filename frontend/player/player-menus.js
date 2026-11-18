@@ -1,8 +1,8 @@
 // The player's subtitle, source and audio menus.
 import { escapeHtml } from "../ui/ui.js";
 import { normalizeAudioMode, planCompatibleAudio } from "../../shared/media/audio-policy.js";
-import { state, video } from "../../app.js";
-import { $ } from "../app/dom.js";
+import { frame, state, video } from "../../app.js";
+import { $ as app$ } from "../app/dom.js";
 import {
   absolutePlaybackSeconds, clearPlayerControlsHideTimer, openTranscodeAt, playerIsPlaying,
   restartTranscodeAt, resumePlayback, revealPlayerControls, schedulePlayerControlsHide,
@@ -21,6 +21,12 @@ import { floatingDesktopWindow } from "./floating-player.js";
 import { cancelPhoneTimelineScrub } from "./phone-seek-lifecycle.js";
 import { playLibraryEpisode } from "./torrent-playback.js";
 import { currentChapterSources, librarySourceDetails } from "../library/library-data.js";
+
+// Document PiP moves the live #video-frame into a different Document. The
+// original event listeners travel with that DOM, but document.querySelector
+// from the opener cannot find its menus. Resolve the live frame first; only
+// dialogs and Watch-only nodes live outside it.
+const $ = selector => frame?.querySelector?.(selector) || app$(selector);
 
 const storedAudioMode = localStorage.getItem("lvl-audio-output-mode");
 const legacySurroundMode = localStorage.getItem("lvl-surround-output");
@@ -287,6 +293,10 @@ export async function switchAudioTrack(index, { force = false, remember = false 
   if (opened && remember && generation === audioTrackSwitchGeneration
     && state.currentSource === source && state.selectedAudioTrack === index)
     rememberSeriesAudioTrack(tracks[index], index, source);
+  // An old async audio preflight can finish after B selects another track or
+  // playback source. Never let A schedule a fresh audio-sync job or redraw
+  // B's menu after its exact switch owner has retired.
+  if (generation !== audioTrackSwitchGeneration || state.currentSource !== source) return;
   renderPlayerAudioMenu();
   scheduleAudioSync(3000);
 }

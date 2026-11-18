@@ -9,60 +9,104 @@ import android.util.Log
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
- * Passes a Cloudflare check the way Mihon does: the page loads in a hidden WebView with
- * the same user agent as the request, and the check counts as passed when the site sets a
- * new cf_clearance cookie (shared with OkHttp through CookieManager). One check at a time.
- * Never call it on the main thread: it waits for the WebView, which lives there.
+ * Hidden, single-owner WebView challenge. Never block the main thread. Any
+ * intervening visible verification (even one already closed) invalidates the
+ * hidden challenge's ownership of both WebView callbacks and cookie results.
  */
 object CloudflareSolver {
     private const val TIMEOUT_MS = 30_000L
+    private const val MAIN_HANDOFF_MS = 2_500L
     private val main = Handler(Looper.getMainLooper())
     private val lock = Any()
+
+    private class HiddenSession(val revision: Long) {
+        @Volatile var cancelled = false
+        var view: WebView? = null // main thread only
+    }
+
+    // A timed-out posted callback must not resurrect an abandoned WebView.
+    // The ownership check and all WebView/CookieManager operations run on main.
+    private fun <T> onMain(session: HiddenSession, action: () -> T?): T? {
+        val finished = CountDownLatch(1)
+        val value = AtomicReference<T?>()
+        if (!main.post {
+                try {
+                    if (!session.cancelled && VerifyActivity.isIdleRevision(session.revision))
+                        value.set(action())
+                } catch (_: RuntimeException) {
+                    // No ambiguous WebView/cookie result can grant clearance.
+                } finally {
+                    finished.countDown()
+                }
+            }) return null
+        try {
+            if (!finished.await(MAIN_HANDOFF_MS, TimeUnit.MILLISECONDS)) {
+                session.cancelled = true
+                return null
+            }
+        } catch (_: InterruptedException) {
+            session.cancelled = true
+            Thread.currentThread().interrupt()
+            return null
+        }
+        return value.get()
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     fun solve(context: Context, url: String, userAgent: String, oldClearance: String?): Boolean {
         check(Looper.myLooper() != Looper.getMainLooper()) { "CloudflareSolver.solve can't run on the main thread" }
         synchronized(lock) {
-            // An interactive check owns the site's verification session while it is open.
-            // Do not launch a competing hidden browser that might retrigger the challenge.
-            if (VerifyActivity.open) return false
-            val cookies = runCatching { CookieManager.getInstance() }.getOrNull() ?: return false
-            var view: WebView? = null
-            main.post {
-                if (VerifyActivity.open) return@post
-                view = WebView(context.applicationContext).apply {
-                    settings.javaScriptEnabled = true
-                    settings.domStorageEnabled = true
-                    settings.userAgentString = userAgent
-                    cookies.setAcceptThirdPartyCookies(this, true)
-                    webViewClient = WebViewClient()
-                    loadUrl(url)
-                }
-            }
+            val initial = VerifyActivity.state
+            if (initial.open) return false
+            val session = HiddenSession(initial.revision)
             val started = SystemClock.uptimeMillis()
             var solved = false
             try {
+                val created = onMain(session) {
+                    val webView = WebView(context.applicationContext)
+                    session.view = webView
+                    webView.apply {
+                        settings.javaScriptEnabled = true
+                        settings.domStorageEnabled = true
+                        settings.userAgentString = userAgent
+                        CookieManager.getInstance().setAcceptThirdPartyCookies(this, true)
+                        webViewClient = WebViewClient()
+                        loadUrl(url)
+                    }
+                    true
+                }
+                if (created != true) return false
                 while (SystemClock.uptimeMillis() - started < TIMEOUT_MS) {
-                    if (VerifyActivity.open) break
+                    if (session.cancelled || !VerifyActivity.isIdleRevision(session.revision)) break
                     Thread.sleep(500)
-                    val clearance = cookieValue(cookies.getCookie(url), "cf_clearance")
+                    val clearance = onMain(session) {
+                        if (session.view == null) null
+                        else cookieValue(CookieManager.getInstance().getCookie(url), "cf_clearance")
+                    }
                     if (clearance != null && clearance != oldClearance) {
-                        solved = true
+                        // Reject a cookie minted by a newer visible generation.
+                        solved = VerifyActivity.isIdleRevision(session.revision) && !session.cancelled
                         break
                     }
                 }
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
             } finally {
+                session.cancelled = true
                 main.post {
-                    view?.stopLoading()
-                    view?.destroy()
+                    session.view?.stopLoading()
+                    session.view?.destroy()
+                    session.view = null
+                    runCatching { CookieManager.getInstance().flush() }
                 }
-                cookies.flush()
             }
-            Log.i("LVL-Comics", "Browser check for $url ${if (solved) "passed" else "not passed"} in ${SystemClock.uptimeMillis() - started} ms")
+            // Do not expose a query string, account token or credential in logs.
+            Log.i("LVL-Comics", "Hidden browser check ${if (solved) "passed" else "not passed"} in ${SystemClock.uptimeMillis() - started} ms")
             return solved
         }
     }

@@ -4,7 +4,7 @@ import { libraryCategory } from "../catalog/home-feed.js";
 import { libraryFileScope } from "../../shared/media/series-sources.js";
 import { readAniListAccount } from "../anilist/anilist-auto-client.js";
 import { state } from "../../app.js";
-import { saveLibrary } from "../app/saved-state.js";
+import { persistentAppStateReady, saveLibrary } from "../app/saved-state.js";
 import { $ } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { episodeIdentity, normalizeCollectionTitle, sourceTagFor } from "../player/player-tracks.js";
@@ -80,7 +80,47 @@ export function upsertLibrarySession(session, magnet = "", {
   const { primary, extras } = partitionTorrentVideos(files);
   const labels = { ...(existing?.chapterLabels || {}), ...(chapterLabels || {}) };
   const collectionTitle = normalizeCollectionTitle(session.name, primary[0]?.name, videos[0]?.name);
-  const anchorSeries = seriesKeyOverride ? buildLibrarySeries().find((item) => item.key === seriesKeyOverride) : null;
+  const qualifiedTarget = /^(?:catalog:|entry:|external:|provisional:|unresolved-entry:)/.test(String(seriesKeyOverride || ""));
+  // Older source-reopen VM consumers provide only buildLibrarySeries; normal
+  // UI calls use the shared unique-only resolver.
+  const selectedAnchor = seriesKeyOverride
+    ? (typeof findLibrarySeriesByKey === "function" ? findLibrarySeriesByKey(seriesKeyOverride)
+      : buildLibrarySeries().find((item) => item.key === seriesKeyOverride)) : null;
+  const workOf = (work) => /^tt\d{5,12}$/i.test(String(work?.catalogId || ""))
+    && ["series", "movie"].includes(String(work?.catalogType || work?.type || "").toLowerCase())
+    ? `${String(work.catalogType || work.type).toLowerCase()}:${String(work.catalogId).toLowerCase()}` : null;
+  const declaredWork = workOf({ catalogId, catalogType });
+  const selectedWork = workOf(selectedAnchor);
+  const existingWork = workOf(existing);
+  // A caller can supply only an IMDb ID or only its media kind. Comparing
+  // exclusively complete (id, kind) pairs would miss those contradictions and
+  // copy the selected title's watched mark onto a different verified work.
+  // Treat every explicitly supplied identity component as an independent
+  // constraint before inheriting any Library source/history from the anchor.
+  const declaredId = String(catalogId || "").toLowerCase();
+  const declaredKind = String(catalogType || "").toLowerCase();
+  const conflictsDeclaredIdentity = (verifiedWork) => {
+    if (!verifiedWork) return false;
+    const [kind, id] = verifiedWork.split(":");
+    return Boolean((declaredId && (!/^tt\d{5,12}$/.test(declaredId) || declaredId !== id))
+      || (declaredKind && declaredKind !== kind));
+  };
+  // A title-only legacy alias is not a verified crosswalk. If the target is
+  // known to be another IMDb work, import an independent source instead.
+  const anchorConflict = selectedWork && (declaredWork && selectedWork !== declaredWork
+    || existingWork && selectedWork !== existingWork
+    || conflictsDeclaredIdentity(selectedWork));
+  const anchorSeries = anchorConflict ? null : selectedAnchor;
+  const requestedWork = workOf({ catalogId: catalogId || anchorSeries?.catalogId,
+    catalogType: catalogType || anchorSeries?.catalogType });
+  // Reimporting an already stored torrent hash cannot silently retarget its
+  // watched chapters to a different known IMDb work or media kind.
+  if (conflictsDeclaredIdentity(existingWork)
+    || (existingWork && requestedWork && existingWork !== requestedWork)
+    || (qualifiedTarget && anchorConflict)) return null;
+  // An explicit Library target must still exist. Do not convert a vanished or
+  // ambiguous route into a new title-only association after an await.
+  if (qualifiedTarget && !anchorSeries) return null;
   const storedDisplayTitle = String(existing?.displayTitle || existing?.title || "").trim();
   const storedLooksLikeRelease = /\b(?:2160p|1080p|720p|576p|480p|4K|WEB[- .]?DL|WEBRip|BluRay|BDRip|HDTV|REMUX|DDP(?:5[. ]?1)?|E-?AC-?3|H[ ._-]?26[45]|x26[45])\b/i.test(storedDisplayTitle);
   const migratedDisplayTitle = storedLooksLikeRelease ? collectionTitle : storedDisplayTitle;
@@ -106,21 +146,24 @@ export function upsertLibrarySession(session, magnet = "", {
       // Saved per episode: subtitle sync models and where you stopped watching.
       ...(previous?.subtitleSync ? { subtitleSync: previous.subtitleSync } : {}),
       ...(previous?.progress ? { progress: previous.progress } : {}),
+      ...(previous?.provisionalChapterId ? { provisionalChapterId: previous.provisionalChapterId } : {}),
     };
   };
   const entry = {
     id,
     magnet: magnet || existing?.magnet || "",
     title: collectionTitle,
-    seriesKey: seriesKeyOverride || (storedLooksLikeRelease ? librarySeriesKey(collectionTitle) : existing?.seriesKey) || librarySeriesKey(existing?.title || collectionTitle),
+    // Keep the historical display alias in persisted records; the stable
+    // routing work key belongs to the derived Library series, not this alias.
+    seriesKey: anchorSeries?.legacyKey || seriesKeyOverride || (storedLooksLikeRelease ? librarySeriesKey(collectionTitle) : existing?.seriesKey) || librarySeriesKey(existing?.title || collectionTitle),
     displayTitle: displayTitleOverride || anchorSeries?.title || migratedDisplayTitle || collectionTitle,
     coverUrl: (existing?.artworkPinned ? existing.coverUrl : "") || (anchorSeries?.artworkPinned ? anchorSeries.coverUrl : "") || coverUrlOverride || existing?.coverUrl || anchorSeries?.coverUrl || "",
     artworkIndex: Number.isInteger(existing?.artworkIndex) ? existing.artworkIndex : (Number.isInteger(anchorSeries?.artworkIndex) ? anchorSeries.artworkIndex : 0),
     artworkSource: existing?.artworkSource || anchorSeries?.artworkSource || "",
     artworkPinned: Boolean(existing?.artworkPinned || anchorSeries?.artworkPinned),
     rawName: session.name || existing?.rawName || collectionTitle,
-    catalogId: catalogId || existing?.catalogId || "",
-    catalogType: catalogType || existing?.catalogType || "",
+    catalogId: catalogId || existing?.catalogId || anchorSeries?.catalogId || "",
+    catalogType: catalogType || existing?.catalogType || anchorSeries?.catalogType || "",
     mediaKind: mediaKind || existing?.mediaKind || anchorSeries?.mediaKind || "",
     // A torrent refresh is not an AniList unlink. Keep account-scoped verified
     // season mappings and imported list metadata on the same stored source.
@@ -146,7 +189,12 @@ export function upsertLibrarySession(session, magnet = "", {
     addedAt: existing?.addedAt || Date.now(),
     updatedAt: Date.now(),
     ...(existing?.lastPlayedAt ? { lastPlayedAt: existing.lastPlayedAt, lastPlayedFileIndex: existing.lastPlayedFileIndex } : {}),
-    episodes: [...primary.map((file) => makeEpisode(file, false)), ...extras.map((file) => makeEpisode(file, true))],
+    episodes: [...primary.map((file) => makeEpisode(file, false)), ...extras.map((file) => makeEpisode(file, true)),
+      // A legacy no-index chapter has no provable mapping to the refreshed
+      // torrent file list. Retain it separately, including its exact playhead,
+      // rather than reassigning progress by matching its display name.
+      ...(existing?.episodes || []).filter((episode) => episode?.fileIndex === null
+        || episode?.fileIndex === undefined || !Number.isSafeInteger(Number(episode.fileIndex)))],
   };
   if (scope) entry.chapterFileIndexes = scope;
   const labelled = Object.fromEntries(Object.entries(labels).filter(([index]) => !scope || scope.includes(Number(index))));
@@ -157,22 +205,84 @@ export function upsertLibrarySession(session, magnet = "", {
   if (render && $("#view-library")?.classList.contains("is-active")) renderLibrary();
   else updateLibrarySummary();
   if (!entry.coverUrl) {
-    queueMicrotask(() => { void fetchArtworkForSeriesKey(entry.seriesKey, { quiet: true }); });
+    // A display alias can become ambiguous (or start naming a different work)
+    // between this import and the eventual image response.
+    const artworkWorkKey = libraryWorkKey(entry);
+    queueMicrotask(() => { void fetchArtworkForSeriesKey(artworkWorkKey, { quiet: true }); });
   }
   return entry;
 }
 
-function libraryChapterKey(episode, fallbackIndex = 0) {
+const unidentifiedEpisodeKeys = new WeakMap();
+let unidentifiedEpisodeSerial = 0;
+function libraryChapterKey(episode, entry) {
   const code = String(episode?.code || "").toUpperCase();
-  if (/^S\d{2}E\d{2,3}$/.test(code)) return code;
-  const title = String(episode?.episodeTitle || episode?.name || "").trim().toLowerCase();
-  return title || `chapter-${fallbackIndex}`;
+  if (/^S\d{2}E\d{2,4}$/.test(code) && verifiedVideoWorkKey(entry)) return code;
+  // Two files may display the identical name. Their existing immutable
+  // Library entry + torrent file index is a stable provisional chapter key.
+  const index = episode?.fileIndex;
+  if (Number.isSafeInteger(Number(index)) && index !== null && index !== undefined && String(index).trim() !== "")
+    return `file:${encodeURIComponent(String(entry?.id || ""))}:${Number(index)}`;
+  // Older records may have an explicit episode identity but no file index.
+  // Do not invent a positional identity that changes when files reorder.
+  const known = String(episode?.id || episode?.sourceId || "");
+  if (known) return `episode:${encodeURIComponent(String(entry?.id || ""))}:${encodeURIComponent(known)}`;
+  if (episode?.provisionalChapterId) return `unresolved:${libraryWorkKey(entry)}:${encodeURIComponent(String(episode.provisionalChapterId))}`;
+  // A legacy object without an immutable file index must remain visible and
+  // distinct. The session-local key survives in-memory reordering and leaves
+  // old saved progress untouched; no guessed identity is persisted on disk.
+  if (!episode || typeof episode !== "object") return null;
+  if (!unidentifiedEpisodeKeys.has(episode)) unidentifiedEpisodeKeys.set(episode, ++unidentifiedEpisodeSerial);
+  return `unresolved:${encodeURIComponent(String(entry?.id || ""))}:${unidentifiedEpisodeKeys.get(episode)}`;
+}
+
+let legacyIdentitySaveScheduled = false;
+/** Add opaque, non-correlating identifiers only after durable hydration.
+ * No existing IDs/progress are overwritten, and CAS persists the extra fields
+ * through the ordinary Library save contract, not a synthetic DB rewrite. */
+export function migrateLegacyLibraryIdentities() {
+  if (typeof persistentAppStateReady === "undefined" || !persistentAppStateReady
+    || (typeof POPUP_HANDOFF !== "undefined" && POPUP_HANDOFF)
+    || !Array.isArray(state.library)) return false;
+  let changed = false;
+  for (const entry of state.library || []) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const hasDurableSourceId = typeof entry.id === "string" && entry.id.length > 0
+      || typeof entry.id === "number" && Number.isSafeInteger(entry.id);
+    if (!hasDurableSourceId && !entry.provisionalWorkId && !verifiedVideoWorkKey(entry)
+      && !(entry.externalSource && entry.externalId)) {
+      entry.provisionalWorkId = crypto.randomUUID();
+      changed = true;
+    }
+    // Old or partially migrated records can contain a non-array episodes
+    // payload. Preserve the original value for recovery; never iterate or
+    // rewrite it as though it were a verified chapter list.
+    for (const episode of Array.isArray(entry.episodes) ? entry.episodes : []) {
+      if (!episode || typeof episode !== "object" || episode.provisionalChapterId
+        || episode.id || episode.sourceId || verifiedVideoWorkKey(entry)
+          && /^S\d{2}E\d{2,4}$/i.test(String(episode.code || ""))) continue;
+      const index = episode.fileIndex;
+      if (index !== null && index !== undefined && String(index).trim() !== ""
+        && Number.isSafeInteger(Number(index))) continue;
+      episode.provisionalChapterId = crypto.randomUUID();
+      changed = true;
+    }
+  }
+  if (changed && !legacyIdentitySaveScheduled) {
+    legacyIdentitySaveScheduled = true;
+    queueMicrotask(() => {
+      legacyIdentitySaveScheduled = false;
+      if (persistentAppStateReady) saveLibrary();
+    });
+  }
+  return changed;
 }
 
 export function groupLibraryChapters(refs) {
   const groups = new Map();
-  refs.forEach((ref, index) => {
-    const key = libraryChapterKey(ref.episode, index);
+  refs.forEach((ref) => {
+    const key = libraryChapterKey(ref.episode, ref.entry);
+    if (!key) return;
     const current = groups.get(key) || {
       key,
       code: ref.episode.code || "VIDEO",
@@ -184,7 +294,10 @@ export function groupLibraryChapters(refs) {
   });
   // The chapter code wins over the file name: files from a pack can be numbered 1…148 across seasons.
   const sortKey = (group) => episodeSortKey(group.code) ?? episodeSortKey(group.sources[0]?.episode?.name) ?? 999999;
-  return [...groups.values()].sort((a, b) => sortKey(a) - sortKey(b) || a.title.localeCompare(b.title));
+  return [...groups.values()].sort((a, b) => sortKey(a) - sortKey(b)
+    || (a.key.startsWith("file:") && b.key.startsWith("file:")
+      ? (Number(a.sources[0]?.episode?.fileIndex) || 0) - (Number(b.sources[0]?.episode?.fileIndex) || 0) : 0)
+    || a.key.localeCompare(b.key));
 }
 
 export function librarySourceDetails(entry, episode) {
@@ -231,6 +344,72 @@ export function librarySeriesKey(title) {
   return String(title || "Untitled series").replace(/\s+\[(?:BDRip|BluRay|WEB[- .]?DL|WEBRip|HDTV|DVDRip)\]\s*$/i, "").trim().toLowerCase();
 }
 
+/** Stable work identity, independent of name, Library insertion order and display aliases. */
+const unidentifiedWorkKeys = new WeakMap();
+let unidentifiedWorkSerial = 0;
+export function libraryWorkKey(entry = {}) {
+  // A malformed old source-id object is not a durable owner. Stringifying it
+  // would merge unrelated records under entry:%5Bobject%20Object%5D.
+  if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const verified = verifiedVideoWorkKey(entry);
+  if (verified) return `catalog:${verified}`;
+  const provider = String(entry.externalSource || "").toUpperCase();
+  const externalId = String(entry.externalId || "").trim();
+  const kind = entry.catalogType === "movie" ? "movie" : "series";
+  if (provider === "ANILIST" && /^[1-9]\d*$/.test(externalId))
+    return `external:anilist:${kind}:${externalId}`;
+  if (provider === "TMDB" && /^(?:(?:movie|tv):)?[1-9]\d*$/.test(externalId))
+    return `external:tmdb:${kind}:${externalId}`;
+  // Existing stored entry.id is durable across source refresh and move within
+  // the Library; unknown same-name sources must never silently join.
+  if ((typeof entry.id === "string" && entry.id.length > 0)
+    || (typeof entry.id === "number" && Number.isSafeInteger(entry.id)))
+    return `entry:${encodeURIComponent(String(entry.id))}`;
+  if (typeof entry.provisionalWorkId === "string" && entry.provisionalWorkId)
+    return `provisional:${encodeURIComponent(entry.provisionalWorkId)}`;
+  // Avoid grouping two historical ID-less records by the empty string. This
+  // identity is intentionally temporary until each source is explicitly saved.
+  if (!unidentifiedWorkKeys.has(entry)) unidentifiedWorkKeys.set(entry, ++unidentifiedWorkSerial);
+  return `unresolved-entry:${unidentifiedWorkKeys.get(entry)}`;
+}
+
+/** Old title-only deep links remain readable only while they identify one work. */
+export function findLibrarySeriesByKey(rawKey, items = buildLibrarySeries()) {
+  const key = String(rawKey || "");
+  const exact = items.find((series) => series.key === key || series.routeKey === key);
+  if (exact) return exact;
+  const bySource = items.filter((series) => (series.routeAliases || []).includes(key));
+  if (bySource.length === 1) return bySource[0];
+  // A typed route is a claimed work/source owner, not a display alias. If its
+  // owner disappeared, never resolve it to a foreign series via legacyKey.
+  if (/^(?:catalog:|entry:|external:|provisional:|unresolved-entry:)/.test(key)) return null;
+  const previousLegacy = key.startsWith("legacy:") ? key.slice("legacy:".length) : key;
+  const legacy = items.filter((series) => series.legacyKey === previousLegacy);
+  return legacy.length === 1 ? legacy[0] : null;
+}
+
+// An already selected torrent always belongs to its exact saved source, not
+// to another translated title sharing its historical seriesKey display alias.
+export function librarySeriesForEntry(entry, items = buildLibrarySeries()) {
+  if (!entry || typeof entry !== "object") return null;
+  const hasId = (typeof entry.id === "string" && entry.id.length > 0)
+    || (typeof entry.id === "number" && Number.isSafeInteger(entry.id));
+  const matches = items.filter((series) => (series.sources || []).some((source) =>
+    hasId ? source.id === entry.id : source === entry));
+  return matches.length === 1 ? matches[0] : null;
+}
+
+// Catalog-backed badges, search results and Discover exclusion require an
+// exact catalog ID and media kind. A display title is not verified ownership.
+export function librarySeriesForCatalog(meta, items = buildLibrarySeries()) {
+  const id = String(meta?.id || meta?.catalogId || "");
+  if (!/^tt\d{5,12}$/i.test(id)) return null;
+  const type = meta?.type === "movie" ? "movie" : "series";
+  const matches = items.filter((series) => series.catalogId?.toLowerCase() === id.toLowerCase()
+    && series.type === type);
+  return matches.length === 1 ? matches[0] : null;
+}
+
 export function catalogMediaKind(meta) {
   const animeIds = new Set((state.homeCatalog.anime || []).map((item) => item.id).filter(Boolean));
   return libraryCategory({ catalogId: meta?.id, type: meta?.type, kind: meta?.kind, genres: meta?.genres },
@@ -238,17 +417,27 @@ export function catalogMediaKind(meta) {
 }
 
 export function buildLibrarySeries() {
+  migrateLegacyLibraryIdentities();
   const groups = new Map();
-  state.library.forEach((entry) => {
+  // A retained legacy Library snapshot may include null/non-record slots.
+  // Ignore them in the derived view without deleting their persisted bytes.
+  (Array.isArray(state.library) ? state.library : []).forEach((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
     // A removed Library listing can retain its saved chapter/source records.
     // Re-adding the title unhides those records without losing watch history.
     if (entry.libraryHidden === true) return;
-    const key = entry.seriesKey || librarySeriesKey(entry.title);
-    const displayTitle = entry.displayTitle || entry.title;
-    const groupId = verifiedVideoWorkKey(entry) || `legacy:${key}`;
+    const key = typeof entry.seriesKey === "string" && entry.seriesKey
+      ? entry.seriesKey : librarySeriesKey(entry.title);
+    const displayTitle = String(entry.displayTitle || entry.title || "Untitled series");
+    const catalogId = typeof entry.catalogId === "string" ? entry.catalogId : "";
+    const groupId = libraryWorkKey(entry);
     const group = groups.get(groupId) || {
-      key,
+      // Legacy key remains available to older Watch/player consumers. Cards,
+      // routes and new Library actions use routeKey, which is immutable.
+      key: groupId,
+      legacyKey: key,
       routeKey: groupId,
+      routeAliases: [],
       title: displayTitle,
       type: entry.catalogType === "movie" ? "movie" : "series",
       mediaKind: entry.mediaKind || "",
@@ -256,8 +445,8 @@ export function buildLibrarySeries() {
       artworkIndex: Number.isInteger(entry.artworkIndex) ? entry.artworkIndex : 0,
       artworkSource: entry.artworkSource || "",
       artworkPinned: Boolean(entry.artworkPinned),
-      catalogId: entry.catalogId || "",
-      catalogType: entry.catalogType || "",
+      catalogId,
+      catalogType: ["movie", "series"].includes(entry.catalogType) ? entry.catalogType : "",
       aliases: Array.isArray(entry.aliases) ? entry.aliases.slice() : [],
       releaseInfo: entry.releaseInfo || "",
       externalSource: entry.externalSource || "",
@@ -268,8 +457,13 @@ export function buildLibrarySeries() {
       extras: [],
     };
     group.sources.push(entry);
-    if (!group.catalogId && entry.catalogId) group.catalogId = entry.catalogId;
-    if (!group.catalogType && entry.catalogType) group.catalogType = entry.catalogType;
+    if ((typeof entry.id === "string" && entry.id.length > 0)
+      || (typeof entry.id === "number" && Number.isSafeInteger(entry.id))) {
+      const sourceRoute = `entry:${encodeURIComponent(String(entry.id))}`;
+      if (!group.routeAliases.includes(sourceRoute)) group.routeAliases.push(sourceRoute);
+    }
+    if (!group.catalogId && catalogId) group.catalogId = catalogId;
+    if (!group.catalogType && ["movie", "series"].includes(entry.catalogType)) group.catalogType = entry.catalogType;
     if (!group.releaseInfo && entry.releaseInfo) group.releaseInfo = entry.releaseInfo;
     if (!group.externalSource && entry.externalSource) group.externalSource = entry.externalSource;
     if (!group.externalId && entry.externalId) group.externalId = entry.externalId;
@@ -286,9 +480,10 @@ export function buildLibrarySeries() {
       group.updatedAt = entry.updatedAt || group.updatedAt;
       group.title = displayTitle || group.title;
     }
-    (entry.episodes || []).forEach((episode) => {
+    (Array.isArray(entry.episodes) ? entry.episodes : []).forEach((episode) => {
+      if (!episode || typeof episode !== "object" || Array.isArray(episode)) return;
       const ref = { entry, episode };
-      const match = String(episode.code || "").match(/^S(\d{1,2})E(\d{1,3})$/i);
+      const match = String(episode.code || "").match(/^S(\d{2})E(\d{2,4})$/i);
       if (episode.extra) {
         group.extras.push(ref);
         return;
@@ -300,26 +495,33 @@ export function buildLibrarySeries() {
     });
     groups.set(groupId, group);
   });
-  const result = [...groups.values()];
-  // Two verified IMDb titles can have the SAME translated/normalized title.
-  // Retain historical series.key for ordinary Library/AniList integration,
-  // but assign both colliding groups a stable qualified action key. Doing
-  // this for *both* makes routing independent of Library insertion order.
-  const counts = new Map();
-  for (const item of result) counts.set(item.key, (counts.get(item.key) || 0) + 1);
-  for (const item of result) if (counts.get(item.key) > 1) item.key = `catalog:${item.routeKey}`;
-  return result.sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
+  // Every new card/action key remains a stable work ID even if another title
+  // with the same display alias is added. Older keys resolve only when unique.
+  return [...groups.values()].sort((a, b) => b.updatedAt - a.updatedAt || a.title.localeCompare(b.title));
 }
 
 export function addCatalogPlaceholder(meta, { aliases = [], externalSource = "CATALOG", externalId = "", render = true } = {}) {
+  if (!Array.isArray(state.library)) return null;
   const name = String(meta?.name || aliases[0] || "Untitled").trim();
   if (!name) return null;
   const catalogType = meta?.type === "movie" ? "movie" : "series";
   const catalogId = /^tt\d{5,12}$/.test(String(meta?.id || "")) ? String(meta.id) : "";
+  const provider = String(externalSource || "").toUpperCase();
+  const providerId = String(externalId || "").trim();
+  const verifiedProvider = provider === "ANILIST" && /^[1-9]\d*$/.test(providerId)
+    || provider === "TMDB" && /^(?:(?:movie|tv):)?[1-9]\d*$/.test(providerId);
+  // An unknown provider ID or display name cannot identify a work. Give each
+  // separately added provisional entry its own durable identity.
   const id = catalogId
     ? `catalog:${catalogType}:${catalogId}`
-    : `${String(externalSource || "external").toLowerCase()}:${String(externalId || name).toLowerCase()}`;
-  const existing = state.library.find((item) => item.id === id);
+    : verifiedProvider
+      // AniList imports already persist anilist:<id>, which the sync planner
+      // also uses for kept/remove membership. Preserve that durable identity
+      // rather than manufacturing a second placeholder for the same media.
+      ? (provider === "ANILIST" ? `anilist:${providerId}`
+        : `external:tmdb:${catalogType}:${providerId}`)
+      : `provisional:${crypto.randomUUID()}`;
+  const existing = state.library.find((item) => item && typeof item === "object" && !Array.isArray(item) && item.id === id);
   const entry = {
     ...(existing || {}),
     id,
@@ -344,10 +546,12 @@ export function addCatalogPlaceholder(meta, { aliases = [], externalSource = "CA
     updatedAt: Date.now(),
     episodes: Array.isArray(existing?.episodes) ? existing.episodes : [],
   };
-  const index = state.library.findIndex((item) => item.id === id);
-  // Explicitly re-adding a title restores chapters retained by "Remove entry".
+  const index = state.library.findIndex((item) => item && typeof item === "object" && !Array.isArray(item) && item.id === id);
+  // Explicitly re-adding a work restores only that work's retained chapters.
+  // Same-name reboots preserve their independent hidden state and watch marks.
   for (const item of state.library) {
-    if ((item.seriesKey || librarySeriesKey(item.title)) === entry.seriesKey) delete item.libraryHidden;
+    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+    if (libraryWorkKey(item) === libraryWorkKey(entry)) delete item.libraryHidden;
   }
   delete entry.libraryHidden;
   if (index >= 0) state.library[index] = entry; else state.library.unshift(entry);
@@ -395,9 +599,9 @@ export function currentChapterNavigation() {
   const source = state.currentSource;
   const currentEntry = source?.libraryId ? libraryEntryById(source.libraryId) : null;
   const currentEpisode = currentEntry?.episodes?.find((episode) => Number(episode.fileIndex) === Number(source?.fileIndex));
-  const currentKey = currentEpisode ? libraryChapterKey(currentEpisode) : "";
+  const currentKey = currentEpisode ? libraryChapterKey(currentEpisode, currentEntry) : "";
   const index = currentKey
-    ? chapters.findIndex(({ episode }) => libraryChapterKey(episode) === currentKey)
+    ? chapters.findIndex(({ entry, episode }) => libraryChapterKey(episode, entry) === currentKey)
     : -1;
   return {
     chapters,
@@ -419,7 +623,7 @@ export function currentChapterSources() {
   if (series.type === "movie") {
     return [...series.seasons.values()].flatMap((items) => items).concat(series.extras || []).sort(compareLibrarySourceRefsByPeers);
   }
-  const wantedKey = libraryChapterKey(currentEpisode);
+  const wantedKey = libraryChapterKey(currentEpisode, currentEntry);
   const refs = [...series.seasons.values()].flatMap((items) => items).concat(series.extras || []);
   const chapter = groupLibraryChapters(refs).find((item) => item.key === wantedKey);
   return (chapter?.sources || []).slice().sort(compareLibrarySourceRefsByPeers);
@@ -438,23 +642,34 @@ export async function resolveCatalogMetaForLibrarySeries(series) {
   }
   const queries = [series.title, ...(series.aliases || [])].filter(Boolean).slice(0, 5);
   const targetYear = Number(String(series.releaseInfo || "").match(/\b(19|20)\d{2}\b/)?.[0] || 0);
-  let best = null;
+  const normalized = (value) => String(value || "").normalize("NFKD").replace(/\p{M}/gu, "")
+    .toLocaleLowerCase().replace(/['’]/g, "").replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/g, " ");
+  const knownNames = new Set(queries.map(normalized).filter(Boolean));
+  const candidates = new Map();
   for (const query of queries) {
     try {
       const data = await fetchJson(`/api/catalog/search?q=${encodeURIComponent(query)}`);
-      const matches = (data.results || []).filter((item) => item.type === (series.type === "movie" ? "movie" : "series"));
-      matches.sort((a, b) => {
-        const aYear = Number(catalogResultYear(a) || 0);
-        const bYear = Number(catalogResultYear(b) || 0);
-        const aPenalty = targetYear && aYear ? Math.abs(targetYear - aYear) : 0;
-        const bPenalty = targetYear && bYear ? Math.abs(targetYear - bYear) : 0;
-        return aPenalty - bPenalty;
-      });
-      if (matches[0]) { best = matches[0]; break; }
+      for (const item of data.results || []) {
+        if (!/^tt\d{5,12}$/i.test(String(item?.id || ""))
+          || item.type !== (series.type === "movie" ? "movie" : "series")) continue;
+        const candidateNames = [item.name, item.title, ...(Array.isArray(item.aliases) ? item.aliases : [])];
+        if (!candidateNames.some((name) => knownNames.has(normalized(name)))) continue;
+        if (targetYear && Number(catalogResultYear(item) || 0) !== targetYear) continue;
+        candidates.set(String(item.id).toLowerCase(), item);
+      }
     } catch {}
   }
-  if (!best) throw new Error("Could not match this imported title to stream metadata.");
-  updateLibrarySeriesEntries(series.key, (entry) => {
+  // An exact display title is not itself unique when remakes or TV/movies
+  // share translations. All alias queries must agree on ONE verified work.
+  if (candidates.size !== 1)
+    throw new Error("Catalog match is missing or ambiguous. Verify the title and year before linking sources.");
+  const best = candidates.values().next().value;
+  const route = series.routeKey || series.key;
+  const current = findLibrarySeriesByKey(route);
+  if (!current || current.catalogId || !current.sources.some((source) =>
+    (series.sources || []).some((original) => original.id === source.id)))
+    throw new Error("The Library title changed during catalog lookup. Reopen it before linking.");
+  const changed = updateLibrarySeriesEntries(route, (entry) => {
     entry.catalogId = best.id;
     entry.catalogType = best.type;
     entry.coverUrl ||= best.poster || "";
@@ -462,15 +677,33 @@ export async function resolveCatalogMetaForLibrarySeries(series) {
     entry.aliases = [...new Set([...(entry.aliases || []), best.name])];
     entry.updatedAt = Date.now();
   });
+  if (!changed) throw new Error("The Library title could not be linked safely.");
   return best;
 }
 
 export function updateLibrarySeriesEntries(seriesKey, updater) {
   let changed = false;
-  const qualified = String(seriesKey).startsWith('catalog:');
-  state.library.forEach((entry) => {
-    const key = entry.seriesKey || librarySeriesKey(entry.title);
-    if (qualified ? `catalog:${verifiedVideoWorkKey(entry)}` !== seriesKey : key !== seriesKey) return;
+  const wanted = String(seriesKey || "");
+  const records = Array.isArray(state.library)
+    ? state.library.filter((entry) => entry && typeof entry === "object" && !Array.isArray(entry)) : [];
+  // Exact work keys always win over historical display aliases, including a
+  // legacy record whose seriesKey happens to contain another work's route.
+  // Unknown typed routes must never become writable name-based fallbacks.
+  const exactExists = records.some((entry) => libraryWorkKey(entry) === wanted);
+  const typedRoute = /^(?:catalog:|entry:|external:|provisional:|unresolved-entry:)/.test(wanted);
+  const legacyWanted = wanted.startsWith("legacy:") ? wanted.slice("legacy:".length) : wanted;
+  const distinctLegacy = new Map();
+  if (!exactExists && !typedRoute) {
+    for (const item of records) {
+      if ((item.seriesKey || librarySeriesKey(item.title)) === legacyWanted)
+        distinctLegacy.set(libraryWorkKey(item), true);
+    }
+  }
+  const allowUniqueLegacy = !exactExists && !typedRoute && distinctLegacy.size === 1;
+  records.forEach((entry) => {
+    const exact = libraryWorkKey(entry) === wanted;
+    const legacy = (entry.seriesKey || librarySeriesKey(entry.title)) === legacyWanted;
+    if (!exact && !(allowUniqueLegacy && legacy)) return;
     updater(entry);
     changed = true;
   });
@@ -494,8 +727,9 @@ export function artworkNotice(message, error = false) {
 export async function fetchArtworkForSeriesKey(seriesKey, { advance = false, quiet = false, rerender = true } = {}) {
   if (artworkFetches.has(seriesKey)) return artworkFetches.get(seriesKey);
   const task = (async () => {
-    const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+    const series = findLibrarySeriesByKey(seriesKey);
     if (!series) return false;
+    const workKey = series.routeKey || series.key;
     if (!advance && (series.artworkPinned || ["CUSTOM", "TVMAZE", "MANUAL"].includes(String(series.artworkSource || "").toUpperCase()))) return false;
     const query = cleanArtworkQuery(series.title);
     if (!query) return false;
@@ -505,18 +739,22 @@ export async function fetchArtworkForSeriesKey(seriesKey, { advance = false, qui
       if (!quiet) artworkNotice(`No poster found for ${query}`, true);
       return false;
     }
+    // The original alias may now refer to another same-name work. Apply the
+    // response only while its captured canonical owner still exists.
+    if (!findLibrarySeriesByKey(workKey)) return false;
     let index = Number.isInteger(series.artworkIndex) ? series.artworkIndex : 0;
     if (advance && series.coverUrl) index += 1;
     index = ((index % candidates.length) + candidates.length) % candidates.length;
     if (advance && candidates.length > 1 && candidates[index]?.url === series.coverUrl) index = (index + 1) % candidates.length;
     const candidate = candidates[index];
-    updateLibrarySeriesEntries(seriesKey, (entry) => {
+    const changed = updateLibrarySeriesEntries(workKey, (entry) => {
       entry.coverUrl = candidate.url;
       entry.artworkIndex = index;
       entry.artworkSource = candidate.source || "WEB";
       entry.artworkPinned = Boolean(advance);
       entry.updatedAt = Date.now();
     });
+    if (!changed) return false;
     if (rerender && $("#view-library")?.classList.contains("is-active")) renderLibrary();
     if (!quiet) artworkNotice(`New poster for ${series.title}`);
     return true;

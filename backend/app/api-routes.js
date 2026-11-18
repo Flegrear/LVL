@@ -260,7 +260,10 @@ const API_ROUTES = [
 ];
 
 export async function handleApi(req, res, url) {
-  if (localOnly(url.pathname) && localRequestRejected(req, res)) return true;
+  // Route ownership must not decide whether a mutation gets a local-origin
+  // check. A newly added API endpoint is protected before its handler runs.
+  if ((localOnly(url.pathname) || (req.method !== "GET" && req.method !== "HEAD"))
+      && localRequestRejected(req, res)) return true;
   for (const route of API_ROUTES) {
     const match = typeof route.path === "string" ? route.path === url.pathname
       : route.path instanceof RegExp ? route.path.exec(url.pathname) : route.path(url.pathname);

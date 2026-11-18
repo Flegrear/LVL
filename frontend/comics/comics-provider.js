@@ -5,11 +5,14 @@ import { readSourceChoice, reconcileFavoriteSource, sourceChoice, sourceChoices,
 
 export function createProviderSession(fetchPage) {
   let revision = 0;
-  const state = { sourceId: "", mode: "popular", query: "", page: 0, hasNextPage: false, loading: false, loaded: false, error: "", status: "", items: [] };
+  const state = { sourceId: "", mode: "popular", query: "", page: 0, hasNextPage: false, loading: false, loaded: false,
+    error: "", status: "", items: [], warning: "", unsupportedPaths: 0, compatibilityWarning: "", needsPeerUpgrade: 0 };
   const snapshot = () => ({ ...state, items: [...state.items] });
   async function fetchNext(append, selection) {
     const token = ++revision;
-    if (!append) Object.assign(state, { sourceId: selection.sourceId, mode: selection.mode, query: selection.query || "", page: 0, hasNextPage: false, items: [], loaded: false });
+    if (!append) Object.assign(state, { sourceId: selection.sourceId, mode: selection.mode, query: selection.query || "",
+      page: 0, hasNextPage: false, items: [], loaded: false, warning: "", unsupportedPaths: 0,
+      compatibilityWarning: "", needsPeerUpgrade: 0 });
     const page = append ? state.page + 1 : 1;
     state.loading = true;
     state.error = "";
@@ -21,6 +24,14 @@ export function createProviderSession(fetchPage) {
       state.page = page;
       const known = new Set(state.items.map((item) => item.path));
       state.items = append ? [...state.items, ...(result.items || []).filter((item) => !known.has(item.path))] : result.items || [];
+      state.unsupportedPaths = (append ? state.unsupportedPaths : 0)
+        + Math.max(0, Number(result.unsupportedPaths) || 0);
+      state.needsPeerUpgrade = (append ? state.needsPeerUpgrade : 0)
+        + Math.max(0, Number(result.needsPeerUpgrade) || 0);
+      state.warning = state.unsupportedPaths
+        ? `${state.unsupportedPaths} source title path(s) cannot be opened or synced by this version of LVL.` : "";
+      state.compatibilityWarning = state.needsPeerUpgrade
+        ? `${state.needsPeerUpgrade} title(s) require an updated LVL on older devices before their full source paths can be opened there.` : "";
       state.hasNextPage = state.status === "ok" && Boolean(result.hasNextPage) && page < 20;
       if (state.status !== "ok") state.error = result.error || (state.status === "unsupported" ? "This source doesn't support this view." : "This source couldn't load.");
     } catch (error) {
@@ -35,7 +46,8 @@ export function createProviderSession(fetchPage) {
     reset(selection) {
       ++revision;
       Object.assign(state, { sourceId: selection.sourceId || "", mode: selection.mode || "popular", query: selection.query || "",
-        page: 0, hasNextPage: false, loading: false, loaded: false, error: "", status: "", items: [] });
+        page: 0, hasNextPage: false, loading: false, loaded: false, error: "", status: "", items: [],
+        warning: "", unsupportedPaths: 0, compatibilityWarning: "", needsPeerUpgrade: 0 });
       return snapshot();
     },
     load: (selection) => fetchNext(false, selection),
@@ -80,8 +92,9 @@ export function mountProviderBrowser(section, ctx) {
     for (const mode of section.querySelectorAll("[data-provider-mode]")) mode.setAttribute("aria-pressed", String(mode.dataset.providerMode === state.mode));
     queryForm.hidden = state.mode !== "search";
     const source = currentSource();
-    status.textContent = state.error || (state.loading ? t("Loading…") : !sources.size && favoritesLoaded ? t("Add favorite sources in Settings › Comics.") :
+    const summary = state.error || (state.loading ? t("Loading…") : !sources.size && favoritesLoaded ? t("Add favorite sources in Settings › Comics.") :
       !source ? t("Choose a source to browse.") : state.loaded ? t("{count} titles", { count: state.items.length }) : t("Choose Popular, Latest or Search."));
+    status.textContent = [summary, ...(!state.loading && !state.error ? [state.warning, state.compatibilityWarning].filter(Boolean) : [])].join(" ");
     status.classList.toggle("is-error", Boolean(state.error));
     grid.innerHTML = state.items.map((item) => card(item, opened.get(`${state.sourceId}\n${item.path}`) || item.workId)).join("");
     more.hidden = !state.hasNextPage || Boolean(state.error);

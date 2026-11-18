@@ -62,6 +62,7 @@ export async function romanizeSubtitleLine(text, language) {
 
 export async function romanizeSubtitles(req, res) {
   const body = await readJsonBody(req);
+  if (req.aborted || res.destroyed || res.writableEnded) return;
   const language = romanizationLanguage(body.language);
   const texts = Array.isArray(body.texts) ? body.texts : [];
   if (!language) {
@@ -79,6 +80,24 @@ export async function romanizeSubtitles(req, res) {
     return;
   }
   const romanized = [];
-  for (const text of normalized) romanized.push(await romanizeSubtitleLine(text, language));
+  // Dictionary initialization/conversion can await filesystem-backed work.
+  // A disconnected client must not keep queuing up to 80 independent lines
+  // or receive an attempted response once its request is gone.
+  let disconnected = Boolean(req.aborted || res.destroyed || res.writableEnded);
+  const onDisconnect = () => { disconnected = true; };
+  req.once("aborted", onDisconnect);
+  res.once("close", onDisconnect);
+  try {
+    for (const text of normalized) {
+      if (disconnected || req.aborted || res.destroyed || res.writableEnded) return;
+      const converted = await romanizeSubtitleLine(text, language);
+      if (disconnected || req.aborted || res.destroyed || res.writableEnded) return;
+      romanized.push(converted);
+    }
+  } finally {
+    req.off("aborted", onDisconnect);
+    res.off("close", onDisconnect);
+  }
+  if (disconnected || req.aborted || res.destroyed || res.writableEnded) return;
   json(res, 200, { language, romanized });
 }

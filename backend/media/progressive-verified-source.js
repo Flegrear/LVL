@@ -39,6 +39,8 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import { verifyTorrentFileByteRange } from './verified-torrent-range.js';
+import { waitForChildStdioDrain } from './transcode-slot-lifecycle.js';
+import { createSharedCacheReservation } from './shared-cache-admission.js';
 
 const UUID=/^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i;
 const HASH=/^[\da-f]{40}$/i;
@@ -52,16 +54,6 @@ const safe=value=>Number.isSafeInteger(value)&&value>=0;
 const sha=value=>crypto.createHash('sha256').update(value).digest('hex');
 const fail=(reason,extras={})=>({eligible:false,reason,verifiedPrefix:null,islands:[],
   mediaTimingProven:false,networkReaderAllowed:false,sourceComplete:false,...extras});
-
-async function abortableAllowance(allowance,bytes,signal){
-  if(signal?.aborted)return null;
-  let onAbort;
-  const canceled=new Promise(resolve=>{onAbort=()=>resolve(null);
-    signal?.addEventListener('abort',onAbort,{once:true});});
-  try{return await Promise.race([Promise.resolve().then(()=>allowance(bytes)),canceled]);}
-  catch{return null;}
-  finally{signal?.removeEventListener('abort',onAbort);}
-}
 
 function identityFor({session,fileIndex,audioIndex=0,audioMode='auto',generation=0},end){
   const file=session.torrent.files[fileIndex];
@@ -143,7 +135,7 @@ export function inspectProgressiveVerifiedSource({session,fileIndex,
 // the outer Matroska Segment ONLY, never an arbitrary later Cluster: a window
 // can be isolated only when its exact byte end is known and already verified.
 function ebmlElement(bytes,offset){
-  if(offset>=bytes.length)return null;
+  if(!safe(offset)||offset>=bytes.length)return null;
   const idFirst=bytes[offset];
   let idLen=1,mask=0x80;
   while(idLen<=4&&!(idFirst&mask)){mask>>=1;idLen++;}
@@ -160,6 +152,7 @@ function ebmlElement(bytes,offset){
   if(size>BigInt(Number.MAX_SAFE_INTEGER)&&!unknown)return null;
   const dataStart=sizeOffset+sizeLen;
   const end=unknown?null:dataStart+Number(size);
+  if(!unknown&&(!safe(end)||end<dataStart))return null;
   return {id,start:offset,dataStart,end,unknown};
 }
 
@@ -170,14 +163,19 @@ function matroskaHeaderLength(prefix){
   const segment=ebmlElement(prefix,ebml.end);
   if(segment?.id!==0x18538067)return null;
   let cursor=segment.dataStart,info=false,tracks=false;
+  let members=0;
   while(cursor+8<=prefix.length){
+    if(safe(segment.end)&&cursor>=segment.end)return null;
+    if(++members>4096)return null;
     const member=ebmlElement(prefix,cursor);
     if(!member)return null;
     if(member.id===0x1f43b675){
       if(!info||!tracks)return null;
       return cursor;
     }
-    if(member.unknown||!safe(member.end)||member.end>prefix.length)return null;
+    if(member.unknown||!safe(member.end)||member.end<=cursor
+      ||member.end>prefix.length
+      ||(safe(segment.end)&&member.end>segment.end))return null;
     if(member.id===0x1549a966)info=true;
     if(member.id===0x1654ae6b)tracks=true;
     cursor=member.end;
@@ -191,9 +189,12 @@ function completeCluster(bytes,at){
     ||cluster.end>bytes.length||cluster.end<=cluster.dataStart+4
     ||cluster.end-at>MAX_CLUSTER)return null;
   let cursor=cluster.dataStart,timecode=null,blocks=0;
+  let elements=0;
   while(cursor<cluster.end){
+    if(++elements>16384)return null;
     const element=ebmlElement(bytes,cursor);
-    if(!element||element.unknown||!safe(element.end)||element.end>cluster.end)return null;
+    if(!element||element.unknown||!safe(element.end)||element.end<=cursor
+      ||element.end>cluster.end)return null;
     if(element.id===0xe7){
       const n=element.end-element.dataStart;
       if(!n||n>8)return null;
@@ -202,6 +203,7 @@ function completeCluster(bytes,at){
       if(value>BigInt(Number.MAX_SAFE_INTEGER))return null;
       timecode=Number(value);
     }
+    if(element.id===0xa0)return null; // BlockGroup timing has no accepted standalone proof
     if(element.id===0xa3)blocks++;
     cursor=element.end;
   }
@@ -220,10 +222,10 @@ async function readLocalExact(file,at,length){
   return bytes;
 }
 
-async function probeIsolatedCluster(ffprobePath,inputPath,audioIndex,signal){
+async function probeIsolatedCluster(ffprobePath,inputPath,audioIndex,signal,spawnProbe=spawn){
   if(!ffprobePath||signal?.aborted)return null;
   let child;
-  try{child=spawn(ffprobePath,['-v','error','-show_streams','-show_frames',
+  try{child=spawnProbe(ffprobePath,['-v','error','-show_streams','-show_frames',
     '-show_entries','stream=index,codec_name,codec_type:frame=stream_index,media_type,key_frame,best_effort_timestamp_time',
     '-of','json',inputPath],{windowsHide:true,stdio:['ignore','pipe','pipe']});}
   catch{return null;}
@@ -231,18 +233,28 @@ async function probeIsolatedCluster(ffprobePath,inputPath,audioIndex,signal){
   const kill=()=>{failed=true;try{child.kill('SIGTERM');}catch{}};
   const onAbort=()=>kill();
   signal?.addEventListener('abort',onAbort,{once:true});
-  const timer=setTimeout(kill,10000);timer.unref?.();
-  const code=await new Promise(resolve=>{
-    child.stdout.on('data',bytes=>{
-      if(failed)return;
-      if(output.length+bytes.length>1024*1024){kill();return;}
-      output+=String(bytes);
-    });
-    child.stderr.resume();
-    child.once('error',kill);
-    child.once('close',resolve);
+  child.stdout.on('data',bytes=>{
+    if(failed)return;
+    if(output.length+bytes.length>1024*1024){kill();return;}
+    output+=String(bytes);
   });
-  clearTimeout(timer);signal?.removeEventListener('abort',onAbort);
+  child.stderr.resume();
+  let escalation=null;
+  const code=await waitForChildStdioDrain(child,{
+    timeoutMs:10000,
+    onTimeout:()=>{
+      kill();
+      if(Number.isSafeInteger(child.pid)&&child.pid>0){
+        escalation=setTimeout(()=>{
+          if(child.exitCode==null&&child.signalCode==null)
+            try{child.kill('SIGKILL');}catch{}
+        },2000);
+        escalation.unref?.();
+      }
+    },
+    onError:kill,
+  });
+  clearTimeout(escalation);signal?.removeEventListener('abort',onAbort);
   if(code!==0||failed||signal?.aborted)return null;
   try{
     const data=JSON.parse(output);
@@ -269,7 +281,7 @@ async function probeIsolatedCluster(ffprobePath,inputPath,audioIndex,signal){
 export function createProgressiveVerifiedSource({sessionsRoot,
   maxPrefixBytes=DEFAULT_PREFIX,maxChunkBytes=DEFAULT_CHUNK,
   maxScanPieces=MAX_SCAN_PIECES,maxActive=1,
-  ffprobePath=null,onDiagnostic=()=>{},
+  ffprobePath=null,spawnProbe=spawn,onDiagnostic=()=>{},
   allowance=async()=>({allowed:false}),isCurrent=()=>false}={}){
   if(!path.isAbsolute(sessionsRoot||'')
     ||!Number.isSafeInteger(maxChunkBytes)||maxChunkBytes<1024||maxChunkBytes>DEFAULT_CHUNK
@@ -297,12 +309,18 @@ export function createProgressiveVerifiedSource({sessionsRoot,
     };
     if(!sourceVerified())return null;
     const leaseToken={};active.add(leaseToken); // claim BEFORE any await
+    const quota=createSharedCacheReservation({sessionsRoot,allowance});
+    // The shared ledger deliberately keeps an already-running quota callback
+    // serialized until it finishes. Abort this owner's lease independently:
+    // a stopped producer must not wait for a provider that never settles.
+    const abortQuota=()=>quota.release();
+    params.signal?.addEventListener('abort',abortQuota,{once:true});
+    if(params.signal?.aborted)abortQuota();
     let source=null,writer=null,staging=null,ready=null,dir=null;
     let successful=false;
     try{
-      const budget=await abortableAllowance(allowance,
-        evidence.verifiedPrefix.bytes+maxChunkBytes,params.signal);
-      if(!budget?.allowed||!sourceVerified())return null;
+      if(!await quota.reserve(evidence.verifiedPrefix.bytes+maxChunkBytes)
+        ||!sourceVerified())return null;
       const root=await fs.realpath(sessionsRoot);
       const home=await fs.realpath(path.join(sessionsRoot,session.id));
       if(path.relative(root,home).toLowerCase()!==session.id.toLowerCase())return null;
@@ -337,6 +355,7 @@ export function createProgressiveVerifiedSource({sessionsRoot,
           if(!bytesWritten)return null;
           done+=bytesWritten;
         }
+        if(!quota.consume(count))return null;
         digest.update(block.subarray(0,count));total+=count;
       }
       if(!sourceVerified())return null;
@@ -351,14 +370,17 @@ export function createProgressiveVerifiedSource({sessionsRoot,
         sourceVerified,networkReaderAllowed:false,mediaTimingProven:false,
         sourceComplete:evidence.sourceComplete,
         async release(){if(released)return;released=true;active.delete(leaseToken);
-          await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});},
+          await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});
+          quota.release();},
       };
     }catch{return null;}
     finally{
+      params.signal?.removeEventListener('abort',abortQuota);
       await writer?.close().catch(()=>{});
       await source?.close().catch(()=>{});
       if(!successful){active.delete(leaseToken);
-        if(dir)await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});}
+        if(dir)await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});
+        quota.release();}
     }
   }
   /**
@@ -387,6 +409,10 @@ export function createProgressiveVerifiedSource({sessionsRoot,
       &&proofRanges.every(({start,end})=>verifyTorrentFileByteRange(
         original.torrent,params.fileIndex,{start,end}).verified===true);
     const leaseToken={};active.add(leaseToken);
+    const quota=createSharedCacheReservation({sessionsRoot,allowance});
+    const abortQuota=()=>quota.release();
+    params.signal?.addEventListener('abort',abortQuota,{once:true});
+    if(params.signal?.aborted)abortQuota();
     let source=null,writer=null,dir=null,success=false;
     try{
       const root=await fs.realpath(sessionsRoot);
@@ -405,6 +431,8 @@ export function createProgressiveVerifiedSource({sessionsRoot,
       const headerRegion=await readLocalExact(source,0,headerRead);
       const headerLength=headerRegion&&matroskaHeaderLength(headerRegion);
       if(!safe(headerLength)||headerLength<32||headerLength>MAX_HEADER){diagnostic('invalid-ebml-prefix');return null;}
+      const segment=ebmlElement(headerRegion,ebmlElement(headerRegion,0)?.end??0);
+      if(segment?.id!==0x18538067)return null;
       const header=headerRegion.subarray(0,headerLength);
       for(const island of evidence.islands){
         if(!stillCurrent())return null;
@@ -419,12 +447,12 @@ export function createProgressiveVerifiedSource({sessionsRoot,
           const cluster=completeCluster(islandData,position);
           if(!cluster)continue;
           const start=island.start+cluster.start,end=island.start+cluster.end-1;
+          if(safe(segment.end)&&end>=segment.end)continue;
           if(safe(params.afterStartBytes)&&start<params.afterStartBytes)continue;
           proofRanges=[{start:0,end:headerLength-1},{start,end}];
           if(!sourceVerified())return null;
           const count=header.length+cluster.end-cluster.start;
-          const budget=await abortableAllowance(allowance,count+maxChunkBytes,params.signal);
-          if(!budget?.allowed||!sourceVerified())return null;
+          if(!await quota.reserve(count+maxChunkBytes)||!sourceVerified())return null;
           const area=path.join(home,'progressive-verified-source');
           await fs.mkdir(area,{recursive:true});
           dir=await fs.mkdtemp(path.join(area,'cluster-'));
@@ -434,11 +462,12 @@ export function createProgressiveVerifiedSource({sessionsRoot,
           const clusterBytes=islandData.subarray(cluster.start,cluster.end);
           const digest=sha(Buffer.concat([header,clusterBytes]));
           await writer.writeFile(header);await writer.writeFile(clusterBytes);
+          if(!quota.consume(count))return null;
           await writer.sync();await writer.close();writer=null;
           if(!sourceVerified())return null;
           await fs.rename(staging,ready);
           const verifiedTime=await probeIsolatedCluster(ffprobePath,ready,
-            params.audioIndex??0,params.signal);
+            params.audioIndex??0,params.signal,spawnProbe);
           if(!verifiedTime||!sourceVerified()){diagnostic('unverified-cluster-decoding');return null;}
           success=true;
           const sourceIdentity=Object.freeze({...evidence.sourceIdentity,
@@ -457,7 +486,8 @@ export function createProgressiveVerifiedSource({sessionsRoot,
             sourceKind:'isolated-cluster',sourceComplete:false,
             networkReaderAllowed:false,mediaTimingProven:false,
             async release(){if(released)return;released=true;active.delete(leaseToken);
-              await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});},
+              await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});
+              quota.release();},
           };
         }
       }
@@ -465,10 +495,12 @@ export function createProgressiveVerifiedSource({sessionsRoot,
       return null;
     }catch(error){diagnostic('island-failure:'+String(error?.message||error));return null;}
     finally{
+      params.signal?.removeEventListener('abort',abortQuota);
       await writer?.close().catch(()=>{});
       await source?.close().catch(()=>{});
       if(!success){active.delete(leaseToken);
-        if(dir)await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});}
+        if(dir)await fs.rm(dir,{recursive:true,force:true,maxRetries:3,retryDelay:100}).catch(()=>{});
+        quota.release();}
     }
   }
   return {inspect,materialize,materializeClusterIsland,

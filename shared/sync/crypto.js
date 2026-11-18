@@ -33,10 +33,15 @@ export function newKdfSettings({ iterations = KDF_DEFAULTS.iterations } = {}) {
 
 // The key as 32 bytes: kept with this device's sync settings, so a restart doesn't ask for
 // the passphrase again (the passphrase itself is never stored).
-export async function deriveKeyBytes(passphrase, kdf) {
-  if (typeof passphrase !== "string" || passphrase.length < 8) throw new Error("The sync passphrase must have at least 8 characters");
+export async function deriveKeyBytes(passphrase, kdf, { existing = false } = {}) {
+  if (typeof passphrase !== "string") throw new Error("The sync passphrase must have at least 8 characters");
+  const normalized = passphrase.normalize("NFC");
+  // Creation enforces the actual secret fed to PBKDF2. Older encrypted repos
+  // must remain unlockable even if their original phrase predated this check.
+  if (!existing && Array.from(normalized).length < 8)
+    throw new Error("The sync passphrase must have at least 8 characters");
   if (kdf?.name !== KDF_DEFAULTS.name || !Number.isInteger(kdf.iterations) || kdf.iterations < 100_000) throw new Error("Unsupported sync encryption settings");
-  const base = await subtle().importKey("raw", encoder.encode(passphrase.normalize("NFC")), "PBKDF2", false, ["deriveBits"]);
+  const base = await subtle().importKey("raw", encoder.encode(normalized), "PBKDF2", false, ["deriveBits"]);
   return new Uint8Array(await subtle().deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: fromBase64(kdf.salt), iterations: kdf.iterations }, base, 256));
 }
 

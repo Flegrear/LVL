@@ -4,13 +4,15 @@
 // chapters comes with sources. MangaDex allows about five
 // requests per second; this client sends at most four and honors Retry-After.
 
-import { normalizeUnitNumber, sortVolumes, countChapters } from "../../shared/reading/units.js";
+import { normalizeUnitNumber, sortVolumes, countChapters, unitKey } from "../../shared/reading/units.js";
 import { readBoundedResponse } from "./response-body.js";
 
 export const MANGADEX_API = "https://api.mangadex.org";
 const SAFE_RATINGS = ["safe", "suggestive"];
 const MANGA_UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const COVER_FILENAME = /^[a-z0-9_-]{1,80}\.(?:jpe?g|png|webp)$/i;
+const METADATA_MAX_BYTES = 4 * 1024 * 1024;
+const COVER_MAX_BYTES = 2 * 1024 * 1024;
 
 // The primary edition is explicitly linked by MangaDex. A matching title is
 // only a search hint; it never authorizes an artwork substitution.
@@ -51,13 +53,13 @@ export function createMangaDexClient({ endpoint = MANGADEX_API, fetchImpl = glob
       await sleep(retry);
       return send(pathAndQuery, attempt + 1, options);
     }
-    // Artwork metadata requests have a finite retained-byte budget; ordinary
-    // existing aggregate/volume callers keep their prior response contract.
-    const payload = options.maxBytes
-      ? await readBoundedResponse(response, options.maxBytes, "MangaDex artwork metadata exceeds 512 KiB")
-        .then((bytes) => JSON.parse(bytes.toString("utf8"))).catch(() => null)
-      : await response.json().catch(() => null);
-    if (options.maxBytes && !payload) throw new Error("Invalid or oversized MangaDex artwork metadata");
+    // All provider JSON, not just artwork metadata, must be admitted through
+    // a finite streaming byte budget before parsing (including chunked bodies).
+    const maxBytes = options.maxBytes ?? METADATA_MAX_BYTES;
+    const bytes = await readBoundedResponse(response, maxBytes, "MangaDex metadata exceeds byte budget");
+    let payload;
+    try { payload = JSON.parse(bytes.toString("utf8")); }
+    catch { throw Object.assign(new Error("Invalid MangaDex metadata"), { status: 502 }); }
     if (!response.ok || payload?.result === "error") {
       const message = payload?.errors?.[0]?.detail || `MangaDex answered HTTP ${response.status}`;
       throw Object.assign(new Error(message), { status: response.status });
@@ -102,7 +104,11 @@ export function createMangaDexClient({ endpoint = MANGADEX_API, fetchImpl = glob
         const query = String(title || "").trim().slice(0, 120);
         if (!query || tried.has(query.toLowerCase()) || tried.size >= 3) continue;
         tried.add(query.toLowerCase());
-        const params = new URLSearchParams({ title: query, limit: "10" });
+        // Artwork's verified crosswalk scans up to 30 candidates. The chapter
+        // index must use the same bounded verified-ID search horizon, or a
+        // title returned at position 11..30 gets a cover but loses its units.
+        // Result order and title similarity never confer work identity.
+        const params = new URLSearchParams({ title: query, limit: "30" });
         for (const rating of SAFE_RATINGS) params.append("contentRating[]", rating);
         const payload = await request(`/manga?${params}`);
         const hit = (payload.data || []).find((item) => String(item?.attributes?.links?.al || "") === target);
@@ -122,7 +128,7 @@ export function createMangaDexClient({ endpoint = MANGADEX_API, fetchImpl = glob
       if (!/^[0-9a-f-]{36}$/i.test(String(mangadexId || ""))) throw new Error("Invalid MangaDex id");
       const byVolume = {};
       for (let offset = 0; offset < 300; offset += 100) {
-        const payload = await request(`/cover?manga[]=${mangadexId}&limit=100&offset=${offset}&order[volume]=asc`);
+        const payload = await request(`/cover?manga[]=${mangadexId}&limit=100&offset=${offset}&order[volume]=asc`, { maxBytes: COVER_MAX_BYTES });
         for (const item of payload.data || []) {
           const volume = normalizeUnitNumber(item?.attributes?.volume);
           const file = String(item?.attributes?.fileName || "");
@@ -148,13 +154,19 @@ export function normalizeAggregate(payload) {
       if (number === null) continue;
       chapters.push({ chapter: number });
     }
-    // Chapters can be listed under several volumes when groups disagree; keep the first.
+    // Numbering can restart in a later volume. Only collapse an identical
+    // volume/chapter pair, never a chapter in another volume.
     volumes.push({ volume, chapters });
   }
   const seen = new Set();
   const sorted = sortVolumes(volumes).map((group) => ({
     ...group,
-    chapters: group.chapters.filter((item) => (seen.has(item.chapter) ? false : seen.add(item.chapter))),
+    chapters: group.chapters.filter((item) => {
+      const key = unitKey({ volume: group.volume, chapter: item.chapter });
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    }),
   })).filter((group) => group.chapters.length || group.volume !== null);
   return { volumes: sorted, chapterCount: countChapters(sorted) };
 }

@@ -13,7 +13,8 @@ import { chapterCode } from "../../shared/media/series-sources.js";
 import { ANILIST_STATUS_LABELS, seriesAniList } from "../anilist/anilist-library.js";
 import { t } from "../ui/ui-i18n.js";
 import { clientFeatures, formatBytes, libraryDialogView, libraryView, state } from "../../app.js";
-import { saveLibrary } from "../app/saved-state.js";
+import { keepAcceptedLegacyLibraryEntries, legacyBootstrapRecoverySummary, restoreLegacyLibraryEntries, saveLibrary, updateLegacyBootstrapRecoverySummary } from "../app/saved-state.js";
+import { fetchJson } from "../app/http.js";
 import { $, $$ } from "../app/dom.js";
 import { viewActive } from "../app/navigation.js";
 import { closePopupMenu, contextMenuPosition, isNativeTextMenuTarget, openMenuState, openPopupMenu } from "../ui/popup-menu.js";
@@ -26,12 +27,12 @@ import {
 } from "../watch/watched-status.js";
 import { catalogChapterList, catalogChapterLists, libraryArtCached } from "../watch/episode-navigation.js";
 import {
-  buildLibrarySeries, groupLibraryChapters, librarySeriesChapterCount, librarySeriesKey,
+  buildLibrarySeries, findLibrarySeriesByKey, groupLibraryChapters, librarySeriesChapterCount, librarySeriesKey,
   librarySourceDetails, updateLibrarySeriesEntries,
 } from "./library-data.js";
 import { largePosterUrl, openLibrarySeries, refreshTitlePage } from "../title/title-page.js";
 import { renderLibraryRecommendations } from "../home/home-page.js";
-import { compareLibrarySourceRefsByPeers } from "../catalog/catalog-search.js";
+import { compareLibrarySourceRefsByPeers, openCatalogSearch } from "../catalog/catalog-search.js";
 import { anilistStoredQueue, persistAniListQueue } from "../anilist/anilist-sync.js";
 
 export let libraryContextSeriesKey = null;
@@ -153,7 +154,10 @@ export function openLibraryContextMenu(event, seriesKey, { anchor = null } = {})
   if (isNativeTextMenuTarget(event)) return;
   event?.preventDefault?.();
   libraryContextSeriesKey = seriesKey;
-  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  const choices = buildLibrarySeries();
+  const matching = choices.filter((item) => item.legacyKey === seriesKey);
+  const series = choices.find((item) => item.key === seriesKey || item.routeKey === seriesKey)
+    || (matching.length === 1 ? matching[0] : null);
   const watchedAction = $("#library-context-menu [data-library-action='mark-watched']");
   if (watchedAction) watchedAction.textContent = series?.sources.some((entry) => Number(entry.watchedTitleAt) > 0)
     ? "Mark as not watched" : "Mark as watched";
@@ -162,7 +166,10 @@ export function openLibraryContextMenu(event, seriesKey, { anchor = null } = {})
     && !catalogChapterLists.get(series.catalogId)?.list) {
     catalogChapterList(series.catalogId, () => {
       if (libraryContextSeriesKey === seriesKey && openMenuState?.menu?.id === "library-context-menu") {
-        renderLibrarySeasonActions(buildLibrarySeries().find((item) => item.key === seriesKey));
+        const current = buildLibrarySeries();
+        const legacy = current.filter((item) => item.legacyKey === seriesKey);
+        renderLibrarySeasonActions(current.find((item) => item.key === seriesKey || item.routeKey === seriesKey)
+          || (legacy.length === 1 ? legacy[0] : null));
       }
     });
   }
@@ -175,16 +182,15 @@ export function openLibraryContextMenu(event, seriesKey, { anchor = null } = {})
   });
 }
 
-export function closeLibraryContextMenu() {
-  if (openMenuState?.menu?.id === "library-context-menu") closePopupMenu({ restoreFocus: false });
+export function closeLibraryContextMenu({ restoreFocus = false } = {}) {
+  if (openMenuState?.menu?.id === "library-context-menu") closePopupMenu({ restoreFocus });
   else if ($("#library-context-menu")) $("#library-context-menu").hidden = true;
 }
 
 export function updateLibrarySummary(count = null) {
   const resolvedCount = Number.isInteger(count)
     ? count
-    : new Set(state.library.filter((entry) => entry.libraryHidden !== true)
-      .map((entry) => entry.seriesKey || librarySeriesKey(entry.title)).filter(Boolean)).size;
+    : buildLibrarySeries().length;
   if ($("#library-count")) $("#library-count").textContent = resolvedCount;
 }
 
@@ -412,7 +418,7 @@ export function setLibrarySeasonWatched(series, season, watched) {
 export function setLibraryTitleWatched(series, watched) {
   if (!series?.key) return false;
   const at = watched ? Date.now() : 0;
-  const changed = updateLibrarySeriesEntries(series.key, (entry) => {
+  const changed = updateLibrarySeriesEntries(series.routeKey || series.key, (entry) => {
     entry.watchedTitleAt = at;
     entry.updatedAt = Date.now();
   });
@@ -531,7 +537,7 @@ function libraryCardItem(series, category = null, summary = null) {
     ? seasonEpisodes.reduce((sum, value) => sum + value, 0) : chapters;
   const count = series.type !== "movie" && knownEpisodes ? `${knownEpisodes} eps` : "";
   return {
-    key: series.key,
+    key: series.routeKey || series.key,
     title: series.title,
     ...libraryCardImage(series, art),
     meta: [
@@ -575,7 +581,7 @@ function renderLibraryContinue(all) {
     cards: items.map(({ series, point, replay }) => {
       const left = Math.max(1, Math.round((point.progress.durationMs - point.progress.positionMs) / 60_000));
       return cardMarkup({
-        key: series.key,
+        key: series.routeKey || series.key,
         title: series.title,
         ...libraryCardImage(series, libraryArtCached(series)),
         meta: [libraryChapterName(point.episode) || (series.type === "movie" ? "Movie" : ""), replay ? "Replay episode" : `${left} min left`],
@@ -591,6 +597,219 @@ function renderLibraryContinue(all) {
 // Avoid replacing all poster nodes in that case (and losing their decoded art).
 let lastLibraryMount = null;
 let lastLibraryGrouped = null;
+const legacyLibrarySelection = new Set();
+let legacyLibraryReview = null;
+let legacyLibraryReviewRevision = null;
+let legacyLibraryReviewFocus = null;
+let legacyLibraryReviewBusy = false;
+let legacyLibraryReviewPage = 0;
+const LEGACY_LIBRARY_REVIEW_PAGE_SIZE = 50;
+
+function legacyLibraryRecordPreview(record) {
+  const serialized = JSON.stringify(record, null, 2) || "null";
+  // Full records, including large embedded covers, are kept for export and
+  // restoration. Bound the number of bytes inserted into the review dialog.
+  return serialized.length <= 12_000 ? serialized
+    : `${serialized.slice(0, 12_000)}\n… ${t("Export retained records for complete data")}`;
+}
+
+function renderLegacyLibraryNotice() {
+  const list = $("#library-list");
+  if (!list || typeof document.getElementById !== "function") return;
+  let notice = document.getElementById("library-legacy-recovery-notice");
+  const count = Number(legacyBootstrapRecoverySummary?.pending) || 0;
+  if (!count) { notice?.remove(); return; }
+  if (!notice) {
+    if (typeof document.createElement !== "function" || typeof list.before !== "function") return;
+    notice = document.createElement("section");
+    notice.id = "library-legacy-recovery-notice";
+    notice.className = "ui-empty ui-empty--compact";
+    notice.setAttribute("role", "status");
+    list.before(notice);
+  }
+  notice.innerHTML = `<p class="ui-empty__title">${escapeHtml(t("Library entries need review"))}</p>
+    <p class="ui-empty__text">${escapeHtml(t("{count} saved Library versions can be reviewed and recovered.", { count }))}</p>
+    <div class="ui-empty__action">${buttonMarkup({ label: t("Review saved entries"), icon: "library",
+      attrs: { "data-library-recovery-action": "open" } })}</div>`;
+}
+
+function legacyReviewDialog() {
+  let dialog = document.getElementById("library-legacy-recovery-dialog");
+  if (dialog) return dialog;
+  const page = $("#view-library");
+  if (!page) return null;
+  dialog = document.createElement("dialog");
+  dialog.id = "library-legacy-recovery-dialog";
+  dialog.className = "ui-dialog";
+  dialog.setAttribute("aria-labelledby", "library-legacy-recovery-title");
+  page.appendChild(dialog);
+  dialog.addEventListener("change", event => {
+    const option = event.target.closest?.("[data-library-recovery-select]");
+    if (!option) return;
+    if (option.checked) legacyLibrarySelection.add(option.dataset.libraryRecoverySelect);
+    else legacyLibrarySelection.delete(option.dataset.libraryRecoverySelect);
+  });
+  dialog.addEventListener("close", () => {
+    if (legacyLibraryReviewFocus?.isConnected !== false) legacyLibraryReviewFocus?.focus?.();
+    else $("#library-filter-all")?.focus?.();
+    legacyLibraryReviewFocus = null;
+  });
+  return dialog;
+}
+
+function legacyReviewStatus(message, error = false) {
+  const feedback = document.getElementById("library-legacy-recovery-feedback");
+  if (feedback) {
+    feedback.textContent = message;
+    feedback.setAttribute("role", error ? "alert" : "status");
+  }
+}
+
+function renderLegacyLibraryReview() {
+  const dialog = legacyReviewDialog();
+  if (!dialog || !legacyLibraryReview) return;
+  const receipt = legacyLibraryReview.receipt;
+  const accepted = new Map((legacyLibraryReview.accepted || []).map(row => [String(row.id), row]));
+  const resolved = new Set(receipt?.resolvedIds || []);
+  const items = [
+    ...(receipt?.candidates || []).map(entry => ({ entry, kind: "Missing from the accepted Library" })),
+    ...(receipt?.overlaps || []).map(entry => ({ entry, kind: "Different from the accepted version" })),
+  ].filter(({ entry }) => !resolved.has(String(entry.id)));
+  const present = items.filter(({ entry }) => accepted.has(String(entry.id))).length;
+  const pageCount = Math.max(1, Math.ceil(items.length / LEGACY_LIBRARY_REVIEW_PAGE_SIZE));
+  legacyLibraryReviewPage = Math.min(Math.max(legacyLibraryReviewPage, 0), pageCount - 1);
+  const rows = items.slice(legacyLibraryReviewPage * LEGACY_LIBRARY_REVIEW_PAGE_SIZE,
+    (legacyLibraryReviewPage + 1) * LEGACY_LIBRARY_REVIEW_PAGE_SIZE).map(({ entry, kind }) => {
+    const id = String(entry.id);
+    const current = accepted.get(id);
+    return `<li style="padding:12px 0;border-bottom:1px solid var(--ui-line)">
+      <label style="display:flex;gap:12px;align-items:flex-start">
+        <input type="checkbox" data-library-recovery-select="${escapeHtml(id)}" ${legacyLibrarySelection.has(id) ? "checked" : ""} />
+        <span><strong>${escapeHtml(String(entry.displayTitle || entry.title || id))}</strong>
+        <small style="display:block">${escapeHtml(t(kind))} · ${escapeHtml(id)}${current ? ` · ${escapeHtml(t("An accepted entry with this ID is already present"))}` : ""}</small></span>
+      </label>
+      <details style="margin:8px 0 0 28px"><summary>${escapeHtml(t("Compare records"))}</summary>
+        <p>${escapeHtml(t("Saved browser version"))}</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(legacyLibraryRecordPreview(entry))}</pre>
+        <p>${escapeHtml(t("Accepted Library version"))}</p><pre style="white-space:pre-wrap;overflow-wrap:anywhere">${escapeHtml(current ? legacyLibraryRecordPreview(current) : t("Missing"))}</pre>
+      </details>
+    </li>`;
+  }).join("");
+  dialog.innerHTML = `<div class="ui-dialog__head"><div><h2 id="library-legacy-recovery-title" class="ui-dialog__title">${escapeHtml(t("Review saved Library entries"))}</h2></div></div>
+    <div class="ui-dialog__body" style="max-height:55vh;overflow:auto">
+      <p>${escapeHtml(t("These browser records were saved when Library synchronized. The accepted Library and its watching progress stay authoritative. A missing record might have been deleted on another device; restore it only after review."))}</p>
+      <p style="margin-top:10px">${escapeHtml(t("{count} entries to review", { count: items.length }))}${present ? ` · ${escapeHtml(t("{count} entries already exist", { count: present }))}` : ""}</p>
+      <ul style="list-style:none;padding:0;margin:12px 0">${rows}</ul>
+      ${pageCount > 1 ? `<nav aria-label="${escapeHtml(t("Review pages"))}" style="display:flex;gap:8px;align-items:center;justify-content:center">
+        ${buttonMarkup({ label: t("Previous page"), variant: "secondary", attrs: { "data-library-recovery-action": "page-prev", disabled: legacyLibraryReviewPage === 0 } })}
+        <span>${escapeHtml(t("Page {page} of {pages}", { page: legacyLibraryReviewPage + 1, pages: pageCount }))}</span>
+        ${buttonMarkup({ label: t("Next page"), variant: "secondary", attrs: { "data-library-recovery-action": "page-next", disabled: legacyLibraryReviewPage === pageCount - 1 } })}
+      </nav>` : ""}
+      <p id="library-legacy-recovery-feedback" role="status" aria-live="polite"></p>
+    </div><div class="ui-dialog__foot">
+      ${buttonMarkup({ label: t("Export retained records"), variant: "secondary", attrs: { "data-library-recovery-action": "export" } })}
+      ${buttonMarkup({ label: t("Refresh review"), variant: "secondary", attrs: { "data-library-recovery-action": "refresh" } })}
+      ${buttonMarkup({ label: t("Close"), variant: "secondary", attrs: { "data-library-recovery-action": "close" } })}
+      ${buttonMarkup({ label: t("Keep accepted selected"), variant: "secondary", attrs: { "data-library-recovery-action": "keep" } })}
+      ${buttonMarkup({ label: t("Restore selected"), variant: "primary", attrs: { "data-library-recovery-action": "restore" } })}
+    </div>`;
+  if (dialog.open) {
+    const initialFocus = dialog.querySelector?.("[data-library-recovery-select]")
+      || dialog.querySelector?.('[data-library-recovery-action="close"]');
+    initialFocus?.focus?.();
+  }
+}
+
+async function reloadLegacyLibraryReview() {
+  const [recovery, library] = await Promise.all([
+    fetchJson("/api/app-state/bootstrap-recovery"), fetchJson("/api/app-state/library"),
+  ]);
+  if (!Array.isArray(library?.value) || !Number.isSafeInteger(library.updatedAt))
+    throw new Error("The current Library revision is unavailable. Try refreshing.");
+  legacyLibraryReview = { receipt: recovery.recovery, accepted: library.value };
+  legacyLibraryReviewRevision = library.updatedAt;
+  const resolved = new Set(recovery.recovery?.resolvedIds || []);
+  const candidates = (recovery.recovery?.candidates || []).filter(entry => !resolved.has(String(entry.id))).length;
+  const overlaps = (recovery.recovery?.overlaps || []).filter(entry => !resolved.has(String(entry.id))).length;
+  updateLegacyBootstrapRecoverySummary(recovery.recovery ? {
+    pending: candidates + overlaps, candidates, overlaps,
+    acceptedRevision: recovery.recovery.acceptedRevision,
+    url: "/api/app-state/bootstrap-recovery",
+  } : null);
+  renderLegacyLibraryReview();
+  renderLegacyLibraryNotice();
+}
+
+async function handleLegacyLibraryRecoveryAction(action, trigger) {
+  if (legacyLibraryReviewBusy) return;
+  const dialog = legacyReviewDialog();
+  if (!dialog) return;
+  if (action === "close") { dialog.close(); return; }
+  if ((action === "page-prev" || action === "page-next") && legacyLibraryReview) {
+    legacyLibraryReviewPage += action === "page-next" ? 1 : -1;
+    renderLegacyLibraryReview();
+    return;
+  }
+  if (action === "open") {
+    legacyLibraryReviewPage = 0;
+    legacyLibraryReviewFocus = trigger;
+    if (!dialog.open) dialog.showModal();
+    dialog.innerHTML = `<div class="ui-dialog__body">${escapeHtml(t("Loading saved Library entries…"))}</div>`;
+  }
+  if (action === "export") {
+    if (!legacyLibraryReview?.receipt) return;
+    const blob = new Blob([JSON.stringify({ version: 1, exportedAt: new Date().toISOString(),
+      recovery: legacyLibraryReview.receipt }, null, 2)], { type: "application/json" });
+    const objectUrl = URL.createObjectURL(blob);
+    try {
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `lvl-library-retained-${new Date().toISOString().slice(0, 10)}.json`;
+      link.click();
+    } finally { URL.revokeObjectURL(objectUrl); }
+    return;
+  }
+  if ((action === "restore" || action === "keep") && legacyLibraryReview) {
+    const resolved = new Set(legacyLibraryReview.receipt?.resolvedIds || []);
+    const accepted = new Set(legacyLibraryReview.accepted.map(entry => String(entry.id)));
+    const eligible = [...legacyLibraryReview.receipt.candidates, ...(legacyLibraryReview.receipt.overlaps || [])]
+      .map(entry => String(entry.id)).filter(id => legacyLibrarySelection.has(id) && !resolved.has(id));
+    if (!eligible.length) { legacyReviewStatus(t("Select an entry to restore."), true); return; }
+    if (action === "restore" && eligible.some(id => accepted.has(id))) {
+      legacyReviewStatus(t("Some selected entries already exist. Review the accepted versions before restoring."), true);
+      return;
+    }
+    legacyLibraryReviewBusy = true;
+    try {
+      const restored = action === "keep"
+        ? await keepAcceptedLegacyLibraryEntries(eligible, legacyLibraryReviewRevision)
+        : await restoreLegacyLibraryEntries(eligible, legacyLibraryReviewRevision);
+      for (const id of eligible) legacyLibrarySelection.delete(id);
+      await reloadLegacyLibraryReview();
+      const pending = [...legacyLibraryReview.receipt.candidates, ...(legacyLibraryReview.receipt.overlaps || [])]
+        .filter(entry => !(legacyLibraryReview.receipt.resolvedIds || []).includes(String(entry.id)));
+      if (!pending.length) dialog.close();
+      else legacyReviewStatus(action === "keep" ? t("Accepted Library versions kept.")
+        : restored.refreshed ? t("Selected entries restored to Library.")
+          : t("Restored in SQLite. Refresh after current Library edits finish."));
+      renderLegacyLibraryNotice();
+      if (viewActive("library")) renderLibrary();
+    } catch (error) {
+      if (error?.status === 409 || error?.httpStatus === 409) {
+        try { await reloadLegacyLibraryReview(); } catch (reloadError) {
+          legacyReviewStatus(reloadError.message, true); return;
+        }
+        legacyReviewStatus(t("Library changed on another device or tab. Review the updated versions; your selection is preserved."), true);
+      } else legacyReviewStatus(error.message || t("Could not restore selected entries."), true);
+    } finally { legacyLibraryReviewBusy = false; }
+    return;
+  }
+  legacyLibraryReviewBusy = true;
+  try { await reloadLegacyLibraryReview(); }
+  catch (error) { dialog.innerHTML = `<div class="ui-dialog__body"><p role="alert">${escapeHtml(error.message || t("Could not load saved Library entries."))}</p>
+    ${buttonMarkup({ label: t("Refresh review"), attrs: { "data-library-recovery-action": "refresh" } })}
+    ${buttonMarkup({ label: t("Close"), attrs: { "data-library-recovery-action": "close" } })}</div>`; }
+  finally { legacyLibraryReviewBusy = false; }
+}
 function updateLibraryCards(list, markup, grouped = false) {
   const signature = markupSignature(markup);
   if (lastLibraryGrouped === grouped && mountedMarkupMatches(lastLibraryMount, list, signature)) return false;
@@ -603,6 +822,7 @@ function updateLibraryCards(list, markup, grouped = false) {
 export function renderLibrary() {
   const list = $("#library-list");
   if (!list) return;
+  renderLegacyLibraryNotice();
   const all = buildLibrarySeries();
   // Progress sorting compares the same title many times. Cache each expensive
   // catalog-wide chapter expansion and ratio once for this render only.
@@ -758,7 +978,7 @@ export function renderLibrary() {
 }
 
 export async function resumeLibrarySeries(seriesKey) {
-  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  const series = findLibrarySeriesByKey(seriesKey);
   const next = series ? seriesNextUp(series) : null;
   if (!next) {
     openLibrarySeries(seriesKey);
@@ -768,10 +988,15 @@ export async function resumeLibrarySeries(seriesKey) {
 }
 
 export function handleLibraryCardAction(event) {
+  const recovery = event.target.closest("[data-library-recovery-action]");
+  if (recovery) {
+    void handleLegacyLibraryRecoveryAction(recovery.dataset.libraryRecoveryAction, recovery);
+    return;
+  }
   const trigger = event.target.closest("[data-ui-action], [data-library-empty]");
   if (!trigger) return;
   if (trigger.dataset.libraryEmpty === "add") {
-    openCatalogDialog();
+    openCatalogSearch("library");
     return;
   }
   const holder = trigger.closest("[data-series-key]");
@@ -810,8 +1035,10 @@ export function confirmLibraryRemoval({ removeChapters = false } = {}) {
   // Recheck the saved key at confirmation; a stale dialog cannot affect a
   // different series. Only the explicitly destructive option drops chapters.
   const ids = new Set(removing.sourceIds || []);
-  const matches = (entry) => ids.size ? ids.has(entry.id)
-    : (entry.seriesKey || librarySeriesKey(entry.title)) === removing.key;
+  // Removal must capture source identities when the dialog opens. A stale
+  // name-only action is never enough to delete another same-name work.
+  if (!ids.size) return;
+  const matches = (entry) => ids.has(entry.id);
   if (!state.library.some((entry) => matches(entry) && entry.libraryHidden !== true)) return;
   if (removeChapters) state.library = state.library.filter((entry) => !matches(entry));
   else for (const entry of state.library) if (matches(entry)) entry.libraryHidden = true;

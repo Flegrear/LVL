@@ -38,6 +38,9 @@ import { spawn as systemSpawn } from 'node:child_process';
 import { indexedCacheEligibility } from './indexed-video-cache.js';
 import { isTorrentFileFullyVerified } from './verified-torrent-file.js';
 import { verifyTorrentFileByteRange } from './verified-torrent-range.js';
+import { waitForChildStdioDrain } from './transcode-slot-lifecycle.js';
+import { mediaAdmissionsClosed } from './media-shutdown.js';
+import { createSharedCacheReservation } from './shared-cache-admission.js';
 
 const MAX_ATOM = 32 * 1024 * 1024;
 const MAX_INIT = 4 * 1024 * 1024;
@@ -56,9 +59,63 @@ const HEX = /^[a-f\d]{64}$/;
 const AVC = /^avc1\.[a-f\d]{6}$/i;
 const EMPTY = Object.freeze([]);
 const RELEASED = Symbol('cancelled');
+const PROGRESSIVE_SCHEMA = 'progressive-index-h264-avc-aac-gop-v3-ffmpeg-args-sha256';
+const MAX_FFMPEG_BINARY_BYTES = 512 * 1024 * 1024;
 
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const finite = value => Number.isFinite(value) && value >= 0;
+
+// Hash the actual pinned executable bytes, never a version string or package
+// label. The hard size limit prevents unbounded reads from a misconfigured path.
+async function ffmpegSha256(filename) {
+  if(!path.isAbsolute(filename||''))return null;
+  let handle;
+  try {
+    handle=await fs.open(filename,'r');
+    const before=await handle.stat();
+    if(!before.isFile()||before.size<1||before.size>MAX_FFMPEG_BINARY_BYTES)return null;
+    const digest=crypto.createHash('sha256'),block=Buffer.allocUnsafe(256*1024);
+    for(let offset=0;offset<before.size;){
+      const n=Math.min(block.length,before.size-offset);
+      const {bytesRead}=await handle.read(block,0,n,offset);
+      if(bytesRead!==n)return null;
+      digest.update(block.subarray(0,n));offset+=n;
+    }
+    const after=await handle.stat();
+    if(before.size!==after.size||before.mtimeMs!==after.mtimeMs
+      ||before.ctimeMs!==after.ctimeMs||before.ino!==after.ino
+      ||before.dev!==after.dev)return null;
+    return digest.digest('hex');
+  }catch{return null;}
+  finally{await handle?.close().catch(()=>{});}
+}
+
+// This single argument source is used by both manifest identity and spawn.
+// Bind BOTH verified-prefix and isolated-cluster audio filter strategies: the
+// selected cluster's local temporary pathname cannot be known at status time.
+function progressiveArgs(identity,input,ffmpegInputArgs=EMPTY,isolatedCluster=false){
+  const args=['-hide_banner','-loglevel','error','-nostdin',
+    ...ffmpegInputArgs,'-i',input,'-map','0:v:0','-map',`0:${identity.audioStreamIndex}`,
+    '-map_metadata','-1','-map_chapters','-1','-write_tmcd','0',
+    ...(identity.videoStrategy==='copy'?['-c:v','copy']:
+      ['-c:v','libx264','-threads:v','2','-preset','veryfast','-crf','23',
+        '-pix_fmt','yuv420p','-g','48','-keyint_min','48','-sc_threshold','0',
+        '-bf','0','-force_key_frames','expr:gte(t,n_forced*2)',
+        '-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709']),
+    '-c:a','aac','-ac',String(identity.channels),'-b:a',identity.bitrate,
+    '-af',isolatedCluster?'aresample=async=1'
+      :'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0',
+    '-avoid_negative_ts','make_zero',
+    '-movflags','frag_keyframe+empty_moov+default_base_moof',
+    '-f','mp4','pipe:1'];
+  return args;
+}
+function progressiveArgsSha256(identity,inputArgs){
+  return hash(JSON.stringify([
+    progressiveArgs(identity,'<verified-local-input>',inputArgs,false),
+    progressiveArgs(identity,'<verified-local-input>',inputArgs,true),
+  ]));
+}
 
 export function progressiveIndexEligibility(params, verifiedSource=null) {
   let base = indexedCacheEligibility(params);
@@ -90,7 +147,9 @@ export function progressiveIndexEligibility(params, verifiedSource=null) {
       sourceMode:'verified-prefix'}:{}),
     // New identity namespace fails closed on legacy windows without their
     // content hash and strict per-fragment verification metadata.
-    cacheVersion: 'progressive-index-h264-avc-aac-hashed-gop-v2',
+    // Policy-only eligibility is synchronous. No GOP may be reused until the
+    // async factory binds the actual FFmpeg bytes and argument fingerprint.
+    cacheVersion: PROGRESSIVE_SCHEMA,
   };
   const sourceVerified=sourceMode==='verified-prefix'
     ?()=>{
@@ -101,6 +160,7 @@ export function progressiveIndexEligibility(params, verifiedSource=null) {
         {start:0,end:limit}).verified===true;
     }:base.sourceVerified;
   return {eligible:true,identity,key:hash(JSON.stringify(identity)),sourceVerified,
+    encoderFingerprintVerified:false,
     torrent:params.session?.torrent,
     verifiedSourceBytes:prefixEvidence?.verifiedPrefix.bytes||identity.sourceLength,
     sourceFullyVerified:sourceMode==='complete'||prefixEvidence?.sourceComplete===true,
@@ -115,8 +175,9 @@ export function progressiveIndexEligibility(params, verifiedSource=null) {
 
 function boxes(bytes, from=8, to=bytes.length) {
   const result=[];
+  if(!Number.isSafeInteger(from)||!Number.isSafeInteger(to)||from<0||to>bytes.length||from>to)return null;
   for(let i=from;i<to;) {
-    if(i+8>to)return null;
+    if(result.length>=1024||i+8>to)return null;
     const size=bytes.readUInt32BE(i),name=bytes.toString('ascii',i+4,i+8);
     const wide=size===1;
     if(wide && i+16>to)return null;
@@ -145,7 +206,7 @@ function avcTrack(init) {
     const mdias=boxes(init,mdia.body,mdia.end);
     const hdlr=mdias?.find(b=>b.name==='hdlr');
     const mdhd=mdias?.find(b=>b.name==='mdhd');
-    if(!hdlr||!mdhd)return null;
+    if(!hdlr||!mdhd||hdlr.body+12>hdlr.end)return null;
     const kind=init.toString('ascii',hdlr.body+8,hdlr.body+12);
     if(kind==='soun'){audioCount++;continue;}
     if(kind!=='vide'||video)return null;
@@ -156,9 +217,10 @@ function avcTrack(init) {
     const minf=mdias.find(b=>b.name==='minf');
     const stbl=minf&&boxes(init,minf.body,minf.end)?.find(b=>b.name==='stbl');
     const stsd=stbl&&boxes(init,stbl.body,stbl.end)?.find(b=>b.name==='stsd');
-    const sample=stsd&&boxes(init,stsd.body+8,stsd.end)?.[0];
+    const sample=stsd&&stsd.body+8<=stsd.end&&boxes(init,stsd.body+8,stsd.end)?.[0];
     if(!id||!timescale||!sample||sample.name!=='avc1')return null;
-    const avcc=boxes(init,sample.body+78,sample.end)?.find(b=>b.name==='avcC');
+    const avcc=sample.body+78<=sample.end
+      ?boxes(init,sample.body+78,sample.end)?.find(b=>b.name==='avcC'):null;
     if(!avcc||avcc.body+5>avcc.end)return null;
     const nalLength=(init[avcc.body+4]&3)+1;
     if(![1,2,3,4].includes(nalLength))return null;
@@ -178,7 +240,8 @@ function fragmentVideoRAP(moof,mdat,track) {
     const tfhd=items?.find(x=>x.name==='tfhd');
     const trun=items?.find(x=>x.name==='trun');
     const tfdt=items?.find(x=>x.name==='tfdt');
-    if(!tfhd||!trun||!tfdt)return null;
+    if(!tfhd||!trun||!tfdt||tfhd.body+8>tfhd.end
+      ||trun.body+12>trun.end||tfdt.body+8>tfdt.end)return null;
     if(moof.readUInt32BE(tfhd.body+4)!==track.id)continue;
     if(chosen)return null;
     const tfhdFlags=moof.readUInt32BE(tfhd.body)&0xffffff;
@@ -186,24 +249,28 @@ function fragmentVideoRAP(moof,mdat,track) {
     if((tfhdFlags&1)||!(tfhdFlags&0x20000)||!(trunFlags&1)
       ||!moof.readUInt32BE(trun.body+4))return null;
     let at=tfhd.body+8;
-    if(tfhdFlags&2)at+=4;
-    if(tfhdFlags&8)at+=4;
+    if(tfhdFlags&2){if(at+4>tfhd.end)return null;at+=4;}
+    if(tfhdFlags&8){if(at+4>tfhd.end)return null;at+=4;}
     let defaultSize=null,defaultFlags=null;
-    if(tfhdFlags&16){defaultSize=moof.readUInt32BE(at);at+=4;}
-    if(tfhdFlags&32)defaultFlags=moof.readUInt32BE(at);
+    if(tfhdFlags&16){if(at+4>tfhd.end)return null;defaultSize=moof.readUInt32BE(at);at+=4;}
+    if(tfhdFlags&32){if(at+4>tfhd.end)return null;defaultFlags=moof.readUInt32BE(at);}
     at=trun.body+8;
+    if(at+4>trun.end)return null;
     const dataOffset=moof.readInt32BE(at);at+=4;
     let flags=defaultFlags;
-    if(trunFlags&4){flags=moof.readUInt32BE(at);at+=4;}
-    if(trunFlags&0x100)at+=4;
+    if(trunFlags&4){if(at+4>trun.end)return null;flags=moof.readUInt32BE(at);at+=4;}
+    if(trunFlags&0x100){if(at+4>trun.end)return null;at+=4;}
     let size=defaultSize;
-    if(trunFlags&0x200){size=moof.readUInt32BE(at);at+=4;}
-    if(trunFlags&0x400)flags=moof.readUInt32BE(at);
+    if(trunFlags&0x200){if(at+4>trun.end)return null;size=moof.readUInt32BE(at);at+=4;}
+    if(trunFlags&0x400){if(at+4>trun.end)return null;flags=moof.readUInt32BE(at);}
     if(flags==null||((flags>>>24)&3)!==2||(flags&0x10000)
       ||!Number.isSafeInteger(size)||size<5||size>512*1024)return null;
     // data-offset references the full moof+mdat pair; reject any missing bytes.
+    const mdatBoxes=boxes(mdat,0);
+    if(!mdatBoxes||mdatBoxes.length!==1||mdatBoxes[0].name!=='mdat')return null;
     const pair=Buffer.concat([moof,mdat]);
-    if(dataOffset<moof.length+8||dataOffset+size>pair.length)return null;
+    const dataStart=moof.length+mdatBoxes[0].body;
+    if(dataOffset<dataStart||dataOffset+size>pair.length)return null;
     const sample=pair.subarray(dataOffset,dataOffset+size);
     let idr=false;
     for(let i=0;i+track.nalLength<sample.length;) {
@@ -305,25 +372,24 @@ async function probeWindow(ffprobePath, spawn, file, job) {
     '-show_frames','-of','json',file],{windowsHide:true,stdio:['ignore','pipe','pipe']});}
   catch{return null;}
   job.probe=child;
-  let output='',stderr='',failed=false,timeout;
-  const exit=new Promise(resolve=>{
-    child.stdout?.on('data',block=>{
-      if(failed)return;
-      if(output.length+block.length>MAX_PROBE_JSON){
-        failed=true;try{child.kill('SIGTERM');}catch{}
-        return;
-      }
-      output+=String(block);
-    });
-    child.stderr?.on('data',chunk=>{if(stderr.length<1024)stderr+=String(chunk).slice(0,1024-stderr.length);});
-    child.once('error',()=>{failed=true;});
-    child.once('close',code=>resolve(code));
+  let output='',stderr='',failed=false;
+  child.stdout?.on('data',block=>{
+    if(failed)return;
+    if(output.length+block.length>MAX_PROBE_JSON){
+      failed=true;try{child.kill('SIGTERM');}catch{}
+      return;
+    }
+    output+=String(block);
   });
-  timeout=setTimeout(()=>{failed=true;try{child.kill('SIGKILL');}catch{}},12000);
-  timeout.unref?.();
+  child.stderr?.on('data',chunk=>{if(stderr.length<1024)stderr+=String(chunk).slice(0,1024-stderr.length);});
+  const exit=waitForChildStdioDrain(child,{
+    timeoutMs:12000,
+    onTimeout:()=>{failed=true;try{child.kill('SIGKILL');}catch{}},
+    onError:()=>{failed=true;try{child.kill('SIGTERM');}catch{}},
+  });
   if(job.cancelled)try{child.kill('SIGTERM');}catch{}
   const code=await exit;
-  clearTimeout(timeout);job.probe=null;
+  job.probe=null;
   if(code!==0||failed||job.cancelled)return null;
   try{return {...JSON.parse(output),__probeWarnings:stderr};}catch{return null;}
 }
@@ -389,7 +455,11 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     throw Error('Invalid progressive-index configuration');
   const jobs=new Map(),pendingPurges=new Set(),verifiedContents=new Map();
   const retiredWindows=new Set();
-  let retiredTimer=null;
+  // Windows locks are not a portable borrow protocol: POSIX permits unlinking
+  // an open file. Hold explicit per-path reservations from before fs.open()
+  // until the same reader's handle has actually closed.
+  const activeWindowBorrowers=new Map(),deletingWindows=new Set();
+  let retiredTimer=null,retiredRetryRunning=false;
   const attemptedPrefixBytes=new Map();
   function releaseSessionAttempts(sessionId){
     for(const [key,attempt] of attemptedPrefixBytes){
@@ -407,19 +477,67 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     Number.isSafeInteger(clusterStart)?'island:'+clusterStart+':':'')+sequence+
     (Number.isSafeInteger(revisionSourceEnd)?':revision:'+revisionSourceEnd:''));}
   function retryRetiredWindows(){
-    if(retiredTimer||!retiredWindows.size)return;
+    if(retiredTimer||retiredRetryRunning||!retiredWindows.size)return;
     retiredTimer=setTimeout(async()=>{
       retiredTimer=null;
-      for(const file of [...retiredWindows]){
-        try{await fs.rm(file,{force:true,maxRetries:1,retryDelay:100});
-          retiredWindows.delete(file);verifiedContents.delete(file);
-        }catch{/* Windows Range readers can pin an older committed GOP. */}
-      }
-      retryRetiredWindows();
+      retiredRetryRunning=true;
+      try{
+        for(const file of [...retiredWindows]){
+          if(activeWindowBorrowers.get(file)>0||deletingWindows.has(file)
+            ||pendingPurges.has(path.dirname(path.dirname(file))))continue;
+          deletingWindows.add(file);
+          try{await fs.rm(file,{force:true,maxRetries:1,retryDelay:100});
+            retiredWindows.delete(file);verifiedContents.delete(file);
+          }catch{/* Keep exact retired file pending for a later retry. */}
+          finally{deletingWindows.delete(file);}
+        }
+      }finally{retiredRetryRunning=false;retryRetiredWindows();}
     },1000);
     retiredTimer.unref?.();
   }
-  const toInfo=params=>progressiveIndexEligibility({...params,enabled:enabled(),canEncode:canEncode()},verifiedSource);
+  function releaseWindowBorrower(file){
+    const count=activeWindowBorrowers.get(file)||0;
+    if(count<=1)activeWindowBorrowers.delete(file);
+    else activeWindowBorrowers.set(file,count-1);
+    if(count<=1){retryRetiredWindows();schedulePurgeRetry();}
+  }
+  const toPolicy=params=>progressiveIndexEligibility({...params,
+    enabled:enabled(),canEncode:canEncode()},verifiedSource);
+  // Reuse only a candidate *namespace*, never a past byte-hash proof. In-place
+  // executable rewrites can preserve every coarse stat field; each status/open
+  // still hashes the full binary at its final trust boundary. This avoids
+  // hashing it twice per unchanged cached status or three times per open.
+  const recentPlans=new Map();
+  function candidateInfo(policy){
+    if(!policy.eligible)return policy;
+    const saved=recentPlans.get(policy.key);
+    if(!saved||saved.identity.encoderArgsSha256!==progressiveArgsSha256(
+      policy.identity,ffmpegInputArgs))return null;
+    return {...policy,identity:{...saved.identity},key:saved.key,
+      encoderFingerprintVerified:true,policyKey:policy.key};
+  }
+  async function bindEncoder(info){
+    if(!info.eligible)return info;
+    const binary=await ffmpegSha256(ffmpegPath);
+    if(!HEX.test(String(binary))){
+      recentPlans.delete(info.key);
+      return {...info,eligible:false,reason:'encoder-unavailable'};
+    }
+    const identity={...info.identity,ffmpegSha256:binary,
+      encoderArgsSha256:progressiveArgsSha256(info.identity,ffmpegInputArgs)};
+    const bound={...info,identity,key:hash(JSON.stringify(identity)),encoderFingerprintVerified:true,
+      policyKey:info.key};
+    recentPlans.delete(info.key);
+    // No caller of verifiedEligibility can mutate the cached candidate.
+    recentPlans.set(info.key,{identity:Object.freeze({...identity}),key:bound.key});
+    if(recentPlans.size>32)recentPlans.delete(recentPlans.keys().next().value);
+    return bound;
+  }
+  const toInfo=async params=>bindEncoder(toPolicy(params));
+  const binaryCurrent=async info=>info.encoderFingerprintVerified===true
+    &&HEX.test(String(info.identity.ffmpegSha256))
+    &&info.identity.encoderArgsSha256===progressiveArgsSha256(info.identity,ffmpegInputArgs)
+    &&await ffmpegSha256(ffmpegPath)===info.identity.ffmpegSha256;
   function snapshot(stat){
     return [stat.size,stat.mtimeMs,stat.ctimeMs,stat.birthtimeMs,stat.ino,stat.dev,stat.mode].join(':');
   }
@@ -508,11 +626,13 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     }catch{return false;}
     finally{await handle?.close().catch(()=>{});}
   }
-  async function readIndex(info){
-    if(!valid(info))return {ranges:[],complete:false};
+  async function readIndex(info,{checkEncoder=true}={}){
+    if(!info.encoderFingerprintVerified||!valid(info))return {ranges:[],complete:false};
     try{
       const saved=JSON.parse(await fs.readFile(path.join(folder(info),'index.json'),'utf8'));
-      if(JSON.stringify(saved.identity)!==JSON.stringify(info.identity)
+      if(saved.schema!==PROGRESSIVE_SCHEMA||!HEX.test(String(saved.identity?.ffmpegSha256))
+        ||!HEX.test(String(saved.identity?.encoderArgsSha256))
+        ||JSON.stringify(saved.identity)!==JSON.stringify(info.identity)
         ||!Array.isArray(saved.ranges)||saved.ranges.length>maxWindows)return {ranges:[],complete:false};
       const results=[],ids=new Set(),sequences=new Set();
       let previous=null;
@@ -539,15 +659,27 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
         const checks=await Promise.all(block.map(item=>checkFile(where(info,item.id),item)));
         if(checks.some(ok=>!ok))return {ranges:[],complete:false};
       }
-      return valid(info)?{ranges:results,complete:saved.complete===true}: {ranges:[],complete:false};
+      return valid(info)&&(!checkEncoder||await binaryCurrent(info))
+        ?{ranges:results,complete:saved.complete===true}: {ranges:[],complete:false};
     }catch{return {ranges:[],complete:false};}
   }
   async function status(params){
-    const info=toInfo(params);
+    const policy=toPolicy(params);
+    let info=candidateInfo(policy)||await bindEncoder(policy);
     if(!info.eligible)return {status:info.reason,ranges:[],readyRanges:[]};
-    const record=await readIndex(info);
+    let record=await readIndex(info,{checkEncoder:false});
+    // The remembered namespace was speculative. Full bytes, not timestamps,
+    // determine whether it is still safe to advertise its saved GOPs.
+    if(!await binaryCurrent(info)){
+      recentPlans.delete(policy.key);
+      info=await bindEncoder(policy);
+      if(!info.eligible)return {status:info.reason,ranges:[],readyRanges:[]};
+      record=await readIndex(info,{checkEncoder:false});
+      if(!await binaryCurrent(info))
+        return {status:'encoder-unavailable',ranges:[],readyRanges:[]};
+    }
     const {ranges,complete}=record;
-    const job=jobs.get(info.key);
+    const job=jobs.get(info.policyKey);
     const lastAttempt=attemptedPrefixBytes.get(info.key)?.bytes||0;
     const prefixProgress=info.sourceFullyVerified?info.identity.sourceLength:info.verifiedSourceBytes;
     const triedCurrentPrefix=info.sourceMode==='verified-prefix'
@@ -568,22 +700,56 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
       audioCodec:'aac',container:'fmp4'};
   }
   async function open(params,sectionId){
-    const info=toInfo(params);
+    const policy=toPolicy(params);
+    const info=candidateInfo(policy)||await bindEncoder(policy);
     if(!info.eligible||!HEX.test(String(sectionId)))return null;
-    const item=(await readIndex(info)).ranges.find(r=>r.id===sectionId);
+    // The pinned output handle is not exposed until the final independent
+    // full-byte executable check below. Avoid an earlier redundant hash.
+    const item=(await readIndex(info,{checkEncoder:false})).ranges.find(r=>r.id===sectionId);
     if(!item||!valid(info))return null;
+    const file=where(info,item.id);
+    // Atomically reserve this path before the first asynchronous handle open.
+    // Retired deletion fences the same path, so neither side can overtake.
+    if(!valid(info)||deletingWindows.has(file))return null;
+    activeWindowBorrowers.set(file,(activeWindowBorrowers.get(file)||0)+1);
     let handle;
     try{
-      handle=await fs.open(where(info,item.id),'r');
+      const before=await fs.lstat(file);
+      if(!before.isFile()||before.isSymbolicLink()||before.size!==item.bytes)
+        throw Error('Untrusted cache file path');
+      handle=await fs.open(file,'r');
       const stat=await handle.stat();
+      const after=await fs.lstat(file);
       if(!valid(info)||!stat.isFile()||stat.size!==item.bytes
-        ||!await checkContent(where(info,item.id),handle,stat,item.contentSha256))
+        ||!after.isFile()||after.isSymbolicLink()
+        ||after.dev!==stat.dev||after.ino!==stat.ino
+        ||!await checkContent(file,handle,stat,item.contentSha256)
+        ||!await binaryCurrent(info))
         throw Error('Cache invalidated');
-      let released=false;
-      return {...item,handle,file:where(info,item.id),async release(){
-        if(released)return;released=true;await handle.close().catch(()=>{});
+      let released=false,releasePromise=null;
+      return {...item,handle,file,async release(){
+        if(released)return true;
+        if(releasePromise)return releasePromise;
+        releasePromise=(async()=>{
+          try{
+            await handle.close();
+            released=true;
+            releaseWindowBorrower(file);
+            return true;
+          }catch{
+            // An unconfirmed close cannot free a live reader's deletion pin.
+            // Keep the reservation and permit a later explicit close retry.
+            return false;
+          }finally{releasePromise=null;}
+        })();
+        return releasePromise;
       }};
-    }catch{await handle?.close().catch(()=>{});return null;}
+    }catch{
+      let closed=!handle;
+      if(handle)try{await handle.close();closed=true;}catch{}
+      if(closed)releaseWindowBorrower(file);
+      return null;
+    }
   }
   async function openWindow(params,atSeconds){
     if(!finite(atSeconds))return null;
@@ -614,11 +780,12 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     job.cancelled=true;job.resolveCancel(RELEASED);
     job.abortController?.abort();
     for(const child of [job.child,job.probe]){
-      if(child&&!child.exitCode)try{child.kill('SIGTERM');}catch{}
+      if(child&&child.exitCode==null&&child.signalCode==null)try{child.kill('SIGTERM');}catch{}
     }
     job.escalation=setTimeout(()=>{
       for(const child of [job.child,job.probe]){
-        if(child&&child.exitCode===null)try{child.kill('SIGKILL');}catch{}
+        if(child&&child.exitCode==null&&child.signalCode==null)
+          try{child.kill('SIGKILL');}catch{}
       }
     },2000);
     job.escalation.unref?.();
@@ -626,6 +793,12 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
   async function stopSession(id,{retire=false}={}){
     await Promise.all([...jobs.values()].filter(j=>j.info.identity.sessionId===id)
       .map(async j=>{await cancelJob(j);await j.done;}));
+    const parent=path.join(sessionsRoot,id,'progressive-index')+path.sep;
+    // Immutable window borrowers retain their own handles. Clearing a warm
+    // SHA memo cannot invalidate a live lease, but prevents a new incarnation
+    // from inheriting the old session's cached content-verification shortcut.
+    for(const filename of verifiedContents.keys())
+      if(filename.startsWith(parent))verifiedContents.delete(filename);
     if(retire)releaseSessionAttempts(id);
   }
   async function stopAll(){await Promise.all([...jobs.values()].map(async j=>{
@@ -641,6 +814,8 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     purgeRetryRunning=true;
     try{
       for(const dir of [...pendingPurges]){
+        if([...activeWindowBorrowers].some(([file,count])=>count>0
+          &&(file===dir||file.startsWith(dir+path.sep))))continue;
         try{
           await removeProgressiveDir(dir,{recursive:true,force:true,maxRetries:2,retryDelay:100});
           pendingPurges.delete(dir);
@@ -674,16 +849,14 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     try{await purgeRun;}finally{purging=false;purgeRun=null;}
   }
   async function start(params,{sourceKind='prefix',afterStartBytes=0}={}){
-    const info=toInfo(params);
-    if(!info.eligible||!valid(info)||foregroundBusy()||jobs.size)return;
-    const prefixProgress=info.sourceFullyVerified?info.identity.sourceLength:info.verifiedSourceBytes;
-    if(sourceKind!=='island'&&info.sourceMode==='verified-prefix'
-      &&(attemptedPrefixBytes.get(info.key)?.bytes||0)>=prefixProgress)return;
-    const job={info,cancelled:false,child:null,probe:null,escalation:null,
+    const policy=toPolicy(params);
+    if(mediaAdmissionsClosed()||!policy.eligible||!valid(policy)||foregroundBusy()||jobs.size)return;
+    const jobKey=policy.key;
+    const job={info:policy,cancelled:false,child:null,probe:null,escalation:null,
       abortController:new AbortController()};
     job.cancel=new Promise(resolve=>{job.resolveCancel=resolve;});
     job.done=new Promise(resolve=>{job.resolveDone=resolve;});
-    jobs.set(info.key,job); // single-flight BEFORE any async admission/probe
+    jobs.set(jobKey,job); // single-flight BEFORE binary hashing or async admission
     job.wallTimer=setTimeout(()=>{diagnose('background-walltime-cap');void cancelJob(job);},maxWallMs);
     job.wallTimer.unref?.();
     const refreshIdle=()=>{
@@ -693,6 +866,12 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
     };
     refreshIdle();
     try{
+      const info=await bindEncoder(policy);
+      if(!info.eligible||job.cancelled||!valid(info)||mediaAdmissionsClosed())return;
+      job.info=info;
+      const prefixProgress=info.sourceFullyVerified?info.identity.sourceLength:info.verifiedSourceBytes;
+      if(sourceKind!=='island'&&info.sourceMode==='verified-prefix'
+        &&(attemptedPrefixBytes.get(info.key)?.bytes||0)>=prefixProgress)return;
       const existing=await Promise.race([readIndex(info),job.cancel]);
       if(job.cancelled||!valid(info))return;
       const already=existing&&Array.isArray(existing.ranges)?existing.ranges:[];
@@ -707,44 +886,33 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
         if(job.lease===RELEASED||!job.lease?.sourceVerified?.())return;
       }
       const input=await sourcePath(params,info,job.lease);
-      if(!input||job.cancelled||!valid(info)||foregroundBusy())return;
+      if(!input||job.cancelled||!valid(info)||foregroundBusy()||mediaAdmissionsClosed())return;
       const admission=await Promise.race([allowance(maxWindowBytes),job.cancel]);
-      if(admission===RELEASED||!admission?.allowed||job.cancelled||foregroundBusy())return;
+      if(admission===RELEASED||!admission?.allowed||job.cancelled||foregroundBusy()||mediaAdmissionsClosed())return;
       const dir=folder(info);
       await fs.mkdir(dir,{recursive:true});
-      const args=['-hide_banner','-loglevel','error','-nostdin',
-        ...ffmpegInputArgs,'-i',input,'-map','0:v:0','-map',`0:a:${info.identity.audioIndex}`,
-        // Genuine anime MKVs can carry a timecode metadata stream. FFmpeg's
-        // MP4 muxer may manufacture a third tmcd/text track even when ONLY
-        // the video+selected audio were mapped, making strict two-track
-        // AVC/AAC GOP proof reject every segment. Drop metadata/timecode and
-        // chapters from the *optional* seek rendition, not from subtitles or
-        // source selection. Keep only the actual mapped video+audio streams.
-        '-map_metadata','-1','-map_chapters','-1','-write_tmcd','0',
-        ...(info.identity.videoStrategy==='copy'?['-c:v','copy']:
-          ['-c:v','libx264','-threads:v','2','-preset','veryfast','-crf','23',
-            '-pix_fmt','yuv420p','-g','48','-keyint_min','48','-sc_threshold','0',
-            '-bf','0','-force_key_frames','expr:gte(t,n_forced*2)',
-            '-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709']),
-        '-c:a','aac','-ac',String(info.identity.channels),'-b:a',info.identity.bitrate,
-        '-af',job.lease?.sourceKind==='isolated-cluster'
-          ?'aresample=async=1':'asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0',
-        '-avoid_negative_ts','make_zero',
-        '-movflags','frag_keyframe+empty_moov+default_base_moof',
-        '-f','mp4','pipe:1'];
-      if(job.cancelled||!valid(info)||foregroundBusy())return;
-      if(sourceKind!=='island'&&info.sourceMode==='verified-prefix')
-        attemptedPrefixBytes.set(info.key,{sessionId:info.identity.sessionId,bytes:prefixProgress});
+      const args=progressiveArgs(info.identity,input,ffmpegInputArgs,
+        job.lease?.sourceKind==='isolated-cluster');
+      if(job.cancelled||!valid(info)||foregroundBusy()||mediaAdmissionsClosed()
+        ||!await binaryCurrent(info))return;
       const child=spawn(ffmpegPath,args,{windowsHide:true,stdio:['ignore','pipe','pipe']});
       job.child=child;
       child.stderr?.resume?.();
-      const exited=new Promise(resolve=>{
-        child.once('error',()=>{void cancelJob(job);});
-        child.once('close',code=>{
-          try{onClose(child,info.identity);}catch{}
-          resolve(code);
-        });
+      const exited=waitForChildStdioDrain(child,{
+        afterExitMs:60_000,
+        onError:()=>{
+          // A failed spawn has no pipes to drain. A real exited child holds
+          // its slot until the trailing stdout/stderr reach EOF.
+          if(!Number.isSafeInteger(child.pid)||child.pid<=0)attemptedPrefixBytes.delete(info.key);
+          child.stdout?.destroy?.();
+          void cancelJob(job);
+        },
+      }).then(code=>{
+        try{onClose(child,info.identity);}catch{}
+        return code;
       });
+      if(sourceKind!=='island'&&info.sourceMode==='verified-prefix')
+        attemptedPrefixBytes.set(info.key,{sessionId:info.identity.sessionId,bytes:prefixProgress});
       try{onSpawn(child,info.identity);}catch{await cancelJob(job);}
       const parser=new AtomParser(maxWindowBytes,diagnose);
       const ranges=[...already];
@@ -773,8 +941,15 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
             if(ranges.some(item=>item.id===id))continue;
             if(ranges.length>=maxWindows) {await cancelJob(job);break;}
             if(candidate.bytes.length>maxWindowBytes){diagnose('window-oversize');continue;}
-            const gate=await Promise.race([allowance(candidate.bytes.length+65536),job.cancel]);
-            if(gate===RELEASED||!gate?.allowed) {await cancelJob(job);break;}
+            // Each complete window is admitted atomically against the same
+            // remux/indexed/verified-source reservation ledger. A plain
+            // allowance snapshot admits simultaneous unrelated writers.
+            const quota=createSharedCacheReservation({sessionsRoot,allowance});
+            if(await Promise.race([
+              quota.reserve(candidate.bytes.length+65536),job.cancel,
+            ])!==true || job.cancelled) {
+              quota.release();await cancelJob(job);break;
+            }
             const part=path.join(dir,id+'.part.mp4');
             const ready=where(info,id);
             let published=false;
@@ -782,7 +957,9 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
               const writer=await fs.open(part,'wx');
               try{await writer.writeFile(candidate.bytes);await writer.sync();}
               finally{await writer.close();}
-              if(job.cancelled||!valid(info)||job.lease&&!job.lease.sourceVerified())break;
+              if(!quota.consume(candidate.bytes.length))throw Error('Window byte reservation lost');
+              if(job.cancelled||!valid(info)||job.lease&&!job.lease.sourceVerified()
+                ||!await binaryCurrent(info))break;
               const probe=await probeWindow(ffprobePath,spawn,part,job);
               const interval=verifiedWindow(probe,info,candidate.rap);
               let offset=0;
@@ -868,9 +1045,11 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
               ranges.sort((a,b)=>a.start-b.start);
               const temp=path.join(dir,'index.json.tmp');
               const file=await fs.open(temp,'w');
-              try{await file.writeFile(JSON.stringify({identity:info.identity,ranges,complete:false}));
+              try{await file.writeFile(JSON.stringify({schema:PROGRESSIVE_SCHEMA,
+                identity:info.identity,ranges,complete:false}));
                 await file.sync();}finally{await file.close();}
-              if(job.cancelled||!valid(info)||job.lease&&!job.lease.sourceVerified()){
+              if(job.cancelled||!valid(info)||job.lease&&!job.lease.sourceVerified()
+                ||!await binaryCurrent(info)){
                 ranges.splice(ranges.indexOf(range),1);
                 if(priorPosition>=0)ranges.push(prior);
                 ranges.sort((a,b)=>a.start-b.start);
@@ -884,6 +1063,7 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
             }finally{
               await fs.rm(part,{force:true}).catch(()=>{});
               if(!published)await fs.rm(ready,{force:true}).catch(()=>{});
+              quota.release();
             }
           }
         }
@@ -902,18 +1082,21 @@ export function createProgressiveIndexCache({sessionsRoot,ffmpegPath,ffprobePath
         &&parser.pending.length===0&&continuous){
         const temp=path.join(dir,'index.json.tmp');
         const file=await fs.open(temp,'w');
-        try{await file.writeFile(JSON.stringify({identity:info.identity,ranges,complete:true}));
+        try{await file.writeFile(JSON.stringify({schema:PROGRESSIVE_SCHEMA,
+          identity:info.identity,ranges,complete:true}));
           await file.sync();}finally{await file.close();}
-        if(!job.cancelled&&valid(info))await fs.rename(temp,path.join(dir,'index.json'));
+        if(!job.cancelled&&valid(info)&&await binaryCurrent(info))
+          await fs.rename(temp,path.join(dir,'index.json'));
       }
     }catch(error){diagnose('background-error:'+String(error?.message||error));}
     finally{
       await job.lease?.release?.().catch(()=>{});
       clearTimeout(job.escalation);
       clearTimeout(job.wallTimer);clearTimeout(job.idleTimer);
-      if(jobs.get(info.key)===job)jobs.delete(info.key);
+      if(jobs.get(jobKey)===job)jobs.delete(jobKey);
       job.resolveDone();
     }
   }
-  return {eligibility:toInfo,start,status,open,openWindow,stopAll,stopSession,purgeAll};
+  return {eligibility:toPolicy,verifiedEligibility:toInfo,
+    start,status,open,openWindow,stopAll,stopSession,purgeAll};
 }

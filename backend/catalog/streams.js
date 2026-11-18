@@ -3,6 +3,7 @@ import { heightFromQualityLabel, qualityLabel, releaseVideoHeight } from "../../
 import { FALLBACK_TRACKERS } from "../../server.js";
 import { fetchUpstreamJson, json, methodNotAllowed, pruneTimedCache } from "../app/http-helpers.js";
 import { validateCatalogType, validateImdbId } from "./catalog-api.js";
+import { catalogProviderAdmission } from "./cold-provider-admission.js";
 
 const STREAM_CACHE_TTL_MS = 10 * 60 * 1000;
 
@@ -115,6 +116,9 @@ function streamMagnet(infoHash, stream) {
 function normalizeProviderStream(stream, provider) {
   const infoHash = String(stream?.infoHash || "").trim().toLowerCase();
   if (!/^[a-f0-9]{40}$/.test(infoHash)) return null;
+  const rawIndex = stream?.fileIdx;
+  const parsedIndex = typeof rawIndex === "number" || (typeof rawIndex === "string" && /^\d+$/.test(rawIndex.trim()))
+    ? Number(rawIndex) : null;
   const title = String(stream?.title || stream?.name || "Torrent source").trim().slice(0, 1400);
   const label = String(stream?.name || provider.name).trim().slice(0, 160);
   const combined = `${label}\n${title}\n${stream?.behaviorHints?.filename || ""}`;
@@ -125,7 +129,7 @@ function normalizeProviderStream(stream, provider) {
     providers: [provider.name],
     title,
     label,
-    fileIdx: Number.isInteger(stream?.fileIdx) && stream.fileIdx >= 0 ? stream.fileIdx : null,
+    fileIdx: Number.isSafeInteger(parsedIndex) && parsedIndex >= 0 ? parsedIndex : null,
     filename: typeof stream?.behaviorHints?.filename === "string" ? stream.behaviorHints.filename.slice(0, 500) : "",
     quality: detectStreamQuality(combined),
     height: releaseVideoHeight(combined),
@@ -159,9 +163,13 @@ function mergeStreamResults(providerResults) {
   const merged = new Map();
   for (const providerResult of providerResults) {
     for (const stream of providerResult.streams) {
-      const existing = merged.get(stream.infoHash);
+      // A pack can expose multiple independently playable files. An unindexed
+      // torrent candidate has unknown file identity and cannot replace one.
+      const fileIndex = Number.isSafeInteger(stream.fileIdx) && stream.fileIdx >= 0 ? stream.fileIdx : null;
+      const identity = `${stream.infoHash}:${fileIndex === null ? "unindexed" : fileIndex}`;
+      const existing = merged.get(identity);
       if (!existing) {
-        merged.set(stream.infoHash, { ...stream });
+        merged.set(identity, { ...stream });
         continue;
       }
       existing.providers = [...new Set([...existing.providers, ...stream.providers])];
@@ -183,13 +191,15 @@ async function streamsForVideo(type, videoId) {
   pruneTimedCache(streamSearchCache, 160);
   const cached = streamSearchCache.get(cacheKey);
   if (cached?.expiresAt > Date.now()) return cached.value;
-  const providerResults = await Promise.all(STREAM_PROVIDERS.map((provider) => queryStreamProvider(provider, type, videoId)));
-  const value = {
-    streams: mergeStreamResults(providerResults),
-    providers: providerResults.map(({ provider, ok, error }) => ({ provider, ok, error: error || null })),
-  };
-  streamSearchCache.set(cacheKey, { value, expiresAt: Date.now() + STREAM_CACHE_TTL_MS });
-  return value;
+  return catalogProviderAdmission.run(`stream:${cacheKey}`, async () => {
+    const providerResults = await Promise.all(STREAM_PROVIDERS.map((provider) => queryStreamProvider(provider, type, videoId)));
+    const value = {
+      streams: mergeStreamResults(providerResults),
+      providers: providerResults.map(({ provider, ok, error }) => ({ provider, ok, error: error || null })),
+    };
+    streamSearchCache.set(cacheKey, { value, expiresAt: Date.now() + STREAM_CACHE_TTL_MS });
+    return value;
+  });
 }
 
 export async function searchStreams(req, res, url) {
@@ -205,6 +215,7 @@ export async function searchStreams(req, res, url) {
     return true;
   }
   const result = await streamsForVideo(type, videoId);
-  json(res, 200, { type, id: videoId, ...result });
+  // Disconnecting one waiter cannot cancel another consumer's shared probe.
+  if (!res.destroyed && !res.writableEnded) json(res, 200, { type, id: videoId, ...result });
   return true;
 }

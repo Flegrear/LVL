@@ -5,6 +5,7 @@ import { artworkFallback, badgeMarkup, bindShelves, buttonMarkup, confirmDialog,
 import { metahubUrl, posterSrcset, sharperPoster } from "../catalog/home-feed.js";
 import { resolveAniListScorePart } from "../anilist/anilist-score-sync.js";
 import { lvlRatingSummary } from "./lvl-ratings.js";
+import { createRatingWriteQueue, ratingPresentationKey, ratingWorkKey } from "./rating-work-identity.js";
 
 // Pick posters: the catalog's (300–780 px, the browser takes the size the screen needs) when the
 // pick has a catalog page, else AniList's large cover. The other one is the fallback.
@@ -213,6 +214,7 @@ export function createRecsUi(hooks) {
   let overview = null;
   let loadedAt = 0;
   let loading = null;
+  let forcedAfterLoading = null;
   // GET and mutation responses can settle out of order. A GET represents the
   // overview revision at request time; only acknowledged POSTs advance it.
   // A later-started acknowledged mutation also supersedes older POST results.
@@ -225,7 +227,22 @@ export function createRecsUi(hooks) {
 
   function load({ force = false } = {}) {
     if (!force && overview && Date.now() - loadedAt < FRESH_MS) return Promise.resolve(overview);
-    if (loading) return loading;
+    // A forced read requested after a mutation must run once the older
+    // in-flight read settles; it cannot consume that stale response.
+    if (loading) {
+      if (!force) return loading;
+      // Multiple refresh actions while a GET is in flight all require one
+      // post-flight read, not a chain of redundant GETs. Mutation revisions
+      // still discard the obsolete response before this queued fetch.
+      if (!forcedAfterLoading) {
+        const queued = loading.catch(() => {}).then(() => load({ force: true }));
+        const joined = queued.finally(() => {
+          if (forcedAfterLoading === joined) forcedAfterLoading = null;
+        });
+        forcedAfterLoading = joined;
+      }
+      return forcedAfterLoading;
+    }
     const requestRevision = overviewRevision;
     loading = fetchJson("/api/recs")
       .then((data) => {
@@ -402,8 +419,10 @@ export function createRecsUi(hooks) {
     if (!overview || !settingsVisible()) return;
     const { settings, stats, status } = overview;
     const total = totalRatings(overview);
-    setText("#recs-rated-count", total ? plural(total, "rating") : "");
-    show("#recs-rated-count", Boolean(total));
+    const unverified = Number(stats.unverifiedLegacy?.count) || 0;
+    setText("#recs-rated-count", [total ? plural(total, "rating") : "",
+      unverified ? `${plural(unverified, "legacy rating")} (account unverified)` : ""].filter(Boolean).join(" · "));
+    show("#recs-rated-count", Boolean(total || unverified));
 
     const letterboxd = settings.letterboxd;
     const feed = Boolean(letterboxd?.username);
@@ -439,7 +458,8 @@ export function createRecsUi(hooks) {
     if (running) line = `Updating, ${runPercent(running)}%: ${running.phase || "starting"}…`;
     else if (last?.status === "failed") line = `The last update failed: ${last.error || "unknown error"}`;
     else if (last) line = `Updated ${timeAgo(last.finishedAt || last.startedAt)}, ${plural(overview.picks.length, "recommendation")}`;
-    if (!running && status.nextRunAt) line += `. Next automatic refresh ${status.nextRunAt - Date.now() <= 10 * 60_000 ? "soon" : timeUntil(status.nextRunAt)}`;
+    if (!running && settings.mode === "manual") line += ". Automatic updates off; use Update now";
+    else if (!running && status.nextRunAt) line += `. Next automatic refresh ${status.nextRunAt - Date.now() <= 10 * 60_000 ? "soon" : timeUntil(status.nextRunAt)}`;
     if (!running && overview.calibratedWith) line += `. Match tuned with ${plural(overview.calibratedWith, "of your ratings", "of your ratings")}`;
     setText("#recs-run", line);
     show("#recs-see-picks", !running && overview.picks.length > 0);
@@ -551,33 +571,67 @@ export function createRecsUi(hooks) {
   /* ------------------------------------------------------------ "Your rating" on a title page */
 
   const titleCache = new Map();
-  const titleWrites = new Map();
+  const { pending: titleWrites, enqueue: queueTitleRating } = createRatingWriteQueue();
   const seasonsOpen = new Set();
   let titleNow = null;
 
-  const titleCacheKey = (subject) => `${subject.catalogId}|${subject.seriesKey}|${subject.title}`;
+  // The displayed AniList title/season links are stable media IDs, unlike a
+  // shared title string. Send them to the read-only ratings endpoint so a
+  // verified current-account score is visible before the IMDb crosswalk runs.
+  const titleAniListIds = (subject) => [subject?.anilist?.anilistId,
+    ...(Array.isArray(subject?.anilist?.seasons) ? subject.anilist.seasons : []).map((part) => part?.anilistId)]
+    .filter((id) => Number.isSafeInteger(id) && id > 0).filter((id, index, ids) => ids.indexOf(id) === index).slice(0, 30);
+  // Cache and edit queue share only the immutable work ID. Presentation
+  // versions are independent: a rename, linked-account switch, or provider
+  // graph change refreshes the read without changing per-work event order.
+  const titleCacheKey = ratingWorkKey;
 
   function titleRecord(subject) {
     const key = titleCacheKey(subject);
+    if (!key) return { data: null, pending: false, error: "A verified or saved title is required", message: "", messageError: false };
+    const presentation = ratingPresentationKey(subject);
     let record = titleCache.get(key);
-    if (record) return record;
-    if (titleCache.size > 60) titleCache.clear();
-    record = { data: null, pending: true, error: "", message: "", messageError: false };
+    if (record?.presentation === presentation) return record;
+    // An old presentation's in-flight GET is still allowed to finish into
+    // its detached record but cannot overwrite the new account/work display.
+    if (record) clearTimeout(record.timer);
+    if (titleCache.size > 60) {
+      // Keep the open editor and pending title writes across cache pruning.
+      const activeKey = titleNow ? titleCacheKey(titleNow) : null;
+      for (const oldKey of titleCache.keys()) {
+        if (titleCache.size <= 60) break;
+        if (oldKey !== activeKey && !titleWrites.has(oldKey)) titleCache.delete(oldKey);
+      }
+    }
+    record = { presentation, data: null, pending: true, error: "", message: "", messageError: false, writeCommitted: false };
     titleCache.set(key, record);
     const params = new URLSearchParams();
     if (subject.catalogId) params.set("catalogId", subject.catalogId);
     if (subject.seriesKey) params.set("key", subject.seriesKey);
+    if (subject.kind) params.set("kind", subject.kind);
+    if (["anime", "anime-movie"].includes(subject.kind) && titleAniListIds(subject).length)
+      params.set("anilistIds", titleAniListIds(subject).join(","));
     if (subject.title) params.set("title", subject.title);
     if (subject.year) params.set("year", String(subject.year));
     fetchJson(`/api/ratings?${params}`)
-      .then((data) => { record.data = data; })
-      .catch((error) => { record.error = error.message || "Couldn't read your ratings"; })
+      .then((data) => {
+        // A stale GET may finish after a newer queued POST. It cannot restore
+        // an earlier score, nor an account snapshot replaced in this work slot.
+        if (titleCache.get(key) === record && !record.writeCommitted) record.data = data;
+      })
+      .catch((error) => {
+        if (titleCache.get(key) === record && !record.writeCommitted)
+          record.error = error.message || "Couldn't read your ratings";
+      })
       .finally(() => { record.pending = false; onTitleChange(); });
     return record;
   }
 
   const scoreInput = (season, rating, label) => `<span class="recs-score"><input type="text" inputmode="decimal" autocomplete="off" spellcheck="false" maxlength="5" placeholder="e.g. 7.5" value="${escapeHtml(formatScore(rating?.score))}" data-rating-score="${season ?? ""}" aria-label="${escapeHtml(label)}" /></span>`;
-  const sourceName = (source) => ({ anilist: "AniList", letterboxd: "Letterboxd" })[source] || source;
+  const sourceName = (rating) => rating.accountId === "legacy:unverified"
+    ? `Legacy ${{ anilist: "AniList", letterboxd: "Letterboxd" }[rating.source] || rating.source} (account unverified)`
+    : rating.source === "letterboxd" && rating.accountId === "import"
+      ? "Letterboxd import (unassigned)" : ({ anilist: "AniList", letterboxd: "Letterboxd" })[rating.source] || rating.source;
 
   function titleLvlBadgeMarkup(subject, record) {
     const ratings = record.data?.ratings || [];
@@ -623,7 +677,7 @@ export function createRecsUi(hooks) {
         + '>' + STATUS_LABELS[value] + '</option>').join("");
     return '<select data-rating-status aria-label="Watch status for ' + escapeHtml(subject.title || 'this title')
       + '" title="LVL watch status; AniList status is shown when no local status is set">'
-      + '<option value="" disabled hidden' + (!status ? ' selected' : '') + '>Status</option>' + options + '</select>';
+      + '<option value=""' + (!status ? ' selected' : '') + '>No status</option>' + options + '</select>';
   }
 
   function paintTitleLvlBadge(subject, record) {
@@ -649,8 +703,8 @@ export function createRecsUi(hooks) {
       slot.dataset.rendered = markup;
       if (opened) slot.querySelector(".title-lvl-rating-wrap").open = true;
       if (field !== null) {
-        const selector = `[data-rating-score="${field}"]`;
-        slot.querySelector(selector)?.focus({ preventScroll: true });
+        [...slot.querySelectorAll("[data-rating-score]")]
+          .find((input) => input.dataset.ratingScore === field)?.focus({ preventScroll: true });
       }
     }
   }
@@ -698,7 +752,7 @@ export function createRecsUi(hooks) {
       ? `<div class="recs-imported"><span class="recs-imported__label">On your lists</span>${imported.map((rating) => {
         const label = rating.seasonNumber > 1 ? `Season ${rating.seasonNumber}` : rating.itemTitle || rating.title;
         const value = hasScore(rating.score) ? formatScore(rating.score) : STATUS_LABELS[rating.status] || "";
-        return `<span class="recs-imported__item">${badgeMarkup(sourceName(rating.source), { variant: "outline" })}<span>${escapeHtml(label)}</span>${value ? `<strong>${escapeHtml(value)}</strong>` : ""}</span>`;
+        return `<span class="recs-imported__item">${badgeMarkup(sourceName(rating), { variant: "outline" })}<span>${escapeHtml(label)}</span>${value ? `<strong>${escapeHtml(value)}</strong>` : ""}</span>`;
       }).join("")}</div>`
       : "";
     const seasons = subject.seasons || [];
@@ -740,17 +794,21 @@ export function createRecsUi(hooks) {
   function setTitleNode(node, markup) {
     if (rendered.get(node) === markup) return;
     const active = node.contains(document.activeElement) ? document.activeElement : null;
-    const focusKey = active?.dataset.ratingScore !== undefined ? `[data-rating-score="${active.dataset.ratingScore}"]` : active?.hasAttribute("data-rating-status") ? "[data-rating-status]" : "";
+    const focusScore = active?.dataset.ratingScore;
+    const focusStatus = active?.hasAttribute("data-rating-status");
     rendered.set(node, markup);
     node.innerHTML = markup;
     node.hidden = !markup;
-    if (focusKey) node.querySelector(focusKey)?.focus();
+    if (focusScore !== undefined)
+      [...node.querySelectorAll("[data-rating-score]")]
+        .find((input) => input.dataset.ratingScore === focusScore)?.focus();
+    else if (focusStatus) node.querySelector("[data-rating-status]")?.focus();
   }
 
   /** subject: { catalogId, seriesKey, title, year, kind, seasons: [1, 2, …] } or null. */
   function renderTitleRating(node, subject) {
     if (!node) return;
-    titleNow = subject && (subject.catalogId || subject.seriesKey) && subject.title ? subject : null;
+    titleNow = subject?.title && titleCacheKey(subject) ? subject : null;
     if (!titleNow) {
       setTitleNode(node, "");
       paintTitleLvlBadge(null);
@@ -773,24 +831,30 @@ export function createRecsUi(hooks) {
   function showTitleRatingMessage(node, subject, message, messageError = false) {
     // AniList imports invalidate the rating cache during an async save. Use
     // the current record, not a detached record from before the refresh.
-    const record = titleRecord(subject);
+    // An old account's completion must not re-adopt its view snapshot after
+    // the user switched accounts while an HTTP save was in flight.
+    const activeSameWork = titleNow && titleCacheKey(titleNow) === titleCacheKey(subject);
+    if (activeSameWork && titleNow.accountUserId !== subject.accountUserId) return;
+    const record = titleRecord(activeSameWork ? titleNow : subject);
     record.message = message;
     record.messageError = messageError;
-    const sameTitle = () => titleNow && titleCacheKey(titleNow) === titleCacheKey(subject);
-    if (sameTitle()) renderTitleRating(node, titleNow);
+    const sameTitle = () => titleNow && titleCacheKey(titleNow) === titleCacheKey(subject)
+      && titleNow.accountUserId === subject.accountUserId;
+    // The historical editor is optional/hidden. Never replace the hero's
+    // content with rating-editor markup when that adapter is unmounted.
+    if (sameTitle()) {
+      const editor = $("#title-your-rating");
+      if (editor?.isConnected) renderTitleRating(editor, titleNow);
+      else paintTitleLvlBadge(titleNow, record);
+    }
     clearTimeout(record.timer);
-    record.timer = setTimeout(() => { record.message = ""; if (sameTitle()) renderTitleRating(node, titleNow); }, 4000);
-  }
-
-  function queueTitleRating(subject, action) {
-    // HTTP responses can complete out of order. Serialize edits on the same
-    // title in user-event order, including local saves and AniList round trips.
-    const key = titleCacheKey(subject);
-    const previous = titleWrites.get(key) || Promise.resolve();
-    const next = previous.catch(() => {}).then(action);
-    titleWrites.set(key, next);
-    void next.finally(() => { if (titleWrites.get(key) === next) titleWrites.delete(key); }).catch(() => {});
-    return next;
+    record.timer = setTimeout(() => {
+      record.message = "";
+      if (!sameTitle()) return;
+      const editor = $("#title-your-rating");
+      if (editor?.isConnected) renderTitleRating(editor, titleNow);
+      else paintTitleLvlBadge(titleNow, record);
+    }, 4000);
   }
 
   function saveTitleRating(node, season, changes) {
@@ -799,8 +863,13 @@ export function createRecsUi(hooks) {
     return queueTitleRating(subject, () => performSaveTitleRating(node, subject, season, changes));
   }
 
-  async function performSaveTitleRating(node, subject, season, { score: inputScore, status, syncScore = false, statusOnly = false }) {
-    const record = titleRecord(subject);
+  async function performSaveTitleRating(node, subject, season, { score: inputScore, status, syncScore = false, statusOnly = false, scoreOnly = false }) {
+    const key = titleCacheKey(subject);
+    const cached = titleCache.get(key);
+    // A queued edit may execute after this title was renamed or another
+    // AniList account was selected. Use a detached snapshot rather than
+    // restoring the old account's presentation in the live cache.
+    const record = cached?.presentation === ratingPresentationKey(subject) ? cached : { data: null };
     // A status-only edit must not copy the score shown in the editor when that
     // score came from AniList. Resolve the saved app score only when this queued
     // action actually runs, after any preceding score edit has been committed.
@@ -810,8 +879,20 @@ export function createRecsUi(hooks) {
     let message = "";
     let messageError = false;
     try {
-      const data = await postJson("/api/ratings", { catalogId: subject.catalogId, seriesKey: subject.seriesKey, season, title: subject.title, kind: subject.kind, year: subject.year, score, status });
-      record.data = { ratings: data.ratings || [] };
+      // The server owns the authoritative app score for a status-only edit.
+      // Its explicit flag prevents a stale cached value from overwriting a
+      // newer LVL score, without ever adopting a displayed AniList score.
+      const data = await postJson("/api/ratings", { catalogId: subject.catalogId, seriesKey: subject.seriesKey, season, title: subject.title, kind: subject.kind, year: subject.year, score, status, statusOnly: statusOnly === true, scoreOnly: scoreOnly === true,
+        anilistIds: ["anime", "anime-movie"].includes(subject.kind) ? titleAniListIds(subject) : [] });
+      if (titleCache.get(key) === record) {
+        record.writeCommitted = true;
+        record.data = { ratings: data.ratings || [] };
+      } else if (titleNow && titleCacheKey(titleNow) === key
+        && titleNow.accountUserId === subject.accountUserId) {
+        // The visible title is the same immutable work but a different
+        // presentation generation; it must refetch after the committed edit.
+        titleCache.delete(key);
+      }
       message = score === null && !status ? "Rating cleared" : "Saved";
       loadedAt = 0;
       if (syncScore) {
@@ -853,7 +934,7 @@ export function createRecsUi(hooks) {
       // The badge in the hero edits the same local rating record as the
       // historical editor. Always re-render through the actual editor node,
       // never replace the entire hero with form markup.
-      const saveNode = $("#title-your-rating") || node;
+      const saveNode = $("#title-your-rating");
       const input = event.target.closest("[data-rating-score]");
       const select = event.target.closest("[data-rating-status]");
       const overallInput = node.querySelector('[data-rating-score=""]');
@@ -870,7 +951,7 @@ export function createRecsUi(hooks) {
         syncScore: Boolean(input), statusOnly: Boolean(select && !input) });
     });
     node.addEventListener("click", (event) => {
-      const saveNode = $("#title-your-rating") || node;
+      const saveNode = $("#title-your-rating");
       const retry = event.target.closest("[data-rating-retry]");
       if (retry) {
         const season = retry.dataset.ratingRetry === "" ? null : Number(retry.dataset.ratingRetry);
@@ -880,7 +961,7 @@ export function createRecsUi(hooks) {
       const button = event.target.closest("[data-rating-clear]");
       if (!button) return;
       const season = button.dataset.ratingClear === "" ? null : Number(button.dataset.ratingClear);
-      void saveTitleRating(saveNode, season, { score: null, status: null, syncScore: true });
+      void saveTitleRating(saveNode, season, { score: null, scoreOnly: true, syncScore: true });
     });
     node.addEventListener("keydown", (event) => {
       if (event.key === "Enter" && event.target.matches?.("[data-rating-score]")) {

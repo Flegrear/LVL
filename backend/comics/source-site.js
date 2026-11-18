@@ -39,7 +39,11 @@ export function siteClient(source, remote) {
     if (from.origin === baseOrigin && to.origin !== baseOrigin && to.pathname === from.pathname && /^https?:$/.test(to.protocol)) source.onMove(to.origin);
   }
   async function send(url, options = {}) {
-    const response = await remote.request(url, { lang: source.lang, referer: `${base}/`, ...extra, ...options });
+    // Site engines may provide request details, but cannot mint or override
+    // the authenticated repository generation captured from the source owner.
+    // The transport revalidates this context against current SQLite state.
+    const response = await remote.request(url, { lang: source.lang, referer: `${base}/`, ...extra, ...options,
+      migration: source.migration || null });
     noteMove(url, response);
     if (isBotCheck(response)) {
       const message = extra.browser === "never"

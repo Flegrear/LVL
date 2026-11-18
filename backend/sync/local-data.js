@@ -9,10 +9,13 @@
 // protected by sync-service's acknowledged base rather than by raw wall time.
 import crypto from "node:crypto";
 import { joinId, splitId } from "../../shared/sync/records.js";
+import { records } from "../../shared/sync/records.js";
 import { compareStamps, parseStamp } from "../../shared/sync/clock.js";
 import { videoProgressComplete, videoPartialProgress, videoWatchedChoice,
   verifiedVideoEpisodeKey } from "../../shared/sync/video-state.js";
 import { COMIC_TYPES, createComicsData, present } from "./comics-data.js";
+import { createAppRatingRevision } from "./rating-revision.js";
+import { causallyTracked, createSyncCausalLedger } from "./causal-ledger.js";
 
 const TITLE_FIELDS = ["title", "displayTitle", "rawName", "seriesKey", "magnet", "coverUrl", "catalogId", "catalogType", "mediaKind", "aliases", "sourceMeta",
   "addedAt", "trackingStatus", "watchedTitleAt", "artworkIndex", "artworkSource", "artworkPinned", "chapterFileIndexes", "chapterLabels", "catalogOnly", "externalSource", "externalId"];
@@ -42,7 +45,23 @@ const importedSnapshot = (entry) => {
 };
 
 export function createLocalData({ appState, db, recs, log = console }) {
-  const comics = createComicsData({ db });
+  const causal = createSyncCausalLedger(db);
+  let causalScope = "unbound-local";
+  const comics = createComicsData({ db, acceptedRead: (id, value) => {
+    // The full HLC and content proof are bound to the verified sync account.
+    // An unbound or older client cannot infer a winner from matching wall ms.
+    if (causalScope === "unbound-local") return null;
+    const accepted = causal.read(causalScope, "comic.read", id);
+    if (!accepted || accepted.schema_version !== 1 || accepted.deleted) return null;
+    const decision = causal.probe(causalScope,
+      { type: "comic.read", id, at: accepted.accepted_at }, records.clean("comic.read", value));
+    return decision === "already" ? true : decision === "dirty" ? false : null;
+  } });
+  const ratingRevision = createAppRatingRevision(db);
+  // Install existing rating-table triggers immediately, not only on the
+  // first timer mark. Direct writers on another connection share the same
+  // durable SQLite triggers. A table created later is picked up by mark().
+  ratingRevision.ensure();
   const types = ["video.title", "video.progress", "video.watched", "video.imported-watched", "rating.lvl", "rating.imported", ...COMIC_TYPES];
   const tableExists = (name) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name));
 
@@ -306,13 +325,25 @@ export function createLocalData({ appState, db, recs, log = console }) {
     if (!tableExists("rec_ratings")) return;
     const value = change.value || previous?.value || {};
     const existing = db.prepare("SELECT * FROM rec_ratings WHERE rating_key = ?").get(change.id);
-    if (existing && Number(existing.updated_at || 0) > stampMs(change)) return;
-    const identity = { catalogId: value.catalogId || "", seriesKey: value.seriesKey || "", season: value.season ?? null };
+    // The sync journal has already selected this record using the full HLC
+    // and protected later local edits. The app rating's wall-clock updated_at
+    // can be days ahead of a peer and must not veto the accepted record.
+    if (existing && existing.source !== "app") return;
+    const identity = { catalogId: value.catalogId || existing?.catalog_id || "",
+      seriesKey: value.seriesKey || existing?.series_key || "", season: value.season ?? existing?.season ?? null,
+      kind: value.kind || existing?.kind || null };
     if (change.value === null) {
       const imported = existing?.provenance_json && JSON.parse(existing.provenance_json)?.source === "anilist";
+      // Retiring the old imported/local wire type cannot remove the current
+      // other-type rating. Its absent projection is a real tombstone, not a
+      // synthetic deletion of the other type.
       if (Boolean(imported) !== (change.type === "rating.imported")) { done.add(change); return; }
-      if (identity.catalogId || identity.seriesKey) recs.setAppRating({ ...identity, score: null, status: null });
+      if (existing && (identity.catalogId || identity.seriesKey))
+        recs.setAppRating({ ...identity, score: null, status: null });
       else db.prepare("DELETE FROM rec_ratings WHERE rating_key = ? AND source = 'app'").run(change.id);
+      // A kind-namespaced identity must not be marked removed if the producer
+      // resolved a different key or refused the deletion.
+      if (db.prepare("SELECT 1 FROM rec_ratings WHERE rating_key = ?").get(change.id)) return;
     } else {
       if (!identity.catalogId && !identity.seriesKey) return;
       recs.setAppRating({ ...identity, title: value.title || "", kind: value.kind || null, year: value.year ?? null, score: value.score ?? null, status: value.status || null,
@@ -321,8 +352,103 @@ export function createLocalData({ appState, db, recs, log = console }) {
     done.add(change);
   }
 
+  // These exact record keys are already validated by the registry. The local
+  // content proof is over its cleaned current projection, not a wall-time,
+  // display title alias, or an unrelated row's change counter.
+  const projectionOf = (change) => {
+    const out = [];
+    if (change.type.startsWith("rating.")) exportRatings(out);
+    else comics.export(out);
+    const row = out.find(item => item.type === change.type && item.id === change.id);
+    return row ? records.clean(change.type, row.value) : null;
+  };
+  function applyCausalOne(change, previous, done) {
+    // Both producer state and per-field HLC proof must commit together.
+    // SAVEPOINT is safe inside the outer journal's BEGIN IMMEDIATE; no
+    // connection-global trigger suppression can hide another local writer.
+    db.exec("SAVEPOINT sync_causal_one");
+    try {
+      if (change.type.startsWith("rating.")) ratingRevision.ensure();
+      const before = projectionOf(change);
+      const decision = causal.probe(causalScope, change, before);
+      if (decision === "unsupported") {
+        db.exec("RELEASE sync_causal_one");
+        return; // keep unknown future local metadata and pending remote intact
+      }
+      if (decision === "dirty") {
+        db.exec("RELEASE sync_causal_one");
+        return; // unsent independent local edit wins; remote stays unapplied
+      }
+      if (decision === "already") {
+        db.exec("RELEASE sync_causal_one");
+        done.add(change); // a previously persisted causal proof, not an invented ack
+        return;
+      }
+      const appliedOne = new Set();
+      if (change.type.startsWith("rating."))
+        applyRating(change, previous, appliedOne);
+      else comics.apply(change, appliedOne, { acceptedBySync: true });
+      if (!appliedOne.has(change)) {
+        db.exec("ROLLBACK TO sync_causal_one");
+        db.exec("RELEASE sync_causal_one");
+        return;
+      }
+      const after = projectionOf(change);
+      if (change.value === null ? after !== null : after === null)
+        throw new Error("Producer did not materialize the requested sync record");
+      if (!causal.record(causalScope, change, after))
+        throw new Error("A newer causal record already owns this sync item");
+      db.exec("RELEASE sync_causal_one");
+      done.add(change);
+    } catch (error) {
+      db.exec("ROLLBACK TO sync_causal_one");
+      db.exec("RELEASE sync_causal_one");
+      throw error;
+    }
+  }
+
   return {
     types,
+    setCausalScope(value) {
+      if (typeof value !== "string" || !value) throw new Error("A bound sync scope is required");
+      causalScope = value;
+    },
+    recordAuthoredCausal(outgoing, captured = []) {
+      const proofByKey = new Map(captured);
+      for (const change of outgoing) {
+        const key = `${change.type} ${change.id}`;
+        if (!causallyTracked(change.type) || !proofByKey.has(key)) continue;
+        if (!causal.record(causalScope, change, proofByKey.get(key), "authored"))
+          throw new Error("Outgoing causal record is older than the durable accepted stamp; preserve the journal");
+      }
+    },
+    inspectCausality(type, id) {
+      return { item: causal.read(causalScope, type, id), fields: causal.fields(causalScope, type, id) };
+    },
+    // A first-time join may have an unsent local title (artwork, source data)
+    // colliding with a newer accepted AniList display snapshot. Keep the
+    // local title edit, but do not republish its *older* same-account import.
+    // This carries display metadata only; it never grants AniList write access.
+    reconcileImportedSnapshot(change) {
+      const incoming = change?.type === "video.title" ? change.value?.anilistSync : null;
+      const account = Number(incoming?.accountUserId);
+      const updatedAt = Number(incoming?.updatedAt);
+      if (!incoming?.showId || !Number.isSafeInteger(account) || account <= 0
+        || !Number.isFinite(updatedAt) || updatedAt <= 0) return false;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const expected = appState.sectionUpdatedAt("library");
+        const library = structuredClone(appState.readSection("library") || []);
+        const entry = library.find((item) => wireId(String(item?.id || "")) === change.id);
+        if (!entry) return false;
+        const current = importedSnapshot(entry);
+        if (!current?.showId || current.showId !== incoming.showId
+          || Number(current.accountUserId) !== account
+          || Number(current.updatedAt || 0) >= updatedAt) return false;
+        entry.anilistSync = structuredClone(incoming);
+        if (appState.compareAndSwapSection("library", library, expected).ok) return true;
+      }
+      throw new Error("The Library changed while reconciling accepted AniList display metadata");
+    },
     // Used to detect user edits made after a journaled incoming Library apply,
     // including removal of an entire title (which has no per-title timestamp).
     exportLibrarySnapshot(entries = appState.readSection("library") || []) {
@@ -350,8 +476,7 @@ export function createLocalData({ appState, db, recs, log = console }) {
         for (const change of other) {
           // A change LVL's own stores refuse stays pending instead of failing the whole sync.
           try {
-            if (isRating(change)) applyRating(change, previous.get(`${change.type} ${change.id}`), done);
-            else comics.apply(change, done);
+            applyCausalOne(change, previous.get(`${change.type} ${change.id}`), done);
           } catch (error) {
             log.warn?.(`Sync: ${change.type} ${String(change.id).slice(0, 80)} not applied: ${error.message}`);
           }
@@ -362,8 +487,7 @@ export function createLocalData({ appState, db, recs, log = console }) {
       return done;
     },
     mark() {
-      const ratings = tableExists("rec_ratings") ? db.prepare("SELECT COUNT(*) AS n, MAX(updated_at) AS t FROM rec_ratings WHERE source = 'app'").get() : null;
-      return [appState.sectionUpdatedAt("library"), ratings ? `${ratings.n}.${ratings.t ?? 0}` : "-", comics.mark()].join("|");
+      return [appState.sectionUpdatedAt("library"), ratingRevision.mark(), comics.mark()].join("|");
     },
   };
 }

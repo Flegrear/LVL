@@ -7,7 +7,7 @@
 // the runner then gets that browser's cookies and user agent.
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { normalizeUnitNumber } from "../../shared/reading/units.js";
 import { chapterNumber, volumeNumber } from "./chapter-names.js";
 import { cleanTitle, fail as failure } from "./source-site.js";
@@ -64,6 +64,21 @@ export function runnerChapter(item, mangaTitle = "") {
 // { pkg, version, apk, fingerprint, sources }. Repository identities are mandatory for executable code.
 // remote: LVL's site requests (downloads, and siteCookies for checks).
 export function createRunnerEngine({ runner, dir, findExtension, remote }) {
+  // Downloads AND native admissions of one package must not race each other,
+  // even when repository sources of that package are opened concurrently.
+  // The lease is held through the native load and verified receipt, rather
+  // than exposing a downloaded but not-yet-admitted APK to another borrower.
+  // Keep old content addresses intact: the native runner may borrow them.
+  const packageLeases = new Map();
+  const preferred = new Map();
+  const withPackageLease = (pkg, action) => {
+    const previous = packageLeases.get(pkg) || Promise.resolve();
+    const pending = previous.catch(() => {}).then(action);
+    const lease = pending.catch(() => {});
+    packageLeases.set(pkg, lease);
+    void lease.finally(() => { if (packageLeases.get(pkg) === lease) packageLeases.delete(pkg); });
+    return pending;
+  };
   async function apkFor(source, { fresh = false } = {}) {
     const ext = await findExtension(source.pkg);
     if (!ext) throw failure(`${source.extension || source.name} isn't in the repository any more`, 404);
@@ -74,50 +89,194 @@ export function createRunnerEngine({ runner, dir, findExtension, remote }) {
       throw trustFailure("The extension repository has no valid approved SHA-256 signing fingerprint");
     const fingerprint = String(ext.fingerprint).replaceAll(":", "").toLowerCase();
     if (!/^https:\/\//.test(String(ext.apk || ""))) throw failure("The repository doesn't link this extension's file");
-    const file = path.join(dir, `${safeName(ext.pkg)}-v${safeName(ext.version)}.apk`);
-    if (fresh) fs.rmSync(file, { force: true });
-    if (!fs.existsSync(file)) {
-      const response = await remote.request(ext.apk, {
-        accept: "application/vnd.android.package-archive,*/*",
-        maxBytes: MAX_APK, timeoutMs: 60_000, httpsOnly: true, browser: "never",
-      });
-      if (!response.ok) throw failure(`The extension file couldn't be downloaded (HTTP ${response.status})`);
+    const authority = `${ext.pkg}@${ext.version}#${fingerprint}`;
+    const prefix = `${safeName(ext.pkg)}-v${safeName(ext.version)}-s${fingerprint}-`;
+    // ready() owns the package lease across this download AND native admission.
+    // No nested lease: another reader waits for the first verified receipt.
+    {
       fs.mkdirSync(dir, { recursive: true });
-      const partial = `${file}.part`;
-      fs.writeFileSync(partial, response.buffer);
-      fs.renameSync(partial, file);
-      // Older versions of this extension's file.
-      for (const name of fs.readdirSync(dir)) {
-        if (name.startsWith(`${safeName(ext.pkg)}-v`) && name.endsWith(".apk") && path.join(dir, name) !== file) fs.rmSync(path.join(dir, name), { force: true });
+      let file = null;
+      let digest = null;
+      // Reuse only an immutable, content-addressed candidate under the exact
+      // repository package+version+signer authority. Native runner.load still
+      // verifies the APK publisher/package before code is admitted.
+      if (!fresh) {
+        const names = fs.readdirSync(dir).filter((name) =>
+          name.startsWith(prefix) && /^[0-9a-f]{64}\.apk$/.test(name.slice(prefix.length)));
+        const preferredFile = preferred.get(authority);
+        names.sort((a, b) => {
+          if (path.join(dir, a) === preferredFile) return -1;
+          if (path.join(dir, b) === preferredFile) return 1;
+          const modified = (name) => { try { return fs.statSync(path.join(dir, name)).mtimeMs; } catch { return 0; } };
+          return modified(b) - modified(a);
+        });
+        for (const name of names) {
+          const candidate = path.join(dir, name);
+          try {
+            const stat = fs.lstatSync(candidate);
+            if (!stat.isFile() || stat.isSymbolicLink() || stat.size < 1 || stat.size > MAX_APK) continue;
+            const actual = createHash("sha256").update(fs.readFileSync(candidate)).digest("hex");
+            if (actual !== name.slice(prefix.length, -4)) continue;
+            // A previously accepted candidate needs an exact native admission
+            // marker. A downloaded but not-yet-admitted candidate is not an
+            // authority for another caller; ready() holds the package lease
+            // until native verification and the receipt are complete.
+            if (preferred.get(authority) !== candidate) {
+              const admitted = JSON.parse(fs.readFileSync(`${candidate}.verified`, "utf8"));
+              if (admitted.authority !== authority || admitted.digest !== actual) continue;
+            }
+            file = candidate;
+            digest = actual;
+            break;
+          } catch { /* corrupted or concurrently retired cache entry */ }
+        }
       }
+      if (!file) {
+        const response = await remote.request(ext.apk, {
+          accept: "application/vnd.android.package-archive,*/*",
+          maxBytes: MAX_APK, timeoutMs: 60_000, httpsOnly: true, browser: "never",
+        });
+        if (!response.ok) throw failure(`The extension file couldn't be downloaded (HTTP ${response.status})`);
+        if (!Buffer.isBuffer(response.buffer) || response.buffer.length < 1 || response.buffer.length > MAX_APK)
+          throw trustFailure("The extension file has invalid bytes");
+        digest = createHash("sha256").update(response.buffer).digest("hex");
+        file = path.join(dir, `${prefix}${digest}.apk`);
+        const partial = path.join(dir, `${prefix}${randomBytes(12).toString("hex")}.part`);
+        try {
+          fs.writeFileSync(partial, response.buffer, { flag: "wx" });
+          // Hard-link is exclusive, unlike rename replacement. Another native
+          // borrower can keep its prior accepted APK and no stale .part wins.
+          try { fs.linkSync(partial, file); }
+          catch (error) { if (error.code !== "EEXIST") throw error; }
+          const published = fs.readFileSync(file);
+          if (createHash("sha256").update(published).digest("hex") !== digest)
+            throw trustFailure("Cached extension bytes conflict with the verified content address");
+        } finally {
+          try { fs.rmSync(partial, { force: true }); } catch { /* no borrower owns the unaccepted partial */ }
+        }
+      }
+      return { file, key: `${authority}#${digest}`, fingerprint, packageName: ext.pkg };
     }
-    // Content, publisher and package are authoritative; an unchanged size/mtime is not.
-    const stat = fs.statSync(file);
-    if (!stat.isFile() || stat.size < 1 || stat.size > MAX_APK) throw trustFailure("The cached extension file is invalid");
-    const digest = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
-    return { file, key: `${ext.pkg}@${ext.version}#${fingerprint}#${digest}`, fingerprint, packageName: ext.pkg };
   }
 
   async function ready(source, options) {
-    const { file, key, fingerprint, packageName } = await apkFor(source, options);
-    const loaded = await runner.load(file, key, { fingerprint, packageName });
-    if (!loaded.sources.some((item) => String(item.id) === String(source.id))) throw failure(`The ${source.extension || source.name} extension no longer has this source`, 404);
-    return loaded;
+    return withPackageLease(source.pkg, async () => {
+      const { file, key, fingerprint, packageName } = await apkFor(source, options);
+      const loaded = await runner.load(file, key, { fingerprint, packageName });
+      if (!loaded.sources.some((item) => String(item.id) === String(source.id))) throw failure(`The ${source.extension || source.name} extension no longer has this source`, 404);
+      const digest = key.slice(key.lastIndexOf("#") + 1);
+      const authority = key.slice(0, key.lastIndexOf("#"));
+      // This admission receipt is separate from the executable APK: rejected
+      // downloaded content is never reused merely because bytes reached disk.
+      // Existing verified receipts may be retained by concurrent borrowers.
+      try {
+        fs.writeFileSync(`${file}.verified`, JSON.stringify({ authority, digest }), { flag: "wx" });
+      } catch (error) {
+        if (error.code !== "EEXIST") throw error;
+        const existing = JSON.parse(fs.readFileSync(`${file}.verified`, "utf8"));
+        if (existing.authority !== authority || existing.digest !== digest)
+          throw trustFailure("Conflicting extension admission receipt");
+      }
+      // Do NOT advance the preferred borrowed APK merely because the download
+      // reached disk. Only an accepted native load and exact requested source
+      // can promote the candidate. Failed fresh loads keep the last accepted
+      // immutable content available to subsequent ordinary calls.
+      preferred.set(authority, file);
+      return loaded;
+    });
   }
 
   // A repository can re-publish an extension under the same version (a fixed build).
   // When the kept file's code doesn't link or verify, it is downloaded again, once per
   // extension while LVL runs, and the request is tried once more.
   const refetched = new Set();
+  const refreshing = new Map();
+  // A failed refresh is shared by the requests that were already started
+  // when it failed, even if a package-serialized native load delays their
+  // extension-code catch. Later requests must NOT inherit that failure:
+  // unrelated old operations may stay in runner.call for an arbitrarily long
+  // time, and active package counts can otherwise starve all future retries.
+  // Per-package request ordinals and disjoint failed intervals make each
+  // failure belong to one cohort only. An unrelated old runner.call must not
+  // pin the receipts of every later independent failed retry.
+  const issued = new Map();
+  const activeRequests = new Map();
+  const failedRefreshes = new Map();
+  const lastFailedThrough = new Map();
+  function retireDrainedFailures(pkg) {
+    const active = activeRequests.get(pkg);
+    const failed = failedRefreshes.get(pkg);
+    if (!failed) return;
+    // An old, still-active operation can retain its own failed receipt, but
+    // must never prevent a later independent generation from retrying.
+    const outstanding = failed.filter((entry) =>
+      active && [...active].some((ordinal) => ordinal >= entry.from && ordinal <= entry.through));
+    if (outstanding.length) failedRefreshes.set(pkg, outstanding);
+    else failedRefreshes.delete(pkg);
+  }
   async function using(source, task) {
+    const pkg = source.pkg;
+    const ordinal = (issued.get(pkg) || 0) + 1;
+    issued.set(pkg, ordinal);
+    if (!activeRequests.has(pkg)) activeRequests.set(pkg, new Set());
+    activeRequests.get(pkg).add(ordinal);
     try {
-      await ready(source);
-      return await withCheck(source, task);
-    } catch (error) {
-      if (error.code !== "extension-code" || refetched.has(source.pkg)) throw error;
-      refetched.add(source.pkg);
-      await ready(source, { fresh: true });
-      return withCheck(source, task);
+      try {
+        await ready(source);
+        return await withCheck(source, task);
+      } catch (error) {
+        if (error.code !== "extension-code") throw error;
+        // Historical cohorts take priority: a delayed original borrower must
+        // observe its shared failure, even if a newer request has since
+        // successfully refreshed the package.
+        let cohort = failedRefreshes.get(pkg)?.find((entry) =>
+          ordinal >= entry.from && ordinal <= entry.through);
+        // Never initiate another refetch once one signed fresh admission
+        // succeeded; historical failed callers may still see their own error.
+        if (!cohort && refetched.has(pkg)) throw error;
+        if (!cohort) cohort = refreshing.get(pkg);
+        if (!cohort) {
+          const refresh = ready(source, { fresh: true }).then((loaded) => {
+            refetched.add(pkg);
+            return loaded;
+          });
+          cohort = { promise: refresh, from: null, through: null };
+          refreshing.set(pkg, cohort);
+          const owned = cohort;
+          // Rejected cohorts keep only the ordinals that already existed at
+          // rejection. Later arrivals may immediately open a new refresh.
+          // This settlement observer consumes both outcomes (no dangling
+          // unhandled rejection) and never cancels an active native borrower.
+          void refresh.then(
+            () => {
+              if (refreshing.get(pkg) === owned) refreshing.delete(pkg);
+            },
+            () => {
+              owned.from = (lastFailedThrough.get(pkg) || 0) + 1;
+              owned.through = issued.get(pkg);
+              lastFailedThrough.set(pkg, owned.through);
+              const failures = failedRefreshes.get(pkg) || [];
+              failures.push(owned);
+              failedRefreshes.set(pkg, failures);
+              if (refreshing.get(pkg) === owned) refreshing.delete(pkg);
+              retireDrainedFailures(pkg);
+            },
+          );
+        }
+        await cohort.promise;
+        return await withCheck(source, task);
+      }
+    } finally {
+      const active = activeRequests.get(pkg);
+      active?.delete(ordinal);
+      if (active?.size === 0) activeRequests.delete(pkg);
+      retireDrainedFailures(pkg);
+      // All request/cohort ordinals may restart only after no package call or
+      // refresh can still refer to an older generation.
+      if (!activeRequests.has(pkg) && !refreshing.has(pkg) && !failedRefreshes.has(pkg)) {
+        issued.delete(pkg);
+        lastFailedThrough.delete(pkg);
+      }
     }
   }
 

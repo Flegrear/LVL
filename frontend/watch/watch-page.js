@@ -119,7 +119,9 @@ export function watchTrackingStatus(series) {
 
 export function setWatchTrackingStatus(seriesKey, status, { automatic = false } = {}) {
   if (!Object.hasOwn(ANILIST_STATUS_LABELS, status)) return false;
-  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
+  const matches = buildLibrarySeries().filter((item) => item.key === seriesKey
+    || item.routeKey === seriesKey || item.legacyKey === seriesKey);
+  const series = matches.length === 1 ? matches[0] : null;
   if (!series || series.mediaKind !== "anime") return false;
   const previous = watchTrackingStatus(series);
   if (automatic && previous !== "PLANNING") return false;
@@ -131,8 +133,8 @@ export function setWatchTrackingStatus(seriesKey, status, { automatic = false } 
   }
   saveLibrary();
   const active = state.currentSource?.libraryId && libraryEntryById(state.currentSource.libraryId);
-  if (active && (active.seriesKey || librarySeriesKey(active.title)) === seriesKey) {
-    renderWatchInfo(buildLibrarySeries().find((item) => item.key === seriesKey), active);
+  if (active && series.sources.some((item) => item.id === active.id)) {
+    renderWatchInfo(series, active);
   }
   return true;
 }
@@ -212,7 +214,7 @@ function renderWatchInfo(series, entry) {
   watchInfoRenderKey = signature;
   info.innerHTML = `<div class="watch-info-poster">${image}</div>
     <div class="watch-info-copy"><h2><button type="button" class="watch-info-title-link" data-watch-title-details
-        data-watch-series-key="${escapeHtml(series.key || "")}" data-watch-catalog-id="${escapeHtml(catalogId)}"
+        data-watch-series-key="${escapeHtml(series.routeKey || series.key || "")}" data-watch-catalog-id="${escapeHtml(catalogId)}"
         data-watch-catalog-type="${series.type === "movie" ? "movie" : "series"}"
         aria-label="${escapeHtml(`Open ${title} in Library`)}">${escapeHtml(title)}</button></h2>
       ${genres.length ? `<ul class="watch-info-genres" aria-label="Genres">${genres.map((genre) => `<li>${escapeHtml(genre)}</li>`).join("")}</ul>` : ""}
@@ -248,7 +250,10 @@ export function renderWatchChapters() {
   const source = watchPendingSelection || state.currentSource;
   const entry = source?.libraryId ? libraryEntryById(source.libraryId) : null;
   const seriesKey = entry?.seriesKey || (entry ? librarySeriesKey(entry.title) : "");
-  const series = seriesKey ? buildLibrarySeries().find((item) => item.key === seriesKey) : null;
+  const groups = buildLibrarySeries();
+  const exact = entry && groups.filter((item) => (item.sources || []).some((saved) => saved.id === entry.id));
+  const legacy = seriesKey ? groups.filter((item) => item.legacyKey === seriesKey) : [];
+  const series = exact?.length === 1 ? exact[0] : legacy.length === 1 ? legacy[0] : null;
   renderWatchInfo(series, entry);
   if (!series || series.type === "movie" || source?.fileIndex === undefined || source?.fileIndex === null) {
     root.hidden = true;
@@ -267,7 +272,7 @@ export function renderWatchChapters() {
   root.hidden = false;
   const playingEpisode = entry.episodes?.find((item) => Number(item.fileIndex) === Number(source.fileIndex));
   const playingCode = String(playingEpisode?.code || source.episode?.code || "").toUpperCase();
-  const sourceKey = `${seriesKey}:${source.libraryId}:${source.fileIndex}`;
+  const sourceKey = `${series.routeKey || series.key}:${source.libraryId}:${source.fileIndex}`;
   const sourceChanged = sourceKey !== watchChaptersSourceKey;
   if (sourceChanged) {
     watchChaptersSourceKey = sourceKey;
@@ -278,7 +283,9 @@ export function renderWatchChapters() {
   [...series.seasons.entries()].forEach(([, refs]) => {
     groupLibraryChapters(refs).forEach((chapter) => {
       const code = String(chapter.code || "").toUpperCase();
-      if (code) stored.set(code, chapter);
+      // Only a verified episode code may join a catalog chapter. Multiple
+      // uncoded files can all display "VIDEO" but remain separate sources.
+      if (/^S\d{2}E\d{2,4}$/.test(code)) stored.set(code, chapter);
     });
   });
   const catalogId = watchCatalogIdFor(series) || entry.catalogId || "";
@@ -298,10 +305,14 @@ export function renderWatchChapters() {
   }
   for (const [season, refs] of series.seasons) {
     const existing = collected.get(season) || [];
-    const listed = new Set(existing.map((chapter) => chapter.code));
+    const listed = new Set(existing.map((chapter) => chapter.key || chapter.code));
     for (const group of groupLibraryChapters(refs)) {
-      if (listed.has(String(group.code).toUpperCase())) continue;
-      existing.push({ code: group.code, season, name: group.title || group.code, stored: group });
+      const code = String(group.code || "").toUpperCase();
+      const coded = /^S\d{2}E\d{2,4}$/.test(code);
+      const actionKey = coded ? code : group.key;
+      if (listed.has(actionKey)) continue;
+      listed.add(actionKey);
+      existing.push({ code: group.code, key: actionKey, season, name: group.title || group.code, stored: group });
     }
     existing.sort((a, b) => (Number(String(a.code).match(/E(\d+)/)?.[1]) || 0)
       - (Number(String(b.code).match(/E(\d+)/)?.[1]) || 0));
@@ -347,14 +358,17 @@ export function renderWatchChapters() {
   const episodesMarkup = (unavailable ? `<div class="watch-chapter-notice"><span>Full episode information couldn't load; your saved episodes remain available.</span><button type="button" class="ui-btn ui-btn--secondary ui-btn--sm" data-watch-retry-chapters>Retry</button></div>` : "") + seasons.filter(([season]) => String(season) === String(watchSelectedSeason)).map(([, rows]) => {
     return `<ol class="watch-episode-list">${rows.map((chapter) => {
         const code = String(chapter.code || "").toUpperCase();
+        const actionKey = chapter.key || code;
         const status = watchEpisodeStatus(series, chapter);
-        const current = playingCode === code;
+        const current = Boolean(chapter.stored?.sources?.some((ref) => ref.entry.id === entry.id
+          && Number(ref.episode.fileIndex) === Number(source.fileIndex)))
+          || (/^S\d{2}E\d{2,4}$/.test(code) && playingCode === code);
         const upcoming = Boolean(chapter.id && chapterUpcoming(chapter));
         const label = status.watched ? "Watched" : status.percent > 0 ? `${status.percent}% watched` : status.saved ? "Not started" : "No source saved";
         const name = chapter.name && chapter.name !== code ? String(chapter.name) : `Episode ${Number(code.match(/E(\d+)/)?.[1] || 0)}`;
         const sourceRefs = chapter.stored?.sources?.slice().sort(compareLibrarySourceRefsByPeers) || [];
         const best = sourceRefs[0] || null;
-        const sourcesOpen = watchEpisodeSourcesOpen === code;
+        const sourcesOpen = watchEpisodeSourcesOpen === actionKey;
         const lookup = chapter.id ? watchEpisodeSourceLookups.get(chapter.id) : null;
         const candidates = [
           ...sourceRefs.map((ref) => ({ kind: "saved", ref, peers: Number(normalizeLibrarySourceMeta(ref.entry?.sourceMeta).peers) || 0 })),
@@ -366,30 +380,30 @@ export function renderWatchChapters() {
         const picture = thumbnail
           ? `<img src="${escapeHtml(thumbnail)}" alt="" loading="lazy" decoding="async" data-fallback="wide" data-fallback-title="${escapeHtml(series.title)}"${backup && backup !== thumbnail ? ` data-fallback-src="${escapeHtml(backup)}"` : ""} />`
           : `<img src="${escapeHtml(artworkFallback(series.title, { ratio: "wide", label: code }))}" alt="" />`;
-        watchChapterActions.set(code, { best, candidates, sourceRefs, saved: chapter.stored || null, catalog: chapter.id ? chapter : null, entry, series, list: cached, current });
+        watchChapterActions.set(actionKey, { best, candidates, sourceRefs, saved: chapter.stored || null, catalog: chapter.id ? chapter : null, entry, series, list: cached, current });
         return `<li class="watch-episode${current ? " is-current" : ""}${status.watched ? " is-watched" : ""}" tabindex="0"
-          data-watch-episode-code="${escapeHtml(code)}" aria-label="${escapeHtml(`${code} ${name}, ${current ? "currently playing" : label}. Press Shift+F10 for actions`)}" aria-keyshortcuts="Shift+F10">
+          data-watch-episode-code="${escapeHtml(actionKey)}" aria-label="${escapeHtml(`${code} ${name}, ${current ? "currently playing" : label}. Press Shift+F10 for actions`)}" aria-keyshortcuts="Shift+F10">
           <div class="watch-episode__shell">
-          <button class="watch-episode__details" type="button" data-watch-episode-sources="${escapeHtml(code)}" aria-expanded="${sourcesOpen}" aria-controls="watch-episode-sources-${escapeHtml(code)}"
+          <button class="watch-episode__details" type="button" data-watch-episode-sources="${escapeHtml(actionKey)}" aria-expanded="${sourcesOpen}" aria-controls="watch-episode-sources-${escapeHtml(actionKey)}"
             aria-label="${escapeHtml(`Choose sources for ${code} ${name}`)}">
             <span class="lib-chapter-thumb watch-episode__thumb">${picture}${status.percent > 0 && !status.watched ? `<span class="lib-chapter-progress" aria-hidden="true"><span style="width:${status.percent}%"></span></span>` : ""}${status.watched ? `<span class="lib-chapter-watched" aria-hidden="true">${icon("check")}</span>` : ""}</span>
             <span class="watch-episode__copy"><span class="watch-episode__code">${escapeHtml(code)}</span><strong>${escapeHtml(name)}</strong><small>${escapeHtml(current ? "Playing now" : upcoming ? "Upcoming" : label)}</small>
               ${status.percent > 0 ? `<span class="watch-episode__progress"><span style="width:${status.percent}%"></span></span>` : ""}
             </span>
           </button>
-          <button type="button" class="watch-episode__play" data-watch-episode="${escapeHtml(code)}" ${upcoming || (!current && !best && !chapter.id) ? 'disabled' : ""}
+          <button type="button" class="watch-episode__play" data-watch-episode="${escapeHtml(actionKey)}" ${upcoming || (!current && !best && !chapter.id) ? 'disabled' : ""}
             aria-label="${escapeHtml(current ? `Return to playing episode ${code} ${name}` : `Play ${code} ${name}`)}" title="${current ? "Return to playing episode" : upcoming ? "Not released yet" : "Play episode"}">${icon("play")}</button>
           </div>
-          <div class="watch-episode__sources" id="watch-episode-sources-${escapeHtml(code)}"${sourcesOpen ? "" : " hidden"}>
+          <div class="watch-episode__sources" id="watch-episode-sources-${escapeHtml(actionKey)}"${sourcesOpen ? "" : " hidden"}>
             <div class="watch-episode__sources-head"><strong>Episode sources</strong></div>
             ${candidates.map((item, index) => {
               const info = item.kind === "saved" ? librarySourceDetails(item.ref.entry, item.ref.episode) : item.stream;
               const release = item.kind === "saved" ? info.releaseName : String(info.title || "Episode source").split("\n")[0];
               const quality = info.quality && info.quality !== "UNKNOWN" ? info.quality : "";
-              return `<button type="button" class="watch-episode__source" data-watch-episode-source-index="${index}" data-watch-episode-source-code="${escapeHtml(code)}"><span><strong title="${escapeHtml(release)}">${escapeHtml(release)}</strong><small>${escapeHtml([quality, item.peers ? `${item.peers} peers` : "Peers unavailable", item.kind === "saved" ? "Saved" : "Online"].filter(Boolean).join(" - "))}</small></span><span>Play</span></button>`;
+              return `<button type="button" class="watch-episode__source" data-watch-episode-source-index="${index}" data-watch-episode-source-code="${escapeHtml(actionKey)}"><span><strong title="${escapeHtml(release)}">${escapeHtml(release)}</strong><small>${escapeHtml([quality, item.peers ? `${item.peers} peers` : "Peers unavailable", item.kind === "saved" ? "Saved" : "Online"].filter(Boolean).join(" - "))}</small></span><span>Play</span></button>`;
             }).join("")}
             ${lookup?.status === "loading" ? '<p role="status">Finding episode sources…</p>' : ""}
-            ${lookup?.status === "error" ? `<p role="alert">${escapeHtml(lookup.error || "Source search failed")} <button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-watch-episode-sources-retry="${escapeHtml(code)}">Retry</button></p>` : ""}
+            ${lookup?.status === "error" ? `<p role="alert">${escapeHtml(lookup.error || "Source search failed")} <button type="button" class="ui-btn ui-btn--ghost ui-btn--sm" data-watch-episode-sources-retry="${escapeHtml(actionKey)}">Retry</button></p>` : ""}
             ${!candidates.length && lookup?.status !== "loading" && lookup?.status !== "error" ? '<p>No episode sources available yet.</p>' : ""}
           </div>
         </li>`;
@@ -409,10 +423,15 @@ export function wireWatchSidePanel() {
     const button = event.target.closest("[data-watch-title-details]");
     if (!button) return;
     const entry = state.currentSource?.libraryId ? libraryEntryById(state.currentSource.libraryId) : null;
-    const key = button.dataset.watchSeriesKey || entry?.seriesKey || (entry ? librarySeriesKey(entry.title) : "");
+    const groups = buildLibrarySeries();
+    const selected = groups.find((series) => entry && (series.sources || []).some((source) => source.id === entry.id));
+    const legacy = entry && !selected ? groups.filter((series) => series.legacyKey === entry.seriesKey
+      && (!entry.catalogId || series.catalogId === entry.catalogId)) : [];
+    const key = selected?.routeKey || (legacy.length === 1 ? legacy[0].routeKey || legacy[0].key : "")
+      || button.dataset.watchSeriesKey || "";
     const catalogId = button.dataset.watchCatalogId || "";
     if (key || catalogId) void navigateWatchToLibrary(() => {
-      if (key && buildLibrarySeries().some((series) => series.key === key)) openLibrarySeries(key);
+      if (key && groups.some((series) => series.key === key || series.routeKey === key)) openLibrarySeries(key);
       else if (catalogId) openTitlePage({ id: catalogId, type: button.dataset.watchCatalogType || "series" });
     });
   });
@@ -421,7 +440,8 @@ export function wireWatchSidePanel() {
     if (!select) return;
     const entry = state.currentSource?.libraryId ? libraryEntryById(state.currentSource.libraryId) : null;
     if (!entry) return;
-    setWatchTrackingStatus(entry.seriesKey || librarySeriesKey(entry.title), select.value);
+    const selected = buildLibrarySeries().find((series) => series.sources.some((source) => source.id === entry.id));
+    if (selected) setWatchTrackingStatus(selected.routeKey || selected.key, select.value);
   });
   $("#watch-side-rail")?.addEventListener("click", (event) => {
     const seasonButton = event.target.closest("[data-watch-season]");
@@ -551,7 +571,7 @@ export function wireWatchChapters() {
     if (event.target.closest("[data-watch-retry-chapters]")) {
       const source = state.currentSource;
       const entry = source?.libraryId ? libraryEntryById(source.libraryId) : null;
-      const series = buildLibrarySeries().find((item) => item.key === (entry?.seriesKey || librarySeriesKey(entry?.title)));
+      const series = buildLibrarySeries().find((item) => entry && item.sources.some((source) => source.id === entry.id));
       const catalogId = series ? watchCatalogIdFor(series) : entry?.catalogId;
       if (catalogId && !catalogChapterLists.get(catalogId)?.pending) {
         catalogChapterLists.delete(catalogId);

@@ -17,7 +17,7 @@ import { absolutePlaybackSeconds, seekPlayerTo } from "../player/player-core.js"
 import { explicitUnwatchCompletionArmed } from "../player/audio-sync.js";
 import { renderWatchChapters, setWatchTrackingStatus, watchTrackingStatus } from "./watch-page.js";
 import { invalidateAutoNextAfterEpisodeEdit } from "./episode-navigation.js";
-import { buildLibrarySeries, libraryEntryById, librarySeriesKey } from "../library/library-data.js";
+import { buildLibrarySeries, findLibrarySeriesByKey, libraryEntryById, librarySeriesKey } from "../library/library-data.js";
 import { libraryOrderedChapters } from "../library/library-page.js";
 import { refreshTitlePage, titleSubject } from "../title/title-page.js";
 import { anilistAutoRun, anilistAutoTimer, anilistStoredQueue, persistAniListQueue } from "../anilist/anilist-sync.js";
@@ -33,6 +33,9 @@ export function currentLibraryEpisode() {
 // Where you stopped watching: kept per Library episode (Continue watching, Resume). Saved at most
 // every 10 s while playing, and right away on pause or when leaving the page.
 let watchProgressSavedAt = 0;
+// A ten-second write throttle belongs to one exact Library episode, not to
+// every episode. An immediate E1 -> E2 handoff must persist E2's first position.
+let watchProgressSavedOwner = "";
 
 // positionSeconds/playing: the pop-up player's position, saved by LVL's window while it plays there.
 export function recordWatchProgress({ force = false, positionSeconds = null, playing = null } = {}) {
@@ -47,8 +50,9 @@ export function recordWatchProgress({ force = false, positionSeconds = null, pla
   if (!durationMs || positionMs < 5000) return;
   const now = Date.now();
   const code = String(current.episode.code || "").toUpperCase();
+  const progressOwner = `${String(current.entry.id || "")}:${String(current.episode.fileIndex)}:${code}`;
   const series = buildLibrarySeries().find((item) => item.sources.includes(current.entry));
-  const key = series?.key || current.entry.seriesKey || librarySeriesKey(current.entry.title);
+  const key = series?.routeKey || series?.key || current.entry.seriesKey || librarySeriesKey(current.entry.title);
   const completionKey = `${key}\0${code}`;
   const manuallyUnwatched = explicitlyUnwatchedChapter(series || { key }, code);
   if (manuallyUnwatched && positionMs <= durationMs * 0.8) explicitUnwatchCompletionArmed.add(completionKey);
@@ -57,8 +61,7 @@ export function recordWatchProgress({ force = false, positionSeconds = null, pla
   current.episode.progress = { positionMs, durationMs, updatedAt: now, finished };
   if (current.episode.progress.finished) {
     explicitUnwatchCompletionArmed.delete(completionKey);
-    for (const entry of series?.sources || state.library.filter((item) =>
-      (item.seriesKey || librarySeriesKey(item.title)) === key)) {
+    for (const entry of series?.sources || [current.entry]) {
       if (entry.watchedChapters?.[code] === false) {
         entry.watchedChapters = { ...entry.watchedChapters };
         delete entry.watchedChapters[code];
@@ -74,8 +77,9 @@ export function recordWatchProgress({ force = false, positionSeconds = null, pla
       setWatchTrackingStatus(key, "CURRENT", { automatic: true });
     }
   }
-  if (force || now - watchProgressSavedAt >= 10_000) {
+  if (force || progressOwner !== watchProgressSavedOwner || now - watchProgressSavedAt >= 10_000) {
     watchProgressSavedAt = now;
+    watchProgressSavedOwner = progressOwner;
     saveLibrary();
     if ($("#watch-chapters") && !$("#watch-chapters").hidden) renderWatchChapters();
   }
@@ -119,12 +123,21 @@ export function resolveChapterManualIntent(entries, rawCode) {
   return selected ? selected.watched : null;
 }
 
+// Real Library series carry sources. A caller with only a legacy key can
+// still address one unambiguous saved entry, but never combine separate
+// identity-poor sources merely because their translated names match.
+function manualIntentSources(series) {
+  if (Array.isArray(series?.sources)) return series.sources;
+  if (!series?.key || !Array.isArray(state?.library)) return [];
+  const candidates = state.library.filter((entry) => (entry.seriesKey || librarySeriesKey(entry.title)) === series.key);
+  return candidates.length === 1 ? candidates : [];
+}
+
 function librarySeriesManualIntent(series, code) {
   if (!series?.key) return null;
   // The Library builder already groups sources through a verified catalog ID
   // when one exists. Use that exact group rather than recomputing a title key.
-  return resolveChapterManualIntent(Array.isArray(series.sources) ? series.sources
-    : state.library.filter((item) => (item.seriesKey || librarySeriesKey(item.title)) === series.key), code);
+  return resolveChapterManualIntent(manualIntentSources(series), code);
 }
 
 export function explicitlyUnwatchedChapter(series, code) {
@@ -145,8 +158,11 @@ function markWatchEpisodeUnwatched(series, code) {
   if (typeof invalidateAutoNextAfterEpisodeEdit === "function") invalidateAutoNextAfterEpisodeEdit(series, normalized);
   explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
   const identity = verifiedVideoEpisodeKey(series, normalized);
-  const entries = state.library.filter((item) => identity ? verifiedVideoEpisodeKey(item, normalized) === identity
-    : (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const legacy = typeof manualIntentSources === "function" ? manualIntentSources(series)
+    : Array.isArray(series.sources) ? series.sources : state.library.filter((item) =>
+      (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const entries = (Array.isArray(series.sources) || legacy.length === 1 ? legacy : []).filter((item) => !identity
+    || verifiedVideoEpisodeKey(item, normalized) === identity);
   const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
   if (!anchor) return false;
   for (const entry of entries) {
@@ -215,15 +231,16 @@ async function syncExplicitAniListUnwatch(series, code) {
     toast("Unwatched locally. AniList needs a verified season link before progress can change.");
     return;
   }
+  const workKey = series.routeKey || series.key;
   const pending = pendingAniListUnwatches().filter((item) => !(item.accountId === account.userId
-    && item.seriesKey === series.key && item.code === code));
-  pending.push({ accountId: account.userId, seriesKey: series.key, code,
+    && item.seriesKey === workKey && item.code === code));
+  pending.push({ accountId: account.userId, seriesKey: workKey, code,
     mediaId: mapped.mediaId, episode: mapped.episode, episodeCount: mapped.episodeCount,
     approvedProgress: null });
   savePendingAniListUnwatches(pending);
   clearTimeout(anilistAutoTimer);
   await flushAniListUnwatches({ interactive: true,
-    only: { accountId: account.userId, seriesKey: series.key, code } });
+    only: { accountId: account.userId, seriesKey: workKey, code } });
 }
 
 export async function flushAniListUnwatches({ interactive = false, only = null } = {}) {
@@ -245,16 +262,29 @@ export async function flushAniListUnwatches({ interactive = false, only = null }
       if (row.accountId !== account.userId) continue;
       if (only && (row.accountId !== only.accountId
         || row.seriesKey !== only.seriesKey || row.code !== only.code)) continue;
-      const series = buildLibrarySeries().find((item) => item.key === row.seriesKey);
+      const series = typeof findLibrarySeriesByKey === "function"
+        ? findLibrarySeriesByKey(row.seriesKey)
+        : buildLibrarySeries().find((item) => item.key === row.seriesKey);
+      const originalRoute = series?.routeKey || series?.key;
+      const workStillOwned = () => {
+        const current = typeof findLibrarySeriesByKey === "function"
+          ? findLibrarySeriesByKey(row.seriesKey)
+          : buildLibrarySeries().find((item) => item.key === row.seriesKey);
+        return Boolean(originalRoute && current
+          && (current.routeKey || current.key) === originalRoute
+          && (Array.isArray(current.sources) && Array.isArray(series.sources)
+            ? current.sources.some((saved) => series.sources.some((original) => original.id === saved.id))
+            : current === series));
+      };
       const part = seriesAniList(series, account.userId);
       const mapped = resolveAniListEpisode({ seasons: part?.seasons, ranges: part?.ranges || [],
         episodeCode: row.code, type: series?.type });
-      if (!mapped || mapped.mediaId !== row.mediaId || mapped.episode !== row.episode
+      if (!workStillOwned() || !mapped || mapped.mediaId !== row.mediaId || mapped.episode !== row.episode
         || mapped.episodeCount !== row.episodeCount || !explicitlyUnwatchedChapter(series, row.code)) continue;
       try {
         const fresh = await anilistGraphql(account.token, ANILIST_SINGLE_PROGRESS_QUERY,
           { id: account.userId, mediaId: row.mediaId });
-        if (!stillConnected()) return;
+        if (!stillConnected() || !workStillOwned()) return;
         const planned = planAniListUnwatch({ mapped, remote: fresh?.MediaList, accountId: account.userId });
         if (!planned) throw new Error("AniList entry missing, protected, or no longer matches the verified season.");
         if (planned.alreadySynced) {
@@ -285,7 +315,7 @@ export async function flushAniListUnwatches({ interactive = false, only = null }
           savePendingAniListUnwatches(pendingAniListUnwatches().map((item) =>
             item.accountId === row.accountId && item.seriesKey === row.seriesKey && item.code === row.code ? row : item));
         }
-        if (!stillConnected() || !explicitlyUnwatchedChapter(series, row.code)) return;
+        if (!stillConnected() || !workStillOwned() || !explicitlyUnwatchedChapter(series, row.code)) return;
         const sent = await anilistGraphql(account.token, ANILIST_SAVE_PROGRESS,
           { mediaId: row.mediaId, progress: planned.progress, ...(planned.status ? { status: planned.status } : {}) });
         if (!stillConnected()) return;
@@ -327,8 +357,11 @@ function markWatchEpisodeWatched(series, code, saved = null) {
   if (typeof invalidateAutoNextAfterEpisodeEdit === "function") invalidateAutoNextAfterEpisodeEdit(series, normalized);
   explicitUnwatchCompletionArmed.delete(`${series.key}\0${normalized}`);
   const identity = verifiedVideoEpisodeKey(series, normalized);
-  const entries = state.library.filter((item) => identity ? verifiedVideoEpisodeKey(item, normalized) === identity
-    : (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const legacy = typeof manualIntentSources === "function" ? manualIntentSources(series)
+    : Array.isArray(series.sources) ? series.sources : state.library.filter((item) =>
+      (item.seriesKey || librarySeriesKey(item.title)) === series.key);
+  const entries = (Array.isArray(series.sources) || legacy.length === 1 ? legacy : []).filter((item) => !identity
+    || verifiedVideoEpisodeKey(item, normalized) === identity);
   const anchor = entries.find((item) => item.id === state.currentSource?.libraryId) || entries[0];
   if (!anchor) return false;
   savePendingAniListUnwatches(pendingAniListUnwatches().filter((item) =>

@@ -1,7 +1,8 @@
 // AniList OAuth implicit grant and GraphQL writes, entirely in the user's
-// browser. The token is never sent to LVL's local Node server or exported with
-// the Library. The user's AniList authorization is independent of public-list
-// imports in Settings > Recommendations.
+// browser. Authenticated score/list import transiently presents the token only
+// to LVL's same-origin local Node backend for independent AniList verification;
+// it is never persisted there, exported with the Library or sent to any other
+// origin. AniList progress mutations remain browser-to-AniList only.
 export const ANILIST_OAUTH_PENDING = "lvl-anilist-oauth-pending-v1";
 export const ANILIST_OAUTH_STORAGE = "lvl-anilist-oauth-v1";
 export const ANILIST_SYNC_PREFERENCES = "lvl-anilist-sync-preferences-v1";
@@ -210,9 +211,9 @@ export async function anilistGraphql(token, query, variables = {}, fetchImpl = f
 }
 
 export const ANILIST_VIEWER_QUERY = `query { Viewer { id name } }`;
-// Complete authenticated list for Library/recommendations, including private
-// entries. The browser sends *only the resulting non-credential list metadata*
-// to LVL's local recommender; never the authorization header or bearer token.
+// Complete authenticated list for browser-side progress reconciliation.
+// Recommendations import uses a separate backend-owned Viewer+list query,
+// rather than accepting this browser-fetched response as authentication.
 export const ANILIST_AUTH_LIBRARY_QUERY = `query ($id: Int!) {
   Viewer { id name }
   MediaListCollection(userId: $id, type: ANIME) {

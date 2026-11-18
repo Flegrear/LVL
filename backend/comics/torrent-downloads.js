@@ -16,9 +16,34 @@ export const DOWNLOAD_LIMITS = Object.freeze({ files: 5000, bytes: 20 * 1024 ** 
 export const CLIENT_OPTIONS = Object.freeze({ uploadLimit: -1, maxConns: 30 });
 const READABLE = /\.(?:cbz|zip|jpe?g|png|webp|avif|gif)$/i;
 
+// BTIH identifies the torrent content; display names, trackers and their order
+// are transport hints. Normalize both interoperable 40-hex and 32-base32 forms
+// to the same 20 bytes before assigning a job ID.
+export function torrentInfoHash(magnet) {
+  const match = /^magnet:\?xt=urn:btih:([0-9a-f]{40}|[a-z2-7]{32})(?:&|$)/i.exec(String(magnet || ""));
+  if (!match) return null;
+  if (match[1].length === 40) return match[1].toLowerCase();
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+  let bits = 0, value = 0;
+  const bytes = [];
+  for (const character of match[1].toUpperCase()) {
+    value = (value << 5) | alphabet.indexOf(character);
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push((value >> bits) & 255);
+      value &= (1 << bits) - 1;
+    }
+  }
+  return bytes.length === 20 ? Buffer.from(bytes).toString("hex") : null;
+}
+
 export function safeTorrentPath(name) {
   const parts = String(name || "").split(/[\\/]/);
-  return parts.length > 0 && parts.every((part) => part && part !== "." && part !== ".." && !/[<>:"|?*\x00-\x1f]/.test(part) && part.length <= 200);
+  return parts.length > 0 && parts.every((part) => part && part !== "." && part !== ".."
+    && !/[<>:"|?*\x00-\x1f]/.test(part) && part.length <= 200
+    && !/[. ]$/.test(part)
+    && !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(part));
 }
 export const safeFolderName = (name) => String(name || "download").replace(/[<>:"/\\|?*\x00-\x1f]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "download";
 
@@ -33,7 +58,10 @@ export function planTorrentFiles(files) {
   return { wanted, bytes };
 }
 
-export function createComicDownloads({ folder, onComplete = () => {}, createClient, now = Date.now, log = console } = {}) {
+export function createComicDownloads({ folder, onComplete = () => {}, createClient, now = Date.now, log = console,
+  // An injectable rename boundary permits an exact race fixture without
+  // touching shared filesystem helpers or spawning another native process.
+  renameOwnedAttempt = fs.renameSync } = {}) {
   let client = null;
   let clientInit = null;
   let lifecycle = 0;
@@ -72,7 +100,25 @@ export function createComicDownloads({ folder, onComplete = () => {}, createClie
     job.error = error;
     const torrent = job.torrent;
     job.torrent = null;
-    torrent?.destroy?.({ destroyStore: state !== "done" });
+    // A cancelled torrent can retain store handles after destroy was called.
+    // Wait for its terminal callback before reclaiming the owned directory.
+    job.terminal = new Promise((resolve) => {
+      if (!torrent?.destroy) return resolve(true);
+      let settled = false;
+      const done = (error) => {
+        if (settled) return;
+        settled = true;
+        if (error) log.warn?.("Comic torrent teardown failed:", error.message);
+        resolve(!error);
+      };
+      try {
+        const returned = torrent.destroy({ destroyStore: state !== "done" }, done);
+        if (returned?.then) returned.then(() => done(), done);
+        // Synchronous test adapters without a callback contract are terminal
+        // on return. Production WebTorrent supplies a close callback.
+        else if (torrent.destroy.length < 2) done();
+      } catch (problem) { done(problem); }
+    });
   }
   function cleanCancelledAttempt(job) {
     if (!job.ownedDirectory || job.cleanupStarted) return;
@@ -81,23 +127,64 @@ export function createComicDownloads({ folder, onComplete = () => {}, createClie
     // The path must be the exact single directory created exclusively for
     // this attempt, never an arbitrary name or a completed download folder.
     if (path.dirname(target) !== job.downloadsRoot) return;
-    fs.lstat(target, (error, stat) => {
-      if (error || !stat.isDirectory() || stat.isSymbolicLink()
-        || stat.dev !== job.directoryDev || stat.ino !== job.directoryIno) return;
-      fs.rm(target, { recursive: true, force: true }, (removeError) => {
-        if (removeError) log.warn?.("Could not remove cancelled comic download:", removeError.message);
-      });
-    });
+    const terminal = job.terminal || Promise.resolve(true);
+    void terminal.then(async (stopped) => {
+      if (!stopped) return; // live borrower: preserve bytes, never guess
+      let stat;
+      try { stat = fs.lstatSync(target); } catch { return; }
+      if (!stat.isDirectory() || stat.isSymbolicLink() || !job.directoryIno
+        || stat.dev !== job.directoryDev || stat.ino !== job.directoryIno
+        || stat.birthtimeMs !== job.directoryBirthtimeMs) return;
+      const quarantine = path.join(job.downloadsRoot, `.lvl-cancel-${crypto.randomBytes(16).toString("hex")}.pending`);
+      try {
+        renameOwnedAttempt(target, quarantine);
+        const parked = fs.lstatSync(quarantine);
+        if (!parked.isDirectory() || parked.isSymbolicLink() || !parked.ino
+          || parked.dev !== job.directoryDev || parked.ino !== job.directoryIno
+          || parked.birthtimeMs !== job.directoryBirthtimeMs) {
+          // If a replacement won the rename race, never recursively delete it.
+          try { if (!fs.existsSync(target)) fs.renameSync(quarantine, target); } catch {}
+          return;
+        }
+      } catch (error) {
+        log.warn?.("Could not quarantine cancelled comic download:", error?.message);
+        return;
+      }
+      // Windows EBUSY/EPERM can leave this random quarantined path for later
+      // owner-aware maintenance; never fall back to removal of original path.
+      try { await fs.promises.rm(quarantine, { recursive: true, force: true, maxRetries: 3, retryDelay: 150 }); }
+      catch (error) { log.warn?.("Cancelled comic attempt remains quarantined:", error?.message); }
+    }).catch((error) => log.warn?.("Comic attempt cleanup failed:", error?.message));
   }
+  const completedFolderStillOwned = (job) => {
+    try {
+      const stat = fs.lstatSync(job.dir);
+      return stat.isDirectory() && !stat.isSymbolicLink()
+        && stat.dev === job.directoryDev && stat.ino === job.directoryIno;
+    } catch { return false; }
+  };
 
   return {
     list: () => [...jobs.values()].map(view).sort((a, b) => b.startedAt - a.startedAt),
     async start({ magnet, name, workId }) {
       if (!validMagnet(magnet)) throw new Error("Not a magnet link");
-      if ([...jobs.values()].filter((job) => job.state === "downloading" || job.state === "metadata").length >= DOWNLOAD_LIMITS.active) throw new Error("Three downloads are already running");
-      const id = crypto.createHash("sha1").update(magnet).digest("hex").slice(0, 12);
+      const infoHash = torrentInfoHash(magnet);
+      if (!infoHash) throw new Error("Not a magnet link");
+      const id = crypto.createHash("sha1").update(infoHash).digest("hex").slice(0, 12);
       const existing = jobs.get(id);
-      if (existing && ["metadata", "downloading", "done"].includes(existing.state)) return view(existing);
+      if (existing && ["metadata", "downloading", "done"].includes(existing.state)) {
+        // The content hash is global to this download service, but a job's
+        // requested destination work is not. Do not report another comic's
+        // download as this work's own result merely because their magnets
+        // have the same BTIH. The user can explicitly link the existing file.
+        if ((existing.workId || null) !== (workId || null))
+          throw Object.assign(new Error("This torrent is already assigned to a different comic"), { status: 409 });
+        // A completed job is not a durable content receipt: the user may have
+        // moved/deleted its folder. Allow a fresh exclusively owned attempt,
+        // without deleting or reusing the former on-disk directory.
+        if (existing.state !== "done" || completedFolderStillOwned(existing)) return view(existing);
+      }
+      if ([...jobs.values()].filter((job) => job.state === "downloading" || job.state === "metadata").length >= DOWNLOAD_LIMITS.active) throw new Error("Three downloads are already running");
       const downloadsRoot = path.resolve(folder, "Downloads");
       fs.mkdirSync(downloadsRoot, { recursive: true });
       const parent = fs.realpathSync(downloadsRoot);
@@ -113,8 +200,9 @@ export function createComicDownloads({ folder, onComplete = () => {}, createClie
       if (!dir) throw new Error("Could not reserve a comic download directory");
       const directory = fs.lstatSync(dir);
       const job = { id, name: String(name || "").slice(0, 200), workId: workId || null,
-        dir, downloadsRoot: parent, ownedDirectory: true, directoryDev: directory.dev, directoryIno: directory.ino,
-        cleanupStarted: false, metadataTimeout: null, state: "metadata", error: null,
+        dir, downloadsRoot: parent, ownedDirectory: true, directoryDev: directory.dev,
+        directoryIno: directory.ino, directoryBirthtimeMs: directory.birthtimeMs,
+        cleanupStarted: false, terminal: Promise.resolve(true), metadataTimeout: null, state: "metadata", error: null,
         bytes: 0, startedAt: now(), torrent: null };
       jobs.set(id, job);
       const startedLifecycle = lifecycle;

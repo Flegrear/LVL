@@ -62,6 +62,7 @@ export function startPhoneShell(win = globalThis.window) {
   let savedQuery = input.value || "";
   let restored = false;
   let disposed = false;
+  let restoreEpoch = 0;
 
   const isPhone = () => query.matches;
   const place = () => {
@@ -81,31 +82,52 @@ export function startPhoneShell(win = globalThis.window) {
     if (bell.parentElement !== actions || bell.nextElementSibling !== pivot) actions.insertBefore(bell, pivot);
   };
 
-  const restoreDraft = () => {
+  const restoreDraft = (draft = savedQuery) => {
     if (disposed || !isPhone() || shell.hidden) return;
     button.setAttribute("aria-expanded", "true");
-    if (savedQuery && input.value !== savedQuery) {
-      input.value = savedQuery;
+    // A newer user edit wins over an older scheduled search reopening.
+    if (savedQuery !== draft) return;
+    if (draft && input.value !== draft) {
+      input.value = draft;
       // The existing input listener refreshes the existing result list/cache.
       // Never make an independent request from this module.
       input.dispatchEvent(new win.Event("input", { bubbles: true }));
     }
   };
-  const requestRestore = () => {
+  const requestRestore = (draft = savedQuery) => {
     if (restored) return;
     restored = true;
+    const epoch = ++restoreEpoch;
     // app.js clears the input synchronously when its trigger first opens it.
     // Restore on the next microtask after that existing handler runs.
-    win.queueMicrotask(() => { restored = false; restoreDraft(); });
+    win.queueMicrotask(() => {
+      if (epoch !== restoreEpoch || disposed) return;
+      restored = false;
+      restoreDraft(draft);
+    });
   };
 
   const onSearch = () => {
     if (!isPhone()) return;
+    // Take the draft BEFORE clicking the original trigger, which can clear its
+    // existing input as part of the app's search lifetime handoff.
+    const draft = savedQuery || input.value;
     place();
     doc.getElementById(activeHome(doc) ? "home-search-title" : "section-search-title")?.click();
-    requestRestore();
+    if (draft) savedQuery = draft;
+    requestRestore(draft);
   };
-  const onInput = () => { if (isPhone()) savedQuery = input.value; };
+  const onInput = () => {
+    if (!isPhone()) return;
+    // A genuine edit arriving before a queued restore must win. In contrast,
+    // the original search trigger's synchronous clear happens inside onSearch
+    // and its pre-click draft snapshot is reinstated immediately afterward.
+    savedQuery = input.value;
+    if (restored) {
+      ++restoreEpoch;
+      restored = false;
+    }
+  };
   const onKey = (event) => {
     if (!isPhone() || event.key !== "Escape" || shell.hidden) return;
     // Existing app.js Escape handler closes results and restores focus to its
@@ -138,6 +160,8 @@ export function startPhoneShell(win = globalThis.window) {
     get query() { return savedQuery; },
     destroy() {
       disposed = true;
+      restoreEpoch++;
+      restored = false;
       button.remove();
       root.classList.remove("phone-shell-active");
       if (bell.parentElement !== origin) origin.insertBefore(bell, originalNext?.parentElement === origin ? originalNext : null);

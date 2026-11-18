@@ -2,7 +2,8 @@
 import { artworkFallback, escapeHtml, refreshImages } from "../ui/ui.js";
 import {
   animeCatalogCombinedSearchNames, animeCatalogRootSearchNames, animeCatalogSearchNames,
-  animeCatalogSubtitleSearchNames, verifiedAnimeCatalogMatch, verifiedAnimeLibraryCatalogMatch,
+  animeCatalogSubtitleSearchNames, resolveUniqueAnimeSearchBatch,
+  verifiedAnimeCatalogMatch, verifiedAnimeLibraryCatalogMatch,
 } from "../catalog/anime-catalog-match.js";
 import { animeBrowser, homeBrowseCategory } from "../../app.js";
 import { $ } from "../app/dom.js";
@@ -13,6 +14,7 @@ import { openTitlePage } from "../title/title-page.js";
 import { homeTitleIndex } from "./home-page.js";
 
 const animeBrowserTitleCache = new Map();
+let openingMediaId = null;
 export let animeBrowserPrefetchTimer = null;
 
 function animeBrowserExactCatalogMatch(media, candidates = []) {
@@ -41,23 +43,20 @@ export function resolveAnimeBrowserCatalog(media) {
   }
   const distinctNames = animeCatalogSearchNames(media);
   if (!distinctNames.length) return Promise.reject(new Error("This title has no searchable name."));
-  // Search aliases concurrently and accept the earliest VERIFIED exact match.
-  // Before this fix, two slow sequential searches took >8 seconds for one card.
-  const searchNames = (names) => Promise.any(names.map(async (title) => {
+  // Wait for every alias in the same batch. Two different known IMDb IDs
+  // cannot be decided by which HTTP response happens to arrive first.
+  const searchNames = (names) => resolveUniqueAnimeSearchBatch(media, names, async (title) => {
     const response = await fetchJson(`/api/catalog/search?q=${encodeURIComponent(title)}`);
-    const match = animeBrowserExactCatalogMatch(media, response.results || []);
-    if (!match) throw new Error("no-exact-match");
-    return match;
-  }));
+    return response.results || [];
+  });
   const promise = searchNames(distinctNames).catch(async (originalError) => {
+    if (originalError.code !== "CATALOG_NO_MATCH") throw originalError;
     const roots = animeCatalogRootSearchNames(media);
     // Some providers omit the original series from sequel-title searches.
     // Query the show's root only when both primary aliases failed.
     if (roots.length) {
       try { return await searchNames(roots); }
-      catch (rootError) {
-        originalError.errors = [...(originalError.errors || []), ...(rootError.errors || [])];
-      }
+      catch (rootError) { if (rootError.code !== "CATALOG_NO_MATCH") throw rootError; }
     }
     // Cross-language combinations and shortened romanized subtitles can
     // retrieve the original IMDb series when provider token matching fails.
@@ -65,12 +64,7 @@ export function resolveAnimeBrowserCatalog(media) {
     const alternateQueries = [...animeCatalogSubtitleSearchNames(media), ...animeCatalogCombinedSearchNames(media)];
     if (alternateQueries.length) {
       try { return await searchNames(alternateQueries); }
-      catch (alternateError) {
-        originalError.errors = [...(originalError.errors || []), ...(alternateError.errors || [])];
-      }
-    }
-    if ((originalError?.errors || []).some((item) => item.message !== "no-exact-match")) {
-      throw new Error("Catalog search is temporarily unavailable. Please retry.");
+      catch (alternateError) { if (alternateError.code !== "CATALOG_NO_MATCH") throw alternateError; }
     }
     throw new Error("No verified LVL catalog match found for this anime.");
   });
@@ -111,7 +105,7 @@ export function renderAnimeBrowserResults() {
   if (!grid || !status || !more) return;
   status.textContent = animeBrowser.error || (animeBrowser.loading ? "Loading anime from AniList…" : animeBrowser.loaded ? `${animeBrowser.items.length} anime` : "");
   status.classList.toggle("is-error", Boolean(animeBrowser.error));
-  grid.innerHTML = animeBrowser.items.map((item) => `<button class="anime-browser-card" type="button" data-anime-id="${item.id}">
+  grid.innerHTML = animeBrowser.items.map((item) => `<button class="anime-browser-card${openingMediaId === item.id ? " is-resolving" : ""}" type="button" data-anime-id="${item.id}"${openingMediaId === item.id ? ' aria-busy="true"' : ""}>
     <span class="anime-browser-art"><img src="${escapeHtml(item.cover || artworkFallback(item.title))}" alt="" loading="lazy" decoding="async" data-fallback="poster" data-fallback-title="${escapeHtml(item.title)}"${item.coverFallback && item.coverFallback !== item.cover ? ` data-fallback-src="${escapeHtml(item.coverFallback)}"` : ""} /></span>
     <strong>${escapeHtml(item.title)}</strong>
     <span>${escapeHtml([item.year, item.season && item.season[0] + item.season.slice(1).toLowerCase(), item.format, Number(item.score) > 0 && Number(item.score) <= 100 ? `${(Number(item.score) / 10).toFixed(1)}/10` : ""].filter(Boolean).join(" - "))}</span>
@@ -124,6 +118,7 @@ export function renderAnimeBrowserResults() {
 export async function loadAnimeBrowser({ append = false } = {}) {
   const token = ++animeBrowser.requestId;
   ++animeBrowser.openRequestId;
+  openingMediaId = null;
   const page = append ? animeBrowser.page + 1 : 1;
   animeBrowser.loading = true;
   animeBrowser.error = "";
@@ -151,6 +146,7 @@ export async function openAnimeBrowserTitle(id) {
   const media = animeBrowser.items.find((item) => item.id === Number(id));
   if (!media) return;
   const token = ++animeBrowser.openRequestId;
+  openingMediaId = media.id;
   const status = $("#anime-browser-status");
   const card = [...($("#anime-browser-results")?.querySelectorAll("[data-anime-id]") || [])]
     .find((item) => Number(item.dataset.animeId) === media.id);
@@ -172,6 +168,15 @@ export async function openAnimeBrowserTitle(id) {
   } finally {
     card?.classList.remove("is-resolving");
     card?.removeAttribute("aria-busy");
+    if (token === animeBrowser.openRequestId) {
+      openingMediaId = null;
+      // A rerender can replace the original card during the lookup. Retire the
+      // current card without erasing an error message set by the catch above.
+      const latest = [...($("#anime-browser-results")?.querySelectorAll("[data-anime-id]") || [])]
+        .find((item) => Number(item.dataset.animeId) === media.id);
+      latest?.classList.remove("is-resolving");
+      latest?.removeAttribute("aria-busy");
+    }
   }
 }
 // Prefetch only after the pointer settles on a card; keyboard focus works too.

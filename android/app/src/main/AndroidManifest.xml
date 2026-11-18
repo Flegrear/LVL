@@ -48,6 +48,12 @@
             android:exported="false"
             android:windowSoftInputMode="adjustResize" />
 
+        <activity
+            android:name=".updates.InstallConfirmationActivity"
+            android:exported="false"
+            android:noHistory="true"
+            android:excludeFromRecents="true" />
+
         <receiver
             android:name=".updates.InstallResultReceiver"
             android:exported="false" />

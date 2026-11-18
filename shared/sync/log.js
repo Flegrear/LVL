@@ -9,13 +9,14 @@
 // storage: { list() -> [{ path, version }], read(path, version) -> text,
 //            write(path, text, { version }) -> new version,
 //            head() -> { version } (optional: the whole storage's version, cheap to ask) }
-import { SYNC_FORMAT, SYNC_FORMAT_VERSION } from "./records.js";
+import { SYNC_FORMAT, SYNC_FORMAT_VERSION, createRegistry } from "./records.js";
 import { decryptText, encryptText, makeCheck, newKdfSettings } from "./crypto.js";
 
 export const SETTINGS_FILE = "lvl-sync.json";
 const CHANGE_FILE = /^changes\/([a-z0-9][a-z0-9-]{2,31})\/(\d{6})\.json$/;
 const SNAPSHOT_FILE = /^snapshots\/([a-z0-9][a-z0-9-]{2,31})\.json$/;
 const MAX_CHANGES_PER_FILE = 5000;
+const MAX_CHANGE_SEQUENCE = 999_999; // The v1 immutable filename grammar contains six digits.
 export const changePath = (device, seq) => `changes/${device}/${String(seq).padStart(6, "0")}.json`;
 export const snapshotPath = (device) => `snapshots/${device}.json`;
 
@@ -36,7 +37,8 @@ export function readSettingsFile(text) {
   return settings;
 }
 
-export function createSyncLog({ storage, device, key = null }) {
+export function createSyncLog({ storage, device, key = null, now = Date.now }) {
+  const registry = createRegistry(undefined, { now });
   // Keep plain records indented so fields and individual edits are readable on GitHub.
   const encode = async (path, data) => {
     if (key) return encryptText(key, path, JSON.stringify(data));
@@ -54,11 +56,16 @@ export function createSyncLog({ storage, device, key = null }) {
     // Everything new since `seen` ({ path: version } of files already read): snapshots that
     // changed, then change files not read yet. Returns the changes, the new `seen`, the
     // files skipped, the next number for this device's own change files, and every path listed.
-    async pull(seen = {}) {
+    async pull(seen = {}, { retryPaths = [] } = {}) {
       const files = await storage.list();
       const next = { ...seen };
+      // Previous installations could acknowledge a file containing a future
+      // clock. A persisted retry path must override even an existing seen
+      // entry and an otherwise covering snapshot.
+      const retry = new Set(retryPaths);
       const changes = [];
       const skipped = [];
+      const deferred = [];
       let ownLast = 0;
       // null when the file was skipped: unreadable, or readable without a list of changes.
       const tryRead = async (file) => {
@@ -66,7 +73,11 @@ export function createSyncLog({ storage, device, key = null }) {
         try { content = await readJson(file.path, file.version); } catch (error) {
           if (!unreadable(error)) throw error;
         }
-        if (Array.isArray(content?.changes)) return content;
+        if (Array.isArray(content?.changes)) {
+          if (content.changes.some((change) => registry.read(change).status === "future"))
+            deferred.push(file.path);
+          return content;
+        }
         skipped.push(file.path);
         return null;
       };
@@ -74,12 +85,12 @@ export function createSyncLog({ storage, device, key = null }) {
       const covered = new Map();
       for (const file of snapshots) {
         const owner = SNAPSHOT_FILE.exec(file.path)[1];
-        if (seen[file.path] === file.version) continue;
+        if (seen[file.path] === file.version && !retry.has(file.path)) continue;
         const snapshot = await tryRead(file);
-        next[file.path] = file.version;
+        if (!deferred.includes(file.path)) next[file.path] = file.version;
         if (!snapshot) continue;
         changes.push(...snapshot.changes);
-        if (Number.isInteger(snapshot.upTo)) covered.set(owner, snapshot.upTo);
+        if (!deferred.includes(file.path) && Number.isInteger(snapshot.upTo)) covered.set(owner, snapshot.upTo);
         if (owner === device) ownLast = Math.max(ownLast, snapshot.upTo || 0);
       }
       const changeFiles = files.map((file) => ({ file, match: CHANGE_FILE.exec(file.path) })).filter((item) => item.match)
@@ -88,17 +99,25 @@ export function createSyncLog({ storage, device, key = null }) {
         const [, owner, number] = match;
         const seq = Number(number);
         if (owner === device) ownLast = Math.max(ownLast, seq);
-        if (next[file.path] || (covered.get(owner) || 0) >= seq) { next[file.path] = next[file.path] || file.version; continue; }
+        if (!retry.has(file.path) && (next[file.path] || (covered.get(owner) || 0) >= seq)) {
+          next[file.path] = next[file.path] || file.version; continue;
+        }
         const content = await tryRead(file);
-        next[file.path] = file.version;
+        if (!deferred.includes(file.path)) next[file.path] = file.version;
         if (content) changes.push(...content.changes);
       }
-      return { changes, seen: next, skipped, nextSeq: ownLast + 1, paths: new Set(files.map((file) => file.path)) };
+      return { changes, seen: next, skipped, deferred, nextSeq: ownLast + 1, paths: new Set(files.map((file) => file.path)) };
     },
     // Writes this device's next change file.
     async push(changes, seq) {
       if (!changes.length) return null;
-      if (changes.length > MAX_CHANGES_PER_FILE) throw new Error("Too many changes for one sync file");
+      if (!Number.isSafeInteger(seq) || seq < 1 || seq > MAX_CHANGE_SEQUENCE)
+        throw Object.assign(new Error("This device's sync log sequence reached the v1 protocol limit; local changes remain pending"), {
+          status: 409, code: "sync_sequence_limit",
+        });
+      if (changes.length > MAX_CHANGES_PER_FILE) throw Object.assign(new Error("Too many changes for one sync file"), {
+        status: 413, code: "sync_record_too_large",
+      });
       const path = changePath(device, seq);
       const planned = { device, seq, changes };
       // Serialize once: a transient branch conflict may retry this exact

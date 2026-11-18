@@ -8,6 +8,7 @@
 // - On a phone a new video starts in fullscreen.
 // - Downloads the page makes from blob or data URLs are saved to Downloads by the app,
 //   because the WebView can't read those URLs once the page has revoked them.
+import * as sharedOverlayHost from "../ui/overlay-host.js";
 
 const MAX_DOWNLOAD_BYTES = 50 * 1024 * 1024;
 const activeBridges = new WeakMap();
@@ -30,13 +31,55 @@ export function requestReaderImmersive(win, on) {
 const visible = (element) => Boolean(element && !element.hidden && element.getClientRects().length);
 
 // Closes the topmost open thing; true when something was closed.
-export function closeTopmost(doc) {
+export function closeTopmost(doc, { registry = sharedOverlayHost } = {}) {
   if (doc.fullscreenElement) {
     doc.exitFullscreen?.().catch(() => {});
     return true;
   }
   const dialogs = [...doc.querySelectorAll("dialog[open]")];
-  const dialog = dialogs[dialogs.length - 1];
+  const modals = dialogs.filter(node => node.matches?.(":modal"));
+  const registered = typeof registry?.getTopOverlayOwner === "function"
+    ? registry.getTopOverlayOwner(doc) : null;
+  const registeredNode = registered?.element || registered?.node;
+  const registeredNativeModal = Boolean(registered && (registered.kind === "modal"
+    || registered.kind === "native-dialog" || registered.kind === "dialog"
+    || registeredNode?.matches?.(":modal")));
+  // Native :modal top-layer order is not DOM sibling order. The shared
+  // registry can order ONLY the modal elements that actually registered.
+  // An unknown native modal may be above its latest registered predecessor:
+  // do not synthesize Escape or close a background popup/dialog on Back.
+  if (modals.length > 1) {
+    const known = typeof registry?.listOverlayOwners === "function"
+      ? registry.listOverlayOwners(doc).map(owner => owner?.element || owner?.node)
+      : [];
+    if (!registered || modals.some(modal => !known.includes(modal)))
+      return false;
+  }
+  // Typed shared ownership has priority when installed. Never dismiss a
+  // background menu behind an active native top-layer dialog; its native Back
+  // fallback stays below. This path runs instead of, not in addition to,
+  // dispatching a synthetic Escape.
+  if (registered && !registeredNativeModal && typeof registry?.dismissTopOverlay === "function"
+    && (!modals.length || registeredNode && modals.some(node => node.contains?.(registeredNode)))) {
+    return registry.dismissTopOverlay(doc, { reason: "android-back" }) === true;
+  }
+  // A newer menu/search/notification can be above an older native dialog.
+  // Deliver one real cancellable Escape to the app's LIFO overlay owner first,
+  // exactly as the Back key would. It consumes the event only for the top
+  // transient layer; the fallback below retains native dialog semantics.
+  const target = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : doc;
+  const escape = new (doc.defaultView?.KeyboardEvent || KeyboardEvent)("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true });
+  target.dispatchEvent(escape);
+  if (escape.defaultPrevented) return true;
+  const focusedDialog = doc.activeElement?.closest?.("dialog[open]");
+  // When the typed owner is an actual native modal, its recorded opening
+  // order outranks DOM sibling order. With multiple unregistered modals and
+  // no focused top-layer proof, fail closed rather than dismissing behind it.
+  const dialog = registeredNativeModal && dialogs.includes(registeredNode)
+    ? registeredNode
+    : dialogs.includes(focusedDialog) ? focusedDialog
+      : dialogs.length === 1 ? dialogs[0] : null;
+  if (dialogs.length && !dialog) return false;
   if (dialog) {
     const close = dialog.querySelector(":scope > .dialog-close, [data-close-dialog]");
     if (close) close.click();
@@ -48,12 +91,7 @@ export function closeTopmost(doc) {
     doc.getElementById("app-notifications-close")?.click();
     return true;
   }
-  // Menus, the search panel and other popovers close on Escape; their handlers call
-  // preventDefault when they handle it.
-  const target = doc.activeElement && doc.activeElement !== doc.body ? doc.activeElement : doc;
-  const escape = new (doc.defaultView?.KeyboardEvent || KeyboardEvent)("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true });
-  target.dispatchEvent(escape);
-  return escape.defaultPrevented;
+  return false;
 }
 
 export function playbackSnapshot(doc) {
@@ -64,8 +102,10 @@ export function playbackSnapshot(doc) {
     playing: !video.paused && !video.ended,
     width: video.videoWidth || 0,
     height: video.videoHeight || 0,
-    position: Number.isFinite(video.currentTime) ? video.currentTime : 0,
-    duration: Number.isFinite(video.duration) ? video.duration : 0,
+    position: Number.isFinite(video.__lvlAbsoluteTime?.())
+      ? video.__lvlAbsoluteTime() : Number.isFinite(video.currentTime) ? video.currentTime : 0,
+    duration: Number.isFinite(video.__lvlDurationSeconds?.())
+      ? video.__lvlDurationSeconds() : Number.isFinite(video.duration) ? video.duration : 0,
     rate: video.playbackRate || 1,
     title: (doc.getElementById("player-now-title")?.textContent || "").trim().slice(0, 200),
     // The Watch page shows a video (also while it's loading): turning the phone opens fullscreen.
@@ -82,9 +122,32 @@ export function runMediaCommand(doc, command, value) {
     case "toggle": toggle(); return true;
     case "play": if (video.paused) toggle(); return true;
     case "pause": if (!video.paused) toggle(); return true;
-    case "forward": click("player-seek-forward", () => { video.currentTime += 10; }); return true;
-    case "rewind": click("player-seek-back", () => { video.currentTime = Math.max(0, video.currentTime - 10); }); return true;
-    case "seek": if (Number.isFinite(value) && value >= 0) video.currentTime = value; return true;
+    case "forward": {
+      // The existing button owns seekPlayerBy() on the absolute movie clock.
+      // Without its owner, changing decoder currentTime would seek within a
+      // transcode window, not by ten seconds of the movie. Fail closed.
+      const button = doc.getElementById("player-seek-forward");
+      if (!button) return false;
+      button.click();
+      return true;
+    }
+    case "rewind": {
+      const button = doc.getElementById("player-seek-back");
+      if (!button) return false;
+      button.click();
+      return true;
+    }
+    case "seek": {
+      if (!Number.isFinite(value) || value < 0 || !doc.dispatchEvent) return false;
+      // The controller resolves absolute movie time through the active media
+      // source (transcode offset, verified GOP, indexed seek or native MP4).
+      // Decoder currentTime is a window clock and cannot accept movie seconds.
+      const EventType = doc.defaultView?.CustomEvent || globalThis.CustomEvent;
+      if (!EventType) return false;
+      const event = new EventType("lvl:media-session-seek", { cancelable: true, detail: { seconds: value } });
+      doc.dispatchEvent(event);
+      return event.defaultPrevented;
+    }
     default: return false;
   }
 }
@@ -162,7 +225,9 @@ export function startAndroidBridge(win = globalThis.window) {
   const frame = doc.getElementById("video-frame");
   let fullscreenOffered = null;
   video?.addEventListener("play", () => {
-    const key = (title?.textContent || "").trim() || video.currentSrc;
+    // New player loads publish a stable file owner. The fallback retains the
+    // legacy bridge contract for pages without that source-owner integration.
+    const key = video.__lvlSourceOwner || `${video.currentSrc || video.src || ""}|${(title?.textContent || "").trim()}`;
     if (!key || key === fullscreenOffered) return;
     fullscreenOffered = key;
     if (!phone?.matches || doc.fullscreenElement || root.classList.contains("android-pip") || root.classList.contains("android-fullscreen")) return;
@@ -228,7 +293,11 @@ export function startAndroidBridge(win = globalThis.window) {
     fullscreen: (on) => { root.classList.toggle("android-fullscreen", Boolean(on)); report(); },
     requestReaderImmersive: (on) => requestReaderImmersive(win, on),
     readerImmersive: acknowledgeReaderImmersive,
-    media: (command, value) => runMediaCommand(doc, String(command), Number(value)),
+    media: (command, value) => {
+      const handled = runMediaCommand(doc, String(command), Number(value));
+      if (handled && command === "seek") report();
+      return handled;
+    },
     playback: () => playbackSnapshot(doc),
   });
   activeBridges.set(win, win.lvlAndroid);

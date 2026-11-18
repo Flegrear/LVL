@@ -1,30 +1,38 @@
 /*
  * ui.css: LVL component library.
  *
- * Tokens mirror the existing monochrome palette in styles.css. The learning accents keep
+ * Tokens alias the existing monochrome palette in styles.css. The learning accents keep
  * their current meaning (known, review, frequency tiers). Every class is prefixed with `ui-`
  * so it never collides with the older view styles.
  */
 
 :root {
   /* Surfaces */
-  --ui-bg: #000;
-  --ui-bg-raised: #050505;
+  --ui-bg: var(--black, #000);
+  --ui-bg-raised: var(--ink, #050505);
   --ui-surface: #080808;
-  --ui-surface-2: #0d0d0d;
+  --ui-surface-2: var(--panel-2, #0d0d0d);
   --ui-surface-3: #121212;
+  /* Raised source thumbnails retain their translucent Comics fallback. */
+  --ui-surface-raised: rgba(255, 255, 255, .06);
   /* Lines */
   --ui-line-subtle: #1b1b1b;
   --ui-line: #202020;
-  --ui-line-strong: #2a2a2a;
+  --ui-line-strong: var(--line, #2a2a2a);
   --ui-line-hover: #4a4a4a;
   --ui-border-content: var(--ui-line);
+  --ui-border: var(--ui-line-strong, #2a2a2a);
   /* Text */
-  --ui-text: #fff;
+  --ui-text: var(--white, #fff);
   --ui-text-2: #d8d8d8;
   --ui-text-3: #aaa;
-  --ui-muted: #8f8f8f;
-  --ui-muted-2: #5c5c5c;
+  --ui-muted: var(--muted, #8f8f8f);
+  --ui-muted-2: var(--muted-2, #5c5c5c);
+  --ui-text-muted: var(--ui-text-3, #aaa);
+  /* Compatibility names for retained Library/Study markup. */
+  --text-muted: var(--ui-text-3, #aaa);
+  --text-primary: var(--ui-text, #fff);
+  --ui-danger: #ff8a80;
   /* Inverse: active and primary states */
   --ui-inverse: #f2f2f2;
   --ui-inverse-text: #080808;
@@ -36,8 +44,8 @@
   --ui-tier-1000: #b6b9ff;
   --ui-tier-5000: #c7a8ff;
   /* Type */
-  --ui-font-sans: var(--font-sans);
-  --ui-font-mono: var(--font-mono);
+  --ui-font-sans: var(--font-sans, sans-serif);
+  --ui-font-mono: var(--font-mono, monospace);
   --ui-type-card-title: 600 13px/1.3 var(--ui-font-sans);
   --ui-type-row-title: 500 15px/1.3 var(--ui-font-sans);
   /* Shape and depth */
@@ -60,6 +68,9 @@
   --ui-card-w: clamp(128px, 12.6vw, 190px);
   --ui-topbar-h: 64px;
   --ui-space-3: 12px;
+  /* Default values; per-element playback/progress state overrides these. */
+  --ui-progress: 0%;
+  --ui-hero-interval: 8s;
 }
 
 /* ---------------------------------------------------------------- Utilities */

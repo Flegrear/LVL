@@ -27,7 +27,10 @@ export const UPLOAD_CLEANUP_LIMITS = Object.freeze({
 });
 export function uploadName(value) {
   const name = path.basename(String(value || "").replace(/\\/g, "/")).trim();
-  return UPLOAD_NAME.test(name) && !name.startsWith(".") ? name : null;
+  const stem = name.replace(/\.[^.]+$/, "");
+  return UPLOAD_NAME.test(name) && !name.startsWith(".")
+    && !/[. ]$/.test(stem) && !/^(?:CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(name)
+    ? name : null;
 }
 
 async function closeUploadSweepCursor(cursor) {
@@ -80,13 +83,37 @@ export async function sweepAbandonedUploads(folder, {
       if (ACTIVE_PARTS.has(file)) continue;
       try {
         const old = await fs.lstat(file);
-        if (!old.isFile() || old.nlink !== 1 || old.size > MAX_UPLOAD_BYTES || old.mtimeMs > cutoff) continue;
+        if (!old.isFile() || old.isSymbolicLink() || ![1, 2].includes(old.nlink)
+          || old.size > MAX_UPLOAD_BYTES || old.mtimeMs > cutoff) continue;
         if (result.removedBytes + old.size > maxRemovedBytes) continue;
+        // A failed post-link partial unlink retains a second link to the
+        // complete archive. Never infer success from link count alone: prove a
+        // published same-inode archive under this exact original upload name
+        // (or its collision-numbered variant) before reclaiming only the part.
+        const publishedWitness = async () => {
+          if (old.nlink === 1) return true;
+          if (!old.ino) return false;
+          const ext = path.extname(match[1]);
+          const stem = match[1].slice(0, -ext.length);
+          const names = await fs.readdir(folder);
+          for (const name of names.slice(0, UPLOAD_CLEANUP_LIMITS.maxExamined)) {
+            if (name !== match[1] && !name.startsWith(`${stem} (`)) continue;
+            if (name !== match[1]) {
+              const suffix = name.slice(stem.length);
+              if (!/^ \([1-9][0-9]?\)\.(?:cbz|zip)$/i.test(suffix) || path.extname(name).toLowerCase() !== ext.toLowerCase()) continue;
+            }
+            const final = await fs.lstat(path.join(folder, name)).catch(() => null);
+            if (final?.isFile() && !final.isSymbolicLink() && final.dev === old.dev && final.ino === old.ino
+              && final.size === old.size && final.nlink === 2) return true;
+          }
+          return false;
+        };
+        if (!await publishedWitness()) continue;
         // Recheck identity and timestamp immediately before removal: a newly
         // opened writer or completed publication must not inherit a stale stat.
         if (ACTIVE_PARTS.has(file) || !shouldContinue()) break;
         const current = await fs.lstat(file);
-        if (!current.isFile() || current.nlink !== 1 || current.ino !== old.ino || current.dev !== old.dev
+        if (!current.isFile() || current.nlink !== old.nlink || current.ino !== old.ino || current.dev !== old.dev
           || current.size !== old.size || current.mtimeMs !== old.mtimeMs || current.ctimeMs !== old.ctimeMs) continue;
         if (ACTIVE_PARTS.has(file) || !shouldContinue()) break;
         await fs.unlink(file);
@@ -150,7 +177,22 @@ export function createUploadMaintenance(folder, options = {}) {
 export async function saveUpload(req, folder, name, length) {
   await fs.mkdir(folder, { recursive: true });
   // The scanner reads only .cbz/.zip files, so the unfinished copy is never picked up.
-  const part = path.join(folder, `${name}.${crypto.randomBytes(8).toString("hex")}.lvl-part`);
+  // A rare same-process random-token collision must not borrow the first
+  // writer's ACTIVE_PARTS reservation. Otherwise the failed second writer's
+  // finally could retire the first writer while its stream is still open,
+  // allowing maintenance to reclaim another request's active partial.
+  // Reserve each candidate synchronously before creating any write stream.
+  let part = null;
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const candidate = path.join(folder, `${name}.${crypto.randomBytes(8).toString("hex")}.lvl-part`);
+    if (ACTIVE_PARTS.has(candidate)) continue;
+    ACTIVE_PARTS.add(candidate);
+    part = candidate;
+    break;
+  }
+  if (!part) throw Object.assign(new Error("EEXIST: upload partial already reserved by an active writer"), {
+    code: "EEXIST", statusCode: 409,
+  });
   let written = 0;
   const counter = new Transform({
     transform(chunk, _encoding, done) {
@@ -158,10 +200,17 @@ export async function saveUpload(req, folder, name, length) {
       done(written > length ? Object.assign(new Error("The file is larger than announced"), { statusCode: 400 }) : null, chunk);
     },
   });
-  const sink = createWriteStream(part, { flags: "wx" });
+  // The sweeper can scan as soon as the exclusive file is created, before
+  // createWriteStream emits its asynchronous "open" event. Reserve the exact
+  // randomized path *before* creating the stream and retain ownership until
+  // pipeline has closed the writer and publication/rollback cleanup finishes.
   let ownsPart = false;
-  sink.once("open", () => { ownsPart = true; ACTIVE_PARTS.add(part); });
   try {
+    // Stream construction itself may throw synchronously on an invalid or
+    // unavailable filesystem. Keep it inside the same finally that retires
+    // the reservation, so no phantom active partial blocks maintenance.
+    const sink = createWriteStream(part, { flags: "wx" });
+    sink.once("open", () => { ownsPart = true; });
     await pipeline(req, counter, sink);
     if (written !== length) throw Object.assign(new Error("The file didn't arrive completely"), { statusCode: 400 });
     // Same-directory hard-link creation is an atomic no-replace publication,
@@ -189,7 +238,7 @@ export async function saveUpload(req, folder, name, length) {
     if (ownsPart) await fs.rm(part, { force: true }).catch(() => {});
     throw error;
   } finally {
-    if (ownsPart) ACTIVE_PARTS.delete(part);
+    ACTIVE_PARTS.delete(part);
   }
 }
 
@@ -288,15 +337,46 @@ export async function handleLocalRoutes(req, res, url, deps) {
     if (req.method !== "PUT") return ctx.methodNotAllowed(res, ["PUT"]), true;
     const input = await body();
     if (!FILE_ID.test(String(input?.fileId || ""))) return bad("Invalid file");
-    const saved = local.saveProgress(input);
-    if (saved && (input.finished === true || Number(input.page) >= Number(input.pages) - 1)) deps.marks?.finish(local.file(input.fileId)?.work_id, input.fileId, true);
+    let current;
+    try { current = await (local.refreshFile?.(input.fileId) ?? local.file(input.fileId)); }
+    catch (error) { return bad(error.message || "Cannot verify the archive", 422); }
+    if (!current) return bad("Unknown file", 404);
+    if (current.error) return bad("The archive is unreadable. Rescan or reopen it.", 422);
+    if (current.kind === "cbz" && current.content_rev?.startsWith("v2-")
+      && input.revision !== current.content_rev)
+      return bad("The archive changed. Reopen this chapter before saving progress.", 409);
+    const journaled = input.progressVersion !== undefined || input.expectedGeneration !== undefined
+      || input.operationId !== undefined;
+    if (journaled && (input.workId !== current.work_id || input.sourceId !== "local"
+      || input.revision !== current.content_rev || !local.saveLocalProgressCAS))
+      return bad("Reader work, source or archive revision changed. Reopen before saving.", 409);
+    let accepted;
+    try {
+      accepted = journaled ? local.saveLocalProgressCAS({
+        version: input.progressVersion, workId: current.work_id, fileId: input.fileId,
+        sourceId: input.sourceId, contentWitness: input.revision, operationId: input.operationId,
+        expectedGeneration: input.expectedGeneration, page: input.page, pages: input.pages,
+        finished: input.finished,
+        predecessorOperationId: input.predecessorOperationId,
+        predecessorGeneration: input.predecessorGeneration,
+        markFinished: (workId, fileId) => deps.marks?.finish(workId, fileId, true),
+      }) : { saved: local.saveProgress(input) };
+    } catch (error) { return bad(error.message || "Reader progress conflict", error.status || 409); }
+    const saved = accepted.saved;
+    if (!journaled && saved && (input.finished === true || Number(input.page) >= Number(input.pages) - 1))
+      deps.marks?.finish(local.file(input.fileId)?.work_id, input.fileId, true);
     if (saved) await deps.onProgress?.(local.file(input.fileId)?.work_id);
-    return saved ? (ctx.json(res, 200, { file: saved }), true) : bad("Unknown file", 404);
+    return saved ? (ctx.json(res, 200, { file: saved,
+      ...(accepted.progressReceipt ? { progressReceipt: accepted.progressReceipt,
+        progressDuplicate: accepted.duplicate === true } : {}) }), true)
+      : bad("Unknown file", 404);
   }
   const reader = /^\/api\/reader\/files\/(f[0-9a-f]{16})(?:\/pages\/(\d{1,5}))?$/.exec(p);
   if (reader) {
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
-    const row = local.file(reader[1]);
+    let row;
+    try { row = await (local.refreshFile?.(reader[1]) ?? local.file(reader[1])); }
+    catch (error) { return bad(error.message || "Cannot verify the archive", 422); }
     if (!row || row.error) return bad("Unknown file", 404);
     let listed;
     try { listed = await listPages(row); } catch (error) { return bad(error.message, 422); }
@@ -305,19 +385,20 @@ export async function handleLocalRoutes(req, res, url, deps) {
       const index = siblings.findIndex((item) => item.id === row.id);
       return ctx.json(res, 200, {
         file: siblings[index] || null, workId: row.work_id, pages: listed.pages.length,
+        progressGeneration: local.progressGeneration?.(row.work_id, row.id) ?? null,
         prev: index > 0 ? siblings[index - 1].id : null, next: index >= 0 && index < siblings.length - 1 ? siblings[index + 1].id : null,
       }), true;
     }
     const name = listed.pages[Number(reader[2])];
     if (!name) return bad("No such page", 404);
-    const tag = `"${row.id}-${row.size}-${row.mtime}-${reader[2]}"`;
+    const tag = `"${row.id}-${row.size}-${row.mtime}-${row.content_rev || "legacy"}-${reader[2]}"`;
     if (req.headers["if-none-match"] === tag) { res.writeHead(304); res.end(); return true; }
     let page;
     try { page = await readPage(row, name); } catch (error) { return bad(error.message, 422); }
     if (!page) return bad("Not an image", 415);
     res.writeHead(200, {
       "Content-Type": page.type, "Content-Length": page.buffer.length, ETag: tag,
-      "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff",
+      "Cache-Control": "private, no-cache", "X-Content-Type-Options": "nosniff",
       "Content-Disposition": `inline; filename="${path.basename(name).replace(/[^\w.-]/g, "_")}"`,
     });
     res.end(req.method === "HEAD" ? undefined : page.buffer);

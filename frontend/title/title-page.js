@@ -31,7 +31,7 @@ import {
   catalogChapterList, catalogChapterLists, libraryArtCached, movieArtRecords,
 } from "../watch/episode-navigation.js";
 import {
-  addCatalogPlaceholder, buildLibrarySeries, groupLibraryChapters, librarySeriesChapterCount,
+  addCatalogPlaceholder, buildLibrarySeries, findLibrarySeriesByKey, groupLibraryChapters, librarySeriesChapterCount,
   librarySeriesKey, resolveCatalogMetaForLibrarySeries, updateLibrarySeriesEntries,
 } from "../library/library-data.js";
 import {
@@ -99,8 +99,8 @@ export function openTitlePage({ id = "", type = "series", key = "", meta = null,
 }
 
 export function openLibrarySeries(seriesKey) {
-  const series = buildLibrarySeries().find((item) => item.key === seriesKey);
-  if (series) openTitlePage({ id: series.catalogId, type: series.type, key: series.key });
+  const series = findLibrarySeriesByKey(seriesKey);
+  if (series) openTitlePage({ id: series.catalogId, type: series.type, key: series.routeKey || series.key });
 }
 
 // Catalog ids and AniList ids of the video titles in the Library (features join
@@ -123,8 +123,13 @@ export function libraryTitleIds() {
 
 export function openHomeTitle(meta) {
   if (!meta) return;
-  const existing = buildLibrarySeries().find((series) => (meta.id && series.catalogId === meta.id) || series.key === librarySeriesKey(meta.name));
-  openTitlePage({ id: meta.id || existing?.catalogId || "", type: meta.type === "movie" ? "movie" : "series", key: existing?.key || "", meta });
+  const all = buildLibrarySeries();
+  const exact = meta.id && all.find((series) => series.catalogId === meta.id
+    && series.type === (meta.type === "movie" ? "movie" : "series"));
+  const legacy = !meta.id && all.filter((series) => !series.catalogId
+    && series.legacyKey === librarySeriesKey(meta.name));
+  const existing = exact || (legacy?.length === 1 ? legacy[0] : null);
+  openTitlePage({ id: meta.id || existing?.catalogId || "", type: meta.type === "movie" ? "movie" : "series", key: existing?.routeKey || existing?.key || "", meta });
 }
 
 // The Library title the page is about, if any: the one with this catalog id, then the saved key,
@@ -132,14 +137,32 @@ export function openHomeTitle(meta) {
 export function titleSubject(route = titleRoute()) {
   const all = buildLibrarySeries();
   const seed = route.id ? titleSeedMeta.get(route.id) || homeTitleIndex.get(route.id) : null;
-  const series = (route.id && all.find((item) => item.catalogId === route.id))
-    || (route.key && all.find((item) => item.key === route.key && (!route.id || !item.catalogId || item.catalogId === route.id)))
-    || (seed?.name && all.find((item) => !item.catalogId && item.key === librarySeriesKey(seed.name)))
+  // An explicit immutable work route can still open an unlinked torrent while
+  // a catalog search is unresolved. Never interpret a display/legacy alias
+  // as this proof, nor attach a foreign IMDb ID to that provisional source.
+  const requestedType = route.type === "movie" ? "movie" : "series";
+  // unresolved-entry: serials are process-local, not immutable source keys.
+  const exactUnresolved = route.key && /^(?:entry:|provisional:)/.test(route.key)
+    ? all.find((item) => !item.catalogId && item.type === requestedType
+      && item.routeKey === route.key)
+    : null;
+  const series = exactUnresolved || (route.id && all.find((item) => item.catalogId === route.id
+    && item.type === (route.type === "movie" ? "movie" : "series")))
+    || (route.key && (() => {
+      const saved = findLibrarySeriesByKey(route.key, all);
+      // A route with a known catalog ID cannot adopt an ID-less saved title
+      // through a stale key or display alias. Only a verified ID can do that.
+      return saved && (!route.id || saved.catalogId === route.id) ? saved : null;
+    })())
+    || (!route.id && seed?.name && (() => {
+      const names = all.filter((item) => !item.catalogId && item.legacyKey === librarySeriesKey(seed.name));
+      return names.length === 1 ? names[0] : null;
+    })())
     || null;
   return {
-    id: route.id || series?.catalogId || "",
+    id: exactUnresolved ? "" : route.id || series?.catalogId || "",
     type: series ? (series.type === "movie" ? "movie" : "series") : route.type,
-    key: series?.key || "",
+    key: series?.routeKey || series?.key || "",
     series,
   };
 }
@@ -703,7 +726,8 @@ export async function handleTitleAniListLink(event) {
     const latest = current();
     if (!latest || seriesAniList(latest, account.userId)?.seasons?.some((part) => part.season === season)) return;
     updateLibrarySeriesEntries(latest.key, (entry) => {
-      if (entry.id !== latest.sources[0]?.id) return;
+      // Persist the verified work-level link on every saved source of this
+      // canonical title. Removing the oldest torrent must not erase the link.
       const links = Array.isArray(entry.anilistManualLinks) ? entry.anilistManualLinks : [];
       entry.anilistManualLinks = [...links.filter((link) => !(link.userId === account.userId && link.season === season)), {
         ...planned, verifiedAt: Date.now(),
@@ -905,9 +929,11 @@ export function fitTitleBackdrop() {
 // AniList, other titles on TMDB) and the seasons that can be rated one by one.
 function titleRatingSubject(subject, info, meta) {
   const movie = subject.type === "movie";
+  const persistedRoute = subject.series?.routeKey || subject.series?.key || "";
   // Public/legacy AniList annotations may be displayed elsewhere, but cannot
   // supply the signed-in account's editable score or remote write target.
-  const linkedAniList = authenticatedTitleAniList(subject, readAniListAccount(localStorage));
+  const account = readAniListAccount(localStorage);
+  const linkedAniList = authenticatedTitleAniList(subject, account);
   const anime = Boolean(subject.series?.sources?.some((entry) => entry.anilistId))
     || eligibleForPublicAnimeRating({ mediaKind: subject.series?.mediaKind,
       genres: info.genres, country: info.country });
@@ -920,7 +946,15 @@ function titleRatingSubject(subject, info, meta) {
   ])].sort((a, b) => a - b);
   return {
     catalogId: subject.id || "",
-    seriesKey: subject.key || "",
+    // The server also uses seriesKey as the app-rating key when there is no
+    // IMDb ID. Send the same persisted Library owner as the UI queue, not the
+    // mutable navigation/display alias (which could create another DB row).
+    seriesKey: persistedRoute || (subject.id ? subject.key || "" : ""),
+    // The Library owns the persisted source route; this cannot be replaced
+    // with a display alias when names or grouping order change. The account
+    // ID versions only the browser presentation, never the local work queue.
+    workKey: persistedRoute,
+    accountUserId: account?.userId || null,
     title: info.name === "Untitled" ? "" : info.name,
     year: Number(String(info.releaseInfo || info.released || "").match(/\d{4}/)?.[0]) || null,
     kind: anime ? (movie ? "anime-movie" : "anime") : movie ? "movie" : "series",
@@ -1116,13 +1150,13 @@ export function handleTitleAction(event) {
     else switchView("library");
   } else if (action === "related-movie") void openRelatedAnimeMovie(button.dataset.animeMovieId);
   else if (action === "library") switchView("library");
-  else if (action === "play-next" && series) void resumeLibrarySeries(series.key);
+  else if (action === "play-next" && series) void resumeLibrarySeries(series.routeKey || series.key);
   else if (action === "play-first") {
     const chapter = titleFirstChapter(catalogSeriesView);
     if (catalogSeriesView && chapter) void playCatalogChapter(catalogSeriesView, chapter, button);
   } else if (action === "add") titleAddToLibrary(subject);
-  else if (action === "magnet" && series) openMagnetDialog({ seriesKey: series.key });
-  else if (action === "menu" && series) openLibraryContextMenu(event, series.key, { anchor: button });
+  else if (action === "magnet" && series) openMagnetDialog({ seriesKey: series.routeKey || series.key });
+  else if (action === "menu" && series) openLibraryContextMenu(event, series.routeKey || series.key, { anchor: button });
   else if (action === "find-title" && series) void titleFindCatalogMatch(series, button);
   else if (action === "retry") retryTitleMeta(subject);
   else if (action === "movie-sources") void loadTitleMovieSources({ scroll: !button.closest("#title-sources") });

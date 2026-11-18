@@ -67,7 +67,7 @@ export const COMICS_ES = Object.freeze({
   "1 chapter": "1 capítulo", "Volumes {from}–{to}": "Volúmenes {from}–{to}",
   // Chapter index, comic page tabs, chosen sources (B18)
   "1 source": "1 fuente", "{count} sources": "{count} fuentes", "No chosen source has this chapter yet.": "Ninguna fuente elegida tiene este capítulo todavía.",
-  "Choose sources": "Elegir fuentes", "Search chapters": "Buscar capítulos", Order: "Orden", Ascending: "Ascendente", Descending: "Descendente",
+  "Choose sources": "Elegir fuentes", "Search chapters": "Buscar capítulos", "Sort chapters": "Ordenar capítulos", Order: "Orden", Ascending: "Ascendente", Descending: "Descendente",
   "Group by volume": "Agrupar por volumen", "Some sources couldn't load chapters.": "Algunas fuentes no pudieron cargar los capítulos.",
   "Couldn't load chapters.": "No se pudieron cargar los capítulos.",
   "The source was not confirmed for this comic. Try again.": "No se confirmó la fuente para este cómic. Inténtalo de nuevo.",

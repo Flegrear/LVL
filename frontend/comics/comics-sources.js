@@ -607,8 +607,18 @@ export async function sourcesSettingsSection(container) {
   let availableBrowseSources = [];
   const favoritesBody = (favorites) => (favorites.length ? `<ul class="comics-rows">${favorites.map((source) => favoriteRow(source, { open: openSettings.has(source.id) })).join("")}</ul>`
     : `<p class="settings-hint">${escapeHtml(t("Add sources below. A comic's Sources tab searches them for it."))}</p>`);
+  const sourceRekeyForm = (favorites) => !favorites.length ? "" :
+    `<form data-source-rekey class="comics-add"><p class="settings-hint">${escapeHtml(t("If a repository changes a source ID, confirm the replacement to preserve your linked titles and chapter history."))}</p>`
+    + `<div class="settings-grid two"><label class="settings-field"><span>${escapeHtml(t("Previous favorite"))}</span><select name="oldSourceId" required>`
+    + favorites.map((source) => `<option value="${escapeHtml(source.id)}">${escapeHtml(source.name)} · #${escapeHtml(source.id)}</option>`).join("")
+    + `</select></label><label class="settings-field"><span>${escapeHtml(t("New repository source ID"))}</span>`
+    + `<input name="newSourceId" inputmode="numeric" autocomplete="off" required pattern="-?[0-9]{1,20}" maxlength="20" /></label></div>`
+    + `<label class="settings-field"><input type="checkbox" name="confirmed" required /> ${escapeHtml(t("I have verified which source replaces the old ID."))}</label>`
+    + `<div class="settings-actions">${buttonMarkup({ label: "Migrate source", type: "submit", size: "sm", variant: "secondary" })}`
+    + `<p class="tool-status settings-status" role="status" aria-live="polite"></p></div></form>`;
   const favoritesCard = (favorites) => cardMarkup({ title: t("Favorite sources"), badge: favorites.length ? String(favorites.length) : "",
-    hint: favorites.length ? t("A comic's Sources tab searches these for it. Each site can have its own settings.") : "", body: favoritesBody(favorites), attrs: " data-favorites-section" });
+    hint: favorites.length ? t("A comic's Sources tab searches these for it. Each site can have its own settings.") : "",
+    body: favoritesBody(favorites) + sourceRekeyForm(favorites), attrs: " data-favorites-section" });
   const render = async () => {
     const [{ sources, downloads }, cache, favoriteReply, prefs] = await Promise.all([comicsApi.sources(), comicsApi.cache().catch(() => null),
       comicsApi.favorites().catch(() => null), comicsApi.settings().catch(() => ({ showAdult: false }))]);
@@ -728,6 +738,22 @@ export async function sourcesSettingsSection(container) {
   holder.addEventListener("submit", async (event) => {
     event.preventDefault();
     const form = event.target;
+    if (form.matches("[data-source-rekey]")) {
+      const status = form.querySelector(".settings-status");
+      const button = form.querySelector("[type=submit]");
+      if (!form.confirmed.checked) return;
+      button.disabled = true;
+      try {
+        const result = await comicsApi.rekeySource(form.oldSourceId.value, form.newSourceId.value.trim());
+        if (!holder.isConnected) return;
+        await render();
+        await listExtensions();
+        toast(t("Source migrated. {count} chapter identities preserved.", { count: result.migratedChapters }));
+      } catch (error) {
+        if (status?.isConnected) { status.classList.add("is-error"); status.textContent = error.message; }
+      } finally { if (button.isConnected) button.disabled = false; }
+      return;
+    }
     if (form.matches("[data-site-settings]")) return saveSite(form, siteValues(form));
     try {
       if (form.matches("[data-extension-search]")) return listExtensions();

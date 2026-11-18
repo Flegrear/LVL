@@ -2,7 +2,7 @@
 // and grouped by volume, before any source is chosen. Built from Wikipedia's
 // "List of … chapters" pages (volume → chapter numbers and titles), MangaDex's
 // aggregate (fills chapters not collected yet), and AniList's chapter count.
-import { normalizeUnitNumber, sortVolumes } from "../../shared/reading/units.js";
+import { normalizeUnitNumber, sortVolumes, unitKey } from "../../shared/reading/units.js";
 
 export const WIKIPEDIA_API = "https://en.wikipedia.org/w/api.php";
 
@@ -211,9 +211,12 @@ export async function fetchWikipediaList(titles, { fetchImpl = globalThis.fetch,
 export function mergeIndex({ wikipedia = null, mangadex = null, chaptersTotal = null, volumesTotal = null } = {}) {
   const byVolume = new Map();
   const seen = new Set();
+  const seenChapterNumbers = new Set();
   const add = (volume, chapter, title = "") => {
-    if (!chapter || seen.has(chapter)) return;
-    seen.add(chapter);
+    const key = unitKey({ volume, chapter });
+    if (!chapter || !key || seen.has(key)) return;
+    seen.add(key);
+    seenChapterNumbers.add(chapter);
     if (!byVolume.has(volume)) byVolume.set(volume, { volume, chapters: [] });
     byVolume.get(volume).chapters.push({ chapter, ...(title ? { title } : {}) });
   };
@@ -225,7 +228,9 @@ export function mergeIndex({ wikipedia = null, mangadex = null, chaptersTotal = 
   }
   for (const group of mangadex?.volumes || []) for (const item of group.chapters) add(group.volume, item.chapter);
   if (Number.isInteger(chaptersTotal) && chaptersTotal > 0 && chaptersTotal <= 5000) {
-    for (let n = 1; n <= chaptersTotal; n += 1) if (!seen.has(String(n))) add(null, String(n));
+    // Count-only AniList metadata cannot assign an additional volume to an
+    // existing chapter number, particularly when numbering restarts per volume.
+    for (let n = 1; n <= chaptersTotal; n += 1) if (!seenChapterNumbers.has(String(n))) add(null, String(n));
   }
   const total = Number.isInteger(volumesTotal) && volumesTotal > 0 && volumesTotal <= 500 ? volumesTotal : 0;
   for (let n = 1; n <= total; n += 1) if (!byVolume.has(String(n))) byVolume.set(String(n), { volume: String(n), chapters: [] });

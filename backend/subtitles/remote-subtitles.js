@@ -33,7 +33,11 @@ export function pruneRemoteSubtitleDownloads() {
   for (const [token, record] of remoteSubtitleDownloads) {
     if (!record || record.expiresAt <= now) remoteSubtitleDownloads.delete(token);
   }
-  while (remoteSubtitleDownloads.size > 300) remoteSubtitleDownloads.delete(remoteSubtitleDownloads.keys().next().value);
+  // A single search can register 100 Wyzie + 100 SubSource hits. Several
+  // searches should not immediately expire an otherwise valid 20-minute
+  // user-selected result. Retain a bounded 1,200-token pool with LRU reads.
+  while (remoteSubtitleDownloads.size > 1200)
+    remoteSubtitleDownloads.delete(remoteSubtitleDownloads.keys().next().value);
 }
 
 function parseRemoteSubtitleUrl(value) {
@@ -96,6 +100,19 @@ export async function fetchRemoteSubtitleDownload(remote, { fetchImpl = pinnedSu
   throw Object.assign(new Error("Subtitle download redirected too many times"), { statusCode: 502 });
 }
 
+export function boundedSubtitleHeaders(input) {
+  const headers = {};
+  if (!input || typeof input !== "object" || Array.isArray(input)) return headers;
+  // Current supported providers need at most one of these credentials.
+  // Never cache arbitrary provider-controlled headers in a 1,200-token pool.
+  for (const [key, value] of Object.entries(input)) {
+    if (!/^(?:authorization|x-api-key)$/i.test(key) || typeof value !== "string"
+      || !value || value.length > 512 || /[\r\n\0]/.test(value)) continue;
+    headers[key] = value;
+  }
+  return headers;
+}
+
 export function registerRemoteSubtitleDownload({ url, headers = {}, label = "subtitle.srt", language = "", provider = "REMOTE" }) {
   const parsed = parseRemoteSubtitleUrl(url);
   if (!parsed) return null;
@@ -103,7 +120,7 @@ export function registerRemoteSubtitleDownload({ url, headers = {}, label = "sub
   const token = crypto.randomBytes(18).toString("hex");
   remoteSubtitleDownloads.set(token, {
     url: parsed.toString(),
-    headers: Object.fromEntries(Object.entries(headers).filter(([key, value]) => typeof key === "string" && typeof value === "string")),
+    headers: boundedSubtitleHeaders(headers),
     label: String(label || "subtitle.srt").slice(0, 500),
     language: normalizeSubtitleLanguage(language),
     provider: String(provider || "REMOTE").slice(0, 80),

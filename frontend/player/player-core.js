@@ -20,10 +20,11 @@ import {
   playbackMetrics, popupPlayer, progressiveReadyRanges, progressiveSeekAvailable,
   renderSubtitleWorkspace, state, titleSeedMeta, video,
 } from "../../app.js";
-import { $, $$ } from "../app/dom.js";
+import { $ as app$, $$ as app$$ } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { viewActive } from "../app/navigation.js";
 import { remuxMseCacheAllowed } from "../settings/storage-settings.js";
+import { remuxPreferenceIntentMatches } from "./remux-preference-intent.js";
 import { transcodeQuery } from "./player-tracks.js";
 import { audioOutputMode } from "./player-menus.js";
 import { renderSubtitles, subtitleRenderMemo } from "./subtitle-display.js";
@@ -37,9 +38,18 @@ import { updateChapterButtons, watchCatalogIdFor } from "../watch/watch-page.js"
 import { recordWatchProgress } from "../watch/watched-status.js";
 import { autoNextInterval, catalogChapterLists, clearAutoNext, movieArtRecords } from "../watch/episode-navigation.js";
 import {
-  buildLibrarySeries, currentChapterSources, libraryEntryById, librarySeriesKey,
+  buildLibrarySeries, currentChapterSources, libraryEntryById, librarySeriesForEntry,
 } from "../library/library-data.js";
 import { homeTitleIndex } from "../home/home-page.js";
+
+// Browser Document PiP adopts the real video-frame subtree, so its controls
+// leave the main document while keeping their original event listeners. Read
+// from the live owner frame first and then from the opener for Watch panels.
+const $ = selector => frame?.querySelector?.(selector) || app$(selector);
+const $$ = selector => {
+  const live = frame?.querySelectorAll?.(selector);
+  return live?.length ? [...live] : app$$(selector);
+};
 
 let playerControlsHideTimer = null;
 
@@ -67,6 +77,49 @@ export function closeProgressiveEventStream() {
   progressiveEventStream = null;
   progressiveEventKey = "";
   progressiveRefreshAfterPending = false;
+}
+
+// Settings takes one ticket before switching an indexed reader to native,
+// rechecks it with allowNativeRestart after that URL/frame transition, then
+// takes another ticket just before its preference PUT. A failed/late PUT may
+// update this ticket's controls only while the second ticket still matches.
+// No caller should replay saved pause, seek or audio selections over a newer
+// source; the native reader remains valid if the preference write fails.
+export function captureRemuxPreferenceIntent() {
+  const source = state.currentSource;
+  return {
+    source,
+    sessionId: source?.sessionId ?? null,
+    fileIndex: source?.fileIndex ?? null,
+    loadGeneration: playbackLoadRequestId,
+    context: state.transcodeContext,
+    videoSrc: video.src,
+    selectedAudioTrack: state.selectedAudioTrack,
+    audioIndex: state.transcodeContext?.audioIndex ?? null,
+    audioMode: normalizeAudioMode(audioOutputMode),
+    paused: video.paused,
+    positionSeconds: absolutePlaybackSeconds(),
+    selectedTrackId: state.selectedTrackId,
+    baseLanguage: state.baseLanguage,
+    targetLanguage: state.targetLanguage,
+    pendingSeek: state.pendingSeek,
+  };
+}
+export function remuxPreferenceIntentStillCurrent(ticket, options = {}) {
+  return remuxPreferenceIntentMatches(ticket, captureRemuxPreferenceIntent(), options);
+}
+// Restore the verified indexed reader after a rejected cache-disable PUT only
+// while the exact native decoder handoff still owns this source and user intent.
+// A newer pause/seek/audio/source change must never be overwritten.
+export function restoreIndexedAfterRejectedRemuxPreference(before, after) {
+  if (!before?.source || !after?.source || before.source !== after.source
+    || !remuxPreferenceIntentStillCurrent(after)
+    || video.paused !== after.paused
+    || !readyIndexedVideo() || video.dataset.indexed === "1"
+    || state.pendingSeek !== after.pendingSeek) return false;
+  const at = absolutePlaybackSeconds();
+  if (!Number.isFinite(at) || at < 0) return false;
+  return openIndexedSeekAt(at, { wasPlaying: !before.paused });
 }
 function ensureProgressiveEventStream(report, expected, context, source) {
   if (typeof window.EventSource !== "function" || !remuxMseCacheAllowed
@@ -460,7 +513,7 @@ export function setPlayerLoadingTitle(entry = null, fallbackTitle = "") {
   // Local files without a verified catalog identity keep the minimal progress line.
   if (typeof document === "undefined") return;
   if (!entry) { setPlayerLoadingArtwork(""); return; }
-  const series = buildLibrarySeries().find((item) => item.key === (entry.seriesKey || librarySeriesKey(entry.title)));
+  const series = librarySeriesForEntry(entry);
   const id = String(entry.catalogId || series?.catalogId || (series && watchCatalogIdFor(series)) || "");
   const raw = id
     ? String([catalogChapterLists.get(id)?.meta, movieArtRecords.get(id)?.meta, titleSeedMeta.get(id), homeTitleIndex.get(id)]
@@ -681,6 +734,10 @@ export function beginSourceTransition() {
   closeRemuxMseSession();
   cancelTranscodeStart();
   clearAutoNext();
+  // Retire the old torrent's polling owner as soon as navigation starts.
+  // A slow discovery request may otherwise continue reporting old bytes and
+  // issuing GETs until the new source has accepted a playback URL.
+  stopTransferStats();
   // A user-selected new episode is a new incident; recovery-selected sources
   // retain the same bounded history across their asynchronous transition.
   if (!recoveryBusy) resetRecoveryDisplay();
@@ -1996,20 +2053,19 @@ function openProgressiveSeekAt(target, { wasPlaying = !video.paused } = {}) {
   });
   progressiveMseLoader = loader;
   progressiveSeekController = controller;
+  const retireSupersededProgressive = () => {
+    // A new source may have claimed the same video before an old held decoder
+    // promise settles. Release the exact retired controller, not the
+    // successor's video.dataset, mute preference, pending seek or frame gate.
+    if (progressiveSeekController !== controller) return;
+    controller.close();
+    loader.close();
+    progressiveSeekController = null;
+    progressiveMseLoader = null;
+  };
   void controller.seek(snapshot.report, target).then(result => {
     if (!current() || progressiveSeekController !== controller) {
-      // A different title/source can be selected before its new video URL is
-      // installed. Never leave the outgoing muted preroll poisoning that next
-      // source. Do not change a successor's pendingSeek or playback intent.
-      if (progressiveSeekController === controller && video.dataset.progressive === "1") {
-        controller.close(); loader.close();
-        progressiveSeekController = null; progressiveMseLoader = null;
-        delete video.dataset.progressive;
-        if (progressiveSeekOriginalMute !== null) {
-          video.muted = progressiveSeekOriginalMute;
-          progressiveSeekOriginalMute = null;
-        }
-      }
+      retireSupersededProgressive();
       return;
     }
     if (!result?.ok) {
@@ -2039,15 +2095,7 @@ function openProgressiveSeekAt(target, { wasPlaying = !video.paused } = {}) {
     if (pending.wasPlaying) continueProgressiveOrRecover({ force: true });
   }).catch(() => {
     if (!current()) {
-      if (progressiveSeekController === controller && video.dataset.progressive === "1") {
-        controller.close(); loader.close();
-        progressiveSeekController = null; progressiveMseLoader = null;
-        delete video.dataset.progressive;
-        if (progressiveSeekOriginalMute !== null) {
-          video.muted = progressiveSeekOriginalMute;
-          progressiveSeekOriginalMute = null;
-        }
-      }
+      retireSupersededProgressive();
       return;
     }
     video.muted = oldMute;
@@ -2071,13 +2119,20 @@ function cancelRemuxMseWarmSeek() {
   if (warm.frameId !== null && typeof video.cancelVideoFrameCallback === "function")
     video.cancelVideoFrameCallback(warm.frameId);
   window.clearTimeout(warm.timer);
-  frame.classList.remove("is-sync-preroll");
-  if (warm.overlay) {
-    if (warm.previousOverlayAriaHidden === null) warm.overlay.removeAttribute("aria-hidden");
-    else warm.overlay.setAttribute("aria-hidden", warm.previousOverlayAriaHidden);
-  }
   if (warm.pending === state.pendingSeek) state.pendingSeek = null;
-  if (warm.src === video.src) video.muted = warm.wantedMuted;
+  // Cleanup belongs to the exact source/load/window that armed the frame
+  // gate. An obsolete A cannot reset B's overlay or mute on cancellation.
+  if (remuxMseSession === warm.session && warm.src === video.src
+    && state.currentSource === warm.source
+    && state.transcodeContext === warm.context
+    && playbackLoadRequestId === warm.loadId) {
+    frame.classList.remove("is-sync-preroll");
+    if (warm.overlay) {
+      if (warm.previousOverlayAriaHidden === null) warm.overlay.removeAttribute("aria-hidden");
+      else warm.overlay.setAttribute("aria-hidden", warm.previousOverlayAriaHidden);
+    }
+    video.muted = warm.wantedMuted;
+  }
 }
 
 function closeRemuxMseSession() {
@@ -2145,7 +2200,8 @@ function seekInsideRemuxMse(target) {
   const src = video.src;
   const pending = { target, wasPlaying, priming: true, streamInstalled: true };
   const overlay = $("#subtitle-overlay");
-  const warm = { session, pending, src, frameId: null, timer: 0,
+  const warm = { session, pending, src, source, context, loadId,
+    frameId: null, timer: 0,
     wantedMuted: playerWantsMuted(), overlay,
     previousOverlayAriaHidden: overlay?.getAttribute("aria-hidden") ?? null };
   remuxMseWarmSeek = warm;
@@ -2213,12 +2269,18 @@ export function cancelTranscodeStart({ preservePending = false } = {}) {
   if (attempt.retryTimer) window.clearTimeout(attempt.retryTimer);
   if (attempt.timeupdate) video.removeEventListener("timeupdate", attempt.timeupdate);
   if (attempt.loadeddata) video.removeEventListener("loadeddata", attempt.loadeddata);
-  frame.classList.remove("is-sync-preroll");
-  if (attempt.overlay) {
-    if (attempt.previousOverlayAriaHidden === null) attempt.overlay.removeAttribute("aria-hidden");
-    else attempt.overlay.setAttribute("aria-hidden", attempt.previousOverlayAriaHidden);
+  const ownsSharedMedia = state.currentSource === attempt.ownerSource
+    && state.transcodeContext === attempt.ownerContext
+    && playbackLoadRequestId === attempt.ownerLoadId
+    && (!attempt.installedSrc || video.src === attempt.installedSrc);
+  if (ownsSharedMedia) {
+    frame.classList.remove("is-sync-preroll");
+    if (attempt.overlay) {
+      if (attempt.previousOverlayAriaHidden === null) attempt.overlay.removeAttribute("aria-hidden");
+      else attempt.overlay.setAttribute("aria-hidden", attempt.previousOverlayAriaHidden);
+    }
+    if (attempt.mutedForPreroll) video.muted = attempt.wantedMuted;
   }
-  if (attempt.mutedForPreroll) video.muted = attempt.wantedMuted;
   if (!preservePending && state.pendingSeek === attempt.pending) state.pendingSeek = null;
 }
 
@@ -2295,7 +2357,7 @@ export function playerWantsMuted() {
 }
 
 export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, initialize = null, seekRetry = 0,
-  onPreflightFailure = null, forceNative = false, verifySession = false } = {}) {
+  onPreflightFailure = null, forceNative = false, verifySession = false, fallbackH264 = false } = {}) {
   const context = state.transcodeContext;
   if (!context?.baseUrl) return false;
   if (typeof cancelIndexedSeekAttempt === "function") cancelIndexedSeekAttempt();
@@ -2326,6 +2388,13 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
   const target = Math.max(0, durationSeconds ? Math.min(Number(seconds) || 0, Math.max(0, durationSeconds - 0.25)) : Number(seconds) || 0);
   const audioIndex = Number.isInteger(context.audioIndex) ? context.audioIndex : state.selectedAudioTrack || 0;
   const query = transcodeQuery(target, audioIndex);
+  // A decoder-rejection retry asks for H264 without mutating the shared
+  // context. Only the accepted, current URL commits the new codec policy.
+  if (fallbackH264 && context.copyVideo) {
+    query.delete("hevc");
+    query.delete("av1");
+    query.set("video", "h264");
+  }
   // A known HEVC Main10 SDR -> H264 stream can use a bounded MSE SourceBuffer
   // to make frames already transcoded in THIS session genuinely seekable.
   // Existing copy/HDR/other codec paths remain unchanged. Failed MSE startup
@@ -2341,7 +2410,10 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
   const pending = { target, wasPlaying: Boolean(wasPlaying), timer: 0, priming: true,
     streamInstalled: false };
   const attempt = { serial, controller, pending, frameId: null, watchdog: 0,
+    ownerSource: source, ownerContext: context, ownerLoadId: loadId,
+    installedSrc: null,
     seekRetry, retryTimer: 0, retryScheduled: false,
+    pendingCodecFallback: Boolean(fallbackH264),
     timeupdate: null, mutedForPreroll: false, wantedMuted: video.muted,
     overlay: null, previousOverlayAriaHidden: null };
   transcodeStartAttempt = attempt;
@@ -2375,7 +2447,7 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
       if (!current()) return;
       void openTranscodeAt(target, {
         wasPlaying: pending.wasPlaying, initialize, seekRetry: attempt.seekRetry + 1,
-        forceNative,
+        forceNative, fallbackH264,
       });
     }, delay);
     return true;
@@ -2472,7 +2544,7 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
   attempt.fallbackToNative = () => {
     if (!mse || remuxMseSession !== mse || !current()) return false;
     void openTranscodeAt(target, {
-      wasPlaying: pending.wasPlaying, initialize, forceNative: true,
+      wasPlaying: pending.wasPlaying, initialize, forceNative: true, fallbackH264,
     });
     return true;
   };
@@ -2497,7 +2569,14 @@ export async function openTranscodeAt(seconds, { wasPlaying = !video.paused, ini
   // the video element. Its late ended/error events cannot describe the new
   // media window before this assignment completes.
   pending.streamInstalled = true;
+  // HTMLMediaElement.src resolves a relative request URL to an absolute URL.
+  // Compare the normalized installed value, not the original query string.
+  attempt.installedSrc = video.src;
   if (!current()) return false;
+  // Constructing a query is pure. Commit the fallback codec only when this
+  // accepted source has actually installed that URL; rejected/stale preflights
+  // must not mutate the next seek's codec policy.
+  if (context.copyVideo && query.get("video") === "h264") context.forceH264 = true;
   state.transcodeRequestedStartSeconds = target;
   video.dataset.mode = "transcode";
   const prerollSeconds = Math.max(0, target - effectiveStart);
@@ -3082,6 +3161,18 @@ export function suspendPlayerForPopup() {
 }
 
 export function wirePlayerVideoEvents() {
+  // Android's MediaSession passes movie seconds, including after a copied
+  // transcode reopened the decoder at an offset. The same source-aware seek
+  // transaction as Watch's timeline owns the request and pause intent.
+  video.__lvlAbsoluteTime = absolutePlaybackSeconds;
+  video.__lvlDurationSeconds = () => playerDurationMs() / 1000;
+  document.addEventListener?.("lvl:media-session-seek", (event) => {
+    const seconds = Number(event.detail?.seconds);
+    if (!Number.isFinite(seconds) || seconds < 0
+      || !state.currentSource || !frame.classList.contains("has-video")) return;
+    event.preventDefault();
+    seekPlayerTo(seconds);
+  });
   // Detect tab hide/show even when Chromium throttles both video callbacks
   // and interval timers for the entire background interval.
   document.addEventListener?.("visibilitychange", () => recoveryPictureVisible());
@@ -3269,7 +3360,8 @@ export function wirePlayerVideoEvents() {
       const probeCompatibility = state.currentMediaProbe?.compatibility?.video || {};
       const inputCodec = String(probeVideo.codec || "").toLowerCase();
       const failedCopy = state.transcodeContext?.copyVideo
-        && !state.transcodeContext?.forceH264 && mediaKind === "native";
+        && !state.transcodeContext?.forceH264
+        && !transcodeStartAttempt?.pendingCodecFallback && mediaKind === "native";
       const isHdr = Boolean(probeCompatibility.hdr || probeCompatibility.hdrKind
         || probeVideo.dolbyVision || ["smpte2084", "arib-std-b67"].includes(String(probeVideo.colorTransfer || "").toLowerCase()));
       const tryCompatibleVideoFallback = ({ requireHttpSuccess = false } = {}) => {
@@ -3279,8 +3371,7 @@ export function wirePlayerVideoEvents() {
           || (requireHttpSuccess && responseStatus !== 200)) return false;
         const target = Number(state.pendingSeek.target) || 0;
         const wasPlaying = Boolean(state.pendingSeek.wasPlaying);
-        state.transcodeContext.forceH264 = true;
-        void openTranscodeAt(target, { wasPlaying, forceNative: true });
+        void openTranscodeAt(target, { wasPlaying, forceNative: true, fallbackH264: true });
         return true;
       };
       if (tryCompatibleVideoFallback({ requireHttpSuccess: true })) return;

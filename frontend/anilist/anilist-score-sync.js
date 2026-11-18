@@ -191,7 +191,11 @@ export function planAniListScoresIntoLvl(candidates = []) {
       title: row.local?.title || row.title || "",
       kind: row.local?.kind || (row.part.format === "MOVIE" ? "anime-movie" : "anime"),
       year: row.local?.year ?? null, season: row.season, mediaId: row.mediaId,
-      score: row.remote, previous: Number.isFinite(localScore) ? localScore : null, status: row.local?.status || null });
+      score: row.remote, previous: Number.isFinite(localScore) ? localScore : null, status: row.local?.status || null,
+      // A scored AniList snapshot is not permission to overwrite a subsequent
+      // LVL edit. The server checks this local row revision under its write
+      // savepoint, including edits in the same wall-clock millisecond.
+      expectedLocalUpdatedAt: row.local?.updatedAt ?? null });
   }
   return { updates, skipped };
 }

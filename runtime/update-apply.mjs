@@ -168,8 +168,10 @@ function decodePatch(zipPath, root, from, to, expectedSha) {
     byName.set(name, entry);
   }
   const header = byName.get("manifest.json");
-  if (!header || header.header.size > 256 * 1024) fail("missing bounded manifest.json");
-  const manifest = parseJson(header.getData(), 256 * 1024, "manifest");
+  // The reviewed patch builder permits a 512 KiB manifest. This reader must
+  // admit the same bounded, verified payload contract at install time.
+  if (!header || header.header.size > 512 * 1024) fail("missing bounded manifest.json");
+  const manifest = parseJson(header.getData(), 512 * 1024, "manifest");
   if (manifest.format !== FORMAT || manifest.fromVersion !== from || manifest.toVersion !== to
       || !isUpgrade(from, to)) fail("invalid manifest format/version transition");
   if (!Array.isArray(manifest.files) || !Array.isArray(manifest.deletes)

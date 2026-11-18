@@ -14,6 +14,7 @@ class SpeechTape {
     this.chunks = new Map(); // chunk index -> Float32Array (NaN = not heard yet)
     this.ranges = []; // [fromFrame, toFrame) runs, merged
     this.touchedAt = Date.now();
+    this.writers = 0;
   }
 
   write(frame, value) {
@@ -56,19 +57,29 @@ class SpeechTape {
 }
 
 function tapeKey(sessionId, fileIndex, audio) {
-  return `${sessionId}:${Number(fileIndex)}:${Number(audio) || 0}`;
+  // Undefined audio preserves the legacy default-track call contract.
+  // Null/empty/malformed selectors are NOT authority to read track zero:
+  // Number(null), Number("") and Number(false) all coerce to 0.
+  const track = audio === undefined ? 0 : audio;
+  const index = fileIndex;
+  if (typeof sessionId !== "string" || !sessionId || !Number.isSafeInteger(index)
+    || index < 0 || !Number.isSafeInteger(track) || track < 0 || track > 63) return null;
+  return `${sessionId}:${index}:${track}`;
 }
 
 function tapeFor(sessionId, fileIndex, audio, { create = false } = {}) {
   const key = tapeKey(sessionId, fileIndex, audio);
+  if (!key) return null;
   let tape = tapes.get(key);
   if (!tape && create) {
+    if (tapes.size >= MAX_TAPES) {
+      const evictable = [...tapes.entries()].filter(([, value]) => !value.writers)
+        .sort((a, b) => a[1].touchedAt - b[1].touchedAt)[0];
+      if (!evictable) return null; // Every tape still has a live writer.
+      tapes.delete(evictable[0]);
+    }
     tape = new SpeechTape();
     tapes.set(key, tape);
-    while (tapes.size > MAX_TAPES) {
-      const oldest = [...tapes.entries()].sort((a, b) => a[1].touchedAt - b[1].touchedAt)[0];
-      tapes.delete(oldest[0]);
-    }
   }
   if (tape) tape.touchedAt = Date.now();
   return tape || null;
@@ -78,7 +89,12 @@ function tapeFor(sessionId, fileIndex, audio, { create = false } = {}) {
  * A writer for one FFmpeg run that starts at startSeconds: feed it s16le mono chunks as they come.
  */
 export function speechTapeWriter(sessionId, fileIndex, audio, startSeconds) {
+  const key = tapeKey(sessionId, fileIndex, audio);
   const tape = tapeFor(sessionId, fileIndex, audio, { create: true });
+  if (!tape) return { push() {}, end() {} };
+  tape.writers++;
+  let ended = false;
+  const current = () => !ended && tapes.get(key) === tape;
   const startFrame = Math.max(0, Math.round((Number(startSeconds) || 0) * 1000 / SPEECH_FRAME_MS));
   let frame = startFrame;
   let rangeStart = startFrame;
@@ -87,6 +103,7 @@ export function speechTapeWriter(sessionId, fileIndex, audio, startSeconds) {
   let count = 0;
   return {
     push(chunk) {
+      if (!current()) return;
       const data = carry.length ? Buffer.concat([carry, chunk]) : chunk;
       const usable = data.length - (data.length % 2);
       for (let offset = 0; offset < usable; offset += 2) {
@@ -108,7 +125,10 @@ export function speechTapeWriter(sessionId, fileIndex, audio, startSeconds) {
       tape.touchedAt = Date.now();
     },
     end() {
-      tape.addRange(rangeStart, frame);
+      if (ended) return;
+      if (current()) tape.addRange(rangeStart, frame);
+      ended = true;
+      tape.writers = Math.max(0, tape.writers - 1);
     },
   };
 }

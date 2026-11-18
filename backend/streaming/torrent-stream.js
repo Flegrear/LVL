@@ -104,26 +104,40 @@ function startProgressiveWhenNewPieces(params, status) {
 // complete file doesn't restart by itself.
 const fullIndexFirst = new Map(); // `${sessionId}:${fileIndex}` -> { since, gaveUp, stopped, ... }
 const FULL_INDEX_FIRST_GRACE_MS = 20_000;
+const FULL_INDEX_FIRST_RECHECK_MS = 5 * 60_000;
 function fullIndexFirstChoice(params) {
   // Android does not build full-episode indexed copies in the background.
   // Preserve the desktop optimization and any already verified cache reads.
   if (process.platform === "android" || storage.limits().remuxCacheEnabled !== true) return null;
   const key = `${params.session?.id}:${params.fileIndex}`;
   const known = fullIndexFirst.get(key);
-  if (known) return known.gaveUp ? null : known;
+  if (known?.session === params.session) {
+    if (!known.gaveUp) return known;
+    // Quota/slot pressure is transient. Resume section work immediately on
+    // failure but permit a later whole-index attempt after a bounded cooldown.
+    if (Date.now() - known.gaveUpAt < FULL_INDEX_FIRST_RECHECK_MS) return null;
+  }
+  // A re-acquired session can reuse the same public ID. Its index priority
+  // must be independent from the retired torrent's latch.
+  if (known) fullIndexFirst.delete(key);
   const info = indexedCacheEligibility({ ...params, enabled: true });
   if (!info.eligible || info.identity?.videoStrategy !== 'copy') return null;
   if (fullIndexFirst.size >= 64) fullIndexFirst.delete(fullIndexFirst.keys().next().value);
-  const entry = { since: Date.now(), gaveUp: false };
+  const entry = { since: Date.now(), gaveUp: false, session: params.session };
   fullIndexFirst.set(key, entry);
   return entry;
 }
 function fullIndexFirstActive(params) {
   const entry = fullIndexFirst.get(`${params.session?.id}:${params.fileIndex}`);
-  return Boolean(entry && !entry.gaveUp && !entry.playerUsesSections);
+  // The public session ID can be reused by a later torrent incarnation.
+  // The previous owner's whole-index priority cannot suppress that new
+  // session's independently verified progressive-seek producer.
+  return Boolean(entry && entry.session === params.session
+    && !entry.gaveUp && !entry.playerUsesSections);
 }
 function giveUpFullIndexFirst(entry, params) {
   entry.gaveUp = true;
+  entry.gaveUpAt = Date.now();
   resumeStoppedSections(entry, params);
 }
 // The section cache skips sections it already has, so this continues where it stopped.

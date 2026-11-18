@@ -12,7 +12,7 @@ import { createRunnerEngine, fromLvlPath } from "./runner-engine.js";
 import { validSitePath } from "./ext-sources.js";
 import { normalizeSeriesName } from "../../shared/reading/release-name.js";
 import { sniffImage } from "../reader/pages.js";
-import { SOURCE_ID, WORK_ID } from "../../shared/reading/ids.js";
+import { SOURCE_ID, WORK_ID, isSyncableSourceTitleKey, isLegacyComicSourceTitleKey, isSyncableComicLink } from "../../shared/reading/ids.js";
 import { localIdFor } from "../reader/local-library.js";
 
 const MAX_IMAGE = 25 * 1024 * 1024;
@@ -67,7 +67,16 @@ async function repositorySources(deps, { force = false } = {}) {
     try { return { repo, value: await deps.extensionRepos.get(repo.config.url, { force }) }; } catch (error) { return { repo, error: error.message }; }
   }));
   const extensions = repos.flatMap((item) => (item.value?.extensions || []).map((ext) => ({ ...ext, repo: item.repo.id, fingerprint: item.value?.fingerprint || "" })));
-  return { repos, extensions };
+  // Only enabled, successfully fetched, fingerprint-consistent HTTPS
+  // repositories can issue same-source origin migration generations.
+  // A stale cache fallback or contradictory signer is not fresh authority.
+  const trustedRepositories = repos.filter(({ repo, value, error }) =>
+    !error && !value?.error && !value?.stale && value?.fingerprintMatches === true
+    && /^(?:[a-f0-9]{64}|(?:[a-f0-9]{2}:){31}[a-f0-9]{2})$/i.test(String(value?.fingerprint || ""))
+    && /^https:\/\//.test(String(repo.config?.url || "")))
+    .map(({ repo, value }) => ({ id: repo.id, url: repo.config.url,
+      fingerprint: String(value.fingerprint).toLowerCase().replaceAll(":", "") }));
+  return { repos, extensions, trustedRepositories };
 }
 
 // Sources LVL has no engine for run their own extension in the extension runner,
@@ -119,12 +128,22 @@ export function rank(items, comic) {
 export async function ensureSynced(deps, favorite, ext = null) {
   if (!favorite || favorite.version) return favorite;
   let found = ext;
+  let trustedRepositories = [];
   if (!found) {
-    const { extensions } = await repositorySources(deps).catch(() => ({ extensions: [] }));
+    const listing = await repositorySources(deps).catch(() => ({ extensions: [], trustedRepositories: [] }));
+    const { extensions } = listing;
+    trustedRepositories = listing.trustedRepositories || [];
     found = extensions.find((item) => item.pkg === favorite.pkg);
   }
   const source = found?.sources.find((item) => String(item.id) === String(favorite.id));
-  return source ? deps.ext.add(found, source, found.repo || favorite.repo) : favorite;
+  if (!source) return favorite;
+  // A repository-listed change to an existing default must go through the
+  // same trusted generation lifecycle as periodic refresh.
+  if (trustedRepositories.some((repo) => repo.id === found.repo)) {
+    deps.ext.refresh([found], { trustedRepositories });
+    return deps.ext.favorite(favorite.id);
+  }
+  return deps.ext.add(found, source, found.repo || favorite.repo);
 }
 
 // Favorites follow the repository while they're used, not only in Settings:
@@ -133,15 +152,24 @@ export async function ensureSynced(deps, favorite, ext = null) {
 // source moved or its extension changed.
 const syncState = new WeakMap(); // ext store -> { at, forcedAt }
 export async function syncFavorites(deps, { force = false, now = Date.now() } = {}) {
-  const state = syncState.get(deps.ext) || { at: 0, forcedAt: 0 };
+  const state = syncState.get(deps.ext) || { at: 0, forcedAt: 0, pending: null };
   syncState.set(deps.ext, state);
+  if (state.pending) return state.pending;
   if (force) {
     if (now - state.forcedAt < 30 * 60_000) return [];
-    state.forcedAt = now;
   } else if (now - state.at < 10 * 60_000) return [];
-  state.at = now;
-  const { extensions } = await repositorySources(deps, { force }).catch(() => ({ extensions: [] }));
-  return extensions.length ? deps.ext.refresh(extensions) : [];
+  const run = (async () => {
+    const { extensions, trustedRepositories } = await repositorySources(deps, { force });
+    // A failed or empty listing cannot establish a successful synchronization.
+    // Permit another attempt instead of suppressing retries for 10–30 minutes.
+    if (!extensions.length) return [];
+    const updated = deps.ext.refresh(extensions, { trustedRepositories });
+    state.at = now;
+    if (force) state.forcedAt = now;
+    return updated;
+  })().catch(() => []).finally(() => { if (state.pending === run) state.pending = null; });
+  state.pending = run;
+  return run;
 }
 
 // "1.6.38" > "1.6.37"
@@ -184,7 +212,8 @@ export async function extChapterList(link, deps, title = "") {
     if (!engine) throw Object.assign(new Error(`${source.name} isn't supported in LVL yet`), { status: 400 });
     // "ext-chapters3": lists from LVL's old theme engines used other paths than the extensions.
     // A chosen source's list older than an hour is used at once and refreshed in the background.
-    const list = (await deps.cached(`ext-chapters3:${source.cacheKey || source.id}:${link.mangaId}`, 60 * 60_000, () => engine.chapters(source, link.mangaId, { remote: deps.remote, title }), { background: true })).value;
+    const list = (await deps.cached(`ext-chapters4:${source.cacheKey || source.id}:${source.version || ""}:${source.movedTo || ""}:${source.adult ? 1 : 0}:${link.mangaId}`,
+      60 * 60_000, () => engine.chapters(source, link.mangaId, { remote: deps.remote, title }), { background: true })).value;
     return list.map((item) => ({ id: deps.ext.chapterId(source.id, item.path), path: item.path, chapter: item.chapter, volume: item.volume, title: item.name, language: source.lang, group: item.group || "", publishedAt: item.date }));
   });
 }
@@ -251,6 +280,65 @@ export async function handleExtRoutes(req, res, url, deps) {
     return Boolean(local && local.status !== "NONE");
   }) || null;
 
+  // A repository-source ID can change while the user's favorites, links and
+  // reads still reference the old ID. The person must explicitly choose the
+  // replacement. Verification uses the fresh signed repository package and
+  // its listed source IDs; a matching language or name is never sufficient.
+  if (p === "/api/comics/ext/rekey") {
+    if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]), true;
+    let body;
+    try { body = await ctx.readJsonBody(req, 2048); } catch { return bad("Invalid source migration"); }
+    const oldId = String(body?.oldSourceId || ""), nextId = String(body?.newSourceId || "");
+    const old = SOURCE_ID.test(oldId) ? ext.favorite(oldId) : null;
+    if (!old || !SOURCE_ID.test(nextId) || body?.confirmed !== true)
+      return bad("Select and confirm an existing favorite and its new repository source", 400);
+    let extensions;
+    try { ({ extensions } = await repositorySources(deps, { force: true })); }
+    catch (error) { return bad(error.message || "Cannot verify repository", 502); }
+    const candidates = extensions.filter((item) => item.pkg === old.pkg && item.repo === old.repo
+      && /^(?:[0-9a-f]{64}|(?:[0-9a-f]{2}:){31}[0-9a-f]{2})$/i.test(String(item.fingerprint || ""))
+      && item.sources?.some((itemSource) => String(itemSource.id) === nextId)
+      && !item.sources?.some((itemSource) => String(itemSource.id) === oldId));
+    if (candidates.length !== 1) return bad("The repository cannot verify this source replacement", 409);
+    const replacement = candidates[0].sources.find((item) => String(item.id) === nextId);
+    try {
+      const migrated = ext.rekeyVerified(oldId, candidates[0], replacement, old.repo, { confirmed: true });
+      return send(200, { ...migrated, favorites: ext.favorites().map((item) => publicFavorite(item, deps)) });
+    } catch (error) { return bad(error.message, 409); }
+  }
+  if (p === "/api/comics/ext/chapter-redirect") {
+    if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]), true;
+    let body;
+    try { body = await ctx.readJsonBody(req, 4096); } catch { return bad("Invalid chapter redirect"); }
+    const owner = String(body?.workId || ""), sourceId = String(body?.sourceId || "");
+    const from = String(body?.fromPath || ""), to = String(body?.toPath || "");
+    if (!WORK_ID.test(owner) || !SOURCE_ID.test(sourceId) || body?.confirmed !== true
+      || !deps.linked.list(owner).some((link) => link.sourceId === ext.resolveSourceId(sourceId)))
+      return bad("Choose and confirm a linked source first", 409);
+    try {
+      const chapterId = ext.recordChapterRedirect(sourceId, from, to, {
+        confirmed: true, proof: `confirmed:${owner}`,
+      });
+      return send(200, { chapterId, sourceId: ext.resolveSourceId(sourceId) });
+    } catch (error) { return bad(error.message, 409); }
+  }
+  const relink = /^\/api\/comics\/work\/([^/]+)\/ext-relink$/.exec(p);
+  if (relink) {
+    if (req.method !== "POST") return ctx.methodNotAllowed(res, ["POST"]), true;
+    if (!WORK_ID.test(relink[1])) return bad("Invalid comic");
+    let body;
+    try { body = await ctx.readJsonBody(req, 4096); } catch { return bad("Invalid source redirect"); }
+    const sourceId = ext.resolveSourceId(body?.sourceId || "");
+    if (!SOURCE_ID.test(sourceId) || !ext.favorite(sourceId) || body?.confirmed !== true)
+      return bad("Confirm a favorite source first", 409);
+    try {
+      const links = deps.linked.relinkVerified(relink[1], sourceId, String(body.fromPath || ""), String(body.toPath || ""), {
+        confirmed: true, proof: `confirmed:${relink[1]}`,
+      });
+      return send(200, { links });
+    } catch (error) { return bad(error.message, 409); }
+  }
+
   if (p === "/api/comics/ext/browse") {
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
     const sourceId = String(url.searchParams.get("source") || "");
@@ -277,15 +365,29 @@ export async function handleExtRoutes(req, res, url, deps) {
         return { items: await current.search(fresh, query, { remote: deps.remote }), hasNextPage: false };
       });
       if (!result) return send(200, unavailable);
-      const items = (result.items || []).filter((item) => validSitePath(item.path) && item.title).slice(0, 20);
-      return send(200, { source: publicFavorite(source, deps), status: "ok", page: Number(rawPage),
-        hasNextPage: Boolean(result.hasNextPage) && Number(rawPage) < 20,
+      const candidates = (result.items || []).filter((item) => validSitePath(item.path) && item.title).slice(0, 20);
+      // Browse and manual open share the same lossless provider-path contract as
+      // Mihon import, the local store, and sync. Never offer an Add button for a
+      // path which could only be persisted as an unsyncable or truncated key.
+      const canOpen = (item) => isSyncableSourceTitleKey(`mihon:${source.id}:${item.path}`);
+      const items = candidates.filter(canOpen);
+      const unsupportedPaths = candidates.length - items.length;
+      const needsPeerUpgrade = items.filter((item) => !isLegacyComicSourceTitleKey(`mihon:${source.id}:${item.path}`)).length;
+      const warning = unsupportedPaths
+        ? `${unsupportedPaths} source title path(s) cannot be opened or synced by this version of LVL.` : "";
+      const compatibilityWarning = needsPeerUpgrade
+        ? `${needsPeerUpgrade} title(s) require an updated LVL on older devices before their full source paths can be opened there.` : "";
+      const allUnsupported = unsupportedPaths > 0 && items.length === 0;
+      return send(200, { source: publicFavorite(source, deps), status: allUnsupported ? "unsupported" : "ok", page: Number(rawPage),
+        hasNextPage: !allUnsupported && Boolean(result.hasNextPage) && Number(rawPage) < 20,
+        ...(unsupportedPaths ? { unsupportedPaths, warning, ...(allUnsupported ? { error: warning } : {}) } : {}),
+        ...(needsPeerUpgrade ? { needsPeerUpgrade, compatibilityWarning } : {}),
         items: items.map((item) => {
           const key = `mihon:${source.id}:${item.path}`;
-          const local = key.length <= 300 ? deps.local.localTitle(localIdFor(key)) : null;
+          const local = deps.local.localTitle(localIdFor(key));
           return {
             path: item.path, title: String(item.title).slice(0, 200), cover: signedImage(item.cover, source.id),
-            workId: libraryOwner(source.id, item.path) || (local && local.status !== "NONE" ? local.id : null),
+            workId: libraryOwner(source.id, item.path) || (local && local.series_key === key && local.status !== "NONE" ? local.id : null),
           };
         }) });
     } catch (error) {
@@ -303,12 +405,13 @@ export async function handleExtRoutes(req, res, url, deps) {
     const title = String(body?.title || "").trim().slice(0, 200);
     const source = SOURCE_ID.test(sourceId) ? deps.ext.favorite(sourceId) : null;
     if (!source) return bad("Choose a favorite source first", 404);
-    if (!validSitePath(entryPath) || entryPath.length > 280 || !title) return bad("Invalid source title");
-    if (`mihon:${source.id}:${entryPath}`.length > 300) return bad("This source title path is too long");
-    const owner = libraryOwner(source.id, entryPath);
-    if (owner) return send(200, { workId: owner, existed: true });
+    if (!validSitePath(entryPath) || !title) return bad("Invalid source title");
     const key = `mihon:${source.id}:${entryPath}`;
     const workId = localIdFor(key);
+    if (!isSyncableSourceTitleKey(key) || !isSyncableComicLink(workId, source.id, entryPath))
+      return bad("This source title path cannot be synced or safely opened", 422);
+    const owner = libraryOwner(source.id, entryPath);
+    if (owner) return send(200, { workId: owner, existed: true });
     const existing = deps.local.localTitle(workId);
     const cover = readSignedImage(body?.cover || "");
     const db = deps.ctx.db;
@@ -330,8 +433,8 @@ export async function handleExtRoutes(req, res, url, deps) {
     if (selectedSource && !SOURCE_ID.test(selectedSource)) return bad("Invalid source ID");
     const filter = { q: String(url.searchParams.get("q") || "").slice(0, 80), lang, source: selectedSource, adult: ext.showAdult?.() === true,
       offset: Math.max(0, Math.min(5000, Number(url.searchParams.get("offset")) || 0)), limit: 60 };
-    const { repos, extensions } = await repositorySources(deps, { force: url.searchParams.get("refresh") === "1" });
-    ext.refresh(extensions);
+    const { repos, extensions, trustedRepositories } = await repositorySources(deps, { force: url.searchParams.get("refresh") === "1" });
+    ext.refresh(extensions, { trustedRepositories });
     const { total, items } = deps.filterExtensions(extensions, filter);
     const languages = {};
     for (const item of extensions) if (filter.adult || !item.nsfw) for (const code of new Set(item.sources.map((source) => source.lang))) languages[code] = (languages[code] || 0) + 1;
@@ -409,7 +512,8 @@ export async function handleExtRoutes(req, res, url, deps) {
         source = current;
         const engine = engineOf(current, deps);
         if (!engine) throw Object.assign(new Error(`${current.name} isn't supported in LVL yet`), { status: 400 });
-        return (await deps.cached(`ext-chapters3:${current.cacheKey || current.id}:${path}`, 60 * 60_000, () => engine.chapters(current, path, { remote: deps.remote }))).value;
+        return (await deps.cached(`ext-chapters4:${current.cacheKey || current.id}:${current.version || ""}:${current.movedTo || ""}:${current.adult ? 1 : 0}:${path}`,
+          60 * 60_000, () => engine.chapters(current, path, { remote: deps.remote }))).value;
       });
       return send(200, { source: publicFavorite(source, deps), ...describeEntry(list), siteUrl: siteUrlOf(source, path) });
     } catch (error) {
@@ -468,7 +572,7 @@ export async function handleExtRoutes(req, res, url, deps) {
     if (signature.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) return bad("Unknown image", 404);
     const source = sourceId ? ext.favorite(sourceId) : null;
     let image;
-    try { image = await deps.images.get(`ext-img:${target}`, () => fetchListImage(target, source, deps)); } catch (error) { return bad(error.message, 502); }
+    try { image = await deps.images.get(`ext-img:${sourceId}:${target}`, () => fetchListImage(target, source, deps)); } catch (error) { return bad(error.message, 502); }
     res.writeHead(200, { "Content-Type": image.type, "Content-Length": image.buffer.length, "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" });
     res.end(image.buffer);
     return true;
@@ -482,7 +586,9 @@ function hostOf(value) {
 
 function publicFavorite(favorite, deps = null) {
   if (!favorite) return null;
-  const { cacheKey: _cacheKey, ...rest } = favorite;
+  // Repository migration generations are internal transport identity
+  // context, never browser-visible favorite metadata.
+  const { cacheKey: _cacheKey, migration: _migration, ...rest } = favorite;
   let viaBrowser = false;
   try { viaBrowser = Boolean(favorite.baseUrl && deps?.remote?.usesBrowser?.(favorite.baseUrl)); } catch {}
   // No LVL engine of its own: the extension itself runs, when the runner is installed.

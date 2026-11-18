@@ -21,6 +21,7 @@ import kotlinx.serialization.json.put
 import okhttp3.OkHttpClient
 import java.io.File
 import java.io.IOException
+import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -72,6 +73,18 @@ class AppUpdater(private val context: Context, private val server: Server) {
     private var error: String? = null
     private var noticePending = false
     private var bytes = 0L
+    // Durable identity is generated before network I/O; the same UUID becomes
+    // the PackageInstaller journal owner. Only its one-way public digest goes
+    // over the browser/server status bridge.
+    private var ownedAttemptId: String? = null
+    private var ownedAttemptVersion: String? = null
+    private var ownedAttemptFailure: String? = null
+
+    private fun publicAttemptId(id: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256")
+            .digest("lvl-public-update-attempt-v1:$id".toByteArray(Charsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
+    }
 
     init {
         load()
@@ -84,6 +97,9 @@ class AppUpdater(private val context: Context, private val server: Server) {
     /** Recover the private journal even when Android created only the receiver. */
     private fun restoreApkStateLocked(): ApkInstall.Attempt? {
         val attempt = ApkInstall.reconcile(context) ?: return null
+        // A failed older journal can remain until the new retry has passed
+        // download verification. It cannot own the current retry's status.
+        if (ownedAttemptId != null && attempt.id != ownedAttemptId) return null
         pendingApkSessionId = attempt.sessionId.takeIf { attempt.pending }
         pendingApkVersion = attempt.version.takeIf { attempt.pending }
         if (attempt.failed) {
@@ -120,7 +136,11 @@ class AppUpdater(private val context: Context, private val server: Server) {
         "settings" -> {
             val wanted = command["automatic"]?.jsonPrimitive?.booleanOrNull
             val days = command["intervalDays"]?.jsonPrimitive?.intOrNull
-            if (wanted == null || days !in setOf(1, 7, 30)) failure("Invalid update preferences")
+            // The supported automatic cadence is one day across native and
+            // the server's persisted Boolean preference. Discovery-only browser
+            // notifications are separate and never grant installation authority.
+            // Older 7/30 inputs never represented a durable native preference.
+            if (wanted == null || days != 1) failure("Invalid update preferences")
             else {
                 val turnedOn = synchronized(lock) { (!automatic && wanted).also { automatic = wanted; save() } }
                 if (turnedOn) startCheck(false)
@@ -141,6 +161,9 @@ class AppUpdater(private val context: Context, private val server: Server) {
         // in-memory failure flags left by a terminated installer process.
         val attempt = restoreApkStateLocked()
         val next = available
+        val ownerId = attempt?.id ?: ownedAttemptId
+        val ownerVersion = attempt?.version ?: ownedAttemptVersion
+        val publicId = ownerId?.takeIf { next == null || next.version == ownerVersion }?.let(::publicAttemptId)
         val failedAttempt = attempt?.takeIf { it.failed && (next == null || next.version == it.version) }
         val apkError = failedAttempt?.message ?: failedAttempt?.let { "Android couldn't confirm this update" }
         buildJsonObject {
@@ -152,16 +175,19 @@ class AppUpdater(private val context: Context, private val server: Server) {
             put("installedVersion", installedVersion())
             put("available", next != null)
             put("availableVersion", next?.version)
+            put("attemptId", publicId)
             put("checking", checking)
             put("downloading", downloading)
             put("error", when {
                 attempt?.phase == "confirmed" || attempt?.pending == true -> null
                 apkError != null -> apkError
-                else -> error
+                else -> if (next == null || next.version == ownedAttemptVersion)
+                    ownedAttemptFailure ?: error else error
             })
             put("apkInstall", attempt?.let {
                 buildJsonObject {
                     put("version", it.version)
+                    put("attemptId", publicAttemptId(it.id))
                     put("sessionId", it.sessionId)
                     put("phase", it.phase)
                     put("inProgress", it.pending)
@@ -176,12 +202,24 @@ class AppUpdater(private val context: Context, private val server: Server) {
             put("notice", next?.let { buildJsonObject { put("message", "LVL ${it.version} is available") } } ?: JsonNull)
             put("noticePending", noticePending)
             if (next != null) {
+                put("availableAsset", buildJsonObject {
+                    put("version", next.version)
+                    put("releaseTag", next.releaseTag)
+                    put("assetName", next.asset)
+                    put("sha256", next.payloadSha256)
+                    if (next.payloadSha256 != null) put("size", next.size)
+                    else put("size", JsonNull)
+                    put("kind", if (next.patch) "patch" else "installer")
+                    put("identity", next.payloadSha256?.let { "sha256:$it" })
+                })
                 put("availableSize", buildJsonObject { put("bytes", next.size); put("kind", if (next.patch) "patch" else "installer") })
                 put("autoInstall", next.patch)
             }
             if (downloading && next != null) {
                 put("download", buildJsonObject {
                     put("bytes", bytes)
+                    put("attemptId", publicId)
+                    put("assetIdentity", next.payloadSha256?.let { "sha256:$it" })
                     if (next.size > 0) put("total", next.size) else put("total", JsonNull)
                     put("kind", if (next.patch) "patch" else "installer")
                 })
@@ -206,6 +244,7 @@ class AppUpdater(private val context: Context, private val server: Server) {
                         terminalApkFailureVersion = null
                         error = null
                     }
+                    if (release?.version != ownedAttemptVersion) ownedAttemptFailure = null
                     available = release
                 }.onFailure {
                     if (terminalApkFailureVersion == null) error = it.message ?: "The update check failed"
@@ -219,7 +258,7 @@ class AppUpdater(private val context: Context, private val server: Server) {
     }
 
     private fun startInstall(auto: Boolean, source: String): Boolean {
-        val release = synchronized(lock) {
+        val selected = synchronized(lock) {
             val release = available ?: return false
             if (restoreApkStateLocked()?.pending == true) return false
             if (checking || downloading || installing != null || pendingApkSessionId != null) return false
@@ -231,14 +270,30 @@ class AppUpdater(private val context: Context, private val server: Server) {
             terminalApkFailureVersion = null
             bytes = 0
             noticePending = false
-            release
+            val previousId = ownedAttemptId
+            val previousVersion = ownedAttemptVersion
+            val previousFailure = ownedAttemptFailure
+            val id = UUID.randomUUID().toString()
+            ownedAttemptId = id
+            ownedAttemptVersion = release.version
+            ownedAttemptFailure = null
+            if (!save()) {
+                ownedAttemptId = previousId
+                ownedAttemptVersion = previousVersion
+                ownedAttemptFailure = previousFailure
+                downloading = false
+                error = "Couldn't record this update attempt"
+                return false
+            }
+            release to id
         }
+        val (release, id) = selected
         Log.i(TAG, "Accepted LVL ${release.version} update request, source=$source, kind=${if (release.patch) "patch" else "apk"}")
-        work.execute { downloadAndInstall(release) }
+        work.execute { downloadAndInstall(release, id) }
         return true
     }
 
-    private fun downloadAndInstall(release: Release) {
+    private fun downloadAndInstall(release: Release, attemptId: String) {
         // Inside TMPDIR, so LVL's server can also see the download (update-policy.js).
         val folder = File(context.filesDir, "tmp/LVL-update-" + UUID.randomUUID().toString().replace("-", ""))
         try {
@@ -248,11 +303,13 @@ class AppUpdater(private val context: Context, private val server: Server) {
             val file = File(folder, release.asset)
             feed.download(release, file, if (release.patch) MAX_PATCH else MAX_APK) { done -> synchronized(lock) { bytes = done } }
             if (ReleaseFeed.sha256(file) != expected) throw IOException("The download didn't match the release checksum")
-            if (release.patch) installPatch(release, file, expected) else installApk(release, file)
+            if (release.patch) installPatch(release, file, expected) else installApk(release, file, attemptId)
         } catch (failure: Exception) {
             Log.w(TAG, "Update to ${release.version} failed", failure)
             synchronized(lock) {
                 error = failure.message ?: "The update failed"
+                ownedAttemptFailure = error?.take(180)
+                save()
                 if (!release.patch) terminalApkFailureVersion = release.version
                 downloading = false
                 installing = null
@@ -287,7 +344,7 @@ class AppUpdater(private val context: Context, private val server: Server) {
         server.restart { if (!AppFiles.swapInUpdate(context)) throw IOException("The new version couldn't be put in place") }
     }
 
-    private fun installApk(release: Release, apk: File) {
+    private fun installApk(release: Release, apk: File, attemptId: String) {
         val manager = context.packageManager
         val info = manager.getPackageArchiveInfo(apk.path, PackageManager.GET_SIGNING_CERTIFICATES)
             ?: throw IOException("The download isn't an Android app")
@@ -308,13 +365,13 @@ class AppUpdater(private val context: Context, private val server: Server) {
         if (measuredFree != null && measuredFree < apk.length()) {
             throw IOException("There isn't enough space to stage this APK (APK ${apk.length()} bytes, /data available $measuredFree bytes); Android may require more")
         }
-        ApkInstall.install(context, apk, release.version, info.longVersionCode) { id ->
+        ApkInstall.install(context, apk, release.version, info.longVersionCode, { id ->
             synchronized(lock) {
                 pendingApkSessionId = id
                 pendingApkVersion = release.version
                 downloading = false
             }
-        }
+        }, ownedAttemptId = attemptId)
         Log.i(TAG, "Handed LVL ${release.version} to Android's installer, session=${synchronized(lock) { pendingApkSessionId }}")
         // Android may legitimately wait beyond 15 minutes for user action.
         // Journal status and the package/session reconciliation own the result.
@@ -377,19 +434,27 @@ class AppUpdater(private val context: Context, private val server: Server) {
         lastCheckedAt = saved["lastCheckedAt"]?.jsonPrimitive?.contentOrNull
         failedVersion = saved["failedVersion"]?.jsonPrimitive?.contentOrNull
         failedAt = saved["failedAt"]?.jsonPrimitive?.longOrNull ?: 0L
+        ownedAttemptId = saved["ownedAttemptId"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false) }
+        ownedAttemptVersion = saved["ownedAttemptVersion"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { Regex("^\\d+\\.\\d+\\.\\d+$").matches(it) }
+        ownedAttemptFailure = saved["ownedAttemptFailure"]?.jsonPrimitive?.contentOrNull?.take(180)
     }
 
-    private fun save() {
-        runCatching {
+    private fun save(): Boolean {
+        return runCatching {
             val temp = File(settingsFile.path + ".tmp")
             temp.writeText(buildJsonObject {
                 put("automatic", automatic)
                 put("lastCheckedAt", lastCheckedAt)
                 put("failedVersion", failedVersion)
                 put("failedAt", failedAt)
+                put("ownedAttemptId", ownedAttemptId)
+                put("ownedAttemptVersion", ownedAttemptVersion)
+                put("ownedAttemptFailure", ownedAttemptFailure)
             }.toString())
             check(temp.renameTo(settingsFile)) { "rename failed" }
-        }.onFailure { Log.w(TAG, "Couldn't save the update settings", it) }
+        }.onFailure { Log.w(TAG, "Couldn't save the update settings", it) }.isSuccess
     }
 
     fun stop() {

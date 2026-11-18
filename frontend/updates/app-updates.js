@@ -57,7 +57,16 @@ export let appUpdateView = { phase: "idle" };
 const androidUpdateUi = () => Boolean(window.LvlAndroid || document.documentElement.classList.contains("lvl-android"));
 let appUpdateDownSince = null;
 let appUpdatePollTimer = null;
+// A settings mutation must not discard a pending notification-triggered GET.
+// Keep the intent until a later successful native-backed status response.
+let pendingUpdateNotificationRefresh = false;
 export const appUpdateCardClosed = new Set();
+// Keep this consumer self-contained: existing browser tests execute its real
+// event handlers without module imports. Matches update-view's public key.
+function updateNoticeKey(view) {
+  const base = `${view?.phase}:${view?.version}`;
+  return view?.attemptId ? `${base}:${view.attemptId}` : base;
+}
 function readStoredJson(key) {
   try { return JSON.parse(localStorage.getItem(key) || "null"); } catch { return null; }
 }
@@ -85,21 +94,28 @@ function nativeConfirmedCompletion(report) {
   const acknowledged = readStoredJson(UPDATE_ACKNOWLEDGED_KEY)?.version;
   if (acknowledged === version || appVersionAdvances(version, acknowledged)) return null;
   return { from: null, to: version, at: Number(apk.createdAtMillis) || Date.now(),
-    active: false, completed: true, source: "verified-native-apk" };
+    active: false, completed: true, attemptId: apk.attemptId || null, source: "verified-native-apk" };
 }
 function acknowledgeUpdateCompletion(version) {
   const pending = readUpdatePending();
-  if (pending?.to === version) writeStoredJson(UPDATE_PENDING_KEY, null);
+  if (pending?.to === version && (!pending.attemptId || !appUpdateView?.attemptId
+      || pending.attemptId === appUpdateView.attemptId))
+    writeStoredJson(UPDATE_PENDING_KEY, null);
   const acknowledged = readStoredJson(UPDATE_ACKNOWLEDGED_KEY)?.version;
   if (!acknowledged || appVersionAdvances(acknowledged, version))
     writeStoredJson(UPDATE_ACKNOWLEDGED_KEY, { version, at: Date.now() });
-  appUpdateCardClosed.add(`updated:${version}`);
+  appUpdateCardClosed.add(updateNoticeKey({ phase: "updated", version,
+    attemptId: appUpdateView?.attemptId }));
 }
 export function dismissAppUpdateCard() {
   const { phase, version } = appUpdateView;
-  appUpdateCardClosed.add(`${phase}:${version}`);
+  appUpdateCardClosed.add(updateNoticeKey(appUpdateView));
   if (phase === "updated") acknowledgeUpdateCompletion(version);
-  else if (phase === "failed" && readUpdatePending()?.to === version) writeStoredJson(UPDATE_PENDING_KEY, null);
+  else if (phase === "failed") {
+    const pending = readUpdatePending();
+    if (pending?.to === version && (!pending.attemptId || pending.attemptId === appUpdateView.attemptId))
+      writeStoredJson(UPDATE_PENDING_KEY, null);
+  }
   paintAppUpdateCard();
   paintUpdateNotifications();
 }
@@ -126,7 +142,9 @@ export function paintAppUpdateCard() {
   let pending = readUpdatePending();
   const confirmed = nativeConfirmedCompletion(report);
   if (confirmed && (!pending || (pending.to !== confirmed.to
-      && appVersionAdvances(pending.to, confirmed.to)))) {
+      && appVersionAdvances(pending.to, confirmed.to))
+      || (pending.to === confirmed.to && pending.attemptId && confirmed.attemptId
+        && pending.attemptId !== confirmed.attemptId))) {
     // The signed installed version wins over a genuinely stale earlier
     // browser attempt. Never erase another window's newer in-flight version.
     writeStoredJson(UPDATE_PENDING_KEY, confirmed);
@@ -138,20 +156,23 @@ export function paintAppUpdateCard() {
   appUpdateView = view;
   // Remember the update across the reload, so the new window can say it worked.
   if ((view.phase === "downloading" || view.phase === "installing") && report?.installedVersion
-      && !(pending?.to === view.version && pending.active))
+      && !(pending?.to === view.version && pending.active
+        && (!view.attemptId || !pending.attemptId || pending.attemptId === view.attemptId)))
     writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version,
-      at: Date.now(), active: true, androidApk: androidApkInstall(report) });
+      at: Date.now(), active: true, attemptId: view.attemptId, androidApk: androidApkInstall(report) });
   else if (view.phase === "ready" && report?.update?.installsWhenIdle && report?.installedVersion && pending?.to !== view.version)
     writeStoredJson(UPDATE_PENDING_KEY, { from: String(report.installedVersion), to: view.version, at: Date.now(), active: false });
   else if (view.phase === "ready" && pending?.active && pending.to !== view.version)
     writeStoredJson(UPDATE_PENDING_KEY, null);
-  else if (view.phase === "failed" && pending?.active) writeStoredJson(UPDATE_PENDING_KEY, null);
+  else if (view.phase === "failed" && pending?.active
+      && (!pending.attemptId || pending.attemptId === view.attemptId))
+    writeStoredJson(UPDATE_PENDING_KEY, null);
   if (view.phase === "updated" && pending && !pending.completed)
     writeStoredJson(UPDATE_PENDING_KEY, { ...pending, active: false, completed: true });
   const card = $("#app-update-card");
   if (!card) return view;
   const watching = Boolean($("#view-watch")?.classList.contains("is-active"));
-  const show = view.phase !== "idle" && !appUpdateCardClosed.has(`${view.phase}:${view.version}`)
+  const show = view.phase !== "idle" && !appUpdateCardClosed.has(updateNoticeKey(view))
     && !(view.phase === "ready" && (view.snoozed || watching || !updateNotificationsEnabled()));
   card.hidden = !show;
   if (!show) return view;
@@ -240,17 +261,25 @@ function paintAppUpdateSettings(report) {
     else message = "No checks completed yet. Check now, or enable automatic checks.";
     if (!automatic && !checking && view.phase !== "failed") message += " Automatic checks are off.";
   }
+  if (report?.preferencesError) {
+    message = String(report.preferencesError);
+    failure = true;
+  }
   setToolStatus("#settings-app-updates-status", message, failure);
   paintUpdateNotifications(report);
   scheduleAppUpdatePoll();
 }
 export async function refreshAppUpdateSettings({ checkNotifications = false } = {}) {
+  if (checkNotifications) pendingUpdateNotificationRefresh = true;
   if (appUpdateSettingsBusy) return;
   try {
     const report = await fetchJson("/api/app-updates/status", { signal: AbortSignal.timeout(5000) });
     appUpdateDownSince = null;
     paintAppUpdateSettings(report);
-    if (checkNotifications) maybeCheckForUpdateNotifications(report);
+    if (pendingUpdateNotificationRefresh) {
+      pendingUpdateNotificationRefresh = false;
+      maybeCheckForUpdateNotifications(report);
+    }
   } catch (error) {
     // LVL is restarting into the update: no error, the card shows the progress.
     if (appUpdateExpectsRestart()) {
@@ -273,7 +302,7 @@ async function changeAppUpdateSettings() {
   try {
     paintAppUpdateSettings(await postJson("/api/app-updates/settings", { automatic, intervalDays: AUTO_UPDATE_INTERVAL_DAYS }));
     setToolStatus("#settings-app-updates-status", automatic
-      ? "Automatic updates on. LVL checks every hour and installs updates when no video is open."
+      ? "Automatic updates on. LVL checks once per day and installs updates when no video is open."
       : "Automatic update checks disabled. You can still check manually.");
   } catch (error) {
     setToolStatus("#settings-app-updates-status", error.message || "Couldn't change update settings", true);
@@ -281,6 +310,7 @@ async function changeAppUpdateSettings() {
   } finally {
     appUpdateSettingsBusy = false;
     if (appUpdateSettingsSnapshot) paintAppUpdateSettings(appUpdateSettingsSnapshot);
+    if (pendingUpdateNotificationRefresh) void refreshAppUpdateSettings();
   }
 }
 export function wireAppUpdateSettings() {
@@ -298,6 +328,7 @@ export function wireAppUpdateSettings() {
     } finally {
       appUpdateSettingsBusy = false;
       if (appUpdateSettingsSnapshot) paintAppUpdateSettings(appUpdateSettingsSnapshot);
+      if (pendingUpdateNotificationRefresh) void refreshAppUpdateSettings();
     }
   });
   $("#settings-app-updates-install")?.addEventListener("click", async () => {
@@ -315,6 +346,7 @@ export function wireAppUpdateSettings() {
     } finally {
       appUpdateSettingsBusy = false;
       if (appUpdateSettingsSnapshot) paintAppUpdateSettings(appUpdateSettingsSnapshot);
+      if (pendingUpdateNotificationRefresh) void refreshAppUpdateSettings();
     }
   });
   setInterval(() => {
@@ -329,6 +361,7 @@ export function wireAppUpdateSettings() {
 // checks the same installed LVL launcher for the actual available version.
 export const UPDATE_ALERTS_PREF = "lvl-available-update-notifications-v1";
 const UPDATE_ALERTS_CHECKED_AT = "lvl-available-update-check-at-v1";
+const UPDATE_ALERTS_FAILED_AT = "lvl-available-update-check-failed-at-v1";
 let notificationCheckRunning = false;
 let updateChangelogCache = null;
 const updateNotificationsEnabled = () => localStorage.getItem(UPDATE_ALERTS_PREF) !== "0";
@@ -396,12 +429,19 @@ function maybeCheckForUpdateNotifications(report) {
   if (!updateNotificationsEnabled() || !report?.installed || report?.automatic
       || report?.checking || report?.downloading || notificationCheckRunning) return;
   const last = Number(localStorage.getItem(UPDATE_ALERTS_CHECKED_AT)) || 0;
-  const interval = report?.error ? 60 * 60_000 : 24 * 60 * 60_000;
-  if (Date.now() - last < interval) return;
+  const failed = Number(localStorage.getItem(UPDATE_ALERTS_FAILED_AT)) || 0;
+  if (Date.now() - last < 24 * 60 * 60_000 || Date.now() - failed < 60 * 60_000) return;
   notificationCheckRunning = true;
-  localStorage.setItem(UPDATE_ALERTS_CHECKED_AT, String(Date.now()));
-  void postJson("/api/app-updates/check", { apply: false }).then(paintAppUpdateSettings)
-    .catch((error) => console.warn("Update notification check deferred:", error?.message))
+  void postJson("/api/app-updates/check", { apply: false }).then(native => {
+      // A rejected or lost POST must never count as a successful daily check.
+      localStorage.setItem(UPDATE_ALERTS_CHECKED_AT, String(Date.now()));
+      localStorage.removeItem(UPDATE_ALERTS_FAILED_AT);
+      paintAppUpdateSettings(native);
+    })
+    .catch((error) => {
+      localStorage.setItem(UPDATE_ALERTS_FAILED_AT, String(Date.now()));
+      console.warn("Update notification check deferred:", error?.message);
+    })
     .finally(() => { notificationCheckRunning = false; });
 }
 
@@ -465,7 +505,10 @@ export async function renderBundledChangelog(history) {
       const title = document.createElement("h3");
       title.textContent = String(entry.title || entry.version || "Release notes");
       section.append(title);
-      const changes = Array.isArray(entry.changes) ? entry.changes : [];
+      // v2 publishes canonical changes. v1 local servers may still provide
+      // only lines, so an older installed bundle can survive a rolling restart.
+      const changes = Array.isArray(entry.changes) ? entry.changes
+        : Array.isArray(entry.lines) ? entry.lines : [];
       if (changes.length) {
         const list = document.createElement("ul");
         for (const change of changes) {

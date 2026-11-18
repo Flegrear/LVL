@@ -58,21 +58,23 @@ const randomKeyOf = (value) => String(value || "").normalize("NFKD").replace(/\p
 export function findSavedRandomTitle(saved = [], { imdbId = "", catalogId = "", anilistId = 0, title = "", titleAlt = "" } = {}) {
   const id = String(imdbId || catalogId || "");
   const aniId = Number(anilistId) || 0;
-  const titles = [title, titleAlt].map(randomKeyOf).filter(Boolean);
-  const matches = saved.filter((series) => {
-    if (id && id === series.catalogId) return true;
-    if (aniId && (series.sources || []).some((entry) => {
+  const byImdb = id ? saved.filter((series) => id === series.catalogId) : [];
+  const byAniList = aniId ? saved.filter((series) => {
+    // A provider crosswalk cannot override a different known IMDb identity.
+    if (id && series.catalogId && series.catalogId !== id) return false;
+    return (series.sources || []).some((entry) => {
       const info = entry.anilist;
       return Number(info?.anilistId) === aniId || Number(String(info?.showId || "").split(":").at(-1)) === aniId
         || (info?.seasons || []).some((part) => Number(part.anilistId) === aniId)
         || (String(entry.externalSource || "").toUpperCase() === "ANILIST" && Number(entry.externalId) === aniId);
-    })) return true;
-    return titles.length > 0 && [series.title, ...(series.aliases || []), ...(series.sources || []).map((entry) => entry.title)]
-      .some((name) => titles.includes(randomKeyOf(name)));
-  });
-  // Imports and separately added sources can create multiple Library groups for
-  // one title. A watched group must not be hidden by an earlier planning group.
-  return matches.find((series) => randomSeriesAlreadySeen(series)) || matches[0] || null;
+    });
+  }) : [];
+  const confirmed = byImdb.length ? byImdb : byAniList;
+  if (confirmed.length) return confirmed.find((series) => randomSeriesAlreadySeen(series)) || confirmed[0];
+  // An unverified display-name alias cannot authorize a seen/skip decision,
+  // even with one saved result. Keep historical title-only state intact until
+  // a deliberate provider association is supplied by an upstream resolver.
+  return null;
 }
 export function randomPickMatchesCategory(pick, category = "all") {
   const anime = pick?.source === "anilist" || pick?.mediaKind === "anime";

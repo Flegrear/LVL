@@ -17,6 +17,14 @@ const ACTIVE = new Set(["downloading", "installing", "restarting"]);
 
 export const updateIsActive = (view) => ACTIVE.has(view?.phase);
 
+// Dismissal belongs to one native attempt and phase. A repeated error poll
+// stays dismissed, while a retry or transition gets its own notice. Legacy
+// launchers without attempt identity retain their original per-version key.
+export function updateNoticeKey(view) {
+  const base = `${view?.phase}:${view?.version}`;
+  return view?.attemptId ? `${base}:${view.attemptId}` : base;
+}
+
 // The update phase and detailed Settings progress remain unchanged. Android's
 // floating card uses a short active label and native confirmation cue.
 export function updateCardPresentation(view, { android = false, pendingConfirmation = false } = {}) {
@@ -71,14 +79,15 @@ export function updateView({ report = null, downSince = null, pending = null, lo
   later = null, now = Date.now() } = {}) {
   const installed = String(report?.installedVersion || loadedVersion || "");
   const apkInstall = androidApkInstall(report) || pending?.androidApk === true;
+  const attemptId = report?.update?.attemptId || report?.apkInstall?.attemptId || pending?.attemptId || null;
 
   if (downSince) {
     if (!pending?.active || !pending.to) return { phase: "idle" };
-    if (now - downSince >= UPDATE_STUCK_AFTER_MS) return { phase: "stuck", version: pending.to,
+    if (now - downSince >= UPDATE_STUCK_AFTER_MS) return { phase: "stuck", version: pending.to, attemptId,
       title: "LVL hasn't restarted yet",
       detail: apkInstall ? "If it doesn't come back, reopen LVL from your apps." : "If it doesn't come back, open LVL from the Start menu.",
       progress: null };
-    return { ...installing(pending.to, apkInstall), phase: "restarting" };
+    return { ...installing(pending.to, apkInstall), phase: "restarting", attemptId };
   }
 
   if (!report?.installed) return { phase: "idle" };
@@ -87,29 +96,30 @@ export function updateView({ report = null, downSince = null, pending = null, lo
 
   // A later update takes precedence over the previous completion notice.
   if (pending?.to && installed === pending.to && (!version || version === installed))
-    return { phase: "updated", version: pending.to, title: `LVL updated to ${pending.to}`, detail: "", progress: null };
+    return { phase: "updated", version: pending.to, attemptId,
+      title: `LVL updated to ${pending.to}`, detail: "", progress: null };
 
   if (update.phase === "downloading" && version) {
     const percent = updatePercent(update.progress);
     const bytes = Number(update.progress?.bytes) || 0, total = Number(update.progress?.total) || 0;
     const amount = total ? `${formatUpdateBytes(bytes)} of ${formatUpdateBytes(total)}`
       : bytes ? formatUpdateBytes(bytes) : "Starting the download";
-    return { phase: "downloading", version, title: `Downloading LVL ${version}`,
+    return { phase: "downloading", version, attemptId, title: `Downloading LVL ${version}`,
       detail: (percent === null ? amount : `${percent}% · ${amount}`) +
         (apkInstall ? ` ${ANDROID_APK_HANDOFF}` : ""), progress: { percent } };
   }
-  if (update.phase === "installing" && version) return installing(version, apkInstall, update.pendingConfirmation === true);
-  if (update.phase === "failed" && version) return failed(version, installed, update.error || "");
+  if (update.phase === "installing" && version) return { ...installing(version, apkInstall, update.pendingConfirmation === true), attemptId };
+  if (update.phase === "failed" && version) return { ...failed(version, installed, update.error || ""), attemptId };
 
   // LVL restarted on the old version after this window saw the install start.
   if (pending?.active && pending.from && installed === pending.from && now - (Number(pending.at) || 0) > ROLLED_BACK_AFTER_MS
       && !(update.phase === "ready" && version && version !== pending.to))
-    return failed(pending.to, installed);
+    return { ...failed(pending.to, installed), attemptId };
 
   if (update.phase === "ready" && version) {
     const size = update.size?.bytes ? ` (${formatUpdateBytes(update.size.bytes)})` : "";
     const snoozed = later?.version === version && now - (Number(later.at) || 0) < UPDATE_LATER_MS;
-    return { phase: "ready", version, snoozed, title: `LVL ${version} is ready`,
+    return { phase: "ready", version, attemptId, snoozed, title: `LVL ${version} is ready`,
       detail: update.installsWhenIdle
         ? `It installs by itself when no video is open${size}.`
         : apkInstall

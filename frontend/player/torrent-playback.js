@@ -25,13 +25,16 @@ import { refreshSubtitleTimelineFits } from "./subtitle-timing.js";
 import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import {
   embeddedSubtitleImports, embeddedSubtitleProbePosition, enableDefaultEmbeddedSubtitles,
+  retireEmbeddedSubtitleImports,
 } from "./embedded-subtitles.js";
 import { resetAudioSync } from "./audio-sync.js";
+import { retireWebSubtitleImports } from "./subtitle-search.js";
 import { refreshEpisodeSkipOptions } from "./episode-skips.js";
 import { dismissPopupPlayer, floatingDesktopPending, floatingDesktopWindow } from "./floating-player.js";
 import { renderWatchChapters, setWatchTheaterMode } from "../watch/watch-page.js";
 import {
-  buildLibrarySeries, catalogMediaKind, libraryEntryById, librarySeriesKey, upsertLibrarySession,
+  buildLibrarySeries, catalogMediaKind, findLibrarySeriesByKey, libraryEntryById,
+  librarySeriesKey, upsertLibrarySession,
 } from "../library/library-data.js";
 import { libraryChapterName, renderLibrary, updateLibrarySummary } from "../library/library-page.js";
 import { renderHome } from "../home/home-page.js";
@@ -45,6 +48,8 @@ export function stopPlaybackIfHiddenAfterNavigation(destination) {
   if ($("#view-watch")?.classList.contains("is-floating") || floatingDesktopWindow || (typeof popupPlayer !== "undefined" && popupPlayer.open)
     || floatingDesktopPending || document.pictureInPictureElement === video) return;
   playbackLoadRequestId += 1;
+  retireEmbeddedSubtitleImports("Watch hidden without floating playback");
+  retireWebSubtitleImports({ closeDialog: true });
   const currentIntent = playbackIntentOwner.current();
   if (currentIntent?.phase === "pending")
     playbackIntentOwner.cancelCurrentForNavigation(currentIntent.token);
@@ -61,9 +66,12 @@ export function stopPlaybackIfHiddenAfterNavigation(destination) {
 }
 
 export function episodeSortKey(name) {
-  const match = String(name).match(/S(\d{1,2})E(\d{1,3})/i) || String(name).match(/(?:^|\D)(\d{1,2})x(\d{1,3})(?:\D|$)/i);
+  const match = String(name).match(/S(\d{1,2})E(\d{1,4})(?!\d)/i)
+    || String(name).match(/(?:^|\D)(\d{1,2})x(\d{1,4})(?:\D|$)/i);
   if (!match) return null;
-  return Number(match[1]) * 1000 + Number(match[2]);
+  // The canonical chapter parser accepts four-digit episode numbers.
+  // Reserve 10,000 ordinals per season to keep sort keys collision-free.
+  return Number(match[1]) * 10_000 + Number(match[2]);
 }
 
 export function sortedVideoFiles(files) {
@@ -142,6 +150,11 @@ export async function releaseTorrentSession(lease, magnet = null, fromRetirement
 
 export async function importCatalogStream(meta, stream, { button = null, seriesKey = null, quiet = false, rerenderLibrary = true, signal } = {}) {
   if (!stream?.magnet) throw new Error("Selected source did not provide a usable torrent hash.");
+  const selected = seriesKey ? findLibrarySeriesByKey(seriesKey) : null;
+  if (seriesKey && !selected) throw new Error("The selected Library title changed. Open it again before adding this source.");
+  if (selected?.catalogId && meta?.id && (selected.catalogId !== meta.id
+    || selected.type !== (meta.type === "movie" ? "movie" : "series")))
+    throw new Error("This source belongs to a different verified catalog title.");
   // Importing without playback still holds a metadata resource lease. Its POST
   // can reuse an unresolved Library session, independently of selection intent.
   const reservation = playbackSessionReservationOwner.begin(null, stream.magnet);
@@ -155,8 +168,11 @@ export async function importCatalogStream(meta, stream, { button = null, seriesK
       if (!quiet) setToolStatus(TITLE_STATUS, `Opening the torrent… ${elapsed} s${current.numPeers ? `, ${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}` : ""}`);
     }, { timeoutMs: 25_000, preferredFileIndex: Number.isInteger(stream.fileIdx) ? stream.fileIdx : null,
       signal, releaseOnFailure: false, onSession: (resolved) => observePlaybackMetadataSession(reservation, resolved) });
+    if (selected && !findLibrarySeriesByKey(selected.routeKey || selected.key)?.sources.some((source) =>
+      selected.sources.some((prior) => prior.id === source.id)))
+      throw new Error("The selected Library title changed while this source was being resolved.");
     const entry = upsertLibrarySession(session, stream.magnet, {
-      seriesKeyOverride: seriesKey || catalogSeriesKey(meta),
+      seriesKeyOverride: selected?.routeKey || catalogSeriesKey(meta),
       displayTitleOverride: meta.name,
       coverUrlOverride: meta.poster || "",
       catalogId: meta.id,
@@ -237,6 +253,7 @@ function setCurrentTorrentSource(session, file) {
   state.currentSource = {
     kind: "torrent",
     magnet: entry?.magnet || (session.infoHash ? `magnet:?xt=urn:btih:${session.infoHash}` : ""),
+    infoHash: libraryId,
     title: collectionTitle,
     sourceTag,
     seriesKey: entry?.seriesKey || librarySeriesKey(collectionTitle),
@@ -250,6 +267,8 @@ function setCurrentTorrentSource(session, file) {
     catalogId: entry?.catalogId || "",
     catalogType: entry?.catalogType || "",
   };
+  // Stable per media file even when a transcode seek reopens the decoder.
+  video.__lvlSourceOwner = `torrent:${libraryId}:${file.index}`;
   rememberWatchSelection(state.currentSource.libraryId, file.index);
   changeRecoverySource(playbackLoadRequestId);
   applyLanguagePreferencesToTracks();
@@ -326,6 +345,9 @@ export function observePlaybackMetadataSession(reservation, session) {
 // numeric request generation for existing async media and recovery checks.
 export function claimPlaybackIntent(kind, { parentIntent = null, magnet = null } = {}) {
   if (parentIntent !== null && !playbackIntentOwner.canContinue(parentIntent)) return null;
+  // A new source/load intent retires all outstanding exact ZIP member picks
+  // and their HTTP requests before any old response can be installed.
+  retireWebSubtitleImports({ closeDialog: true });
   const intent = parentIntent || playbackIntentOwner.begin(kind);
   // Publish B's metadata reservation BEFORE aborting A. Even if B's POST is
   // not yet answered, it may reuse exactly the fresh session A would delete.
@@ -347,6 +369,7 @@ export function claimPlaybackIntent(kind, { parentIntent = null, magnet = null }
 export function invalidatePlaybackIntentForEpisodeEdit(token) {
   if (!playbackIntentOwner.owns(token) || playbackIntentOwner.current()?.phase !== "cancel-requested") return false;
   playbackLoadRequestId += 1;
+  retireWebSubtitleImports({ closeDialog: true });
   libraryPlaybackResolveController?.abort("episode changed while selecting a catalog source");
   libraryPlaybackResolveController = null;
   libraryPlaybackPendingMagnet = "";
@@ -792,8 +815,9 @@ export async function playLibraryEpisode(libraryId, fileIndex, {
       sourceMeta: entry.sourceMeta || null,
       aliases: entry.aliases || [],
     });
-    const file = session.files.find((item) => Number(item.index) === Number(fileIndex))
-      || session.files.find((item) => item.name === buttonSource?.name);
+    // A selected torrent file index is a stable byte owner. A same-name file
+    // at another index is not authorization to play different media.
+    const file = session.files.find((item) => Number(item.index) === Number(fileIndex));
     if (!file) throw new Error("That file is no longer present in this torrent.");
     const played = await playTorrentFile(session, file, {
       startAtSeconds: resumeAtSeconds, requestId: loadId, parentIntent: intent,
@@ -832,6 +856,12 @@ export async function resolveMagnet(event) {
   event.preventDefault();
   const magnet = $("#magnet-input").value.trim();
   if (!magnet) return;
+  const targetSeriesKey = state.pendingMagnetSeriesKey;
+  const targetSeries = targetSeriesKey ? findLibrarySeriesByKey(targetSeriesKey) : null;
+  if (targetSeriesKey && !targetSeries) {
+    setToolStatus("#magnet-status", "The selected Library title changed. Open its magnet dialog again.", true);
+    return;
+  }
   const reservation = playbackSessionReservationOwner.begin(null, magnet);
   magnetDialogResolveController?.abort("another magnet was submitted");
   const controller = new AbortController();
@@ -853,8 +883,17 @@ export async function resolveMagnet(event) {
     }, { signal: controller.signal, releaseOnFailure: false,
       onSession: (resolved) => observePlaybackMetadataSession(reservation, resolved) });
     if (controller.signal.aborted || magnetDialogResolveController !== controller) return;
-    const targetSeriesKey = state.pendingMagnetSeriesKey;
-    const entry = upsertLibrarySession(session, magnet, { seriesKeyOverride: targetSeriesKey });
+    const currentTarget = targetSeries && findLibrarySeriesByKey(targetSeries.routeKey || targetSeries.key);
+    if (state.pendingMagnetSeriesKey !== targetSeriesKey
+      || (targetSeries && (!currentTarget || !currentTarget.sources.some((source) =>
+        targetSeries.sources.some((previous) => previous.id === source.id)))))
+      throw new Error("The Library title changed while the magnet was being resolved. Nothing was imported.");
+    const entry = upsertLibrarySession(session, magnet, {
+      seriesKeyOverride: targetSeries?.routeKey || null,
+      catalogId: targetSeries?.catalogId || "",
+      catalogType: targetSeries?.catalogType || "",
+    });
+    if (!entry) throw new Error("This magnet cannot be attached safely to the selected Library work.");
     state.pendingMagnetSeriesKey = null;
     const videoCount = (session.files || []).filter((file) => file.video).length;
     const normalizedTitle = normalizeCollectionTitle(session.name, session.files?.find((file) => file.video)?.name);
@@ -876,10 +915,14 @@ export async function resolveMagnet(event) {
 }
 
 export function openMagnetDialog({ seriesKey = null } = {}) {
-  state.pendingMagnetSeriesKey = seriesKey;
+  const series = seriesKey ? findLibrarySeriesByKey(seriesKey) : null;
+  if (seriesKey && !series) {
+    setToolStatus("#magnet-status", "That Library title is no longer uniquely identified.", true);
+    return;
+  }
+  state.pendingMagnetSeriesKey = series?.routeKey || null;
   $("#magnet-input").value = "";
   $("#magnet-files").innerHTML = "";
-  const series = seriesKey ? buildLibrarySeries().find((item) => item.key === seriesKey) : null;
   $("#magnet-title").textContent = series ? `Add a magnet to ${series.title}` : "Open a magnet link";
   setToolStatus("#magnet-status", "");
   const dialog = $("#magnet-dialog");
@@ -907,6 +950,7 @@ export function wireLocalVideoInput() {
     let url = null;
     let installed = false;
     try {
+    dismissPopupPlayer();
     cancelPhoneTimelineScrub();
     const abandonedSessionLease = state.currentSource?.sessionLease;
     // Local selection supersedes any torrent resolve/metadata response that
@@ -918,7 +962,9 @@ export function wireLocalVideoInput() {
     url = URL.createObjectURL(file);
     const title = normalizeCollectionTitle(file.name);
     setPlayerLoadingTitle(null, title);
-    state.currentSource = { kind: "local", title, sourceTag: title, libraryId: null, fileIndex: null };
+    const fileInstanceId = crypto.randomUUID();
+    state.currentSource = { kind: "local", title, sourceTag: title, libraryId: null, fileIndex: null, fileInstanceId };
+    video.__lvlSourceOwner = `local:${fileInstanceId}`;
     state.currentMediaProbe = null;
     state.selectedAudioTrack = 0;
     resetAudioSync();

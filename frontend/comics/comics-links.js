@@ -14,6 +14,9 @@ import { mainAnimeRelation } from "../../shared/reading/franchise.js";
 
 const lookups = new Map();   // query -> Promise<{ manga }>
 const resolved = new Map();  // query -> { main, others, index } once known
+const lookupFailures = new Map(); // query -> retry deadline; failure is never verified absence
+const lookupTimers = new Map();
+const LOOKUP_RETRY_MS = 15_000;
 const shownManga = new Map(); // query -> work id the user picked on that page
 let openHint = null;          // { workId, at }: the manga just opened from a card
 // Video page -> the comic to show first in its Comics section: opened from a card, or picked there.
@@ -38,14 +41,20 @@ function animeQuery(payload) {
 async function fetchManga(query) {
   if (!lookups.has(query)) {
     lookups.set(query, fetch(`/api/comics/for-anime?${query}`, { signal: AbortSignal.timeout(30_000) })
-      .then((response) => (response.ok ? response.json() : { manga: [] })).catch(() => ({ manga: [] })));
+      .then((response) => {
+        if (!response.ok) throw new Error(`Manga lookup failed (HTTP ${response.status})`);
+        return response.json();
+      }).catch((error) => {
+        lookups.delete(query);
+        throw error;
+      }));
   }
   return lookups.get(query);
 }
 
 // Looks up the manga and its chapter index once per title, then redraws the title page.
 function lookUp(query, ctx) {
-  if (resolved.has(query) || lookUp.pending.has(query)) return;
+  if (resolved.has(query) || lookUp.pending.has(query) || (lookupFailures.get(query) || 0) > Date.now()) return;
   lookUp.pending.add(query);
   void fetchManga(query).then(async ({ manga = [] }) => {
     const main = manga.find((item) => item.main) || manga[0] || null;
@@ -54,9 +63,22 @@ function lookUp(query, ctx) {
     if (hinted) { shownManga.set(query, openHint.workId); openHint = null; }
     const index = main ? await comicsApi.units(comicKey(main.anilistId)).catch(() => null) : null;
     resolved.set(query, { main, others: manga.filter((item) => item !== main), index });
-    lookUp.pending.delete(query);
+    lookupFailures.delete(query);
     // With a manga the Manga chip appears; without one, the Comics chip.
     ctx.refreshTitle?.();
+  }).catch(() => {
+    lookupFailures.set(query, Date.now() + LOOKUP_RETRY_MS);
+    if (!lookupTimers.has(query)) {
+      const timer = setTimeout(() => {
+        if (lookupTimers.get(query) !== timer) return;
+        lookupTimers.delete(query);
+        lookupFailures.delete(query);
+        ctx.refreshTitle?.();
+      }, LOOKUP_RETRY_MS);
+      lookupTimers.set(query, timer);
+    }
+  }).finally(() => {
+    lookUp.pending.delete(query);
   });
 }
 lookUp.pending = new Set();

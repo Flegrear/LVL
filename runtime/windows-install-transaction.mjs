@@ -14,6 +14,8 @@ const FULL_FORMAT = "lvl-windows-full-transaction-v1";
 const FULL_TX = ".lvl-full-transaction";
 const VERSION = /^(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})\.(?:0|[1-9]\d{0,3})$/;
 const TOKEN = /^[0-9a-f]{32}$/i;
+const NATIVE_PROOF_FORMAT = "lvl-windows-process-proof-v1";
+const OS_BIRTH_TICKS = /^\d{15,20}$/;
 const STALE_GRACE_MS = 15_000;
 const REQUIRED_STAGE = ["LVL.exe", "installed-app.json", "package.json", "server.js",
   "app.js", "index.html", "runtime/node.exe", "runtime/update-apply.mjs",
@@ -85,55 +87,182 @@ function leaseOwner(root) {
     const owner = readJson(path.join(dir, "owner.json"));
     if (owner.format !== LEASE_FORMAT || owner.target !== canonicalInstallTarget(root)
         || !TOKEN.test(owner.token) || !Number.isInteger(owner.pid) || owner.pid <= 0
-        || !/^\d{15,20}$/.test(owner.startTicks)) reject("invalid target lease");
+        || !OS_BIRTH_TICKS.test(owner.startTicks)
+        || (owner.executablePath !== undefined
+          && (typeof owner.executablePath !== "string" || !path.isAbsolute(owner.executablePath)
+            || owner.executablePath !== canonicalInstallTarget(owner.executablePath))))
+      reject("invalid target lease");
     return owner;
   } catch (error) {
     if (Date.now() - stat.birthtimeMs < STALE_GRACE_MS) return { initializing: true };
     throw error;
   }
 }
-function processTicks(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
-  if (process.platform !== "win32") return pid === process.pid ? String(Date.now()) : null;
-  // Use actual OS creation ticks, not a possibly reused PID or a time guess.
-  try { process.kill(pid, 0); } catch (error) {
-    if (error.code === "ESRCH") return null;
-    if (error.code === "EPERM") return undefined;
-    throw error;
-  }
-  const script = `try { $p=Get-Process -Id ${pid} -ErrorAction Stop } catch [Microsoft.PowerShell.Commands.ProcessCommandException] { exit 0 } catch { exit 77 }; if ($p -and -not $p.HasExited) { $p.StartTime.ToUniversalTime().Ticks }; exit 0`;
-  const command = Buffer.from(script, "utf16le").toString("base64");
-  const result = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive",
-    "-EncodedCommand", command], { windowsHide: true, timeout: 3500, encoding: "utf8" });
-  if (result.error || result.status !== 0) return undefined;
-  const value = result.stdout.trim();
-  return /^\d{15,20}$/.test(value) ? value : null;
+// Inno extracts the very same packaged launcher as a private temporary proof
+// candidate before it has extracted root/LVL.exe. The issuer supplies the
+// SHA-256 of those embedded bytes. This verifier binds candidate to the same
+// temporary directory as the packaged Node helper/script, not any caller-
+// selected copied executable. It never trusts a missing/redirected candidate.
+export function verifySetupBootstrap(image, digest, scriptFile = fileURLToPath(import.meta.url)) {
+  if (process.platform !== "win32" || typeof image !== "string" || !path.isAbsolute(image)
+      || !/^[a-f0-9]{64}$/.test(digest) || typeof scriptFile !== "string"
+      || !path.isAbsolute(scriptFile)) return null;
+  try {
+    const scriptDir = path.dirname(scriptFile);
+    const directory = fs.lstatSync(scriptDir);
+    const script = fs.lstatSync(scriptFile);
+    const candidate = fs.lstatSync(image);
+    if (!directory.isDirectory() || directory.isSymbolicLink()
+        || !script.isFile() || script.isSymbolicLink()
+        || !candidate.isFile() || candidate.isSymbolicLink()
+        || candidate.size < 16_384 || candidate.size > 32 * 1024 * 1024
+        || path.basename(image).toLowerCase() !== "lvl.exe"
+        || canonicalInstallTarget(image) !== canonicalInstallTarget(path.join(scriptDir, "LVL.exe"))
+        || canonicalInstallTarget(path.dirname(image)) !== canonicalInstallTarget(scriptDir)
+        || sha(fs.readFileSync(image)) !== digest) return null;
+    return { helper: image, sha256: digest };
+  } catch { return null; }
 }
-export function inspectInstallLease(root, { getTicks = processTicks } = {}) {
+
+// An inspect plan is not a proof. The scriptFile seam is exclusively for
+// deterministic planner tests; the real inspect runner below never forwards
+// an externally selected scriptFile, and native C# must separately attest.
+export function planNativeProcessInspection(pid, root, {
+  bootstrap = null, scriptFile = fileURLToPath(import.meta.url),
+} = {}) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !root || !path.isAbsolute(root)
+      || process.platform !== "win32") return null;
+  try {
+    // A truly fresh Inno target may not exist until the first extraction.
+    // Canonicalize its existing ancestor, but do not create or mutate it just
+    // to prove the setup parent before the installation lease is acquired.
+    if (fs.existsSync(root)) safeRoot(root);
+    const physicalRoot = canonicalInstallTarget(root);
+    const approvedBootstrap = bootstrap
+      ? verifySetupBootstrap(bootstrap.helper, bootstrap.sha256, scriptFile) : null;
+    if (bootstrap && (!approvedBootstrap
+        || canonicalInstallTarget(path.dirname(approvedBootstrap.helper)) === physicalRoot))
+      return null;
+    const helper = approvedBootstrap?.helper || path.join(root, "LVL.exe");
+    const file = fs.lstatSync(helper, { throwIfNoEntry: false });
+    if (!file?.isFile() || file.isSymbolicLink()
+        || canonicalInstallTarget(helper) !== (approvedBootstrap
+          ? canonicalInstallTarget(approvedBootstrap.helper)
+          : canonicalInstallTarget(path.join(physicalRoot, "LVL.exe"))))
+      return null;
+    const argv = ["--inspect-process", "--pid", String(pid), "--app-root", physicalRoot];
+    if (approvedBootstrap) argv.push("--bootstrap-image", approvedBootstrap.helper,
+      "--bootstrap-sha256", approvedBootstrap.sha256);
+    return { helper, argv, options: {
+      cwd: approvedBootstrap ? path.dirname(helper) : physicalRoot,
+      shell: false, windowsHide: true, timeout: 3500,
+      encoding: "utf8", maxBuffer: 4096,
+    } };
+  } catch { return null; }
+}
+
+// Read-only process query. No shell, PID-name matching, guessed birth or new
+// binary. undefined = ambiguous (keep lease); null = verified dead.
+export function inspectNativeProcess(pid, root, { run = spawnSync, bootstrap = null } = {}) {
+  try {
+    const plan = planNativeProcessInspection(pid, root, { bootstrap });
+    if (!plan) return undefined;
+    const response = run(plan.helper, plan.argv, plan.options);
+    if (response.error || response.status !== 0 || typeof response.stdout !== "string"
+        || Buffer.byteLength(response.stdout) > 4096) return undefined;
+    return parseNativeProcessProof(response.stdout, pid);
+  } catch { return undefined; }
+}
+
+// The installer uses its already-reviewed temporary launcher to wait for the
+// exact installed image and ext-runner executables to exit after the installed
+// launcher's ordinary --quit request. This observer never kills a PID or uses
+// process names, WMI, PowerShell, a shell, or another unreviewed binary.
+export function awaitNativeInstalledStop(root, {
+  bootstrap = null, run = spawnSync,
+} = {}) {
+  try {
+    const plan = planNativeProcessInspection(process.pid, root, { bootstrap });
+    if (!plan) return false;
+    const argv = ["--await-stopped", "--app-root", plan.argv[4]];
+    if (bootstrap) argv.push("--bootstrap-image", plan.helper,
+      "--bootstrap-sha256", bootstrap.sha256);
+    const result = run(plan.helper, argv, {
+      ...plan.options, timeout: 35_000,
+    });
+    return !result.error && result.status === 0 && result.stdout === ""
+      && (!result.stderr || result.stderr === "");
+  } catch { return false; }
+}
+
+// Pure validation seam used by deterministic contract tests; it is not process
+// observation and never grants authority without a real native CLI response.
+export function parseNativeProcessProof(response, pid) {
+  try {
+    if (!Number.isSafeInteger(pid) || pid <= 0 || typeof response !== "string"
+        || Buffer.byteLength(response) > 4096) return undefined;
+    // The C# helper emits exactly one JSON line. No preface, blank records or
+    // control characters may precede a process identity decision.
+    const value = response.endsWith("\n") ? response.slice(0, -1) : response;
+    if (!value || /[\r\n\0]/.test(value) || value !== value.trim()) return undefined;
+    const parsed = JSON.parse(value);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+        || parsed.format !== NATIVE_PROOF_FORMAT || parsed.pid !== pid
+        || typeof parsed.alive !== "boolean") return undefined;
+    if (!parsed.alive) {
+      if (Object.keys(parsed).length !== 3) return undefined;
+      return null;
+    }
+    if (Object.keys(parsed).length !== 5) return undefined;
+    if (!OS_BIRTH_TICKS.test(parsed.startTicks)
+        || BigInt(parsed.startTicks) > 3155378975999999999n
+        || typeof parsed.executablePath !== "string"
+        || !path.isAbsolute(parsed.executablePath)
+        || parsed.executablePath.length > 2048
+        || parsed.executablePath !== canonicalInstallTarget(parsed.executablePath))
+      return undefined;
+    return { pid, startTicks: parsed.startTicks, executablePath: parsed.executablePath };
+  } catch { return undefined; }
+}
+function processTicks(pid, root) {
+  const observed = inspectNativeProcess(pid, root);
+  return observed === undefined ? undefined : observed === null ? null : observed.startTicks;
+}
+export function inspectInstallLease(root, { getTicks = processTicks, bootstrap = null } = {}) {
   const owner = leaseOwner(root);
   if (!owner) return { busy: false };
   if (owner.initializing) return { busy: true, initializing: true };
-  const ticks = getTicks(owner.pid);
-  return { busy: ticks === undefined || ticks === owner.startTicks,
-    identityUnavailable: ticks === undefined, observedStartTicks: ticks ?? null,
-    stale: ticks !== undefined && ticks !== owner.startTicks,
+  const proof = getTicks === processTicks ? inspectNativeProcess(owner.pid, root, { bootstrap }) : undefined;
+  const ticks = getTicks === processTicks
+    ? (proof === undefined ? undefined : proof === null ? null : proof.startTicks)
+    : getTicks(owner.pid);
+  const imageMismatch = proof && owner.executablePath
+    && proof.executablePath !== owner.executablePath;
+  const unknown = ticks === undefined || Boolean(imageMismatch);
+  return { busy: unknown || ticks === owner.startTicks,
+    identityUnavailable: unknown, observedStartTicks: ticks ?? null,
+    stale: !unknown && ticks !== owner.startTicks,
     phase: owner.phase, token: owner.token, owner };
 }
-function reclaimStaleLease(root, getTicks) {
+function reclaimStaleLease(root, getTicks, bootstrap = null) {
   const leaseDir = installLeasePath(root), guard = leaseDir + ".reclaim";
   try { fs.mkdirSync(guard); } catch (error) {
     if (error.code === "EEXIST") return false;
     throw error;
   }
   try {
-    const state = inspectInstallLease(root, { getTicks });
+    const state = inspectInstallLease(root, { getTicks, bootstrap });
     if (!state.stale || !state.owner) return false;
     const retired = guard + "." + randomUUID().replaceAll("-", "") + ".old";
     fs.renameSync(leaseDir, retired);
     // Only the same former lease may be retired. If the contender race made
     // the directory change, restore it and fail closed.
     const moved = readJson(path.join(retired, "owner.json"));
-    if (moved.token !== state.owner.token || moved.startTicks !== state.owner.startTicks) {
+    if (moved.token !== state.owner.token || moved.startTicks !== state.owner.startTicks
+        || moved.executablePath !== state.owner.executablePath
+        || moved.target !== state.owner.target || moved.pid !== state.owner.pid
+        || moved.phase !== state.owner.phase || moved.version !== state.owner.version
+        || moved.createdAt !== state.owner.createdAt) {
       fs.renameSync(retired, leaseDir);
       reject("target lease changed during stale reclamation");
     }
@@ -143,25 +272,31 @@ function reclaimStaleLease(root, getTicks) {
 }
 export function acquireInstallLease(rootValue, {
   token = randomUUID().replaceAll("-", ""), pid = process.pid,
-  startTicks = processTicks(pid), phase = "downloading", getTicks = processTicks,
+  startTicks = null, phase = "downloading", getTicks = processTicks, bootstrap = null,
 } = {}) {
   const root = safeRoot(rootValue, true), dir = installLeasePath(root);
-  if (!TOKEN.test(token) || !/^\d{15,20}$/.test(String(startTicks || "")))
+  const proof = getTicks === processTicks ? inspectNativeProcess(pid, root, { bootstrap }) : undefined;
+  const birth = startTicks ?? (getTicks === processTicks
+    ? proof?.startTicks : getTicks(pid));
+  if (!TOKEN.test(token) || !OS_BIRTH_TICKS.test(String(birth || ""))
+      || (getTicks === processTicks
+        && (proof === undefined || proof === null || proof.startTicks !== String(birth))))
     reject("owner identity unavailable");
   for (let attempt = 0; attempt < 2; attempt++) {
     if (fs.existsSync(dir + ".reclaim")) reject("target lease reclamation is in progress");
     try { fs.mkdirSync(dir); }
     catch (error) {
       if (error.code !== "EEXIST") throw error;
-      const state = inspectInstallLease(root, { getTicks });
-      if (!state.stale || !reclaimStaleLease(root, getTicks))
+      const state = inspectInstallLease(root, { getTicks, bootstrap });
+      if (!state.stale || !reclaimStaleLease(root, getTicks, bootstrap))
         reject("another installation owns this target");
       continue;
     }
     try {
       if (fs.existsSync(dir + ".reclaim")) reject("target lease reclamation is in progress");
       const owner = { format: LEASE_FORMAT, target: canonicalInstallTarget(root),
-        token, pid, startTicks: String(startTicks), phase, createdAt: new Date().toISOString() };
+        token, pid, startTicks: String(birth), phase, createdAt: new Date().toISOString() };
+      if (proof?.executablePath) owner.executablePath = proof.executablePath;
       atomicJson(path.join(dir, "owner.json"), owner);
       return owner;
     } catch (error) {
@@ -187,14 +322,20 @@ export function releaseInstallLease(root, token) {
   fs.rmSync(installLeasePath(root), { recursive: true, force: true });
   return true;
 }
-export async function awaitInstallLease(root, token, { maxMs = 6000 } = {}) {
+export async function awaitInstallLease(root, token, {
+  maxMs = 6000, requiredPhase = null, pause = sleep,
+} = {}) {
   const end = Date.now() + maxMs;
   do {
     const owner = leaseOwner(root);
-    if (owner && !owner.initializing && owner.token === token) return owner;
     if (owner && !owner.initializing && owner.token !== token)
       reject("target belongs to a different installation");
-    await sleep(30);
+    // Installed 0.3.2 saves the same token in "downloading" BEFORE launching
+    // Setup, then publishes "detached-child" only AFTER Process.Start returns.
+    // Do not rebind while that older parent can still overwrite PID/birth/phase.
+    if (owner && !owner.initializing && owner.token === token
+        && (requiredPhase === null || owner.phase === requiredPhase)) return owner;
+    await pause(30);
   } while (Date.now() < end);
   reject("detached installation ownership was not transferred");
 }
@@ -337,8 +478,12 @@ export function recoverFullInstallation(rootValue, {
         reject("preparing journal has an unknown launcher identity");
       // A crash before bootstrap promotion left the previous installation
       // entirely intact; an old 0.2.6 launcher remains usable.
-      try { fs.rmSync(fullTx(root), { recursive: true, force: true }); }
-      catch { /* retry after detached helper exits */ }
+      // No live item was swapped. If a detached helper still holds staging,
+      // retain the exact attempt lease and journal for explicit recovery;
+      // releasing the lease after partial cleanup would admit another writer.
+      fs.rmSync(fullTx(root), { recursive: true, force: true });
+      if (fs.existsSync(fullTx(root)))
+        reject("preparing cleanup is incomplete; preserve target ownership");
       if (hasMatchingLease(root, journal.token)) releaseInstallLease(root, journal.token);
       return true;
     }
@@ -406,7 +551,9 @@ export function recoverFullInstallation(rootValue, {
     updateInstallLease(root, journal.token, { phase: "rolled-back" });
   return true;
 }
-export function commitFullInstallation(rootValue, version, token, { afterMove } = {}) {
+export function commitFullInstallation(rootValue, version, token, {
+  afterMove, beforeFirstLiveSwap, observeStopped,
+} = {}) {
   const root = safeRoot(rootValue), journal = fullJournal(root);
   if (journal.token !== token || journal.version !== version || journal.state !== "preparing")
     reject("full setup has no matching prepared journal");
@@ -426,6 +573,26 @@ export function commitFullInstallation(rootValue, version, token, { afterMove } 
     }
     const newExecutable = filename(root, "pending", "LVL.exe");
     assertEntryDigest(newExecutable, executableRow.next, "new stable bootstrap");
+    // The outer Inno stop observation can precede substantial verification
+    // and backup work. Recheck the same prepared attempt immediately before
+    // the FIRST live mutation, without granting authority to a basename.
+    beforeFirstLiveSwap?.();
+    const owner = leaseOwner(root);
+    // The exported direct transaction API predates signed Inno staging: its
+    // acquireInstallLease() owner begins in "downloading" and may prepare and
+    // commit under the SAME lease and verified journal. Do not reinterpret it
+    // as an Inno staging lease. Signed CLI commits always pass observeStopped,
+    // and therefore still require "staging" plus the exact native parent and
+    // final quiet proof; no other phase or changed attempt is admitted.
+    const directPreparedOwner = !observeStopped && owner?.phase === "downloading";
+    if (!owner || owner.initializing || owner.token !== token
+        || (owner.phase !== "staging" && !directPreparedOwner))
+      reject("prepared installation lease changed before first live swap");
+    if (observeStopped && observeStopped() !== true)
+      reject("legacy owner restarted before first live swap");
+    // This is a fail-closed final observation, not an atomic OS launch barrier.
+    // A start after observation may still contend with Windows file locking;
+    // failure must retain verified recovery state instead of continuing.
     fs.renameSync(newExecutable, path.join(root, "LVL.exe"));
     afterMove?.("bootstrap", "LVL.exe");
     journal.state = "bootstrap-ready";
@@ -512,13 +679,24 @@ async function cli(args) {
   const root = options["--app-root"], token = options["--token"],
     version = options["--version"];
   if (!root || !path.isAbsolute(root)) reject("full installer must name an absolute target");
+  const requestedBootstrap = options["--bootstrap-native"] || options["--bootstrap-sha256"];
+  const bootstrap = requestedBootstrap
+    ? verifySetupBootstrap(options["--bootstrap-native"], options["--bootstrap-sha256"]) : null;
+  if (requestedBootstrap && !bootstrap)
+    reject("untrusted or missing installer-embedded native process proof");
   if (action === "recover-startup") {
     const parent = Number(options["--launcher-pid"]);
+    const launcherPort = Number(options["--launcher-port"] || "4273");
+    if (!Number.isInteger(launcherPort) || launcherPort <= 1024 || launcherPort > 65535)
+      reject("invalid recovering launcher port");
     const expectedBirth = options["--launcher-start-ticks"];
     const ready = options["--ready-file"];
+    const expectedLauncher = canonicalInstallTarget(path.join(root, "LVL.exe"));
+    const launcher = inspectNativeProcess(parent, root);
     if (!Number.isSafeInteger(parent) || parent < 1 || parent !== process.ppid
-        || !/^\d{15,20}$/.test(expectedBirth || "")
-        || processTicks(parent) !== expectedBirth)
+        || !OS_BIRTH_TICKS.test(expectedBirth || "")
+        || !launcher || launcher.startTicks !== expectedBirth
+        || launcher.executablePath !== expectedLauncher)
       reject("native recovery must originate from its live, exact launcher process");
     if (!ready || !/^launch-[0-9a-f]{32}\.ready$/.test(path.basename(ready))
         || path.resolve(path.dirname(ready)) !== path.resolve(filename(root, "recovery", "")))
@@ -529,7 +707,12 @@ async function cli(args) {
       reject("journal does not require native startup repair");
     fs.writeFileSync(ready, "READY\n", { flag: "wx" });
     const limit = Date.now() + 15000;
-    while (processTicks(parent) === expectedBirth) {
+    while (true) {
+      const current = inspectNativeProcess(parent, root);
+      if (current === undefined) reject("recovery launcher process identity became unavailable");
+      if (current === null || current.startTicks !== expectedBirth) break;
+      if (current.executablePath !== expectedLauncher)
+        reject("recovery launcher executable identity changed");
       if (Date.now() > limit) reject("recovery launcher did not exit");
       await sleep(50);
     }
@@ -541,7 +724,7 @@ async function cli(args) {
         const stat = checkEntry(executable);
         if (!stat?.isFile()) reject("recovered application launcher is missing");
         await new Promise((resolve, rejectStart) => {
-          const child = spawn(executable, ["--background", "--port", "4273"], {
+          const child = spawn(executable, ["--background", "--port", String(launcherPort)], {
             cwd: root, windowsHide: true, detached: true, stdio: "ignore",
           });
           child.once("error", rejectStart);
@@ -555,19 +738,30 @@ async function cli(args) {
     const pid = Number(options["--owner-pid"]);
     if (pid !== process.ppid)
       reject("installer helper must be a direct child of the claimed setup process");
-    const startTicks = processTicks(pid);
-    if (!startTicks) reject("cannot verify setup process identity");
+    const expectedSetupImage = options["--owner-image"];
+    if (typeof expectedSetupImage !== "string" || !path.isAbsolute(expectedSetupImage))
+      reject("installer must name its exact native executable image");
+    const setup = inspectNativeProcess(pid, root, { bootstrap });
+    if (!setup || !setup.executablePath
+        || setup.executablePath !== canonicalInstallTarget(expectedSetupImage))
+      reject("cannot verify exact setup process PID, OS birth and executable image");
+    const { startTicks, executablePath } = setup;
     let reservedToken = token;
     if (token) {
-      await awaitInstallLease(root, token);
+      // Wait until the previous updater has completed its token-matched
+      // detached-child publication. A matching "downloading" token is NOT
+      // evidence the older launcher has finished writing the owner record.
+      await awaitInstallLease(root, token, { requiredPhase: "detached-child" });
       // The detached bootstrap is a prior, DIFFERENT process. Its identity
       // becomes stale when it exits. Replace both the PID and OS birth ticks
       // with the verified live setup process before Inno extracts anything.
       updateInstallLease(root, token, {
-        pid, startTicks, phase: "staging", setupPid: pid,
+        pid, startTicks, executablePath, phase: "staging", setupPid: pid,
       });
     } else {
-      reservedToken = acquireInstallLease(root, { pid, startTicks, phase: "staging" }).token;
+      reservedToken = acquireInstallLease(root, {
+        pid, startTicks, phase: "staging", bootstrap,
+      }).token;
     }
     if (fs.existsSync(filename(root, "", "journal.json"))) {
       recoverFullInstallation(root);
@@ -587,10 +781,54 @@ async function cli(args) {
       fs.writeFileSync(output, reservedToken, { flag: "wx", mode: 0o600 });
     }
     process.stdout.write("reserved\n");
+  } else if (action === "preflight-stop" || action === "await-stop") {
+    // The old installed --quit MUST run before writing 'preparing': older
+    // launchers do not know the new recovery/quit exception. This preflight
+    // waits for that old --quit child to exit under the exact staging lease.
+    // The later await-stop is a second native check of the prepared journal.
+    const owner = leaseOwner(root);
+    const parent = owner && !owner.initializing
+      ? inspectNativeProcess(owner.pid, root, { bootstrap }) : undefined;
+    if (!bootstrap || !TOKEN.test(token || "") || !owner || owner.initializing
+        || owner.token !== token || owner.pid !== process.ppid
+        || !OS_BIRTH_TICKS.test(owner.startTicks)
+        || !parent || parent.startTicks !== owner.startTicks
+        || parent.executablePath !== owner.executablePath)
+      reject("native process stop check requires the live, prepared setup owner");
+    if (action === "preflight-stop") {
+      if (owner.phase !== "staging" || fs.existsSync(filename(root, "", "journal.json")))
+        reject("legacy quit preflight requires staging lease before any recovery journal");
+    } else {
+      const journal = fullJournal(root);
+      if (journal.token !== token || journal.state !== "preparing")
+        reject("native process stop check requires this attempt's prepared journal");
+    }
+    if (!awaitNativeInstalledStop(root, { bootstrap }))
+      reject("owned launcher or extension runner has not stopped");
   } else if (action === "prepare-full") {
     prepareFullInstallation(root, version, token);
   } else if (action === "commit-full") {
-    commitFullInstallation(root, version, token);
+    // The native waiter was already required after the old app's --quit.
+    // Re-check immediately before the journal's first live swap, because a
+    // launcher may have started again between Inno's stop callback and commit.
+    // Installed/API recovery callers without the Inno bootstrap keep their
+    // original journal/state admission path.
+    if (bootstrap && !awaitNativeInstalledStop(root, { bootstrap }))
+      reject("installed executable or runner restarted before full commit");
+    commitFullInstallation(root, version, token, {
+      observeStopped: bootstrap ? () => {
+        // The signed Inno bootstrap must still be the child of the exact
+        // native setup owner with unchanged OS birth and executable image.
+        const owner = leaseOwner(root);
+        const parent = inspectNativeProcess(process.ppid, root, { bootstrap });
+        return Boolean(owner && !owner.initializing
+          && owner.token === token && owner.phase === "staging"
+          && owner.pid === process.ppid && parent
+          && parent.pid === owner.pid && parent.startTicks === owner.startTicks
+          && parent.executablePath === owner.executablePath
+          && awaitNativeInstalledStop(root, { bootstrap }));
+      } : undefined,
+    });
   } else if (action === "rollback-full") {
     recoverFullInstallation(root);
   } else if (action === "cancel-full") {
@@ -601,18 +839,13 @@ async function cli(args) {
     acknowledgeFullInstallation(root, version);
   } else if (action === "ack-any") {
     const launcherPid = Number(options["--launcher-pid"]);
-    if (!Number.isSafeInteger(launcherPid) || launcherPid < 1 || !processTicks(launcherPid))
-      reject("restart acknowledgement requires a live launcher");
-    // A malicious/stale helper process cannot acknowledge the update on behalf
-    // of a different executable; only this installed launcher path qualifies.
-    if (process.platform === "win32") {
-      const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${launcherPid}" -ErrorAction SilentlyContinue; if ($p) { $p.ExecutablePath }`;
-      const query = spawnSync("powershell.exe", ["-NoLogo", "-NoProfile", "-NonInteractive",
-        "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
-        { encoding: "utf8", windowsHide: true, timeout: 3500 });
-      if (query.status !== 0 || canonicalInstallTarget(query.stdout.trim()) !== canonicalInstallTarget(path.join(root, "LVL.exe")))
-        reject("restart acknowledgement came from a different executable");
-    }
+    const expectedBirth = options["--launcher-start-ticks"];
+    const launcher = inspectNativeProcess(launcherPid, root);
+    if (!Number.isSafeInteger(launcherPid) || launcherPid <= 0
+        || launcherPid !== process.ppid || !OS_BIRTH_TICKS.test(expectedBirth || "")
+        || !launcher || launcher.startTicks !== expectedBirth
+        || launcher.executablePath !== canonicalInstallTarget(path.join(root, "LVL.exe")))
+      reject("restart acknowledgement requires exact parent PID, OS birth and installed launcher path");
     let acknowledged = false;
     if (fs.existsSync(filename(root, "", "journal.json")))
       acknowledged = acknowledgeFullInstallation(root, version);

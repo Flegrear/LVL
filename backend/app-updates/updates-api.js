@@ -2,6 +2,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import net from "node:net";
+import { createHmac } from "node:crypto";
 import { APP_VERSION, root, UPDATE_BRIDGE, updatePolicy } from "../../server.js";
 import { json, methodNotAllowed, readJsonBody } from "../app/http-helpers.js";
 
@@ -10,6 +11,20 @@ import { json, methodNotAllowed, readJsonBody } from "../app/http-helpers.js";
 // is not the published release history. The alpha packager stamps its payload
 // copy of the Unreleased heading with the version being installed.
 const MAX_LOCAL_CHANGELOG_BYTES = 128 * 1024;
+const WINDOWS_PROOF_CHALLENGE = /^[A-Za-z0-9_-]{32,128}$/;
+
+// The native launcher gives its own child a private bridge secret. A foreign
+// same-port HTTP server cannot answer this per-request challenge. The proof
+// stays in response headers and never exposes the bridge endpoint or key.
+function windowsStatusProof(req) {
+  const challenge = req.headers["x-lvl-windows-challenge"];
+  const secret = UPDATE_BRIDGE?.secret;
+  if (req.method !== "GET" || typeof challenge !== "string"
+      || !WINDOWS_PROOF_CHALLENGE.test(challenge)
+      || typeof secret !== "string" || !/^[A-Za-z0-9+/]{43}=$/.test(secret)) return {};
+  return { "X-LVL-Windows-Proof": createHmac("sha256", Buffer.from(secret, "base64"))
+    .update(`LVL-Windows-Child:v1:${challenge}`).digest("base64") };
+}
 
 function parseLocalChangelog(raw) {
   const sections = [];
@@ -26,13 +41,13 @@ function parseLocalChangelog(raw) {
         version: release ? `${release[1]}.${release[2]}.${release[3]}` : null,
         date: release ? release[4] : null,
         unreleased: Boolean(unreleased),
-        lines: [],
+        changes: [],
       } : null;
       continue;
     }
     if (section) {
       const bullet = /^\s*[-*]\s+(.+)\s*$/.exec(line);
-      if (bullet) section.lines.push(bullet[1]);
+      if (bullet) section.changes.push(bullet[1]);
     }
   }
   if (section) sections.push(section);
@@ -46,8 +61,10 @@ function parseLocalChangelog(raw) {
     }
     return 0;
   });
-  const entries = sections.map((entry) => ({ ...entry, changes: entry.lines }));
-  return { entries, latest: entries.find((entry) => !entry.unreleased) || null, raw };
+  // v2 owns one canonical list. Serialize 'lines' as a deprecated read-only
+  // compatibility alias until old installed browser bundles have retired.
+  const entries = sections.map((entry) => ({ ...entry, lines: entry.changes }));
+  return { schemaVersion: 2, entries, latest: entries.find((entry) => !entry.unreleased) || null, raw };
 }
 
 function localChangelogEndpoint(req, res, url) {
@@ -157,9 +174,9 @@ export async function appUpdatesEndpoint(req, res, url) {
   if (route[1] === "settings") {
     const body = await readJsonBody(req, 1024);
     if (!body || typeof body.automatic !== "boolean" ||
-        ![1, 7, 30].includes(body.intervalDays) ||
+        body.intervalDays !== 1 ||
         Object.keys(body).some((key) => key !== "automatic" && key !== "intervalDays")) {
-      json(res, 400, { error: "Choose automatic updates and a 1, 7 or 30 day interval" });
+      json(res, 400, { error: "Automatic update checks use the fixed one-day native interval" });
       return true;
     }
     fields = { automatic: body.automatic, intervalDays: body.intervalDays };
@@ -178,7 +195,8 @@ export async function appUpdatesEndpoint(req, res, url) {
     }
   }
   try {
-    json(res, 200, await updatePolicy.handle(route[1], fields));
+    json(res, 200, await updatePolicy.handle(route[1], fields),
+      route[1] === "status" ? windowsStatusProof(req) : undefined);
   } catch (error) {
     json(res, error.statusCode || 503, { error: error.message || "Updater unavailable" });
   }

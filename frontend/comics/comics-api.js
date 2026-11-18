@@ -1,4 +1,5 @@
 // Comics section: calls to the local /api/comics routes.
+import { createReaderProgressJournal } from "../reader/progress-journal.js";
 const TIMEOUT_MS = 30_000;
 
 function signalWithTimeout(signal, timeoutMs) {
@@ -20,13 +21,14 @@ function signalWithTimeout(signal, timeoutMs) {
   };
 }
 
-async function call(url, { method = "GET", body, timeoutMs = TIMEOUT_MS, signal } = {}) {
+async function call(url, { method = "GET", body, timeoutMs = TIMEOUT_MS, signal, keepalive = false } = {}) {
   const request = signalWithTimeout(signal, timeoutMs);
   try {
     const response = await fetch(url, {
       method,
       headers: body === undefined ? { Accept: "application/json" } : { Accept: "application/json", "Content-Type": "application/json" },
       body: body === undefined ? undefined : JSON.stringify(body),
+      keepalive,
       signal: request.signal,
     });
     const payload = await response.json().catch(() => ({}));
@@ -55,7 +57,16 @@ export const comicsApi = Object.freeze({
   rematch: (id, anilistId) => call(`/api/comics/work/${encodeURIComponent(id)}/match`, { method: "PUT", body: { anilistId } }),
   library: () => call("/api/comics/library"),
   setStatus: (id, status) => call(`/api/comics/library/${encodeURIComponent(id)}`, { method: "PUT", body: { status } }),
-  remove: (id) => call(`/api/comics/library/${encodeURIComponent(id)}`, { method: "DELETE" }),
+  remove: async (id) => {
+    const response = await call(`/api/comics/library/${encodeURIComponent(id)}`, { method: "DELETE" });
+    if (response?.removed === true) {
+      // A confirmed explicit work removal retires only that exact work's
+      // understood v1 snapshots; unknown future schemas remain untouched.
+      try { createReaderProgressJournal({ storage: globalThis.localStorage }).retireWork(id); }
+      catch { /* preserve unreadable/unsupported journal rather than overwrite */ }
+    }
+    return response;
+  },
   folders: () => call("/api/comics/folders"),
   addFolder: (folderPath) => call("/api/comics/folders", { method: "POST", body: { path: folderPath } }),
   removeFolder: (folderPath) => call("/api/comics/folders", { method: "DELETE", body: { path: folderPath } }),
@@ -86,9 +97,25 @@ export const comicsApi = Object.freeze({
   readerFile: (fileId, { workId = "", name = "", describe = false } = {}) => (String(fileId).startsWith("f")
     ? call(`/api/reader/files/${encodeURIComponent(fileId)}`)
     : call(`/api/reader/remote/${encodeURIComponent(fileId)}?${new URLSearchParams({ work: workId, name, ...(describe ? { describe: "1" } : {}) })}`, { timeoutMs: 120_000 })),
-  saveProgress: (progress, workId = "") => (String(progress.fileId).startsWith("f")
-    ? call("/api/reader/progress", { method: "PUT", body: progress })
-    : call("/api/reader/remote-progress", { method: "PUT", body: { id: progress.fileId, workId, page: progress.page, pages: progress.pages, chapter: progress.chapter ?? null, volume: progress.volume ?? null } })),
+  saveProgress: (progress, workId = "", { keepalive = false } = {}) => (String(progress.fileId).startsWith("f")
+    ? call("/api/reader/progress", { method: "PUT", body: progress, keepalive })
+    : call("/api/reader/remote-progress", { method: "PUT", body: { id: progress.fileId, workId, page: progress.page, pages: progress.pages,
+      chapter: progress.chapter ?? null, volume: progress.volume ?? null, finished: progress.finished === true,
+      ...(progress.pageWitness ? { pageWitness: progress.pageWitness } : {}),
+      ...(progress.operationId ? { operationId: progress.operationId } : {}),
+      ...(progress.progressVersion !== undefined ? { progressVersion: progress.progressVersion } : {}),
+      ...(progress.expectedGeneration !== undefined ? { expectedGeneration: progress.expectedGeneration } : {}),
+      ...(progress.predecessorOperationId ? { predecessorOperationId: progress.predecessorOperationId } : {}),
+      ...(progress.predecessorGeneration !== undefined ? { predecessorGeneration: progress.predecessorGeneration } : {}),
+      ...(progress.sourceId ? { sourceId: progress.sourceId } : {}) }, keepalive })),
+  rekeySource: (oldSourceId, newSourceId) =>
+    call("/api/comics/ext/rekey", { method: "POST", body: { oldSourceId, newSourceId, confirmed: true } }),
+  redirectChapter: (workId, sourceId, fromPath, toPath) =>
+    call("/api/comics/ext/chapter-redirect", { method: "POST",
+      body: { workId, sourceId, fromPath, toPath, confirmed: true } }),
+  relinkSource: (workId, sourceId, fromPath, toPath) =>
+    call(`/api/comics/work/${encodeURIComponent(workId)}/ext-relink`, { method: "POST",
+      body: { sourceId, fromPath, toPath, confirmed: true } }),
   sources: () => call("/api/comics/sources"),
   addSource: (source) => call("/api/comics/sources", { method: "POST", body: source }),
   updateSource: (id, patch) => call(`/api/comics/sources/${encodeURIComponent(id)}`, { method: "PUT", body: patch }),

@@ -76,18 +76,27 @@ const account = (status) => `<div class="sync-account"><span class="sync-account
   + `<small>${status.mode === "token" ? "Connected with a token" : status.renew ? "Signed in · renews itself" : "Signed in until you disconnect"}</small></span>`
   + `${action("Disconnect", "disconnect", "ghost")}</div>`;
 
+const recoveryActions = (status) => {
+  const pending = status.recovery?.pending
+    ? `<p class="settings-hint">Your previous sync has pending local edits or an unfinished journal. Reconnect its original GitHub account to continue, or archive the pending sync locally before disconnecting.</p>`
+      + action("Archive pending sync and disconnect", "archive-disconnect", "secondary") : "";
+  const archives = status.canResumeArchived ? (status.archivedRecoveries || []) : [];
+  return pending + (archives.length ? `<div class="sync-recoveries"><p class="settings-hint">Local recovery archives are stored on this device. Restore one and reconnect its original account before syncing.</p>`
+    + archives.map((item) => `<div class="settings-actions"><span>${esc(item.repo || "Previous GitHub sync")}</span>${action("Restore pending sync", "resume-archive", "secondary", { "data-recovery-id": item.id })}</div>`).join("") + `</div>` : "");
+};
+
 const stat = (label, value, note = "") => `<div class="ui-stat"><span class="ui-stat__label">${esc(label)}</span><span class="ui-stat__value">${esc(value)}</span>`
   + (note ? `<span class="ui-stat__note">${esc(note)}</span>` : "") + "</div>";
 
 function githubPanel(status, ui) {
   if (status.step === "start") {
     if (!status.appReady || ui.showToken) {
-      return tokenSetup(status) + (status.appReady ? action("Sign in with GitHub instead", "hide-token", "ghost") : "") + errorLine(status);
+      return tokenSetup(status) + (status.appReady ? action("Sign in with GitHub instead", "hide-token", "ghost") : "") + recoveryActions(status) + errorLine(status);
     }
     return `<div class="sync-signin">${action("Sign in with GitHub", "start", "primary")}`
       + `<label class="ui-switch settings-switch-row" for="sync-renew"><input id="sync-renew" data-focus-key="sync-renew" type="checkbox"${ui.renew ? " checked" : ""} /><span class="ui-switch__track" aria-hidden="true"></span>`
       + `<span class="settings-learning-copy"><strong>Renew the sign-in by itself</strong><small>Each sign-in lasts 8 hours and renews while LVL runs. Off: it lasts until you disconnect.</small></span></label></div>`
-      + action("Use a token instead", "show-token", "ghost") + errorLine(status);
+      + action("Use a token instead", "show-token", "ghost") + recoveryActions(status) + errorLine(status);
   }
   if (status.step === "device") {
     const minutes = Math.max(0, Math.round((status.device.expiresAt - Date.now()) / 60000));
@@ -130,17 +139,55 @@ function githubPanel(status, ui) {
     + `<div class="settings-actions">${action("Sync now", "now", "primary")}</div>` + errorLine(status);
 }
 
+// The initial browser migration may arrive after sync has already created
+// Library rows. Its unmatched entries are held in a durable server receipt,
+// never copied into Library until the user reviews an exact revision.
+function legacyRecoveryPanel(ui) {
+  const count = Number(ui.legacySummary?.pending) || 0;
+  if (!count) return "";
+  let markup = `<div class="sync-panel"><p class="settings-hint">${count} older Library entr${count === 1 ? "y needs" : "ies need"} review before it can be restored. Your current synced Library stays unchanged.</p>`;
+  if (!ui.legacyReview) return markup + action("Review older Library entries", "bootstrap-review") + "</div>";
+  const start = ui.legacyPage * 20;
+  const batch = ui.legacyReview.slice(start, start + 20);
+  markup += batch.map(({ entry, kind }, index) => {
+    const title = String(entry.displayTitle || entry.title || entry.id).slice(0, 160);
+    const label = kind === "overlap"
+      ? "Different historical version; the synced record remains authoritative"
+      : "Missing from the synced Library";
+    return `<div class="settings-actions"><span><strong>${esc(title)}</strong><small>${esc(label)}</small></span>`
+      + action("Keep current", "bootstrap-keep", "ghost", { "data-legacy-index": start + index })
+      + (kind === "candidate" ? action("Restore older", "bootstrap-restore", "secondary", { "data-legacy-index": start + index }) : "")
+      + "</div>";
+  }).join("");
+  if (start > 0) markup += action("Previous entries", "bootstrap-prev", "ghost");
+  if (start + 20 < ui.legacyReview.length) markup += action("More entries", "bootstrap-next", "ghost");
+  return markup + "</div>";
+}
+
 function view(status, ui) {
   const connected = status.step !== "start";
   const picked = connected ? "github" : ui.choice;
   const chips = `<div class="ui-chip-row settings-sync-options" role="group" aria-label="Where LVL keeps the synced copy">${OPTIONS.map((option) =>
     `<button type="button" class="ui-chip" data-sync-option="${option.id}" data-focus-key="sync-option:${option.id}" aria-pressed="${picked === option.id}"${connected && option.id !== "github" ? " disabled" : ""}>`
     + `${esc(option.label)}${option.ready ? "" : '<span class="ui-chip__count">Soon</span>'}</button>`).join("")}</div>`;
-  if (!picked) return `<p class="settings-hint">Your Library, where you are in each video and chapter, your ratings and your comics, the same on every device. Choose where LVL keeps the synced copy.</p>${chips}`;
+  if (!picked) return `<p class="settings-hint">Your Library, where you are in each video and chapter, your ratings and your comics, the same on every device. Choose where LVL keeps the synced copy.</p>${chips}${legacyRecoveryPanel(ui)}`;
   const option = OPTIONS.find((item) => item.id === picked);
   const panel = option.ready ? githubPanel(status, ui)
     : `<div class="sync-soon"><span class="ui-badge ui-badge--outline">Soon</span><p class="settings-hint">${esc(option.text)}</p></div>`;
-  return `${chips}<div class="sync-panel">${panel}</div>`;
+  return `${chips}<div class="sync-panel">${panel}</div>${legacyRecoveryPanel(ui)}`;
+}
+
+async function appStateRequest(path, body) {
+  const response = await fetch(`/api/app-state/${path}`, body === undefined
+    ? { headers: { Accept: "application/json" } }
+    : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(String(payload.message || payload.error || "Library recovery could not be completed").slice(0, 300));
+    error.status = response.status;
+    throw error;
+  }
+  return payload;
 }
 
 
@@ -148,18 +195,35 @@ async function call(path, body) {
   const response = await fetch(`/api/sync/${path}`, body === undefined ? { headers: { Accept: "application/json" } }
     : { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const data = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(data.error || `Sync answered HTTP ${response.status}`);
+  if (!response.ok) {
+    const code = String(data?.code || data?.error || `HTTP_${response.status}`);
+    const safeServerMessage = typeof data?.error === "string" && !/^[a-z0-9_]+$/.test(data.error) ? data.error : null;
+    const message = data?.message || data?.detail || safeServerMessage
+      || (response.status === 409 ? "The synced copy changed. Review the Library conflict and retry."
+        : response.status === 401 || response.status === 403 ? "Sync access was denied. Reconnect your account or check access."
+          : response.status === 429 ? "Sync is rate limited. Retry when GitHub allows another request."
+            : response.status === 503 ? "Sync is temporarily unavailable. Your local changes are preserved; retry."
+              : (/^[a-z0-9_]+$/.test(code) ? `Sync request failed (HTTP ${response.status}). Retry or check the account connection.` : code));
+    const error = new Error(message);
+    error.status = error.httpStatus = response.status;
+    error.code = code;
+    error.detail = data?.detail || data?.message || code;
+    error.recovery = data?.recovery || null;
+    throw error;
+  }
   return data;
 }
 
 function mount(card, ctx) {
   card.dataset.syncMounted = "1";
   card.querySelector(".settings-card__head")?.insertAdjacentHTML("beforeend", '<span class="ui-badge ui-badge--outline settings-sync-badge" hidden></span>');
-  card.insertAdjacentHTML("beforeend", '<div class="settings-sync-body"></div>');
+  card.insertAdjacentHTML("beforeend", '<div class="settings-sync-body"></div><p class="ui-status ui-status--error" role="alert" data-sync-action-error hidden><span></span></p>');
   const body = card.querySelector(".settings-sync-body");
   const badge = card.querySelector(".settings-sync-badge");
+  const actionFeedback = card.querySelector("[data-sync-action-error]");
   let status = { step: "start" };
-  const ui = { choice: localStorage.getItem(CHOICE_KEY) || "", showToken: false, encrypt: false, renew: true };
+  const ui = { choice: localStorage.getItem(CHOICE_KEY) || "", showToken: false, encrypt: false, renew: true,
+    legacySummary: null, legacyReview: null, legacyPage: 0 };
   let shown = "";
   let timer = 0;
   let finding = false;
@@ -167,6 +231,13 @@ function mount(card, ctx) {
   let refreshRevision = 0;
   let inputRevision = 0;
   let actionError = "";
+  let recoveryActionError = false;
+  const showActionError = () => {
+    if (!actionFeedback) return;
+    actionFeedback.hidden = !actionError;
+    const message = actionFeedback.querySelector("span");
+    if (message) message.textContent = actionError;
+  };
   const onVisibleTab = () => card.isConnected && !card.closest('[role="tabpanel"][hidden]');
   const render = ({ discardSubmittedDraft = false } = {}) => {
     if (!onVisibleTab()) return;
@@ -201,7 +272,18 @@ function mount(card, ctx) {
     try {
       const next = await call("status");
       if (!isCurrent()) return;
-      status = { ...next, lastError: actionError || next.lastError };
+      // A healthy GET proves transport health, not recovery of pending edits.
+      // Only a successful recovery action or completed sign-in clears its error.
+      if (!recoveryActionError || status.step === "device" && next.step === "ready") {
+        actionError = "";
+        recoveryActionError = false;
+        showActionError();
+      }
+      status = next;
+      const summary = await appStateRequest("bootstrap-recovery?summary=1");
+      if (!isCurrent()) return;
+      ui.legacySummary = summary;
+      if (!summary.pending) { ui.legacyReview = null; ui.legacyPage = 0; }
     } catch (error) {
       if (!isCurrent()) return;
       status = { ...status, lastError: actionError || error.message };
@@ -212,7 +294,11 @@ function mount(card, ctx) {
       try {
         const found = await call("github/find", {});
         if (!isCurrent()) return;
-        status = { ...found, lastError: actionError || found.lastError };
+        if (!recoveryActionError) {
+          actionError = "";
+          showActionError();
+        }
+        status = found;
       } catch (error) {
         if (!isCurrent()) return;
         status = { ...status, lastError: actionError || error.message };
@@ -242,13 +328,22 @@ function mount(card, ctx) {
     try {
       const next = await task();
       if (actionIntent !== intent || !card.isConnected) return;
-      actionError = "";
+      const kind = control?.dataset?.sync || form?.dataset?.syncForm;
+      const recoveryResolved = ["disconnect", "archive-disconnect", "resume-archive", "token", "now",
+        "bootstrap-keep", "bootstrap-restore"].includes(kind);
+      if (!recoveryActionError || recoveryResolved) {
+        actionError = "";
+        recoveryActionError = false;
+        showActionError();
+      }
       if (next) status = next;
       completed = true;
     } catch (error) {
       if (actionIntent !== intent || !card.isConnected) return;
       actionError = error.message;
-      status = { ...status, lastError: actionError };
+      recoveryActionError = Boolean(error.recovery?.pending || error.status === 401
+        || ["sync_pending", "sync_account_mismatch", "sync_generation_changed", "sync_in_progress", "signed-out"].includes(error.code));
+      showActionError();
       toast(error.message);
     } finally {
       if (control?.isConnected) {
@@ -258,7 +353,8 @@ function mount(card, ctx) {
         control.removeAttribute("aria-busy");
       }
       if (actionIntent === intent && card.isConnected)
-        render({ discardSubmittedDraft: completed && Boolean(form) && submittedRevision === inputRevision });
+        render({ discardSubmittedDraft: completed && submittedRevision === inputRevision
+          && (Boolean(form) || ["disconnect", "archive-disconnect", "resume-archive"].includes(control?.dataset?.sync)) });
     }
   };
   body.addEventListener("input", () => { inputRevision++; });
@@ -292,6 +388,10 @@ function mount(card, ctx) {
       // The user has chosen a different wizard surface; an older async action
       // may finish on the server, but it no longer owns this visible form.
       ++intent;
+      if (!recoveryActionError) {
+        actionError = "";
+        showActionError();
+      }
       ui.choice = option.dataset.syncOption;
       localStorage.setItem(CHOICE_KEY, ui.choice);
       render({ discardSubmittedDraft: true });
@@ -302,11 +402,67 @@ function mount(card, ctx) {
     const name = target.dataset.sync;
     if (name === "show-token" || name === "hide-token") {
       ++intent;
+      if (!recoveryActionError) {
+        actionError = "";
+        showActionError();
+      }
       ui.showToken = name === "show-token";
       render({ discardSubmittedDraft: true });
       return;
     }
+    if (name === "bootstrap-next" || name === "bootstrap-prev") {
+      ui.legacyPage = Math.max(0, ui.legacyPage + (name === "bootstrap-next" ? 1 : -1));
+      render({ discardSubmittedDraft: true });
+      return;
+    }
     void run(target, async () => {
+      if (name === "bootstrap-review") {
+        const receipt = (await appStateRequest("bootstrap-recovery")).recovery;
+        const resolved = new Set(receipt?.resolvedIds || []);
+        ui.legacyReview = [
+          ...(receipt?.candidates || []).map(entry => ({ entry, kind: "candidate" })),
+          ...(receipt?.overlaps || []).map(entry => ({ entry, kind: "overlap" })),
+        ].filter(({ entry }) => !resolved.has(String(entry.id)));
+        ui.legacyPage = 0;
+        ui.legacySummary = { pending: ui.legacyReview.length };
+        return;
+      }
+      if (name === "bootstrap-keep" || name === "bootstrap-restore") {
+        const index = Number(target.dataset.legacyIndex);
+        const selected = Number.isSafeInteger(index) && ui.legacyReview?.[index];
+        if (!selected) throw new Error("This recovery entry changed. Review the pending entries again.");
+        const restore = name === "bootstrap-restore";
+        const decision = await confirmDialog({
+          title: restore ? "Restore this older Library entry?" : "Keep the current synced Library?",
+          confirmLabel: restore ? "Restore entry" : "Keep current",
+          text: restore
+            ? "The entry is added only if its identity is still missing and the Library revision has not changed. If sync deleted it, review carefully before restoring."
+            : "Resolve this older entry without changing the current Library. This decision is saved on this device.",
+        });
+        if (!decision) return;
+        // Fetch the current revision immediately before CAS admission. The
+        // server verifies it again while holding the same SQLite write lock.
+        const library = await appStateRequest("library");
+        // Reuse the core's established Library write barrier. It refuses a
+        // recovery while this tab has unsaved edits, a pending CAS, a pop-up
+        // handoff or an unresolved conflict; the backend checks revision too.
+        // Resolve the module only on an actual review click so feature import
+        // remains side-effect free during app boot.
+        const recovery = await import("../app/saved-state.js");
+        const ids = [String(selected.entry.id)];
+        const result = restore
+          ? await recovery.restoreLegacyLibraryEntries(ids, library.updatedAt)
+          : await recovery.keepAcceptedLegacyLibraryEntries(ids, library.updatedAt);
+        const receipt = (await appStateRequest("bootstrap-recovery")).recovery;
+        const resolved = new Set(receipt?.resolvedIds || []);
+        ui.legacyReview = (ui.legacyReview || []).filter(({ entry }) => !resolved.has(String(entry.id)));
+        ui.legacySummary = { pending: ui.legacyReview.length };
+        ui.legacyPage = Math.min(ui.legacyPage, Math.max(0, Math.ceil(ui.legacyReview.length / 20) - 1));
+        if (restore) {
+          toast("The selected older Library entry was restored.");
+        }
+        return;
+      }
       if (name === "start") return call("github/start", { renew: body.querySelector("#sync-renew")?.checked !== false });
       else if (name === "cancel") return call("github/cancel", {});
       else if (name === "copy") { await navigator.clipboard?.writeText(status.device?.userCode || ""); toast("Code copied"); }
@@ -323,9 +479,26 @@ function mount(card, ctx) {
       }
       else if (name === "reload") { await call("reload-shown", {}); window.location.reload(); }
       else if (name === "disconnect") {
-        const sure = await confirmDialog({ title: "Disconnect sync on this device?", confirmLabel: "Disconnect",
-          text: "Your data on this device stays, and so does the copy in lvl-sync. You can connect again at any time." });
-        if (sure) { ui.showToken = false; ui.encrypt = false; return call("disconnect", {}); }
+        const preview = await call("recovery");
+        const pending = Boolean(preview.pending?.pending);
+        const sure = await confirmDialog({ title: pending ? "Archive pending sync before disconnecting?" : "Disconnect sync on this device?",
+          confirmLabel: pending ? "Archive and disconnect" : "Disconnect",
+          text: pending ? "The unfinished journal and local sync edits will be archived on this device for later recovery. Reconnect the original account when you restore the archive. The remote copy and your Library remain intact."
+            : "Your data on this device stays, and so does the copy in lvl-sync. You can connect again at any time." });
+        if (sure) { ui.showToken = false; ui.encrypt = false; return call("disconnect", { pending: pending ? "archive" : "reject" }); }
+      }
+      else if (name === "archive-disconnect") {
+        const sure = await confirmDialog({ title: "Archive pending sync before disconnecting?", confirmLabel: "Archive and disconnect",
+          text: "Keep the unfinished journal and local sync edits in a recovery archive on this device. Restore it later and reconnect the original GitHub account. Your Library and remote copy stay intact." });
+        if (sure) { ui.showToken = false; ui.encrypt = false; return call("disconnect", { pending: "archive" }); }
+      }
+      else if (name === "resume-archive") {
+        const id = target.dataset.recoveryId;
+        const record = (status.archivedRecoveries || []).find((item) => item.id === id);
+        if (!record || !status.canResumeArchived) throw new Error("Refresh the local recovery list before restoring this archive.");
+        const sure = await confirmDialog({ title: "Restore this pending sync?", confirmLabel: "Restore sync",
+          text: `Restore the pending journal for ${record.repo || "the original account"} on this device. Reconnect its original GitHub account to resume publication.` });
+        if (sure) { ui.showToken = false; return call("recovery/resume", { id }); }
       }
     });
   });

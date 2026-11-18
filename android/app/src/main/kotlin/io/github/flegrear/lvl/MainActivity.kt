@@ -47,6 +47,7 @@ import android.widget.TextView
 import android.widget.Toast
 import android.window.OnBackInvokedDispatcher
 import org.json.JSONObject
+import java.util.UUID
 import kotlin.concurrent.thread
 
 /** Shows LVL's own web UI from the server that ServerService runs on this device. */
@@ -239,10 +240,21 @@ class MainActivity : Activity() {
         }
         // Clear a prior Android process's HttpOnly cookie before any navigation.
         // The initial proof request itself contains no LVL bearer.
+        clearLocalCookieForStartup()
+    }
+
+    private fun clearLocalCookieForStartup() {
+        val mutation = ++cookieMutation
         CookieManager.getInstance().setCookie(
             base, "lvl_access=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict"
-        ) {
-            if (!isDestroyed && !isFinishing) waitForServer()
+        ) { accepted ->
+            if (mutation != cookieMutation || isDestroyed || isFinishing) return@setCookie
+            if (!accepted) {
+                cookieFailed = true
+                showStartupFailure()
+            } else {
+                waitForServer()
+            }
         }
     }
 
@@ -422,7 +434,7 @@ class MainActivity : Activity() {
                     cookieFailed = true
                     waiting = false
                     Log.e("LVL", "Couldn't set the local server access cookie")
-                    status.text = "Couldn't configure LVL's secure connection. Reopen the app to retry."
+                    showStartupFailure()
                     return@setCookie
                 }
                 cookieReady = true
@@ -732,13 +744,15 @@ class MainActivity : Activity() {
                 web.evaluateJavascript(script, null)
             }
             uri.scheme == "https" -> {
+                val destination = Downloads.uniqueDownloadName(name, UUID.randomUUID().toString().replace("-", ""))
                 val request = DownloadManager.Request(uri)
-                    .setTitle(name)
+                    .setTitle(Downloads.safeName(name))
                     .setMimeType(mimeType)
                     .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, Downloads.safeName(name))
-                getSystemService(DownloadManager::class.java).enqueue(request)
-                Toast.makeText(this, "Downloading $name", Toast.LENGTH_SHORT).show()
+                    .setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, destination)
+                val requestId = getSystemService(DownloadManager::class.java).enqueue(request)
+                Log.i("LVL-Downloads", "Enqueued native download requestId=$requestId")
+                Toast.makeText(this, "Downloading $destination", Toast.LENGTH_SHORT).show()
             }
             else -> Toast.makeText(this, "This download can't be saved", Toast.LENGTH_SHORT).show()
         }
@@ -770,13 +784,15 @@ class MainActivity : Activity() {
         )
         statusBox.visibility = View.VISIBLE
         status.text = getString(R.string.start_failed)
-        retryStartupButton.visibility = if (cookieFailed) View.GONE else View.VISIBLE
+        // A failed cookie mutation may recover under fresh authenticated proof.
+        // Retry creates a new mutation generation; old callbacks are fenced out.
+        retryStartupButton.visibility = View.VISIBLE
     }
 
     private fun retryStartup() {
-        if (isDestroyed || isFinishing || cookieFailed) return
+        if (isDestroyed || isFinishing) return
         connectionSuspended = false
-        cookieMutation += 1
+        cookieFailed = false
         localNavigationIntent += 1
         pendingSignInRequestCode = null
         pendingSignInChild = null
@@ -796,11 +812,7 @@ class MainActivity : Activity() {
         // command. Only a newer service revision can fail this retry.
         ignoredFailureRevision = ServerService.readinessRevision()
         ServerService.start(this)
-        CookieManager.getInstance().setCookie(
-            base, "lvl_access=; Max-Age=0; Path=/; HttpOnly; SameSite=Strict"
-        ) {
-            if (!isDestroyed && !isFinishing) waitForServer()
-        }
+        clearLocalCookieForStartup()
     }
 
     private fun waitForServer() {
@@ -874,6 +886,7 @@ class MainActivity : Activity() {
         override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
             val uri = request.url
             if (request.isForMainFrame && uri.scheme == "http" && uri.host == "127.0.0.1" && uri.port == ServerService.PORT) {
+                val failingGeneration = waitGeneration
                 Log.w("LVL", "Local page unavailable: ${error.errorCode}")
                 val child = authenticatedChild
                 Log.w("LVL-Connection", "phase=MAIN_FRAME_ERROR child_alive=${ServerService.isCurrentChild(child)} code=${error.errorCode}")
@@ -890,7 +903,10 @@ class MainActivity : Activity() {
                         suspendAuthenticatedPage(child, waitGeneration, showOverlay = true)
                     }
                 } else showStartupFailure()
-                debugUiTransition("MAIN_FRAME_ERROR", SystemClock.elapsedRealtime(), waitGeneration, true)
+                // showStartupFailure advances waitGeneration. Attribute the
+                // observed failure to the generation that actually made the request.
+                debugUiTransition("MAIN_FRAME_ERROR", SystemClock.elapsedRealtime(), failingGeneration,
+                    child != null && ServerService.isCurrentChild(child))
             }
         }
 
@@ -979,8 +995,13 @@ class MainActivity : Activity() {
             val view = customView ?: return
             root.removeView(view)
             customView = null
-            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            window.insetsController?.show(WindowInsets.Type.systemBars())
+            requestedOrientation = if (appFullscreen && !fullscreenByRotation)
+                fullscreenOrientation(lastPlayback) else ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            if (appFullscreen || readerImmersive || inPictureInPicture) {
+                window.insetsController?.hide(WindowInsets.Type.systemBars())
+            } else {
+                window.insetsController?.show(WindowInsets.Type.systemBars())
+            }
             root.requestApplyInsets()
             customViewCallback?.onCustomViewHidden()
             customViewCallback = null

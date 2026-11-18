@@ -133,14 +133,46 @@ object ApkInstall {
     private fun callbackData(context: Context, attempt: Attempt): Uri =
         Uri.parse("lvl-install-result://${context.packageName}/${attempt.sessionId}/${attempt.id}")
 
-    private fun begin(context: Context, id: Int, version: String, versionCode: Long): Attempt =
+    // The OS confirmation Intent can share one filter identity across APKs.
+    // The notification instead opens an unexported Activity with a request
+    // identity tied to the durable session and UUID.
+    private fun confirmationData(context: Context, attempt: Attempt): Uri =
+        Uri.parse("lvl-install-confirm://${context.packageName}/${attempt.sessionId}/${attempt.id}")
+
+    fun confirmationTap(context: Context, attempt: Attempt, confirmation: Intent): PendingIntent {
+        val route = Intent(context, InstallConfirmationActivity::class.java)
+            .setAction(InstallConfirmationActivity.ACTION_CONFIRM)
+            .setPackage(context.packageName)
+            .setData(confirmationData(context, attempt))
+            .putExtra(EXTRA_LVL_SESSION_ID, attempt.sessionId)
+            .putExtra(EXTRA_LVL_ATTEMPT_ID, attempt.id)
+            .putExtra(Intent.EXTRA_INTENT, confirmation)
+        return PendingIntent.getActivity(context, attempt.sessionId, route,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_CANCEL_CURRENT)
+    }
+
+    fun ownedConfirmation(context: Context, attemptId: String, sessionId: Int, data: Uri? = null): Boolean {
+        val current = reconcile(context) ?: return false
+        if (current.id != attemptId || current.sessionId != sessionId ||
+            !current.awaitingConfirmation || (data != null && data != confirmationData(context, current))) return false
+        val session = runCatching {
+            context.packageManager.packageInstaller.getSessionInfo(sessionId)
+        }.getOrNull() ?: return false
+        return session.installerPackageName == context.packageName &&
+            (session.appPackageName == null || session.appPackageName == context.packageName)
+    }
+
+    private fun begin(context: Context, id: Int, version: String, versionCode: Long, ownedAttemptId: String?): Attempt =
         synchronized(journalLock) {
             val previous = readLocked(context)
             check(previous?.pending != true) { "An Android installation is already pending" }
             val signerHashes = installedSignerHashes(context)
             check(signerHashes.isNotEmpty()) { "Couldn't verify the installed LVL signature" }
             val createdAt = System.currentTimeMillis()
-            Attempt(UUID.randomUUID().toString(), id, version, versionCode, "created", null,
+            val identity = ownedAttemptId?.takeIf {
+                runCatching { UUID.fromString(it).toString() == it }.getOrDefault(false)
+            } ?: UUID.randomUUID().toString()
+            Attempt(identity, id, version, versionCode, "created", null,
                 createdAt, signerHashes, listOf("${createdAt}:created:none"))
                 .also { writeLocked(context, it) }
         }
@@ -223,8 +255,7 @@ object ApkInstall {
         val details = session.createDetailsIntent() ?: return false
         details.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         return runCatching {
-            val tap = PendingIntent.getActivity(context, 9, details,
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+            val tap = confirmationTap(context, attempt, details)
             notify(context, 7, "Finish updating LVL", "Tap to continue installing the update", tap)
             true
         }.getOrDefault(false)
@@ -263,7 +294,8 @@ object ApkInstall {
     fun availableBytes(context: Context): Long? =
         runCatching { StatFs(context.filesDir.absolutePath).availableBytes }.getOrNull()
 
-    fun install(context: Context, apk: File, version: String, versionCode: Long, onSessionCreated: (Int) -> Unit) {
+    fun install(context: Context, apk: File, version: String, versionCode: Long,
+                onSessionCreated: (Int) -> Unit, ownedAttemptId: String? = null) {
         val installer = context.packageManager.packageInstaller
         val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL).apply {
             setAppPackageName(context.packageName)
@@ -275,8 +307,11 @@ object ApkInstall {
         val id = installer.createSession(params)
         var attempt: Attempt? = null
         try {
-            val created = begin(context, id, version, versionCode)
+            val created = begin(context, id, version, versionCode, ownedAttemptId)
             attempt = created
+            // Notification delivery is optional; failure to retire an older
+            // surface must not prevent the verified PackageInstaller attempt.
+            runCatching { context.getSystemService(NotificationManager::class.java).cancel(7) }
             onSessionCreated(id)
             Log.i(TAG, "Created LVL APK install session $id, apkBytes=${apk.length()}, dataAvailableBytes=${availableBytes(context)}")
             installer.openSession(id).use { session ->
@@ -367,8 +402,10 @@ class InstallResultReceiver : BroadcastReceiver() {
             ApkInstall.onResult?.invoke(sessionId, true, null)
             return
         }
+        if (finalState == null || finalState.id != attempt.id || finalState.sessionId != sessionId) return
         when (status) {
             PackageInstaller.STATUS_PENDING_USER_ACTION -> {
+                if (!finalState.awaitingConfirmation) return
                 if (confirm == null) {
                     // A pending-action callback without a usable confirmation
                     // Intent is not an explicit install failure. Retain the
@@ -377,12 +414,12 @@ class InstallResultReceiver : BroadcastReceiver() {
                     return
                 }
                 confirm.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                if (!ApkInstall.ownedConfirmation(context, attempt.id, sessionId)) return
                 val opened = MainActivity.visible && runCatching { context.startActivity(confirm) }.isSuccess
                 if (!opened) {
                     // Away from LVL, Android doesn't let it open the confirmation: ask from a notification.
                     runCatching {
-                        val tap = PendingIntent.getActivity(context, 7, confirm,
-                            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+                        val tap = ApkInstall.confirmationTap(context, attempt, confirm)
                         ApkInstall.notify(context, 7, "Finish updating LVL", "Tap to install the new version", tap)
                     }.onFailure {
                         ApkInstall.log("Optional install confirmation notification unavailable: ${it.javaClass.simpleName}")

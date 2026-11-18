@@ -5,22 +5,38 @@ import { MAX_SUBTITLE_TEXT_BYTES, port } from "../../server.js";
 import { boundedInteger, json, methodNotAllowed } from "../app/http-helpers.js";
 import { internalTorrentSource } from "../torrents/torrent-sessions.js";
 import { probeTorrentFile } from "../media/torrent-probe.js";
+import { mediaAdmissionsClosed, registerMediaShutdownChild } from "../media/media-shutdown.js";
 
 const MAX_EMBEDDED_SUBTITLE_JOBS = 2;
 
 const activeEmbeddedSubtitleJobs = new Set();
+const activeEmbeddedSubtitleProbes = new Set();
 
 export async function extractTorrentSubtitle(req, res, session, fileIndex, url) {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
+  if (mediaAdmissionsClosed()) { json(res, 503, { error: "Media server is shutting down" }); return; }
   if (!ffmpegPath) {
     json(res, 503, { error: "Bundled FFmpeg binary is unavailable" });
     return;
   }
-  const streamIndex = boundedInteger(url.searchParams.get("stream"), 0, 9999);
+  // URLSearchParams.get() returns null for a missing selector, and Number(null)
+  // is zero. A request without an explicit subtitle track must never acquire
+  // the authority of global stream 0 (often the video rather than subtitles).
+  const rawStream = url.searchParams.get("stream");
+  const streamIndex = rawStream !== null && /^(?:0|[1-9][0-9]{0,3})$/.test(rawStream)
+    ? boundedInteger(rawStream, 0, 9999) : undefined;
   if (streamIndex === undefined) {
     json(res, 400, { error: "A valid embedded subtitle stream index is required" });
     return;
   }
+  // Reserve before the asynchronous torrent metadata probe. Otherwise dozens
+  // of seeks can occupy independent probes while the two-FFmpeg cap is idle.
+  if (activeEmbeddedSubtitleJobs.size + activeEmbeddedSubtitleProbes.size >= MAX_EMBEDDED_SUBTITLE_JOBS) {
+    json(res, 429, { error: "Too many embedded subtitle windows are being extracted" });
+    return;
+  }
+  const probeReservation = {};
+  activeEmbeddedSubtitleProbes.add(probeReservation);
   // Metadata can take a long time on a torrent. Listen for disconnects BEFORE
   // awaiting it; otherwise a closed request can spawn an orphan FFmpeg later.
   let clientClosed = Boolean(res.destroyed || res.writableEnded || req.aborted);
@@ -30,10 +46,12 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
   let media;
   try { media = await probeTorrentFile(session, fileIndex); }
   finally {
+    activeEmbeddedSubtitleProbes.delete(probeReservation);
     req.off("aborted", markClientClosed);
     res.off("close", markClientClosed);
   }
   if (clientClosed || res.destroyed || res.writableEnded || req.aborted) return;
+  if (mediaAdmissionsClosed()) { json(res, 503, { error: "Media server is shutting down" }); return; }
   const subtitle = (media.subtitleTracks || []).find((track) => Number(track.streamIndex) === streamIndex);
   if (!subtitle) {
     json(res, 404, { error: "Embedded subtitle track was not found" });
@@ -49,7 +67,11 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
   // pieces arrive. Normal callers keep the original atomic response.
   const progressive = url.searchParams.get("progressive") === "1";
   const requestedStart = Number(url.searchParams.get("start") || 0);
-  if (!Number.isFinite(requestedStart) || requestedStart < 0 || requestedStart > media.durationSeconds) {
+  const durationKnown = Number.isFinite(media.durationSeconds) && media.durationSeconds > 0;
+  // With no verified duration, only the beginning is a defensible seek point:
+  // never invent an end time, but allow the bounded initial subtitle window.
+  if (!Number.isFinite(requestedStart) || requestedStart < 0
+    || (durationKnown ? requestedStart > media.durationSeconds : requestedStart !== 0)) {
     json(res, 400, { error: "Subtitle window start is outside the video" });
     return;
   }
@@ -63,6 +85,11 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
   }
   const tagged = typeof internalTorrentSource === "function"
     ? internalTorrentSource(session, fileIndex, "subtitle") : null;
+  if (mediaAdmissionsClosed()) {
+    tagged?.release();
+    json(res, 503, { error: "Media server is shutting down" });
+    return;
+  }
   const sourceUrl = tagged?.url || `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   const args = [
     "-v", "error",
@@ -78,24 +105,61 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
     "-f", "webvtt",
     "pipe:1",
   ];
-  const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  let ffmpeg;
+  try { ffmpeg = spawn(ffmpegPath, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }); }
+  catch (error) {
+    tagged?.release();
+    if (!res.destroyed && !res.writableEnded) json(res, 500, { error: error.message });
+    return;
+  }
+  if (!registerMediaShutdownChild(ffmpeg)) {
+    tagged?.release();
+    if (!res.destroyed && !res.writableEnded)
+      json(res, 503, { error: "Media server is shutting down" });
+    return;
+  }
   activeEmbeddedSubtitleJobs.add(ffmpeg);
-  const releaseSubtitleJob = () => { tagged?.release(); activeEmbeddedSubtitleJobs.delete(ffmpeg); };
+  let jobReleased = false;
+  let escalation = null;
+  const releaseSubtitleJob = () => {
+    if (jobReleased) return;
+    jobReleased = true;
+    clearTimeout(escalation);
+    tagged?.release();
+    activeEmbeddedSubtitleJobs.delete(ffmpeg);
+  };
+  // Child 'exit' precedes trailing subtitle bytes. Retain the slot and source
+  // reader through stdio close, except a proven spawn failure with no PID.
   ffmpeg.once("close", releaseSubtitleJob);
-  ffmpeg.once("error", releaseSubtitleJob);
   const chunks = [];
   let size = 0;
   let stderr = "";
   let settled = false;
   let streaming = false;
+  let drainListener = null;
+  const stop = () => {
+    if (drainListener) { res.off("drain", drainListener); drainListener = null; }
+    // ChildProcess.killed merely records successful signal delivery, not OS
+    // exit. Also, successful 'close' is a normal terminal event: finish()
+    // must not signal its possibly recycled PID.
+    const stillRunning = () => !jobReleased && ffmpeg.exitCode == null
+      && ffmpeg.signalCode == null;
+    if (stillRunning()) try { ffmpeg.kill("SIGTERM"); } catch {}
+    if (Number.isSafeInteger(ffmpeg.pid) && ffmpeg.pid > 0 && !jobReleased && !escalation) {
+      escalation = setTimeout(() => {
+        if (stillRunning()) try { ffmpeg.kill("SIGKILL"); } catch {}
+      }, 2000);
+      escalation.unref?.();
+    }
+  };
   const beginStreaming = () => {
-    if (streaming) return;
+    if (streaming || settled || res.destroyed || res.writableEnded) return;
     streaming = true;
     res.writeHead(200, {
       "Content-Type": "text/vtt; charset=utf-8",
       "Cache-Control": "no-store",
       "X-Subtitle-Progressive": "1",
-      "X-Subtitle-Language": String(subtitle.language || ""),
+      "X-Subtitle-Language": String(subtitle.language || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24),
       "X-Subtitle-Start": String(windowStart),
       "X-Subtitle-Window-Seconds": String(windowSeconds),
     });
@@ -105,7 +169,7 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
     if (settled) return;
     settled = true;
     clearTimeout(timer);
-    if (!ffmpeg.killed) ffmpeg.kill();
+    stop();
     if (progressive && streaming) {
       if (!res.destroyed) res.end(status === 200
         ? "\n\nNOTE LVL-EXTRACT-COMPLETE\n"
@@ -124,6 +188,7 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
   const timer = setTimeout(() => finish(504, "Timed out reading video. Some torrent pieces may still be missing."), progressive ? 42_000 : 20_000);
   timer.unref?.();
   ffmpeg.stdout.on("data", (chunk) => {
+    if (settled || res.destroyed || res.writableEnded) return;
     size += chunk.length;
     if (size > MAX_SUBTITLE_TEXT_BYTES) {
       finish(413, "Embedded subtitle track is too large");
@@ -133,14 +198,27 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
       beginStreaming();
       if (!res.write(chunk)) {
         ffmpeg.stdout.pause();
-        res.once("drain", () => ffmpeg.stdout.resume());
+        drainListener = () => {
+          drainListener = null;
+          if (!settled && !res.destroyed && !res.writableEnded) ffmpeg.stdout.resume();
+        };
+        res.once("drain", drainListener);
       }
     } else chunks.push(chunk);
   });
   ffmpeg.stderr.on("data", (chunk) => {
+    if (settled) return;
     if (stderr.length < 16 * 1024) stderr += chunk.toString("utf8");
   });
-  ffmpeg.once("error", (error) => finish(500, error.message));
+  ffmpeg.stdout.on("error", (error) => {
+    if (settled || res.destroyed || res.writableEnded) return;
+    finish(502, error.message);
+  });
+  ffmpeg.stderr.on("error", () => {});
+  ffmpeg.once("error", (error) => {
+    if (!Number.isSafeInteger(ffmpeg.pid) || ffmpeg.pid <= 0) releaseSubtitleJob();
+    finish(500, error.message);
+  });
   ffmpeg.once("close", (code) => {
     if (settled) return;
     if (code !== 0) {
@@ -154,7 +232,7 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
       return;
     }
     finish(200, text, {
-      "X-Subtitle-Language": String(subtitle.language || ""),
+      "X-Subtitle-Language": String(subtitle.language || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 24),
       "X-Subtitle-Title": encodeURIComponent(String(subtitle.title || "Embedded subtitle").slice(0, 200)),
     });
   });
@@ -162,7 +240,7 @@ export async function extractTorrentSubtitle(req, res, session, fileIndex, url) 
     if (!settled) {
       settled = true;
       clearTimeout(timer);
-      if (!ffmpeg.killed) ffmpeg.kill();
+      stop();
     }
   });
 }

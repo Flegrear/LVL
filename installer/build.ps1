@@ -260,6 +260,10 @@ $cscArgs = @(
 )
 & $csc $cscArgs
 if ($LASTEXITCODE -ne 0) { throw "LVL launcher compilation failed ($LASTEXITCODE)." }
+$uninstallObserverSha256 = (Get-FileHash -LiteralPath $launchExe -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($uninstallObserverSha256 -notmatch '^[a-f0-9]{64}$') {
+  throw 'Compiled uninstaller native observer has no valid SHA-256 identity.'
+}
 
 Write-Host 'Generating dependency, Node, FFmpeg and FFprobe license notices...'
 & $node (Join-Path $PSScriptRoot 'notices.mjs') $payloadRoot
@@ -289,7 +293,7 @@ foreach ($artifactName in @('LVL.exe', 'LVL.exe.sha256', 'LVL-Setup.exe', 'LVL-S
   if (Test-Path -LiteralPath $artifact -PathType Leaf) { Remove-Item -LiteralPath $artifact -Force }
 }
 Write-Host "Compiling Windows setup with $iscc"
-& $iscc "/DPayloadDir=$payloadRoot" "/DOutputDir=$distRoot" "/DAppVersion=$($package.version)" (Join-Path $PSScriptRoot 'setup.iss')
+& $iscc "/DPayloadDir=$payloadRoot" "/DOutputDir=$distRoot" "/DAppVersion=$($package.version)" "/DUninstallObserverSha256=$uninstallObserverSha256" (Join-Path $PSScriptRoot 'setup.iss')
 if ($LASTEXITCODE -ne 0) { throw "Inno Setup compilation failed ($LASTEXITCODE)." }
 $setupExe = Join-Path $distRoot 'LVL-Setup.exe'
 if (-not (Test-Path -LiteralPath $setupExe -PathType Leaf)) { throw "Expected installer missing: $setupExe" }

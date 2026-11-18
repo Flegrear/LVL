@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { Transform } from 'node:stream';
+import { createSharedCacheReservation } from './shared-cache-admission.js';
 
 const SESSION=/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const MAX_HEADER=16;
@@ -125,7 +126,9 @@ export function createRemuxRunAheadController({
 
 function children(bytes,from=8,to=bytes.length) {
   const values=[];
-  for(let pos=from;pos+8<=to;) {
+  if(!Number.isSafeInteger(from)||!Number.isSafeInteger(to)||from<0||to>bytes.length||from>to)return null;
+  for(let pos=from;pos<to;) {
+    if(values.length>=1024||pos+8>to)return null;
     let size=bytes.readUInt32BE(pos);
     const name=bytes.toString('ascii',pos+4,pos+8);
     let header=8;
@@ -139,7 +142,6 @@ function children(bytes,from=8,to=bytes.length) {
     values.push({name,start:pos,end:pos+size,body:pos+header});
     pos+=size;
   }
-  if(values.length && values.at(-1).end!==to)return null;
   return values;
 }
 function getTrackTimescales(moov) {
@@ -163,7 +165,8 @@ function getTrackTimescales(moov) {
     const scale=moov.readUInt32BE(timescaleOffset);
     if(!id||!scale||map.has(id))return null;
     map.set(id,scale);
-    if(hdlr&&hdlr.body+12<=hdlr.end&&moov.toString('ascii',hdlr.body+8,hdlr.body+12)==='vide') {
+    if(hdlr&&hdlr.body+12>hdlr.end)return null;
+    if(hdlr&&moov.toString('ascii',hdlr.body+8,hdlr.body+12)==='vide') {
       if(map.videoTrackId)return null;
       map.videoTrackId=id;
       const minf=mdiaChildren.find(x=>x.name==='minf');
@@ -210,7 +213,7 @@ function firstVideoSample(moof,items,trackId,timescales) {
   const dataOffset=moof.readInt32BE(at);at+=4;
   let firstFlags=defaultFlags;
   if(flags&4){if(at+4>trun.end)return null;firstFlags=moof.readUInt32BE(at);at+=4;}
-  if(flags&0x100)at+=4;
+  if(flags&0x100){if(at+4>trun.end)return null;at+=4;}
   let firstSize=defaultSize;
   if(flags&0x200){if(at+4>trun.end)return null;firstSize=moof.readUInt32BE(at);at+=4;}
   if(flags&0x400){if(at+4>trun.end)return null;firstFlags=moof.readUInt32BE(at);}
@@ -274,7 +277,7 @@ class Mp4Index {
         if((kind==='moov'&&length>MAX_INIT_BYTES)||(kind==='moof'&&length>MAX_MOOF_BYTES)
           ||(kind==='ftyp'&&length>512))throw Error('oversize MP4 metadata atom');
         const start=this.size;
-        this.box={kind,length,start,remaining:length-this.header.length,
+        this.box={kind,length,start,headerLength:this.header.length,remaining:length-this.header.length,
           collected:['ftyp','moov','moof'].includes(kind)?[this.header]:null};
         this.size+=this.header.length;this.header=Buffer.alloc(0);
         if(this.box.remaining===0)this.endBox();
@@ -303,6 +306,16 @@ class Mp4Index {
       this.pending={offset:b.start,tracks};
     }else if(b.kind==='mdat'){
       if(!this.pending||this.stage!=='fragments')throw Error('unpaired MP4 media');
+      // trun offsets are measured from moof start, not from the file. An
+      // offset into a free/styp box or the mdat header is never a sample.
+      const minSampleOffset=b.start+b.headerLength-this.pending.offset;
+      const maxSampleOffset=b.start+b.length-this.pending.offset;
+      for(const item of this.pending.tracks) {
+        const rap=item.rap;
+        if(rap&&(rap.sampleOffset<minSampleOffset
+          ||rap.sampleOffset+rap.sampleBytes>maxSampleOffset))
+          throw Error('RAP sample outside mdat payload');
+      }
       if(this.fragments.length>=this.maxFragments)throw Error('MP4 fragment count cap reached');
       const entry={offset:this.pending.offset,end:this.size,bytes:this.size-this.pending.offset,
         tracks:this.pending.tracks};
@@ -318,6 +331,11 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
   if(!path.isAbsolute(sessionsRoot||''))throw Error('remux cache requires scoped absolute sessionsRoot');
   const sessions=new Map();
   const retiredGroups=new Set();
+  // A failed FileHandle.close() is NOT a released borrower. Retain its group
+  // pin and retry the exact handle rather than unlinking active bytes on POSIX
+  // (where unlink succeeds even with an open reader). A WeakSet prevents
+  // multiple independent releases for the same handle.
+  const closingReaderHandles=new WeakSet();
   const cap=Math.min(DEFAULT_ENTRY_CAP,Math.max(4096,Number(maxEntryBytes)||DEFAULT_ENTRY_CAP));
   const fragmentCap=Math.min(MAX_INDEX_FRAGMENTS,Math.max(1,Number(maxIndexFragments)||MAX_INDEX_FRAGMENTS));
   const valid=(id)=>SESSION.test(String(id?.sessionId||''))&&typeof id.sourceIdentity==='string'
@@ -357,7 +375,9 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
       producerToken:crypto.randomBytes(24).toString('hex'),
       path:path.join(group.dir,key+'.part'),readyPath:path.join(group.dir,key+'.mp4'),
       pending:0,queue:[],pumping:false,pumpPromise:null,handle:null,
-      disabled:false,closed:false,finalized:false};
+      disabled:false,closed:false,finalized:false,
+      quota:createSharedCacheReservation({ sessionsRoot,
+        allowance:bytes=>allowance(bytes,identity) })};
     let resolveFinalization;
     record.finalization=new Promise(resolve=>{resolveFinalization=resolve;});
     let finalizationSettled=false;
@@ -370,8 +390,34 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
     async function stopAndDiscard(){
       record.disabled=true;record.queue.length=0;record.pending=0;
       try{
-        if(record.handle){await record.handle.close().catch(()=>{});record.handle=null;}
-        if(group.pins||group.retired)return; // reader lease or group retirement handles physical removal
+        if(record.handle){
+          try{await record.handle.close();record.handle=null;}
+          catch{
+            // The writer still owns bytes even if the platform rejected close.
+            // Retry this exact handle and retain admission instead of unlinking.
+            const retry=setTimeout(()=>{void stopAndDiscard();},1000);
+            retry.unref?.();
+            return;
+          }
+        }
+        record.quota.release();
+        if(group.pins){
+          // A pinned reader owns the old directory's exact bytes. Retire that
+          // directory as a whole, so the same key may start a fresh generation
+          // in another private directory without overwriting a pinned handle.
+          if(!group.retired&&sessions.get(identity.sessionId)===group){
+            sessions.delete(identity.sessionId);
+            group.retired=true;
+            retiredGroups.add(group);
+            for(const other of group.entries.values()){
+              other.disabled=true;
+              other.queue.length=0;
+              other.settleFinalization?.();
+            }
+          }
+          return;
+        }
+        if(group.retired){await removeGroup(group).catch(()=>{});return;}
         await fs.rm(record.path,{force:true}).catch(()=>{});
         await fs.rm(record.readyPath,{force:true}).catch(()=>{});
         await fs.rm(path.join(group.dir,key+'.json'),{force:true}).catch(()=>{});
@@ -381,8 +427,9 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
       }finally{settleFinalization();}
     }
     async function initialize(){
-      const gate=await allowance(RESERVE_CHUNK,identity);
-      if(!enabled()||!gate?.allowed||gate.availableBytes<RESERVE_CHUNK)return false;
+      if(record.disabled||!await record.quota.reserve(RESERVE_CHUNK)
+        ||record.disabled||!enabled())return false;
+      budgetBytes=RESERVE_CHUNK;
       // A cryptographically random exclusive subdirectory prevents untrusted
       // torrent filenames from colliding with cache files.
       await fs.mkdir(path.join(sessionsRoot,identity.sessionId),{recursive:true});
@@ -408,12 +455,12 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
             record.pending-=size;
             if(record.bytes+size>entryCap)throw Error('entry disk cap reached');
             if(budgetBytes<size){
-              const gate=await allowance(Math.max(RESERVE_CHUNK,size),identity);
-              if(!gate?.allowed || gate.availableBytes<Math.max(RESERVE_CHUNK,size))
+              const target=Math.max(RESERVE_CHUNK,size);
+              if(!await record.quota.reserve(target-budgetBytes))
                 throw Error('shared player budget exhausted');
-              budgetBytes=RESERVE_CHUNK;
+              if(record.disabled)throw Error('retired cache producer');
+              budgetBytes=target;
             }
-            budgetBytes-=size;
             const chunk=blocks.length===1?blocks[0]:Buffer.concat(blocks,size);
             let written=0;
             while(written<chunk.length){
@@ -421,6 +468,8 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
               if(!result.bytesWritten)throw Error('short cache write');
               written+=result.bytesWritten;
             }
+            if(!record.quota.consume(size))throw Error('cache reservation ownership lost');
+            budgetBytes-=size;
             index.add(chunk);
             record.bytes+=chunk.length;
           }
@@ -483,7 +532,10 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
           await fs.rename(metaFile+'.tmp',metaFile);
           record.complete=ready;
         }catch{await stopAndDiscard();}
-      }finally{record.active=false;settleFinalization();}
+      }finally{
+        if(record.handle===null)record.quota.release();
+        record.active=false;settleFinalization();
+      }
     }
     return {transform,finish,producerToken:record.producerToken};
   }
@@ -501,13 +553,25 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
     return group.cleanupPromise;
   }
   async function releaseLease(group,handle){
-    await handle.close().catch(()=>{});
-    group.pins=Math.max(0,group.pins-1);
-    if(group.pins)return;
-    if(group.retired){await removeGroup(group).catch(()=>{});return;}
-    for(const record of [...group.entries.values()]){
-      if(record.disabled&&!record.pumping)await record.discard();
-    }
+    if(closingReaderHandles.has(handle))return;
+    closingReaderHandles.add(handle);
+    const attempt=async()=>{
+      try{await handle.close();}
+      catch{
+        // Close failures must not clear the last borrower pin. Keep the exact
+        // handle owned and try again without holding a client HTTP response.
+        const retry=setTimeout(()=>{void attempt();},1000);
+        retry.unref?.();
+        return;
+      }
+      group.pins=Math.max(0,group.pins-1);
+      if(group.pins)return;
+      if(group.retired){await removeGroup(group).catch(()=>{});return;}
+      for(const record of [...group.entries.values()]){
+        if(record.disabled&&!record.pumping)await record.discard().catch(()=>{});
+      }
+    };
+    await attempt();
   }
   async function acquireRecordFile(group,record,file,minimumBytes){
     if(group.retired||record.disabled||!enabled()||group.pins>=MAX_OPEN_READERS)return null;
@@ -525,9 +589,11 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
         await releaseLease(group,handle);
       }};
     }catch{
-      if(handle)await handle.close().catch(()=>{});
-      group.pins--;
-      if(group.retired&&!group.pins)await removeGroup(group).catch(()=>{});
+      if(handle)await releaseLease(group,handle);
+      else{
+        group.pins=Math.max(0,group.pins-1);
+        if(group.retired&&!group.pins)await removeGroup(group).catch(()=>{});
+      }
       return null;
     }
   }
@@ -561,9 +627,16 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
     if(!record?.complete||record.active||record.disabled)return null;
     const lease=await acquireRecordFile(group,record,record.readyPath,record.bytes);
     if(!lease)return null;
-    const stat=await lease.handle.stat();
-    if(stat.size!==record.bytes){await lease.release();return null;}
-    return {...lease,bytes:record.bytes};
+    try {
+      const stat=await lease.handle.stat();
+      if(stat.size!==record.bytes){await lease.release();return null;}
+      return {...lease,bytes:record.bytes};
+    } catch {
+      // A FileHandle can fail after the pin is granted (for example during
+      // Windows cache retirement). The one lease still owns its release.
+      await lease.release();
+      return null;
+    }
   }
   async function verifiedH264Rap(handle,fragment,track,config){
     const rap=track.rap;
@@ -650,6 +723,10 @@ export function createRemuxSegmentCache({sessionsRoot,enabled=()=>false,allowanc
     group.retired=true;retiredGroups.add(group);
     for(const record of group.entries.values()){
       record.disabled=true;record.queue.length=0;
+      // Abort this owner's pending quota wait immediately. The shared ledger
+      // still serializes any allowance callback already running, so another
+      // writer cannot overtake its storage side effects.
+      record.quota.release();
       record.settleFinalization?.();
       if(record.pumpPromise)await record.pumpPromise.catch(()=>{});
       if(record.handle)await record.handle.close().catch(()=>{});

@@ -5,10 +5,50 @@
 import { buttonMarkup, escapeHtml, icon, metaMarkup, toast } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi } from "./comics-api.js";
-import { readerNames } from "./comics-render.js";
+import { readerNameKey, readerNames } from "./comics-render.js";
+import { unitKey } from "../../shared/reading/units.js";
 
 const PAGE = 60;
 const KIND_NAMES = { local: "Your file" };
+
+// One chapter-list generation may own a reused container at a time. The
+// previous generation's delegated listeners and pending pointer selection
+// must not survive a work switch or a same-container rerender.
+const chapterMounts = new WeakMap();
+export function claimChapterMount(container) {
+  chapterMounts.get(container)?.close();
+  const controller = new AbortController();
+  const owner = {
+    signal: controller.signal,
+    isCurrent: () => !controller.signal.aborted && chapterMounts.get(container) === owner,
+    close() {
+      if (controller.signal.aborted) return;
+      controller.abort();
+      if (chapterMounts.get(container) === owner) chapterMounts.delete(container);
+    },
+  };
+  chapterMounts.set(container, owner);
+  return owner;
+}
+
+// A chapter row is a short-lived DOM owner. Requests may resolve after sorting,
+// refresh, a chapter list replacement, or a Sources panel dismissal. Only the
+// current connected row/intent can publish hints, repaint, or start playback.
+export function createChapterCandidateGate(container) {
+  const serials = new WeakMap();
+  return {
+    issue(row) {
+      const serial = (serials.get(row) || 0) + 1;
+      serials.set(row, serial);
+      return serial;
+    },
+    invalidate(row) { serials.set(row, (serials.get(row) || 0) + 1); },
+    current(row, serial) {
+      return serials.get(row) === serial && container.isConnected === true
+        && row.isConnected === true && container.contains(row);
+    },
+  };
+}
 
 // Flat, ordered chapters from the index: [{ chapter, volume, title, volumeTitle, cover }]
 export function flattenIndex(index) {
@@ -31,6 +71,13 @@ export function neighbourVolume(indexItems, chapter) {
     if (number < value && (!before || number > Number(before.chapter))) before = item;
     if (number > value && (!after || number < Number(after.chapter))) after = item;
   }
+  // A list can restart chapter numbering in the next volume. When the
+  // nearest numbered neighbour belongs to more than one explicit volume,
+  // its number cannot prove where an unlabelled source extra belongs.
+  const unambiguous = (item) => !item || new Set(indexItems
+    .filter((candidate) => Number(candidate.chapter) === Number(item.chapter))
+    .map((candidate) => String(candidate.volume ?? ""))).size === 1;
+  if (!unambiguous(before) || (!before && !unambiguous(after))) return null;
   if (!before) return after?.volume || null;
   if (!after && Number.isInteger(value)) return null;
   return before.volume || null;
@@ -40,15 +87,34 @@ export function neighbourVolume(indexItems, chapter) {
 // index has numbers only), and chapters only the sources have (a manga with no index,
 // like Berserk, chapters newer than it, chapter 0, parts like 21.5). Sorted by volume
 // (none last), then number. A source chapter goes in its volume only when the index
-// has no volumes of its own; otherwise it joins its neighbours' volume (neighbourVolume).
+// has no volumes of its own. A source-provided volume remains authoritative;
+// only a chapter with no volume is placed alongside its neighbours.
 export function mergeSourceChapters(indexItems, extra = []) {
-  const titles = new Map(extra.filter((item) => item?.chapter && item.title).map((item) => [item.chapter, item.title]));
-  const known = new Set(indexItems.map((item) => item.chapter));
+  const keyOf = (item) => unitKey(item);
+  const known = new Set(indexItems.map(keyOf));
+  const indexByNumber = new Map();
+  for (const item of indexItems) indexByNumber.set(item.chapter, (indexByNumber.get(item.chapter) || 0) + 1);
+  const titles = new Map(extra.filter((item) => item?.chapter && item.title).map((item) => [keyOf(item), item.title]));
   const indexHasVolumes = indexItems.some((item) => item.volume);
-  const titled = titles.size ? indexItems.map((item) => (item.title || !titles.has(item.chapter) ? item : { ...item, title: titles.get(item.chapter) })) : indexItems;
-  const added = extra.filter((item) => item?.chapter && !known.has(item.chapter)).map((item) => ({
-    chapter: item.chapter, volume: indexHasVolumes ? neighbourVolume(indexItems, item.chapter) : item.volume || null, title: item.title || "", volumeTitle: "", cover: "", fromSource: true,
-  }));
+  const titled = titles.size ? indexItems.map((item) => {
+    if (item.title) return item;
+    const exact = titles.get(keyOf(item));
+    const unlabelled = indexByNumber.get(item.chapter) === 1 ? titles.get(unitKey({ chapter: item.chapter })) : null;
+    return exact || unlabelled ? { ...item, title: exact || unlabelled } : item;
+  }) : indexItems;
+  const added = [];
+  for (const item of extra) {
+    if (!item?.chapter) continue;
+    // An unlabelled source record cannot introduce a second volume for a
+    // number already in the index. Equally, an explicit V2C1 must not be
+    // swallowed just because the index has V1C1.
+    if (!item.volume && indexByNumber.has(item.chapter)) continue;
+    const volume = item.volume || (indexHasVolumes ? neighbourVolume(indexItems, item.chapter) : null);
+    const key = unitKey({ chapter: item.chapter, volume });
+    if (known.has(key)) continue;
+    known.add(key);
+    added.push({ chapter: item.chapter, volume, title: item.title || "", volumeTitle: "", cover: "", fromSource: true });
+  }
   if (!added.length) return titled;
   const rank = (item) => (item.volume === null || item.volume === undefined || item.volume === "" ? Number.POSITIVE_INFINITY : Number(item.volume));
   return [...titled, ...added].sort((a, b) => rank(a) - rank(b) || Number(a.chapter) - Number(b.chapter));
@@ -178,6 +244,9 @@ export function createChapterReadSummaryController(state, fetchSummary, repaint 
 //   onRead(readerId, page, chapter), onChooseSources() }
 export function mountChapterList(container, options) {
   const { workId, comic, index, files = [], langs = ["en"], onRead, onChooseSources, head = null } = options;
+  const mountOwner = claimChapterMount(container);
+  const isCurrentMount = () => mountOwner.isCurrent();
+  const candidateGate = createChapterCandidateGate(container);
   const indexItems = flattenIndex(index);
   let all = indexItems;
   const countVolumes = () => new Set(all.map((item) => item.volume).filter(Boolean)).size;
@@ -191,18 +260,24 @@ export function mountChapterList(container, options) {
   const savedVolumes = (() => { try { const value = JSON.parse(localStorage.getItem(volumesKey) || "{}"); return value && typeof value === "object" && !Array.isArray(value) ? value : {}; } catch { return {}; } })();
   const state = { sort: chapterSortPreference(workId), shown: PAGE, read: new Set(), volumesRead: new Set(), unitStates: new Map(), exactRead: false,
     readConfirmed: false, readPending: true, readError: "", units: [],
-    selecting: false, selected: new Set(), saving: false, available: {},
+    selecting: false, selected: new Set(), saving: false, available: {}, availableByUnit: null,
     availabilityError: "", failedSources: [], opened: new Map(Object.entries(savedVolumes).map(([key, open]) => [String(key), open === true])) };
   const isCollapsed = (key) => volumeCollapsed(key, state.opened, volumeCount);
   const setVolumeOpen = (key, open) => {
     state.opened.set(key, open);
     try { localStorage.setItem(volumesKey, JSON.stringify(Object.fromEntries(state.opened))); } catch {}
   };
-  const onDisk = new Set();
-  for (const file of files) {
-    if (file.chapter) for (let n = Math.ceil(Number(file.chapter)); n <= Number(file.chapterEnd || file.chapter); n += 1) onDisk.add(String(n));
-  }
-  const volumesOnDisk = new Set(files.filter((file) => !file.chapter && file.volume).map((file) => String(file.volume)));
+  const inRange = (first, last, value) => first != null && value != null
+    && Number(value) >= Number(first) && Number(value) <= Number(last || first);
+  const duplicated = (chapter) => all.filter((item) => item.chapter === chapter).length > 1;
+  const onDisk = (item) => files.some((file) => {
+    if (file.chapter) {
+      if (!inRange(file.chapter, file.chapterEnd, item.chapter)) return false;
+      if (file.volume) return inRange(file.volume, file.volumeEnd, item.volume);
+      return !duplicated(item.chapter);
+    }
+    return inRange(file.volume, file.volumeEnd, item.volume);
+  });
   const note = `<p class="catalog-chapters-note" data-chapter-note></p>`;
   if (head) head.innerHTML = note;
   container.innerHTML = (head ? "" : `<div class="title-section__head"><h2 class="title-section__title">${escapeHtml(t("Chapters"))}</h2>${note}</div>`)
@@ -226,14 +301,19 @@ export function mountChapterList(container, options) {
   };
   const chapterRead = (item) => {
     if (!state.readConfirmed) return null;
+    const ambiguous = duplicated(item.chapter);
+    // Old readChapters is number-only. Do not paint both V1C1 and V2C1 as
+    // read because the historical aggregate says that chapter 1 was finished.
+    if (!state.exactRead && ambiguous) return false;
     if (!state.exactRead) return state.read.has(item.chapter) || Boolean(item.volume && state.volumesRead.has(item.volume));
     const units = unitsFor(item);
     if (units.length) return units.some((unit) => state.unitStates.get(unit.id) === true);
-    if (all.filter((candidate) => candidate.chapter === item.chapter).length > 1) return false;
+    if (ambiguous) return false;
     return state.read.has(item.chapter) || Boolean(item.volume && state.volumesRead.has(item.volume));
   };
 
   function paint() {
+    if (!isCurrentMount()) return;
     const items = list();
     const readCount = state.readConfirmed ? all.filter(chapterRead).length : 0;
     scope.querySelector("[data-chapter-note]").innerHTML = escapeHtml(t("{count} chapters", { count: all.length }))
@@ -269,8 +349,13 @@ export function mountChapterList(container, options) {
       budget -= take.length;
       if (!take.length) return heading;
       return heading + take.map((item) => {
-        const local = onDisk.has(item.chapter) || (item.volume && volumesOnDisk.has(String(item.volume)));
-        return chapterRowMarkup(item, { read: isRead(item), readPending: state.readPending, available: (state.available[item.chapter] || 0) + (local ? 1 : 0), onDisk: local, flat: !grouped(),
+        const local = onDisk(item);
+        const sourceCount = state.availableByUnit
+          ? (state.availableByUnit[unitKey(item)]
+            ?? (duplicated(item.chapter) ? 0 : state.availableByUnit[unitKey({ chapter: item.chapter })])
+            ?? 0)
+          : (duplicated(item.chapter) ? 0 : state.available[item.chapter] || 0);
+        return chapterRowMarkup(item, { read: isRead(item), readPending: state.readPending, available: sourceCount + (local ? 1 : 0), onDisk: local, flat: !grouped(),
           selecting: state.selecting, selectable: unitsFor(item).length > 0, selected: state.selected.has(keyOf(item)), key: keyOf(item) });
       }).join("");
     }).join("");
@@ -296,32 +381,44 @@ export function mountChapterList(container, options) {
     body.querySelector(`[data-volume-toggle="${CSS.escape(key)}"]`)?.focus();
   }
 
-  async function candidatesFor(row) {
+  async function candidatesFor(row, serial) {
     const { candidates } = await comicsApi.candidates(workId, row.dataset.chapter, row.dataset.volume, langs);
-    for (const item of candidates) readerNames.set(item.readerId, { label: `${comic.title} · ${t("Chapter {number}", { number: row.dataset.chapter })}`, chapter: row.dataset.chapter, volume: row.dataset.volume || null, source: item.name, sourceId: item.sourceId || "" });
+    if (!candidateGate.current(row, serial)) return [];
+    for (const item of candidates) readerNames.set(readerNameKey(workId, item.readerId), { label: `${comic.title} · ${t("Chapter {number}", { number: row.dataset.chapter })}`, chapter: row.dataset.chapter, volume: row.dataset.volume || null, source: item.name, sourceId: item.sourceId || "" });
     return candidates;
   }
 
   function setOpen(row, open) {
+    if (!open) candidateGate.invalidate(row);
     row.classList.toggle("is-open", open);
     row.querySelector("[data-comic-chapter-sources]").setAttribute("aria-expanded", String(open));
     row.querySelector(".catalog-chapter-sources").hidden = !open;
   }
 
   async function openPanel(row, candidates = null) {
+    const serial = candidateGate.issue(row);
     const panel = row.querySelector(".catalog-chapter-sources");
     setOpen(row, true);
     panel.innerHTML = `<p class="catalog-chapter-sources-status" role="status">${escapeHtml(t("Finding sources…"))}</p>`;
-    try { panel.innerHTML = candidatesMarkup(candidates || await candidatesFor(row), Boolean(onChooseSources)); } catch (error) { panel.innerHTML = `<p class="comic-source__error">${escapeHtml(error.message)}</p>`; }
+    try {
+      const found = candidates || await candidatesFor(row, serial);
+      if (candidateGate.current(row, serial) && row.classList.contains("is-open"))
+        panel.innerHTML = candidatesMarkup(found, Boolean(onChooseSources));
+    } catch (error) {
+      if (candidateGate.current(row, serial) && row.classList.contains("is-open"))
+        panel.innerHTML = `<p class="comic-source__error">${escapeHtml(error.message)}</p>`;
+    }
   }
 
   const setSort = (order) => {
+    if (!isCurrentMount()) return;
     state.sort = order === "desc" ? "desc" : "asc";
     saveChapterSortPreference(workId, state.sort);
     state.shown = PAGE;
     paint();
   };
   const setGrouping = (enabled) => {
+    if (!isCurrentMount()) return;
     if (groupByVolume === Boolean(enabled)) return;
     groupByVolume = Boolean(enabled);
     saveGroupPreference(workId, groupByVolume);
@@ -336,24 +433,24 @@ export function mountChapterList(container, options) {
     paint();
     const next = [...body.querySelectorAll("[data-chapter-key]")].find((row) => row.dataset.chapterKey === key);
     next?.querySelector("[data-chapter-select]")?.focus();
-  });
+  }, { signal: mountOwner.signal });
   async function markUnits(ids, read) {
-    if (state.saving || !ids.length) return false;
+    if (!isCurrentMount() || state.saving || !ids.length) return false;
     state.saving = true;
     paint();
     try {
       // Server verifies unit IDs against the current sources and returns the
       // authoritative read summary. A failed request leaves the old mark intact.
       const response = await comicsApi.markChapters(workId, ids, read);
-      if (!container.isConnected) return false;
+      if (!isCurrentMount() || !container.isConnected) return false;
       readSummary.apply(response);
       return true;
     } catch (error) {
-      toast(error.message);
+      if (isCurrentMount()) toast(error.message);
       return false;
     } finally {
       state.saving = false;
-      if (container.isConnected) paint();
+      if (isCurrentMount() && container.isConnected) paint();
     }
   }
 
@@ -382,7 +479,7 @@ export function mountChapterList(container, options) {
     }
     return undefined;
   };
-  container.addEventListener("click", selectionClick);
+  container.addEventListener("click", selectionClick, { signal: mountOwner.signal });
   // Holding a chapter selects it. Cancel the timer as soon as the gesture
   // becomes a scroll so a slow swipe never enters selection mode.
   let press = null;
@@ -391,6 +488,7 @@ export function mountChapterList(container, options) {
     if (press?.timer !== undefined) clearTimeout(press.timer);
     press = null;
   };
+  mountOwner.signal.addEventListener("abort", cancelPress, { once: true });
   const startSelection = (key) => {
     const item = all.find((candidate) => keyOf(candidate) === key);
     if (!item || state.saving) return;
@@ -410,29 +508,29 @@ export function mountChapterList(container, options) {
     const x = event.clientX, y = event.clientY;
     const timer = setTimeout(() => {
       press = null;
-      if (container.isConnected) startSelection(key);
+      if (isCurrentMount() && container.isConnected) startSelection(key);
     }, 470);
     press = { pointerId: event.pointerId, x, y, timer };
-  });
+  }, { signal: mountOwner.signal });
   container.addEventListener("pointermove", (event) => {
     if (press && event.pointerId === press.pointerId &&
         (Math.abs(event.clientX - press.x) > 12 || Math.abs(event.clientY - press.y) > 12)) cancelPress();
-  });
+  }, { signal: mountOwner.signal });
   for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"])
-    container.addEventListener(eventName, cancelPress);
+    container.addEventListener(eventName, cancelPress, { signal: mountOwner.signal });
   container.addEventListener("contextmenu", (event) => {
     if (event.target.closest?.("[data-comic-open-chapter]")) {
       const key = event.target.closest(".comic-chapter-row")?.dataset.chapterKey;
       if (key) { event.preventDefault(); cancelPress(); startSelection(key); }
     }
-  });
+  }, { signal: mountOwner.signal });
   container.addEventListener("click", (event) => {
     if (Date.now() < suppressClickUntil && event.target.closest?.(".comic-chapter-row")) {
       event.preventDefault();
       event.stopImmediatePropagation();
       suppressClickUntil = 0;
     }
-  }, true);
+  }, { capture: true, signal: mountOwner.signal });
   container.addEventListener("click", async (event) => {
     if (event.target.closest("[data-chapter-selection-toolbar]")) return;
     if (event.target.closest("[data-chapter-read-retry]")) return void readSummary.load();
@@ -454,33 +552,41 @@ export function mountChapterList(container, options) {
     }
     const read = event.target.closest("[data-comic-open-chapter]");
     if (!read) return undefined;
+    const serial = candidateGate.issue(row);
     read.disabled = true;
     try {
-      const candidates = await candidatesFor(row);
+      const candidates = await candidatesFor(row, serial);
+      if (!candidateGate.current(row, serial)) return undefined;
       if (candidates.length === 1) return onRead(candidates[0].readerId, candidates[0].page || 0, row.dataset.chapter);
       return openPanel(row, candidates);
-    } catch (error) { return toast(error.message); } finally { read.disabled = false; }
-  });
+    } catch (error) {
+      if (candidateGate.current(row, serial)) return toast(error.message);
+    } finally {
+      if (read.isConnected) read.disabled = false;
+    }
+  }, { signal: mountOwner.signal });
 
   paint();
   let availabilityRequest = 0;
   const loadAvailability = async () => {
+    if (!isCurrentMount()) return { ok: false, superseded: true };
     const request = ++availabilityRequest;
     try {
       const result = await comicsApi.availability(workId, langs);
-      if (request !== availabilityRequest) return { ok: false, superseded: true };
+      if (request !== availabilityRequest || !isCurrentMount()) return { ok: false, superseded: true };
       state.availabilityError = "";
       state.failedSources = (result.sources || []).filter((source) => source.error).map((source) => source.name || source.sourceId || t("Source")).slice(0, 8);
       state.available = result.counts || {};
+      state.availableByUnit = result.countsByUnit || null;
       all = mergeSourceChapters(indexItems, result.chapters || []);
       state.units = result.units || [];
       volumeCount = countVolumes();
-      if (container.isConnected) paint();
+      if (container.isConnected && isCurrentMount()) paint();
       return { ok: true, chapters: all.length, failedSources: [...state.failedSources] };
     } catch (error) {
-      if (request !== availabilityRequest) return { ok: false, superseded: true };
+      if (request !== availabilityRequest || !isCurrentMount()) return { ok: false, superseded: true };
       state.availabilityError = String(error?.message || t("Couldn't load chapters."));
-      if (container.isConnected) paint();
+      if (container.isConnected && isCurrentMount()) paint();
       return { ok: false, error: state.availabilityError };
     }
   };
@@ -488,22 +594,33 @@ export function mountChapterList(container, options) {
   void readSummary.load();
   void loadAvailability();
   return {
+    dispose: mountOwner.close,
     get chapters() { return all; },
     get readingOrder() { return chapterPresentation(all, { grouped: grouped() }).flatMap((group) => group.items); },
     get sort() { return state.sort; },
     get groupByVolume() { return groupByVolume; },
     setSort,
     setGrouping,
-    cancelSelection() { state.selecting = false; state.selected.clear(); paint(); },
+    cancelSelection() {
+      if (!isCurrentMount()) return;
+      state.selecting = false;
+      state.selected.clear();
+      paint();
+    },
     refresh: loadAvailability,
-    retryReadSummary: readSummary.load,
+    retryReadSummary: () => isCurrentMount() ? readSummary.load() : Promise.resolve(false),
     get readStatus() { return { confirmed: state.readConfirmed, pending: state.readPending, error: state.readError }; },
     readChapters: () => state.read,
     isRead: chapterRead,
     // Opens the chapter using the same control as tapping its row.
     async read(chapter, volume = null) {
-      const target = all.find((item) => item.chapter === chapter && (volume === null || String(item.volume ?? "") === String(volume)))
-        || all.find((item) => item.chapter === chapter);
+      if (!isCurrentMount() || !container.isConnected) return;
+      const matches = all.filter((item) => item.chapter === chapter);
+      // An explicit volume must never fall through to another volume. With an
+      // unknown volume, a duplicate chapter number needs an explicit choice.
+      const target = volume === null
+        ? (matches.length === 1 ? matches[0] : null)
+        : matches.find((item) => String(item.volume ?? "") === String(volume));
       if (!target) return;
       const key = target?.volume ?? "";
       if (grouped() && isCollapsed(key)) setVolumeOpen(key, true);

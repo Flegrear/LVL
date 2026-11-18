@@ -10,6 +10,7 @@ import { speechTapeWriter } from "../media/speech-tape.js";
 import { createTranscodePlan, transcodeVideoFilter } from "../../shared/media/media-compat.js";
 import { detectHardwareH264Encoder, hardwareVideoEncodingArgs } from "../media/hardware-transcode.js";
 import { pruneExitedTranscodes } from "../media/transcode-slot-lifecycle.js";
+import { mediaAdmissionsClosed } from "../media/media-shutdown.js";
 import { pipeRemuxAhead } from "../media/remux-run-ahead.js";
 import { isTorrentFileFullyVerified } from "../media/verified-torrent-file.js";
 import { evaluateEncodedH264CacheEligibility } from "../media/transcode-cache-eligibility.js";
@@ -25,39 +26,88 @@ import { copiedSeekOrigin } from "./torrent-stream.js";
 import { getCachedMediaProbe, probeTorrentFile } from "../media/torrent-probe.js";
 
 // Only the optional, short, verified SDR encoded-output cache needs a precise
-// FFmpeg binary identity. Hash its real bytes lazily, once, with bounded
-// streaming memory; ordinary playback must not pay this startup cost.
+// FFmpeg binary identity. Hash real bytes lazily with bounded streaming memory;
+// a transient read failure must not poison every later cache attempt, and a
+// replaced binary may never inherit the old cached digest.
 let ffmpegBinaryFingerprintPromise = null;
+let ffmpegBinaryFingerprintStamp = null;
+let ffmpegFingerprintRetryAt = 0;
+const FAILED_FINGERPRINT_RETRY_MS = 30_000;
+function ffmpegBinaryStamp() {
+  const stat = fs.statSync(ffmpegPath);
+  if (!stat.isFile() || !Number.isSafeInteger(stat.size) || stat.size <= 0)
+    throw new Error("Unverified FFmpeg binary");
+  return [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+}
 async function exactFfmpegFingerprint() {
   if (!ffmpegPath) return null;
+  let stamp;
+  try { stamp = ffmpegBinaryStamp(); }
+  catch {
+    ffmpegBinaryFingerprintPromise = null;
+    ffmpegBinaryFingerprintStamp = null;
+    ffmpegFingerprintRetryAt = Date.now() + FAILED_FINGERPRINT_RETRY_MS;
+    return null;
+  }
+  if (stamp !== ffmpegBinaryFingerprintStamp) {
+    ffmpegBinaryFingerprintPromise = null;
+    ffmpegBinaryFingerprintStamp = stamp;
+    ffmpegFingerprintRetryAt = 0;
+  }
+  if (Date.now() < ffmpegFingerprintRetryAt) return null;
   if (!ffmpegBinaryFingerprintPromise) {
-    ffmpegBinaryFingerprintPromise = (async () => {
+    let pending;
+    pending = (async () => {
       const digest = crypto.createHash("sha256");
       for await (const chunk of fs.createReadStream(ffmpegPath, { highWaterMark: 1024 * 1024 })) digest.update(chunk);
+      // No mixed-generation bytes may become an encoded-cache authority if
+      // the binary changed while its fingerprint was being streamed.
+      if (ffmpegBinaryStamp() !== stamp) throw new Error("FFmpeg changed during fingerprinting");
       return digest.digest("hex");
-    })().catch(() => null);
+    })().catch(() => {
+      if (ffmpegBinaryFingerprintPromise === pending) {
+        ffmpegBinaryFingerprintPromise = null;
+        ffmpegFingerprintRetryAt = Date.now() + FAILED_FINGERPRINT_RETRY_MS;
+      }
+      return null;
+    });
+    ffmpegBinaryFingerprintPromise = pending;
   }
   return ffmpegBinaryFingerprintPromise;
 }
 
 let preferredHardwareEncoderPromise = null;
 let failedHardwareEncoder = "";
+let failedHardwareEncoderAt = 0;
+let hardwareProbeRetryAt = 0;
+const HARDWARE_PROBE_RETRY_MS = 30_000;
+const FAILED_ENCODER_RETRY_MS = 5 * 60_000;
+let pendingForegroundAdmissions = 0;
 const androidVideoEncoder = process.platform === "android";
 // Android's small FFmpeg needs an actual MediaCodec frame encode to succeed
 // before the player may advertise H.264 conversion support.
 let videoConversionAvailable = !androidVideoEncoder;
 async function videoTranscodeEncoder() {
-  if (!preferredHardwareEncoderPromise) {
+  if (failedHardwareEncoder && Date.now() - failedHardwareEncoderAt >= FAILED_ENCODER_RETRY_MS) {
+    failedHardwareEncoder = "";
+    preferredHardwareEncoderPromise = null;
+  }
+  if (!preferredHardwareEncoderPromise && Date.now() >= hardwareProbeRetryAt) {
+    hardwareProbeRetryAt = Date.now() + HARDWARE_PROBE_RETRY_MS;
     preferredHardwareEncoderPromise = detectHardwareH264Encoder(ffmpegPath)
       .then((encoder) => {
         if (androidVideoEncoder) videoConversionAvailable = Boolean(encoder && encoder !== failedHardwareEncoder);
+        // No suitable encoder may mean a transient driver/media-service
+        // failure. Allow a later explicit playback to retry after cooldown.
+        if (!encoder) preferredHardwareEncoderPromise = null;
         return encoder;
       }).catch(() => {
         if (androidVideoEncoder) videoConversionAvailable = false;
+        preferredHardwareEncoderPromise = null;
         return null;
       });
   }
-  const encoder = await preferredHardwareEncoderPromise;
+  const encoder = preferredHardwareEncoderPromise ? await preferredHardwareEncoderPromise : null;
   return encoder && encoder !== failedHardwareEncoder ? encoder : (androidVideoEncoder ? null : "libx264");
 }
 // Health and optional background-cache admission must reflect a real device
@@ -66,6 +116,10 @@ export function isVideoConversionAvailable() { return videoConversionAvailable; 
 if (androidVideoEncoder) void videoTranscodeEncoder();
 
 export async function transcodeTorrentFile(req, res, session, fileIndex, requestUrl = null) {
+  if (mediaAdmissionsClosed()) {
+    json(res, 503, { error: "Media server is shutting down" });
+    return;
+  }
   const traceToken = typeof playbackTrace !== "undefined" ? playbackTrace.captureToken(session.id, fileIndex) : null;
   const tracing = Boolean(traceToken);
   const file = session.torrent.files[fileIndex];
@@ -92,7 +146,13 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
 
   let sourceUrl = `http://127.0.0.1:${port}/api/torrents/${encodeURIComponent(session.id)}/files/${fileIndex}/stream`;
   const requestedStart = Number(requestUrl?.searchParams?.get("start") || 0);
-  const requestedAudio = Number(requestUrl?.searchParams?.get("audio") || 0);
+  const audioSelector = requestUrl?.searchParams?.get("audio");
+  const requestedAudio = audioSelector == null ? 0 : Number(audioSelector);
+  if (audioSelector != null && (!/^(?:0|[1-9][0-9]{0,2})$/.test(audioSelector)
+    || !Number.isSafeInteger(requestedAudio) || requestedAudio > 63)) {
+    json(res, 400, { error: "A valid audio track index is required" });
+    return;
+  }
   const maximumStart = media?.durationSeconds ? Math.max(0, Number(media.durationSeconds) - 0.25) : requestedStart;
   const startSeconds = Number.isFinite(requestedStart) && requestedStart > 0
     ? Math.max(0, Math.min(requestedStart, maximumStart))
@@ -101,25 +161,25 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
   const requestedVideoMode = requestUrl?.searchParams?.get("video") || "auto";
   // Explicit copy must never quietly turn a seeked HDR source into SDR just
   // because media metadata is not yet cached when the video is reopened.
-  if (!media && (startSeconds > 0 && requestedVideoMode === "copy"
+  if (!media && (requestedAudio > 0 || startSeconds > 0 && requestedVideoMode === "copy"
     || androidVideoEncoder && (requestedVideoMode === "copy"
       || Number.isInteger(requestedAudio) && requestedAudio > 0))) {
     try { media = await probeTorrentFile(session, fileIndex); }
     catch (error) {
       if (!res.destroyed && !res.writableEnded) json(res, error.statusCode || 422, {
-        error: androidVideoEncoder ? "Cannot verify media metadata for the selected video/audio stream"
+        error: androidVideoEncoder || requestedAudio > 0 ? "Cannot verify media metadata for the selected video/audio stream"
           : "Cannot verify source compatibility for copied-video seeking",
       });
       return;
     }
     if (res.destroyed || res.writableEnded || req.aborted) return;
-    if (androidVideoEncoder && torrentSessions.get(session.id) !== session) {
+    if (torrentSessions.get(session.id) !== session) {
       json(res, 410, { error: "Source session has expired" });
       return;
     }
   }
   const audioTracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
-  if (androidVideoEncoder && Number.isInteger(requestedAudio) && requestedAudio > 0
+  if (Number.isInteger(requestedAudio) && requestedAudio > 0
     && requestedAudio >= audioTracks.length) {
     json(res, 422, { error: "The selected audio track is unavailable for this source" });
     return;
@@ -297,6 +357,19 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
       await complete?.release();
       return;
     }
+    // A delayed disk lookup can resolve after shutdown or after this torrent
+    // ID has been reused for another session. Neither a cache HIT nor a MISS
+    // is authorized to admit the retired reader after that async boundary.
+    const retired = typeof torrentSessions !== "undefined"
+      && torrentSessions.get(session.id) !== session;
+    if (mediaAdmissionsClosed() || retired) {
+      await complete?.release();
+      if (!res.headersSent) json(res, mediaAdmissionsClosed() ? 503 : 410, {
+        error: mediaAdmissionsClosed() ? "Media server is shutting down" : "Source session has expired",
+      });
+      else res.destroy();
+      return;
+    }
     if (complete) {
       let cacheStream = null;
       try {
@@ -322,6 +395,7 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
   // Recheck after ALL async cache/admission work. The client may have moved
   // to another episode or disposed this source before FFmpeg is spawned.
   if (res.destroyed || res.writableEnded || req.aborted) return;
+  if (mediaAdmissionsClosed()) { json(res, 503, { error: "Media server is shutting down" }); return; }
   if (typeof torrentSessions !== "undefined" && torrentSessions.get(session.id) !== session) {
     if (!res.headersSent) json(res, 410, { error: "Source session has expired" });
     else res.destroy();
@@ -333,20 +407,32 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
   // ChildProcess "close" event (for example, when an auxiliary pipe stalls).
   // Reclaim only confirmed exited PIDs before rejecting an otherwise valid
   // conversion. Do not kill or unpipe any live FFmpeg.
+  // Reserve an admission in the same synchronous turn that checked capacity.
+  // Otherwise two foreground calls can both await stopAll(), each see one
+  // slot free, then spawn two FFmpeg children into the same slot.
+  pendingForegroundAdmissions += 1;
+  let tagged;
+  let ffmpeg;
+  try {
   pruneExitedTranscodes(activeTranscodes);
   // Foreground seeks outrank offline encoding, but don't throw away a
   // half-built whole-episode rendition while a spare FFmpeg slot exists.
   // Preempt only when admission would otherwise hit the two-slot ceiling;
   // stopAll waits for actual child close before the next admission check.
-  if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) {
+  if (activeTranscodes.size + pendingForegroundAdmissions - 1 >= MAX_TRANSCODE_JOBS) {
     await progressiveIndexCache.stopAll();
-    if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) await indexedVideoCache.stopAll();
+    pruneExitedTranscodes(activeTranscodes);
+    if (activeTranscodes.size + pendingForegroundAdmissions - 1 >= MAX_TRANSCODE_JOBS) await indexedVideoCache.stopAll();
+    pruneExitedTranscodes(activeTranscodes);
   }
-  if (activeTranscodes.size >= MAX_TRANSCODE_JOBS) {
+  if (res.destroyed || res.writableEnded || req.aborted) return;
+  if (mediaAdmissionsClosed()) { json(res, 503, { error: "Media server is shutting down" }); return; }
+  if (torrentSessions.get(session.id) !== session) { json(res, 410, { error: "Source session has expired" }); return; }
+  if (activeTranscodes.size + pendingForegroundAdmissions - 1 >= MAX_TRANSCODE_JOBS) {
     json(res, 429, { error: "Too many videos are being transcoded right now" });
     return;
   }
-  const tagged = typeof internalTorrentSource === "function"
+  tagged = typeof internalTorrentSource === "function"
     ? internalTorrentSource(session, fileIndex, "conversion") : null;
   if (tagged) sourceUrl = tagged.url;
   const audioFilter = plan.audio.codec === "copy"
@@ -398,18 +484,31 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
     ] : []),
   ];
 
-  const ffmpeg = spawn(ffmpegPath, args, {
-    windowsHide: true,
-    stdio: ["ignore", "pipe", "pipe", "pipe"],
-  });
+  try {
+    ffmpeg = spawn(ffmpegPath, args, {
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe", "pipe"],
+    });
+  } catch (error) {
+    tagged?.release();
+    if (!res.destroyed && !res.writableEnded) json(res, 500, { error: "Unable to start FFmpeg transcode" });
+    return;
+  }
   activeTranscodes.add(ffmpeg);
+  } finally {
+    pendingForegroundAdmissions -= 1;
+  }
   scheduleSessionExpiry(session);
   trackOpenStream(session, res, fileIndex);
+  let tapeEnded = false;
+  let endTape = () => {};
   if (audioTracks.length && ffmpeg.stdio[3]) {
     const tape = speechTapeWriter(session.id, fileIndex, audioTrackOrder, startSeconds);
     ffmpeg.stdio[3].on("data", (chunk) => tape.push(chunk));
-    ffmpeg.stdio[3].once("close", () => tape.end());
-    ffmpeg.stdio[3].on("error", () => {});
+    endTape = () => { if (!tapeEnded) { tapeEnded = true; tape.end(); } };
+    ffmpeg.stdio[3].once("end", endTape);
+    ffmpeg.stdio[3].once("close", endTape);
+    ffmpeg.stdio[3].on("error", endTape);
   }
 
   let stderr = "";
@@ -435,6 +534,26 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
     && plan.video.mode === "copy" && plan.video.sourceCodec === "h264"
     && plan.audio.outputCodec === "aac" && !plan.video.hdrKind
     && isTorrentFileFullyVerified(session.torrent, fileIndex));
+  let cancelledByClient = false;
+  let childClosed = false;
+  let stopEscalation = null;
+  let postExitDrain = null;
+  let exitedAt = null;
+  const signalRunningChild = signal => {
+    // Node's .killed means a signal was sent, not that the OS process ended.
+    // Conversely, once exit has been observed, a PID might be recycled while
+    // the child's trailing pipes are still draining. Never signal that PID.
+    if (childClosed || exitedAt !== null
+        || ffmpeg.exitCode != null || ffmpeg.signalCode != null) return;
+    try { ffmpeg.kill(signal); } catch {}
+  };
+  const escalateUnclosedChild = () => {
+    if (childClosed || stopEscalation !== null) return;
+    stopEscalation = setTimeout(() => {
+      signalRunningChild("SIGKILL");
+    }, 2_000);
+    stopEscalation.unref?.();
+  };
   res.writeHead(200,{...outputHeaders(),
     ...(remuxRecorder?{"X-LVL-Remux-Producer":remuxRecorder.producerToken}:{}),
     ...(runAheadEligible?{"X-LVL-Remux-Run-Ahead":"verified-local-bounded"}:{})});
@@ -454,7 +573,10 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
         getCurrentGeneration:()=>current()?generation:null,
         isVerifiedComplete:()=>current() && file.done === true && Number(file.downloaded) === Number(file.length),
         maxBufferedBytes:(androidVideoEncoder ? 24 : 96)*1024*1024,
-        onAbort:()=>{if(!ffmpeg.killed)ffmpeg.kill();},
+        onAbort:()=>{
+          signalRunningChild("SIGTERM");
+          escalateUnclosedChild();
+        },
       });
       if (ahead.started) {
         ffmpeg.stdout.pipe(remuxRecorder.transform);
@@ -465,9 +587,59 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
     } else ffmpeg.stdout.pipe(remuxRecorder.transform).pipe(res);
   } else ffmpeg.stdout.pipe(res);
 
-  let cancelledByClient = false;
-  let childClosed = false;
-  let stopEscalation = null;
+  let readerReleased = false;
+  let recorderSettled = false;
+  const releaseReader = () => {
+    if (readerReleased) return;
+    readerReleased = true;
+    tagged?.release();
+  };
+  const settleRecorder = (success) => {
+    if (recorderSettled || !remuxRecorder) return;
+    recorderSettled = true;
+    void remuxRecorder.finish({ success });
+  };
+  const releaseExited = () => {
+    if (childClosed) return;
+    childClosed = true;
+    clearTimeout(stopEscalation);
+    clearTimeout(postExitDrain);
+    ffmpeg.closeConfirmed = true;
+    activeTranscodes.delete(ffmpeg);
+    releaseReader();
+    // Exit proves the process is gone; the secondary speech pipe may never
+    // emit close, so finish a pending tape after a bounded drain opportunity.
+    if (!tapeEnded) {
+      const tapeDeadline = setTimeout(endTape, 2000);
+      tapeDeadline.unref?.();
+    }
+  };
+  ffmpeg.once("exit", () => {
+    // Exit proves the OS process is gone, but the remaining MP4 atoms and
+    // speech output may still be sitting in Node's stdio pipes. Preserve the
+    // slot and source lease until close; bound a pipe that never reaches EOF.
+    exitedAt = Date.now();
+    const checkDrain = () => {
+      if (childClosed) return;
+      // A slow, still-connected HTTP consumer can legitimately take seconds
+      // to drain the last MP4 atoms. Give it a bounded opportunity to finish.
+      if (!cancelledByClient && !res.destroyed && !res.writableFinished
+          && Date.now() - exitedAt < 60_000) {
+        postExitDrain = setTimeout(checkDrain, 2_000);
+        postExitDrain.unref?.();
+        return;
+      }
+      cancelledByClient = true;
+      if (!res.destroyed && !res.writableFinished) res.destroy();
+      for (const pipe of [ffmpeg.stdout, ffmpeg.stderr, ffmpeg.stdio[3]]) {
+        try { pipe?.destroy(); } catch {}
+      }
+      releaseExited(); // physical exit + explicitly retired pipes
+      settleRecorder(false);
+    };
+    postExitDrain = setTimeout(checkDrain, 2_000);
+    postExitDrain.unref?.();
+  });
   const stop = () => {
     if (res.writableFinished || cancelledByClient) return;
     cancelledByClient = true;
@@ -476,13 +648,8 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
     // after FFmpeg has exited, stranding slots and incomplete cache records.
     // This teardown is ONLY for a disconnected client; successful streams
     // must keep their original pipe chain until the final MP4 atom drains.
-    try { if (!ffmpeg.killed) ffmpeg.kill(); } catch { /* escalate below */ }
-    stopEscalation = setTimeout(() => {
-      if (!childClosed) {
-        try { ffmpeg.kill("SIGKILL"); } catch { /* retain slot until close */ }
-      }
-    }, 2_000);
-    stopEscalation.unref?.();
+    signalRunningChild("SIGTERM");
+    escalateUnclosedChild();
     ffmpeg.stdout.unpipe();
     ffmpeg.stdout.destroy();
     remuxRecorder?.transform.destroy();
@@ -494,8 +661,17 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
   res.once("close", stop);
 
   ffmpeg.once("error", (error) => {
-    tagged?.release();
-    void remuxRecorder?.finish({ success: false });
+    settleRecorder(false);
+    // ENOENT/EACCES may emit 'error' and never emit 'close'. In that case
+    // there is no physical process to reserve a conversion slot for.
+    if (!Number.isSafeInteger(ffmpeg.pid) || ffmpeg.pid <= 0) {
+      ffmpeg.spawnFailure = true;
+      for (const pipe of [ffmpeg.stdout, ffmpeg.stderr, ffmpeg.stdio[3]]) {
+        try { pipe?.destroy(); } catch {}
+      }
+      releaseExited();
+      endTape();
+    }
     // Node may emit ChildProcess "error" before its stdio and process have
     // actually closed. Releasing the slot here could admit a replacement
     // FFmpeg while this failed child still owns pipes or file handles.
@@ -505,27 +681,24 @@ export async function transcodeTorrentFile(req, res, session, fileIndex, request
     else res.destroy();
   });
   ffmpeg.once("close", (code) => {
-    childClosed = true;
-    clearTimeout(stopEscalation);
-    tagged?.release();
+    releaseExited();
     if (remuxRecorder) {
       // ChildProcess close does not mean the optional Transform has finished
       // draining FFmpeg's stdout. Finalizing now can drop its final MP4 atom.
       // The recorder is optional, so never let it end the browser's response.
-      const settleRecorder = () => void remuxRecorder.finish({
-        success: code === 0 && !cancelledByClient
-          && ffmpeg.stdout.readableEnded && remuxRecorder.transform.writableFinished,
-      });
+      const finalize = () => settleRecorder(code === 0 && !cancelledByClient
+          && ffmpeg.stdout.readableEnded && remuxRecorder.transform.writableFinished);
       if (remuxRecorder.transform.writableFinished || !ffmpeg.stdout.readableEnded)
-        settleRecorder();
+        finalize();
       else {
-        remuxRecorder.transform.once("finish", settleRecorder);
-        remuxRecorder.transform.once("close", settleRecorder);
+        remuxRecorder.transform.once("finish", finalize);
+        remuxRecorder.transform.once("close", finalize);
       }
     }
-    activeTranscodes.delete(ffmpeg);
     if (code && videoEncoder !== "copy" && videoEncoder !== "libx264" && !cancelledByClient) {
       failedHardwareEncoder = videoEncoder;
+      failedHardwareEncoderAt = Date.now();
+      hardwareProbeRetryAt = failedHardwareEncoderAt + FAILED_ENCODER_RETRY_MS;
       if (androidVideoEncoder) videoConversionAvailable = false;
       console.warn(`Hardware encoder ${videoEncoder} failed; future streams will ${androidVideoEncoder ? "report conversion unavailable" : "use software H.264"}`);
     }

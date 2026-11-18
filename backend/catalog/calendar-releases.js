@@ -173,6 +173,10 @@ export function createReleaseCalendarService({
   const familyCache = new Map();
   let tvmazeSnapshot = null;
   let tvmazeRequest = null;
+  // Keep the credential only in memory for equality checks. Cache keys must
+  // never contain a private key, but changing one valid key for another must
+  // invalidate requests and coverage made with the previous credential.
+  let cachedTmdbCredential;
 
   async function jsonFetch(url, options = {}, timeout = 25_000) {
     const response = await fetchImpl(url, { ...options, signal: AbortSignal.timeout(timeout) });
@@ -318,17 +322,20 @@ export function createReleaseCalendarService({
 
   async function tv(force = false) {
     if (!force && tvmazeSnapshot && now() - tvmazeSnapshot.at < 6 * 60 * 60_000) return tvmazeSnapshot.events;
-    if (!tvmazeRequest) {
-      tvmazeRequest = jsonFetch(tvmazeEndpoint, {}, 35_000)
-        .then((data) => {
-          if (!Array.isArray(data)) throw new Error("TVmaze schedule was not a list");
-          const events = data.map(normalizeTvmazeAiring).filter(Boolean);
-          tvmazeSnapshot = { at: now(), events };
-          return events;
-        })
-        .finally(() => { tvmazeRequest = null; });
-    }
-    return tvmazeRequest;
+    if (!force && tvmazeRequest) return tvmazeRequest;
+    // A forced refresh supersedes an older request, even when that request is
+    // still in flight. Its late completion cannot replace the new snapshot or
+    // clear the new request's owner.
+    const request = jsonFetch(tvmazeEndpoint, {}, 35_000)
+      .then((data) => {
+        if (!Array.isArray(data)) throw new Error("TVmaze schedule was not a list");
+        const events = data.map(normalizeTvmazeAiring).filter(Boolean);
+        if (tvmazeRequest === request) tvmazeSnapshot = { at: now(), events };
+        return events;
+      })
+      .finally(() => { if (tvmazeRequest === request) tvmazeRequest = null; });
+    tvmazeRequest = request;
+    return request;
   }
 
   async function movies(range, key) {
@@ -338,8 +345,11 @@ export function createReleaseCalendarService({
     let complete = false;
     const fetchPage = async (page) => {
       const url = new URL(`${tmdbEndpoint}/discover/movie`);
-      url.searchParams.set("primary_release_date.gte", range.from);
-      url.searchParams.set("primary_release_date.lte", range.to);
+      // The selected dates are local to the viewer. Movies close to midnight
+      // can fall on the adjacent UTC date, which the final display filter
+      // already permits. Discovery must fetch those two boundary days too.
+      url.searchParams.set("primary_release_date.gte", isoDate(range.start - DAY_MS));
+      url.searchParams.set("primary_release_date.lte", isoDate(range.end + DAY_MS));
       url.searchParams.set("sort_by", "primary_release_date.asc");
       url.searchParams.set("include_adult", "false");
       url.searchParams.set("page", String(page));
@@ -360,7 +370,7 @@ export function createReleaseCalendarService({
     return { events: result, complete };
   }
 
-  async function load(range, anilistIds = [], force = false, scope = "list") {
+  async function load(range, anilistIds = [], force = false, scope = "list", tmdbKey = "") {
     if (scope === "anime-all") {
       // The global schedule is intentionally independent of account and
       // Library; no TVmaze shows or TMDb films belong in this view.
@@ -380,7 +390,6 @@ export function createReleaseCalendarService({
           updatedAt: new Date(now()).toISOString() };
       }
     }
-    const tmdbKey = getTmdbKey();
     // Give the small, exact-list query first access to AniList's rate limit;
     // the general schedule can otherwise spend it on unrelated anime.
     const family = anilistIds.length ? animeFamily(anilistIds, force).catch(() => null) : null;
@@ -436,10 +445,15 @@ export function createReleaseCalendarService({
       const ids = [...new Set(anilistIds.map(Number).filter((id) => Number.isSafeInteger(id) && id > 0))]
         .sort((a, b) => a - b).slice(0, 300);
       if (!["list", "anime-all"].includes(scope)) throw Object.assign(new Error("Invalid calendar scope."), { statusCode: 400 });
-      const key = `${scope}:${from}:${to}:${scope === "list" ? Boolean(tmdbAuth(getTmdbKey())) : ""}:${scope === "list" ? ids.join(",") : ""}`;
+      const tmdbKey = scope === "list" ? String(getTmdbKey() || "") : "";
+      if (scope === "list" && tmdbKey !== cachedTmdbCredential) {
+        cachedTmdbCredential = tmdbKey;
+        cache.clear();
+      }
+      const key = `${scope}:${from}:${to}:${scope === "list" ? Boolean(tmdbAuth(tmdbKey)) : ""}:${scope === "list" ? ids.join(",") : ""}`;
       const cached = cache.get(key);
       if (!force && cached && now() - cached.at < 15 * 60_000) return cached.promise;
-      const promise = load(range, ids, force, scope);
+      const promise = load(range, ids, force, scope, tmdbKey);
       cache.set(key, { at: now(), promise });
       promise.catch(() => { if (cache.get(key)?.promise === promise) cache.delete(key); });
       if (cache.size > 16) cache.delete(cache.keys().next().value);

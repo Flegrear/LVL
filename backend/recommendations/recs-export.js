@@ -37,7 +37,8 @@ export function exportRecsData(store, { now = Date.now() } = {}) {
       studios: item.studios,
       description: item.description || null,
       snapshotAt: iso(item.fetchedAt),
-      yourRatings: (ratingsByItem.get(item.itemId) || []).map((rating) => ({ source: rating.source, score: rating.score, status: rating.status, ratedAt: iso(rating.ratedAt) })),
+      yourRatings: (ratingsByItem.get(item.itemId) || []).map((rating) => ({ source: rating.source, accountId: rating.accountId,
+        score: rating.score, status: rating.status, ratedAt: iso(rating.ratedAt) })),
       fansAlsoRecommend: (links.get(item.itemId) || []).map((link) => ({ itemId: link.to, title: items.get(link.to)?.title || null, votes: link.votes, rank: link.rank })),
       linksSnapshotAt: iso(item.linksAt),
     });
@@ -58,6 +59,10 @@ export function exportRecsData(store, { now = Date.now() } = {}) {
     },
     ratings: ratings.map((rating) => ({
       source: rating.source,
+      // A legacy import must not look as though today's linked account owns
+      // it in a downloaded export. Anonymous CSV and unverified old records
+      // retain their distinct persisted provenance through this data format.
+      accountId: rating.accountId,
       title: rating.title,
       season: rating.season,
       score: rating.score,
@@ -83,7 +88,8 @@ const csvCell = (value) => {
 };
 
 export function ratingsCsv(store) {
-  const header = ["title", "season", "score", "status", "progress", "source", "item_id", "catalog_id", "rated_at"];
-  const rows = store.ratings().map((rating) => [rating.title, rating.season, rating.score, rating.status, rating.progress, rating.source, rating.itemId, rating.catalogId, iso(rating.ratedAt)]);
+  const header = ["title", "season", "score", "status", "progress", "source", "item_id", "catalog_id", "rated_at", "account_id"];
+  const rows = store.ratings().map((rating) => [rating.title, rating.season, rating.score, rating.status, rating.progress, rating.source,
+    rating.itemId, rating.catalogId, iso(rating.ratedAt), rating.accountId]);
   return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n") + "\r\n";
 }

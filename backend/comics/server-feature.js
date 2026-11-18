@@ -32,6 +32,21 @@ import nodePath from "node:path";
 
 const HOUR = 60 * 60 * 1000;
 const ARTWORK_DEADLINE_MS = 17_000; // includes catalog lookup, identity verification and original image
+
+// One constructor shared by the real Comics feature and its synthetic-socket
+// integration test. A source engine cannot supply this verifier: it is bound
+// to the currently enabled repository and favorite owner in the server.
+export function createVerifiedSourceRemote({
+  remoteFactory = (options) => createRemoteFetch(options), sourceBrowser = null, ext, sources,
+} = {}) {
+  return withBrowserFallback(remoteFactory({
+    verifyRepositoryMigration: (claim) => {
+      const repo = sources?.get(claim.repositoryId);
+      if (!repo || !repo.enabled || repo.kind !== "mihon-repo") return null;
+      return ext?.verifyRepositoryMigration(claim, { repositoryUrl: repo.config?.url }) || null;
+    },
+  }), sourceBrowser, { checkHost, isBotCheck });
+}
 async function withinArtworkDeadline(run, budgetMs = ARTWORK_DEADLINE_MS,
   { now = Date.now, schedule = setTimeout, unschedule = clearTimeout } = {}) {
   const deadline = now() + budgetMs;
@@ -48,7 +63,9 @@ export const COMICS_CACHE_MS = Object.freeze({ home: 12 * HOUR, search: HOUR, de
 // 10: indexes built while Wikipedia refused requests are no longer kept for a day.
 // 11: Wikipedia gives numbers only (no titles); parts named in {{Main|…}} (Naruto) are read.
 // 12: ranges ("Mission: 1-5"), side chapters (Bleach 0.8), other series on the page (Dragon Ball Z) and commented volumes.
-export const COMICS_CACHE_VERSION = 12;
+// 13: volume-aware index preserves V1C1 and V2C1 instead of reusing a cached
+// chapter-number-only merge for another day.
+export const COMICS_CACHE_VERSION = 13;
 
 const asset = (file) => [`/${file}`, { file, cacheControl: "no-cache" }];
 export const COMICS_ASSETS = Object.freeze([
@@ -75,7 +92,9 @@ export const COMICS_ASSETS = Object.freeze([
   asset("frontend/comics/comics-source-filter.js"),
   asset("frontend/comics/comics-tracking.js"),
   asset("frontend/reader/reader.js"),
+  asset("frontend/reader/image-decode-recovery.js"),
   asset("frontend/reader/reader-core.js"),
+  asset("frontend/reader/progress-journal.js"),
   asset("frontend/reader/reader-page-window.js"),
   asset("frontend/reader/reader.css"),
   asset("shared/reading/units.js"),
@@ -95,13 +114,21 @@ function cardSnapshot(comic) {
     ...(Array.isArray(comic.relations) ? { anime: mainAnimeRelation(comic.relations) } : {}) };
 }
 
+// Distinguish a provider outage from an authoritative verified no-match.
+// These failures have independent retry horizons; successful empty results
+// are not marked failed and retain the normal catalog units TTL.
+export function unitsRetryDue(value, ageMs) {
+  return Boolean((value?.wikiFailed && ageMs >= 30 * 60_000)
+    || (value?.mangadexFailed && ageMs >= 60_000));
+}
+
 export function createComicsServerFeature({ mangadexFactory = () => createMangaDexClient(), now = Date.now,
   mangadexReaderFactory = () => createMangaDexReader(),
   artworkFactory = (options) => createCatalogArtworkResolver(options),
   artworkDeadlineMs = ARTWORK_DEADLINE_MS,
   artworkTiming = {},
   downloadsFactory = (options) => createComicDownloads(options), wikipediaFetch = (titles) => fetchWikipediaList(titles),
-  repositoryFetch = (repoUrl) => fetchRepository(repoUrl), remoteFactory = () => createRemoteFetch(),
+  repositoryFetch = (repoUrl) => fetchRepository(repoUrl), remoteFactory = (options) => createRemoteFetch(options),
   browserFactory = (options) => (process.env.LVL_EXT_HOST_SOCKET ? createAppBrowser({ dataDir: options.dir }) : createSourceBrowser(options)),
   runnerFactory = (options) => createExtRunner(options) } = {}) {
   const extensionRepoCache = createRepositoryCache({ load: repositoryFetch, now });
@@ -169,21 +196,24 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
 
       // Wikipedia refuses requests for a while when it's busy ("too many requests"); an index
       // built then is rebuilt after 30 minutes instead of a day, so the full list arrives.
-      const WIKI_RETRY_MS = 30 * 60_000;
       const loadUnits = async (id, comic) => {
         let wikiFailed = false;
+        let mangadexFailed = false;
         const [mangadexId, wiki] = await Promise.all([
-          mangadex.findByAniList(id, [comic.title, ...(comic.aliases || [])]).catch(() => null),
+          mangadex.findByAniList(id, [comic.title, ...(comic.aliases || [])]).catch(() => { mangadexFailed = true; return null; }),
           wikipediaFetch([comic.title, comic.title.split(/\s*[:：]\s+/)[0], ...(comic.aliases || []).filter((alias) => /^[\x20-\x7e]+$/.test(alias))]).catch(() => { wikiFailed = true; return null; }),
         ]);
         const [aggregate, covers] = mangadexId
-          ? await Promise.all([mangadex.aggregate(mangadexId).catch(() => null), mangadex.covers ? mangadex.covers(mangadexId).catch(() => null) : null])
+          ? await Promise.all([mangadex.aggregate(mangadexId).catch(() => { mangadexFailed = true; return null; }),
+              mangadex.covers ? mangadex.covers(mangadexId).catch(() => { mangadexFailed = true; return null; }) : null])
           : [null, null];
-        return { mangadexId, mangadex: aggregate, covers, wikipedia: wiki && plausibleList(wiki.volumes, { chaptersTotal: comic.chapters }) ? wiki : null, ...(wikiFailed ? { wikiFailed: true } : {}) };
+        return { mangadexId, mangadex: aggregate, covers, wikipedia: wiki && plausibleList(wiki.volumes, { chaptersTotal: comic.chapters }) ? wiki : null,
+          ...(wikiFailed ? { wikiFailed: true } : {}), ...(mangadexFailed ? { mangadexFailed: true } : {}) };
       };
       const units = async (id, comic) => {
         const result = await cached(`units:${id}`, COMICS_CACHE_MS.units, () => loadUnits(id, comic));
-        if (!result.value?.wikiFailed || now() - result.fetchedAt < WIKI_RETRY_MS) return result;
+        const age = now() - result.fetchedAt;
+        if (!unitsRetryDue(result.value, age)) return result;
         return cached(`units:${id}`, 0, () => loadUnits(id, comic));
       };
 
@@ -288,9 +318,12 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
         ? artworkFactory({ mangadex, imageCache: images, now }) : null;
       // Sites behind a browser check (Cloudflare) go through a headless browser, like Mihon's WebView;
       // in LVL's Android app the app itself is that browser (app-browser.js).
-      const sourceBrowser = browserFactory({ dir: nodePath.join(ctx.dataRoot || ".", "runtime", "source-browser") });
-      const remote = withBrowserFallback(remoteFactory(), sourceBrowser, { checkHost, isBotCheck });
       const ext = createExtSources({ db: ctx.db, now, adult: () => store.settings().showAdult });
+      const sourceBrowser = browserFactory({ dir: nodePath.join(ctx.dataRoot || ".", "runtime", "source-browser") });
+      // Only the currently owned repository/source SQLite state can approve a
+      // redirected POST. Client route bodies and provider redirects never
+      // receive or create this constructor-level authority.
+      const remote = createVerifiedSourceRemote({ remoteFactory, sourceBrowser, ext, sources });
       const marks = createChapterMarks({ db: ctx.db, now });
       const downloads = downloadsFactory({
         folder: local.defaultFolder,
@@ -314,6 +347,10 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       const sourceDeps = { ctx, sources, downloads, local, cached, images, workInfo, ext, remote, store,
         linked: createLinkedSources({ db: ctx.db, now }), availability, chapterCandidates, marks,
         extensionRepos: extensionRepoCache, filterExtensions };
+      // Install the remaining generation triggers once chapter/mark/link
+      // producers have created their SQLite tables. Core's direct sync SQL
+      // then advances exact reader generations without a Core-owned edit.
+      local.installExtendedProgressTriggers();
       // Entries chosen with LVL's old theme engines take the extension's path form.
       sourceDeps.linked.migrateLegacy(LEGACY_ENGINE_PATHS);
       // The extension runner: sources LVL has no engine for run their own extension.
@@ -328,7 +365,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       // Settings › Comics › Import from Mihon or Tachiyomi.
       const mihonImport = createMihonImport({
         query: (text, variables) => { if (!anilist?.query) throw new Error("AniList is not available"); return anilist.query(text, variables); },
-        store, snapshot: cardSnapshot, local, linked: sourceDeps.linked, ext, videoComics, now,
+        db: ctx.db, store, snapshot: cardSnapshot, local, linked: sourceDeps.linked, ext, videoComics, now,
         showAdult: () => store.settings().showAdult,
         repositories: () => sources.list().filter((source) => source.kind === "mihon-repo").map((source) => source.config.url),
         extensions: async () => (await Promise.all(sources.enabled("mihon-repo").map(async (repo) => {
@@ -358,7 +395,8 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
       // the last reader that was actually opened. A removed favorite, missing
       // file, or changed link remains a recoverable saved target.
       async function resolveResume(workId, target) {
-        const readerId = target.readerId;
+        const readerId = target.readerId.startsWith("ex-")
+          ? ext.resolveChapterId(target.readerId) : target.readerId;
         const unavailable = (reason, sourceId = null) => ({
           ...target, status: "unavailable", sourceId, reason,
         });
@@ -378,7 +416,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
         const described = await describeRemoteChapter(workId, readerId, sourceDeps).catch(() => null);
         if (!described || described.sourceId !== sourceId || !described.chapter)
           return unavailable("The saved chapter could not be verified on its source. Refresh or choose a source.", sourceId);
-        return { ...target, status: "ready", sourceId, chapter: described.chapter,
+        return { ...target, readerId, status: "ready", sourceId, chapter: described.chapter,
           volume: described.volume ?? null };
       }
 
@@ -419,7 +457,7 @@ export function createComicsServerFeature({ mangadexFactory = () => createMangaD
           const checked = await resolveResume(resume[1], { readerId, page: 0, pages: 0, finished: false });
           if (checked.status !== "ready")
             return ctx.json(res, 409, { error: checked.reason, target: checked }), true;
-          local.recordResume(resume[1], readerId);
+          local.recordResume(resume[1], checked.readerId);
           return ctx.json(res, 200, { saved: true }), true;
         }
         if (await handleLocalRoutes(req, res, url, { ctx, local, ensureEntry, rescan, onProgress, marks })) return true;

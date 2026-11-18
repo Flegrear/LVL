@@ -1,8 +1,9 @@
 // Import from Mihon or Tachiyomi (Settings › Comics): the backup's library joins Library ›
 // Comics with its sources and reading progress. Nothing is written to AniList or Mihon.
-// - A comic is matched to its AniList work by the backup's AniList tracking, else its
-//   MyAnimeList tracking, else an exact title match. Others join as comics read from
-//   their source (like a comic made from a source on a video page).
+// - A comic is matched to its AniList work only by verified backup AniList tracking,
+//   else MyAnimeList tracking. A title can suggest a work in a separate UI, but
+//   cannot transfer identity, Library status or reading history on its own.
+//   Untracked entries join as comics read from their original source.
 // - Status: the tracker's, else from the chapters read. An LVL entry keeps its status
 //   unless it is Planning.
 // - Each comic's source becomes a source of the work, and a favorite source when one of
@@ -11,20 +12,18 @@
 //   never moves progress back. Importing the same file again adds nothing.
 // Routes: POST /api/comics/import/mihon (the file's bytes) starts it; GET shows the step;
 // POST …/apply imports what the preview showed; DELETE drops it.
-import { IDS_QUERY, MAL_IDS_QUERY, normalizeComic, titleSearchQuery } from "./anilist-manga.js";
+import { IDS_QUERY, MAL_IDS_QUERY, normalizeComic } from "./anilist-manga.js";
 import { MAX_BACKUP_BYTES, backupError, readBackup } from "./mihon-backup.js";
 import { toLvlPath } from "./runner-engine.js";
 import { chapterNumber, volumeNumber } from "./chapter-names.js";
 import { localIdFor } from "../reader/local-library.js";
-import { normalizeSeriesName } from "../../shared/reading/release-name.js";
-import { SOURCE_ID } from "../../shared/reading/ids.js";
+import { SOURCE_ID, isSyncableSourceTitleKey, isSyncableComicLink, isSyncableComicRead } from "../../shared/reading/ids.js";
 
 // Mihon's tracker status numbers (AniList and MyAnimeList number them differently).
 const ANILIST_STATUS = Object.freeze({ 1: "CURRENT", 2: "COMPLETED", 3: "PAUSED", 4: "DROPPED", 5: "PLANNING", 6: "REPEATING" });
 const MAL_STATUS = Object.freeze({ 1: "CURRENT", 2: "COMPLETED", 3: "PAUSED", 4: "DROPPED", 6: "PLANNING", 7: "REPEATING" });
 const MEDIA_ID = /^[1-9]\d{0,9}$/;
 const COMIC_FORMATS = new Set(["MANGA", "ONE_SHOT"]);
-const TITLES_PER_REQUEST = 6;
 const chunks = (list, size) => Array.from({ length: Math.ceil(list.length / size) }, (_, n) => list.slice(n * size, n * size + size));
 const httpCover = (value) => (/^https?:\/\/[^\s"'<>]{4,1500}$/.test(String(value || "")) ? String(value) : "");
 
@@ -56,21 +55,14 @@ const comicOf = (media) => {
   const comic = normalizeComic(media, { adult: true });
   return comic && COMIC_FORMATS.has(media.format) ? { ...comic, adult: media.isAdult === true } : null;
 };
-// Exact titles, spacing aside: a source's "Ao Ashi" is AniList's "Aoashi".
-const compact = (name) => normalizeSeriesName(name).replace(/\s+/g, "");
-const sameTitle = (comic, title) => {
-  const wanted = compact(title);
-  return wanted.length >= 2 && [comic.title, ...(comic.aliases || [])].some((name) => compact(name) === wanted);
-};
-
-// entry key -> AniList comic, by AniList id, then MyAnimeList id, then exact title.
+// entry key -> AniList comic, ONLY by verified AniList or MyAnimeList tracking.
 // query: the AniList client's query(text, variables) (it paces requests). A failed
 // request stops the match: a half-matched import would turn AniList works into source comics.
 export async function matchEntries(entries, { query, onProgress = () => {}, isCancelled = () => false } = {}) {
   const matches = new Map();
   const byId = [...new Set(entries.filter((entry) => entry.anilistId).map((entry) => entry.anilistId))];
   const byMal = [...new Set(entries.filter((entry) => !entry.anilistId && entry.malId).map((entry) => entry.malId))];
-  let total = Math.ceil(byId.length / 50) + Math.ceil(byMal.length / 50) + Math.ceil(entries.length / TITLES_PER_REQUEST);
+  const total = Math.ceil(byId.length / 50) + Math.ceil(byMal.length / 50);
   let done = 0;
   const step = () => { done += 1; onProgress(done, total); };
   onProgress(0, total);
@@ -86,17 +78,11 @@ export async function matchEntries(entries, { query, onProgress = () => {}, isCa
     for (const entry of entries) if (!matches.has(entry.key) && entry.malId && found.get(entry.malId)) matches.set(entry.key, found.get(entry.malId));
     step();
   }
-  const left = entries.filter((entry) => !matches.has(entry.key));
-  total = done + Math.ceil(left.length / TITLES_PER_REQUEST);
-  for (const group of chunks(left, TITLES_PER_REQUEST)) {
-    if (isCancelled()) return matches;
-    const data = await query(titleSearchQuery(group.length), Object.fromEntries(group.map((entry, n) => [`q${n}`, entry.title.slice(0, 100)])));
-    group.forEach((entry, n) => {
-      const hit = (data?.[`t${n}`]?.media || []).map(comicOf).find((comic) => comic && sameTitle(comic, entry.title));
-      if (hit) matches.set(entry.key, hit);
-    });
-    step();
-  }
+  // Deliberately do not query or apply normalized-title candidates here,
+  // even when a search would return exactly ONE AniList ID. That is only a
+  // suggestion, not provenance. Otherwise an untracked provider edition can
+  // take over a different work's saved marks, links and status. Matching by
+  // title must be an explicit separately verified user reconciliation action.
   return matches;
 }
 
@@ -123,7 +109,56 @@ const sourceIndex = (extensions) => {
   return index;
 };
 
+const unsyncable = (detail) => Object.assign(new Error(
+  `A Mihon source ${detail} cannot be synced. This backup was not imported; shorten the provider path or use a supported source.`),
+{ status: 422 });
+// Validate the whole backup before the first library/favorite/link/progress write.
+// The old 300-character prefix is never an identity or a migration hint.
+function validateImportKeys(entries, matches, deps) {
+  const foundKeys = new Map();
+  for (const entry of entries) {
+    const sourceId = deps.ext.resolveSourceId?.(entry.sourceId) || entry.sourceId;
+    const existingOwner = deps.linked?.owners?.(sourceId, entry.path)?.find((id) => id.startsWith("local-"));
+    const path = existingOwner ? deps.linked.resolveMangaPath?.(existingOwner, sourceId, entry.path) || entry.path : entry.path;
+    const seriesKey = `mihon:${sourceId}:${path}`;
+    if (!isSyncableSourceTitleKey(seriesKey)) throw unsyncable("title path");
+    const comic = matches?.get(entry.key);
+    const workId = comic ? `anilist-${comic.anilistId}` : existingOwner || localIdFor(seriesKey);
+    if (!isSyncableComicLink(workId, sourceId, path)) throw unsyncable("link path");
+    // Distinct provider paths can belong to one canonically identified
+    // AniList work when *each* entry carries an independently verified
+    // AniList/MAL tracking ID. A title-only guess or local SHA collision
+    // cannot use that exception to merge two unrelated source titles.
+    const trackedOwner = Boolean(comic && (
+      (Number.isSafeInteger(entry.anilistId) && entry.anilistId > 0 && entry.anilistId === comic.anilistId)
+      || (Number.isSafeInteger(entry.malId) && entry.malId > 0 && entry.malId === comic.malId)));
+    const previous = foundKeys.get(workId);
+    if (previous && previous.seriesKey !== seriesKey && !(previous.trackedOwner && trackedOwner))
+      throw Object.assign(new Error("Mihon comic identity collision: distinct provider paths would share one work"), { status: 409 });
+    if (!previous) foundKeys.set(workId, { seriesKey, trackedOwner });
+    // An older truncated key may have the same short hash; never guess its
+    // original provider URL or merge its saved history.
+    if (!comic) {
+      const previous = deps.local.localTitle(workId);
+      if (previous && previous.series_key !== seriesKey
+        && !verifiedOriginalKey(previous, sourceId, path, deps))
+        throw Object.assign(new Error("Mihon comic identity collision: saved provenance differs; existing history was retained"), { status: 409 });
+    }
+    for (const chapter of entry.chapters) {
+      if (!isSyncableComicRead(workId, sourceId, toLvlPath(chapter.url)))
+        throw unsyncable("chapter path");
+    }
+  }
+}
+
+function verifiedOriginalKey(previous, sourceId, path, deps) {
+  const match = /^mihon:(-?\d{1,20}):(\/.*)$/.exec(String(previous?.series_key || ""));
+  if (!match || deps.ext.resolveSourceId?.(match[1]) !== sourceId) return false;
+  return (deps.linked.resolveMangaPath?.(previous.id, sourceId, match[2]) || match[2]) === path;
+}
+
 export async function previewImport(entries, matches, stores, deps) {
+  validateImportKeys(entries, matches, deps);
   const known = sourceIndex(await deps.extensions().catch(() => []));
   const adultHidden = !deps.showAdult();
   const out = { entries: entries.length, onAniList: 0, inLibrary: 0, fromSources: 0, adult: 0, read: 0, inProgress: 0, notMatched: [] };
@@ -147,9 +182,15 @@ export async function previewImport(entries, matches, stores, deps) {
 }
 
 export async function applyImport(entries, matches, deps) {
+  validateImportKeys(entries, matches, deps);
   const known = sourceIndex(await deps.extensions().catch(() => []));
   const counts = { comics: 0, newInLibrary: 0, fromSources: 0, adultSkipped: 0, favorites: 0, read: 0, inProgress: 0, unreadable: 0 };
-  for (const entry of entries) {
+  const apply = () => {
+  for (const rawEntry of entries) {
+    const sourceId = deps.ext.resolveSourceId?.(rawEntry.sourceId) || rawEntry.sourceId;
+    const existingOwner = deps.linked?.owners?.(sourceId, rawEntry.path)?.find((id) => id.startsWith("local-"));
+    const entry = { ...rawEntry, sourceId, path: existingOwner
+      ? deps.linked.resolveMangaPath?.(existingOwner, sourceId, rawEntry.path) || rawEntry.path : rawEntry.path };
     const comic = matches.get(entry.key);
     if (comic?.adult && !deps.showAdult()) { counts.adultSkipped += 1; continue; }
     let workId;
@@ -159,26 +200,30 @@ export async function applyImport(entries, matches, deps) {
       if (!existing) counts.newInLibrary += 1;
       deps.store.librarySet(comic.anilistId, keepStatus(existing?.status, importedStatus(entry, comic)), deps.snapshot(comic));
     } else {
-      const seriesKey = `mihon:${entry.sourceId}:${entry.path}`.slice(0, 300);
-      workId = localIdFor(seriesKey);
+      const seriesKey = `mihon:${entry.sourceId}:${entry.path}`;
+      workId = deps.linked?.owners?.(entry.sourceId, entry.path)?.find((id) => id.startsWith("local-"))
+        || localIdFor(seriesKey);
       const existing = deps.local.localTitle(workId);
-      deps.local.createTitle({ id: workId, title: entry.title, seriesKey, status: importedStatus(entry, null) });
+      deps.local.createTitle({ id: workId, title: entry.title,
+        seriesKey: existing && verifiedOriginalKey(existing, entry.sourceId, entry.path, deps)
+          ? existing.series_key : seriesKey, status: importedStatus(entry, null) });
       if (existing && keepStatus(existing.status, importedStatus(entry, null)) !== existing.status) deps.local.setLocalStatus(workId, importedStatus(entry, null));
       deps.videoComics.importTitle(workId, { cover: entry.cover, sourceId: entry.sourceId });
       counts.fromSources += 1;
     }
     counts.comics += 1;
     const found = known.get(entry.sourceId);
-    try {
-      deps.linked.link(workId, { kind: "ext", sourceId: entry.sourceId, mangaId: entry.path, name: entry.sourceName || found?.source.name || found?.ext.name || "Source",
-        title: entry.title, lang: found?.source.lang || "" });
-    } catch { counts.unreadable += 1; }
+    // The preflight validated every source path. A broken link must roll the
+    // import back, not leave a partially imported comic with missing reads.
+    deps.linked.link(workId, { kind: "ext", sourceId: entry.sourceId, mangaId: entry.path, name: entry.sourceName || found?.source.name || found?.ext.name || "Source",
+      title: entry.title, lang: found?.source.lang || "" });
     if (found && !deps.ext.isFavorite(entry.sourceId)) {
       try { deps.ext.add(found.ext, found.source, found.ext.repo || ""); counts.favorites += 1; } catch { /* a source without an address stays out */ }
     }
     for (const chapter of entry.chapters) {
+      const candidateId = deps.ext.chapterId(entry.sourceId, toLvlPath(chapter.url));
       const saved = deps.local.importRemoteProgress({
-        id: deps.ext.chapterId(entry.sourceId, toLvlPath(chapter.url)), workId, keepFurther: true,
+        id: deps.ext.resolveChapterId?.(candidateId) || candidateId, workId, keepFurther: true,
         page: chapter.read ? 0 : chapter.page, pages: chapter.read ? 1 : chapter.page + 1, finished: chapter.read,
         chapter: chapterLabel(chapter), volume: volumeNumber(chapter.name), at: chapter.at || deps.now(),
       });
@@ -186,16 +231,46 @@ export async function applyImport(entries, matches, deps) {
     }
   }
   return counts;
+  };
+  if (!deps.db) return apply();
+  deps.db.exec("SAVEPOINT comic_mihon_apply");
+  try { const result = apply(); deps.db.exec("RELEASE comic_mihon_apply"); return result; }
+  catch (error) {
+    deps.db.exec("ROLLBACK TO comic_mihon_apply");
+    deps.db.exec("RELEASE comic_mihon_apply");
+    throw error;
+  }
 }
 
-// Reads a request body as bytes, up to max (a larger one is drained, then refused).
-function readBytes(req, max) {
+// Reject the first over-limit byte rather than retaining an HTTP request open
+// until an untrusted sender eventually signals EOF. Continue consuming/ignoring
+// remaining chunks so the server can deliver its 413 without holding a body.
+export function readMihonRequestBytes(req, max) {
   return new Promise((resolve, reject) => {
     const parts = [];
     let size = 0;
-    req.on("data", (chunk) => { size += chunk.length; if (size <= max) parts.push(chunk); });
-    req.on("end", () => (size > max ? reject(backupError("The backup is larger than 50 MB", 413)) : resolve(Buffer.concat(parts))));
-    req.on("error", reject);
+    let settled = false;
+    const fail = (error) => {
+      if (settled) return;
+      settled = true;
+      parts.length = 0;
+      reject(error);
+    };
+    req.on("data", (chunk) => {
+      if (settled) return; // Once rejected, ignore the rest of the input.
+      size += chunk.length;
+      if (size > max) {
+        fail(backupError("The backup is larger than 50 MB", 413));
+        req.resume?.();
+      } else parts.push(chunk);
+    });
+    req.on("end", () => {
+      if (settled) return;
+      settled = true;
+      resolve(Buffer.concat(parts));
+    });
+    req.on("error", fail);
+    req.on("aborted", () => fail(backupError("The backup upload was interrupted", 400)));
   });
 }
 
@@ -208,6 +283,12 @@ export function createMihonImport(deps) {
     const backup = readBackup(bytes);
     const entries = libraryEntries(backup);
     if (!entries.length) throw backupError("The backup's library is empty");
+    try { validateImportKeys(entries, null, deps); }
+    catch (error) {
+      job = { state: "error", file: String(file).slice(0, 120), progress: { done: 0, total: 0 },
+        preview: null, result: null, error: String(error?.message || error).slice(0, 200) };
+      return view();
+    }
     const mine = { state: "matching", file: String(file).slice(0, 120), progress: { done: 0, total: 1 }, entries, matches: null, preview: null, result: null, error: "" };
     job = mine;
     void (async () => {
@@ -229,12 +310,24 @@ export function createMihonImport(deps) {
     const mine = job;
     if (mine?.state !== "ready") throw Object.assign(new Error("Choose a backup first"), { status: 409 });
     mine.state = "importing";
-    try { mine.result = await applyImport(mine.entries, mine.matches, deps); mine.state = "done"; } catch (error) { mine.state = "error"; mine.error = String(error?.message || error).slice(0, 200); }
-    mine.entries = [];
-    mine.matches = null;
+    try {
+      mine.result = await applyImport(mine.entries, mine.matches, deps);
+      mine.state = "done";
+      mine.entries = [];
+      mine.matches = null;
+    } catch (error) {
+      // Keep the preview and original input available after a rollback so a
+      // corrected user selection can be retried without a second upload.
+      mine.state = "ready";
+      mine.error = String(error?.message || error).slice(0, 200);
+    }
     return view();
   }
-  const cancel = () => { job = null; return view(); };
+  const cancel = () => {
+    if (job?.state === "importing") throw Object.assign(new Error("The import is committing. Try again after it finishes."), { status: 409 });
+    job = null;
+    return view();
+  };
   return {
     view, start, apply, cancel,
     async handle(req, res, path, ctx) {
@@ -248,7 +341,7 @@ export function createMihonImport(deps) {
         if (req.method !== "POST") return ctx.methodNotAllowed(res, ["GET", "POST", "DELETE"]);
         let name = "";
         try { name = decodeURIComponent(String(req.headers["x-file-name"] || "")); } catch {}
-        return ctx.json(res, 200, await start(await readBytes(req, MAX_BACKUP_BYTES), name));
+        return ctx.json(res, 200, await start(await readMihonRequestBytes(req, MAX_BACKUP_BYTES), name));
       } catch (error) {
         return ctx.json(res, Number(error.status) || 500, { error: String(error.message || error).slice(0, 300) });
       }

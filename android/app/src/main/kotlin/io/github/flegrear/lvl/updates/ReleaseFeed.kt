@@ -19,7 +19,8 @@ import java.security.MessageDigest
 
 /** One verified Android release APK; patches are not published on this channel yet. */
 data class Release(val version: String, val asset: String, val url: String, val size: Long, val sumsUrl: String, val patch: Boolean,
-    val payloadSha256: String? = null, val sumsSha256: String? = null, val sumsSize: Long? = null, val versionCode: Long? = null)
+    val payloadSha256: String? = null, val sumsSha256: String? = null, val sumsSize: Long? = null, val versionCode: Long? = null,
+    val releaseTag: String? = null)
 
 /**
  * Reads legacy Android entries and combined manifests with independent platform
@@ -122,7 +123,7 @@ class ReleaseFeed(
         if (assets.map { it.first }.toSet() != allowed) return null
         val sums = assets.single { it.first == "SHA256SUMS" }.second
         val apk = assets.single { it.first == apkName(version, abi) }
-        return Release(version, apk.first, apk.second, apk.third, sums, patch = false)
+        return Release(version, apk.first, apk.second, apk.third, sums, patch = false, releaseTag = tag)
     }
 
     private data class Asset(val name: String, val url: String, val size: Long, val sha256: String)
@@ -182,7 +183,7 @@ class ReleaseFeed(
             val notice = record(android.obj("notice"), "LVL-Android-RELEASE-NOTICE.txt", "android-v$version", sources)
             if (sources.size != 1 || sums.size > MAX_SUMS || notice.size > MAX_SUMS || records.values.any { apk -> apk.size > 400L * 1024 * 1024 }) invalid()
             val apk = records.getValue(abi)
-            androidRelease = Release(version, apk.name, apk.url, apk.size, sums.url, false, apk.sha256, sums.sha256, sums.size, code)
+            androidRelease = Release(version, apk.name, apk.url, apk.size, sums.url, false, apk.sha256, sums.sha256, sums.size, code, tag)
         }
         platforms["windows"]?.let {
             val windows = it as? JsonObject ?: invalid()

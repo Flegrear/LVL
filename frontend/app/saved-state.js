@@ -75,6 +75,14 @@ export function readStorageObject(key) {
 }
 
 export const APP_DB_MIGRATION_KEY = "blackline-db-migrated-v1";
+// This is a browser-side owner certificate, not an OAuth credential. A local
+// Library snapshot may be offered for bootstrap only against its durable
+// backend profile/account generation; a different profile must not claim it.
+const APP_DB_BOOTSTRAP_ORIGIN_KEY = "blackline-db-bootstrap-profile-v1";
+export let legacyBootstrapRecoverySummary = null;
+export function updateLegacyBootstrapRecoverySummary(summary) {
+  legacyBootstrapRecoverySummary = summary ?? null;
+}
 const APP_DB_PREFERENCES_MIGRATION_KEY = "blackline-db-preferences-v2";
 const APP_DB_DIRTY_SECTIONS_KEY = "blackline-db-dirty-sections-v1";
 export let persistentAppStateReady = false;
@@ -425,7 +433,9 @@ function alertPersistentLibraryConflict() {
   const heading = document.createElement("strong");
   heading.textContent = "Library changes need review";
   const detail = document.createElement("span");
-  detail.textContent = "Unsaved edits are kept here. Download them before choosing the saved Library.";
+  detail.textContent = persistentAppStateReady
+    ? "Unsaved edits are kept here. Download them before choosing the saved Library."
+    : "This Library belongs to an unconfirmed account or profile. Download its local copy before switching profiles or retrying recovery.";
   message.append(heading, detail);
   alert.append(message);
   const download = document.createElement("button");
@@ -458,7 +468,7 @@ function alertPersistentLibraryConflict() {
     } catch { recover.textContent = "Couldn't load saved Library — retry"; }
     finally { recover.disabled = false; }
   });
-  alert.append(recover);
+  if (persistentAppStateReady) alert.append(recover);
 }
 
 async function useSavedPersistentLibrary() {
@@ -1058,6 +1068,12 @@ export function persistAppSection(section, value, { immediate = false, merge = f
       .then((completed) => {
         if (!completed) return;
         const { result, savedValue } = completed;
+        // A successful HTTP status alone does not certify the local revision
+        // that Sync now is allowed to publish. Keep the tab-owned edit pending
+        // unless SQLite returned the durable CAS receipt for this Library.
+        if (section === "library" && (!Number.isSafeInteger(result?.updatedAt)
+          || result.updatedAt <= 0))
+          throw new Error("SQLite did not acknowledge the saved Library revision.");
         persistentAppRetryAfter.delete(section);
         if (Number.isFinite(Number(result?.updatedAt))) persistentAppSectionRevisions.set(section, Number(result.updatedAt));
         if (section === "library" && typeof persistentAppAcceptedSnapshots !== "undefined")
@@ -1163,6 +1179,104 @@ function applyPersistentAppState(snapshot = {}) {
   storeLocalCopy("blackline-coach-transcripts", state.coachTranscripts);
 }
 
+// The migration flag belongs to a browser profile; the claim belongs to the
+// actual SQLite database. Recreated databases can already be initialized by
+// sync, so `initialized` cannot substitute for the browser-bootstrap claim.
+export function selectLegacyBootstrapState({ alreadyMigrated, server, localSnapshot }) {
+  if (server?.legacyBootstrap?.version === 1 && typeof server.legacyBootstrap.claimed === "boolean") {
+    if (!server.legacyBootstrap.claimed) return localSnapshot;
+    // A first sync/bootstrap can claim cards or known words while the first
+    // browser Library snapshot has not yet arrived. The backend separately
+    // guards the one-time Library capture under its SQLite writer lock. Offer
+    // ONLY that preserved Library snapshot for receipt staging/first import:
+    // never resend unrelated sections or replace an accepted synced Library.
+    // A previously staged receipt, even fully resolved, proves this snapshot
+    // already had a durable recovery owner and must not be re-offered.
+    const coreStarted = ["cards", "known", "library", "learningExposure", "testResults"]
+      .some(section => Object.hasOwn(server.state || {}, section));
+    const legacyLibrary = localSnapshot?.library;
+    if (coreStarted && server.legacyBootstrapRecovery == null
+      && Array.isArray(legacyLibrary) && legacyLibrary.length
+      && JSON.stringify(legacyLibrary) !== JSON.stringify(server.state?.library))
+      return { library: JSON.parse(JSON.stringify(legacyLibrary)) };
+    return null;
+  }
+  if (server?.legacyBootstrapClaimed === false) return localSnapshot;
+  if (server?.legacyBootstrapClaimed === true) return null;
+  // Compatibility with an older backend that has no separate claim field.
+  return !alreadyMigrated || server?.initialized === false ? localSnapshot : null;
+}
+
+export function sameLegacyBootstrapAuthority(a, b) {
+  return a?.version === 1 && b?.version === 1
+    && typeof a.profileId === "string" && a.profileId.length >= 36
+    && a.profileId === b.profileId
+    && Number.isSafeInteger(a.syncGeneration) && a.syncGeneration >= 0
+    && a.syncGeneration === b.syncGeneration
+    && typeof a.syncFingerprint === "string" && /^[0-9a-f]{64}$/.test(a.syncFingerprint)
+    && a.syncFingerprint === b.syncFingerprint
+    && typeof a.accountFingerprint === "string"
+    && a.accountFingerprint === b.accountFingerprint
+    && ["linked", "unlinked"].includes(a.accountState)
+    && a.accountState === b.accountState;
+}
+
+export function legacyBootstrapOriginAdmission({ claim, origin = null, legacyState = null,
+  localLibrary = [], serverLibrary = [], localDirty = false } = {}) {
+  if (!sameLegacyBootstrapAuthority(claim, claim))
+    return { ok: false, reason: "unsupported_bootstrap_claim" };
+  const hasOffer = legacyState !== null;
+  const contested = Array.isArray(localLibrary) && localLibrary.length > 0
+    && JSON.stringify(localLibrary) !== JSON.stringify(serverLibrary);
+  // A dirty snapshot cannot grant first-capture authority. A previously
+  // hydrated, *exactly* bound browser profile may nevertheless read/reconcile
+  // its own unsaved edits when no legacy snapshot is being offered. Otherwise
+  // the startup conflict remains local and exportable: no guessed ownership.
+  const exactlyBoundDirtyOwner = origin?.version === 1
+    && origin.profileId === claim.profileId
+    && origin.accountFingerprint === claim.accountFingerprint
+    && origin.syncGeneration === claim.syncGeneration;
+  if (localDirty && (hasOffer || (contested && !exactlyBoundDirtyOwner)))
+    return { ok: false, reason: "local_edit_during_bootstrap" };
+  if (origin === null) {
+    // An unbound legacy snapshot cannot prove it belongs to an already linked
+    // GitHub account; preserve it for explicit review rather than guessing.
+    if (claim.accountState === "linked" && (hasOffer || contested))
+      return { ok: false, reason: "unbound_linked_profile" };
+    return { ok: true };
+  }
+  if (origin?.version !== 1 || typeof origin.profileId !== "string"
+    || typeof origin.accountFingerprint !== "string"
+    || !Number.isSafeInteger(origin.syncGeneration) || origin.syncGeneration < 0)
+    return { ok: false, reason: "unknown_browser_origin" };
+  const sameOwner = origin.profileId === claim.profileId
+    && origin.accountFingerprint === claim.accountFingerprint;
+  if (!sameOwner && (hasOffer || contested || localDirty))
+    return { ok: false, reason: "profile_or_account_changed" };
+  if (hasOffer && origin.syncGeneration !== claim.syncGeneration)
+    return { ok: false, reason: "stale_browser_sync_generation" };
+  return { ok: true };
+}
+
+function readLegacyBootstrapOrigin() {
+  try {
+    const raw = localStorage.getItem(APP_DB_BOOTSTRAP_ORIGIN_KEY);
+    return raw === null ? null : JSON.parse(raw);
+  } catch { return { version: "unknown" }; }
+}
+
+function saveLegacyBootstrapOrigin(claim) {
+  // Never record a returned claim unless the entire migration/hydration
+  // completed against the same authority without a newer browser edit.
+  try {
+    localStorage.setItem(APP_DB_BOOTSTRAP_ORIGIN_KEY, JSON.stringify({
+      version: 1, profileId: claim.profileId,
+      accountFingerprint: claim.accountFingerprint,
+      syncGeneration: claim.syncGeneration,
+    }));
+  } catch { console.warn("Could not retain the local bootstrap profile binding; future recovery will require review."); }
+}
+
 export async function hydratePersistentAppState() {
   // Unsaved changes of a section whose browser copy didn't fit can't be recovered from that copy
   // (it holds nothing): keep the database's version instead of replacing it with an empty one.
@@ -1218,12 +1332,62 @@ export async function hydratePersistentAppState() {
   // pre-hydration Library contents now, before a user can unshift a new title
   // into that same array while bootstrap is waiting on SQLite.
   const originalLibraryBaseline = JSON.parse(JSON.stringify(localSnapshot.library || []));
+  // The pre-hydration browser snapshot, not later in-tab edits, owns the
+  // initial Library migration offer. Newer edits use the ordinary CAS/dirty
+  // generation path and must never be smuggled into an older receipt.
+  localSnapshot.library = originalLibraryBaseline;
   const alreadyMigrated = localStorage.getItem(APP_DB_MIGRATION_KEY) === "1";
+  const initialLibraryGeneration = persistentAppWriteGenerations.get("library") || 0;
   try {
-    let payload = await postJson("/api/app-state/bootstrap", { legacyState: alreadyMigrated ? null : localSnapshot });
-    if (!payload.initialized && alreadyMigrated) {
-      payload = await postJson("/api/app-state/bootstrap", { legacyState: localSnapshot });
+    const serverBeforeBootstrap = await fetchJson("/api/app-state");
+    const preflight = await fetchJson("/api/app-state/bootstrap-claim");
+    const claim = preflight?.claim;
+    const legacyState = selectLegacyBootstrapState({ alreadyMigrated, server: serverBeforeBootstrap, localSnapshot });
+    const dirty = persistentDirtySections().has("library")
+      || persistentAppOwnPendingSections.has("library") || hasPendingLibraryForTab();
+    const admission = legacyBootstrapOriginAdmission({
+      claim, origin: readLegacyBootstrapOrigin(), legacyState,
+      localLibrary: originalLibraryBaseline,
+      serverLibrary: serverBeforeBootstrap?.state?.library || [],
+      localDirty: dirty,
+    });
+    if (!admission.ok || (persistentAppWriteGenerations.get("library") || 0) !== initialLibraryGeneration
+      || (legacyState !== null && !sameLibraryContent(state.library, originalLibraryBaseline))) {
+      const error = new Error("The saved browser Library belongs to a different or changing account/profile. Its local data is preserved for explicit recovery.");
+      error.code = "legacy_bootstrap_claim_conflict";
+      throw error;
     }
+    const response = await postJson("/api/app-state/bootstrap-claim", { claim, legacyState });
+    if (response?.ok !== true || !sameLegacyBootstrapAuthority(claim, response.claim)) {
+      const error = new Error("The bootstrap account/profile changed before its durable receipt was confirmed.");
+      error.code = "legacy_bootstrap_claim_conflict";
+      throw error;
+    }
+    if (legacyState !== null && response.bootstrap?.applied !== true) {
+      const error = new Error("SQLite did not claim the offered legacy snapshot; keep its browser copy for review.");
+      error.code = "legacy_bootstrap_claim_conflict";
+      throw error;
+    }
+    let liveClaim = response.claim;
+    const commitBootstrapSection = async (section, body) => {
+      const result = await postJson("/api/app-state/bootstrap-claim/section",
+        { section, claim: liveClaim, ...body });
+      if (result?.ok !== true || !sameLegacyBootstrapAuthority(claim, result.claim)) {
+        const error = new Error("The Library profile or sync account changed during section recovery.");
+        error.code = "legacy_bootstrap_claim_conflict";
+        throw error;
+      }
+      liveClaim = result.claim; // A Library CAS itself changes its revision.
+      return result;
+    };
+    if (legacyState !== null && ((persistentAppWriteGenerations.get("library") || 0) !== initialLibraryGeneration
+      || !sameLibraryContent(state.library, originalLibraryBaseline))) {
+      const error = new Error("The Library changed while bootstrap was running; its latest local edits remain pending.");
+      error.code = "legacy_bootstrap_claim_conflict";
+      throw error;
+    }
+    let payload = await fetchJson("/api/app-state");
+    legacyBootstrapRecoverySummary = payload?.legacyBootstrapRecovery ?? null;
     applyPersistentSectionRevisions(payload?.revisions);
     const attemptedRecovery = new Set();
     while (true) {
@@ -1253,7 +1417,7 @@ export async function hydratePersistentAppState() {
         continue;
       }
       try {
-        const recoveryResult = await postJson(`/api/app-state/${encodeURIComponent(section)}`, {
+        const recoveryResult = await commitBootstrapSection(section, {
           value: recoverySnapshot[section],
           merge: mode === "merge",
           expectedUpdatedAt: PERSISTENT_CAS_SECTIONS.has(section) && mode !== "merge"
@@ -1269,23 +1433,32 @@ export async function hydratePersistentAppState() {
           if (pending) setPersistentSectionDirty(section, true, pending.mode, recoveryResult?.updatedAt);
         }
       } catch (error) {
+        if (error?.status === 409 || error?.code === "legacy_bootstrap_claim_conflict") {
+          error.code = "legacy_bootstrap_claim_conflict";
+          throw error;
+        }
         console.warn(`Persistent ${section} recovery save failed:`, error);
       }
     }
     if (localStorage.getItem(APP_DB_PREFERENCES_MIGRATION_KEY) !== "1"
       && !persistentDirtySections().has("preferences")) {
       try {
-        const preferenceMigration = await postJson("/api/app-state/preferences", {
+        const preferenceMigration = await commitBootstrapSection("preferences", {
           value: persistentPreferencesSnapshot(),
           merge: true,
         });
         if (Number.isFinite(Number(preferenceMigration?.updatedAt))) persistentAppSectionRevisions.set("preferences", Number(preferenceMigration.updatedAt));
         localStorage.setItem(APP_DB_PREFERENCES_MIGRATION_KEY, "1");
       } catch (error) {
+        if (error?.status === 409 || error?.code === "legacy_bootstrap_claim_conflict") {
+          error.code = "legacy_bootstrap_claim_conflict";
+          throw error;
+        }
         console.warn("Persistent preference backfill failed:", error);
       }
     }
     payload = await fetchJson("/api/app-state");
+    legacyBootstrapRecoverySummary = payload?.legacyBootstrapRecovery ?? null;
     applyPersistentSectionRevisions(payload?.revisions);
     if (tabPendingValue && tabPendingSafeToReplay && tabPendingRevision !== null
       && (persistentAppWriteGenerations.get("library") || 0) === 0) {
@@ -1303,7 +1476,7 @@ export async function hydratePersistentAppState() {
       }
       if (recoveryValue && Number.isSafeInteger(diskRevision)) {
       try {
-        const recovered = await postJson("/api/app-state/library", {
+        const recovered = await commitBootstrapSection("library", {
           value: recoveryValue, merge: false, expectedUpdatedAt: diskRevision,
         });
         if (Number.isFinite(Number(recovered?.updatedAt))) {
@@ -1318,6 +1491,10 @@ export async function hydratePersistentAppState() {
           }
         }
       } catch (error) {
+        if (error?.status === 409 || error?.code === "legacy_bootstrap_claim_conflict") {
+          error.code = "legacy_bootstrap_claim_conflict";
+          throw error;
+        }
         // The submitted data stays in sessionStorage and the visible Library.
         console.warn("An unsaved Library change could not be restored automatically:", error);
       }
@@ -1377,24 +1554,137 @@ export async function hydratePersistentAppState() {
         } else payload.state[section] = localOverlay[section];
       }
     }
+    // A title added *during* the versioned preflight is not part of the
+    // frozen old-browser bootstrap offer. Once an exact three-way comparison
+    // proves it disjoint, commit through the same SQLite profile/generation
+    // fence as the bootstrap itself (never the unguarded section PUT).
+    const earlySavedSections = new Set();
+    for (const section of earlySaveSections) {
+      if (section !== "library") continue;
+      const proposed = copyPersistentLibrary(payload.state.library);
+      const submittedGeneration = persistentAppWriteGenerations.get("library") || 0;
+      const localAtSubmit = copyPersistentLibrary(state.library);
+      const revision = Number(payload?.revisions?.library);
+      if (!Number.isSafeInteger(revision) || revision < 0) {
+        const error = new Error("No exact SQLite revision for the new Library title.");
+        error.code = "legacy_bootstrap_claim_conflict";
+        throw error;
+      }
+      const accepted = await commitBootstrapSection("library", {
+        value: proposed, merge: false, expectedUpdatedAt: revision,
+      });
+      if (!Number.isSafeInteger(accepted?.updatedAt) || accepted.updatedAt <= revision) {
+        const error = new Error("SQLite did not confirm the guarded Library addition.");
+        error.code = "legacy_bootstrap_claim_conflict";
+        throw error;
+      }
+      if ((persistentAppWriteGenerations.get("library") || 0) !== submittedGeneration
+        || !sameLibraryContent(state.library, localAtSubmit)) {
+        // The committed earlier delta is safe, but a later in-tab edit has
+        // not been committed or certified. Never apply the older receipt over it.
+        const error = new Error("The Library changed after its guarded bootstrap save.");
+        error.code = "legacy_bootstrap_claim_conflict";
+        throw error;
+      }
+      payload.state.library = proposed;
+      payload.revisions.library = accepted.updatedAt;
+      persistentAppSectionRevisions.set("library", accepted.updatedAt);
+      persistentAppAcceptedSnapshots.set("library", copyPersistentLibrary(proposed));
+      persistentAppLibraryViewBaseline = copyPersistentLibrary(proposed);
+      persistentAppLibraryViewRevision = accepted.updatedAt;
+      persistentAppPartialLibrarySaves.delete("library");
+      clearPendingLibraryForTab();
+      setPersistentSectionDirty("library", false);
+      earlySavedSections.add(section);
+    }
+    const finalClaim = (await fetchJson("/api/app-state/bootstrap-claim"))?.claim;
+    if (!sameLegacyBootstrapAuthority(claim, finalClaim)
+      || finalClaim.libraryRevision !== Number(payload?.revisions?.library)
+      || finalClaim.claimed !== liveClaim.claimed
+      || finalClaim.libraryCapture !== liveClaim.libraryCapture) {
+      const error = new Error("The account/profile changed during Library hydration; preserve the browser copy for review.");
+      error.code = "legacy_bootstrap_claim_conflict";
+      throw error;
+    }
     if (payload?.state && typeof payload.state === "object") applyPersistentAppState(payload.state);
     persistentAppLibraryViewRevision = !persistentDirtySections().has("library")
       && sameLibraryContent(state.library, persistentAppAcceptedSnapshots.get("library"))
       ? persistentAppSectionRevisions.get("library") ?? null : null;
     persistentAppStateReady = true;
-    for (const section of earlySaveSections) persistAppSection(section, persistentAppSnapshot()[section], { immediate: true });
+    // The normal Library CAS queue will keep the dirty rebase for review. Do
+    // not schedule an unfenced first-hydration write that could outlive the
+    // bootstrap account/profile generation just validated.
+    for (const section of earlySaveSections)
+      if (!earlySavedSections.has(section)) persistentAppUnresolvedConflicts.add(section);
     if (localCopyUnloaded.size) {
       localCopyUnloaded.clear();
       storeLocalCopy("blackline-cards", state.cards);
       storeLocalCopy("blackline-library", state.library);
     }
+    if (!persistentDirtySections().has("library") && !persistentAppUnresolvedConflicts.has("library")
+      && (persistentAppWriteGenerations.get("library") || 0) === initialLibraryGeneration)
+      saveLegacyBootstrapOrigin(finalClaim);
     localStorage.setItem(APP_DB_MIGRATION_KEY, "1");
     renderAll();
     applySubtitleStyle();
   } catch (error) {
     console.warn("On-disk app database is unavailable; using the browser cache for this session:", error);
+    if (error?.code === "legacy_bootstrap_claim_conflict" || error?.status === 409) {
+      persistentAppUnresolvedConflicts.add("library");
+      // A newer edit may have arrived while the GET/POST was in flight. Do
+      // not restore the old preflight snapshot over that newer local intent.
+      const editedDuringBootstrap = (persistentAppWriteGenerations.get("library") || 0)
+        !== initialLibraryGeneration;
+      state.library = editedDuringBootstrap
+        ? copyPersistentLibrary(state.library)
+        : copyPersistentLibrary(originalLibraryBaseline);
+      renderAll();
+      alertPersistentLibraryConflict();
+      return;
+    }
     renderAll();
   }
+}
+
+// Explicit recovery uses the server's atomic Library CAS and receipt update.
+// An ordinary pending edit or conflict in this tab must finish separately.
+export async function restoreLegacyLibraryEntries(ids, expectedUpdatedAt) {
+  if (!persistentAppStateReady || POPUP_HANDOFF || persistentAppWriteChains.has("library")
+    || persistentAppWriteTimers.has("library") || persistentAppOwnPendingSections.has("library")
+    || hasPendingLibraryForTab() || persistentAppUnresolvedConflicts.has("library"))
+    throw new Error("Finish saving or resolving current Library changes before restoring entries.");
+  const claim = (await fetchJson("/api/app-state/bootstrap-claim"))?.claim;
+  if (!sameLegacyBootstrapAuthority(claim, claim))
+    throw new Error("A current Library recovery profile claim is required.");
+  const result = await postJson("/api/app-state/bootstrap-claim/restore", { ids, expectedUpdatedAt, claim });
+  if (!sameLegacyBootstrapAuthority(claim, result?.claim))
+    throw new Error("The Library recovery account changed; preserved entries remain pending.");
+  if (!Number.isSafeInteger(result?.updatedAt) || result.updatedAt <= expectedUpdatedAt)
+    throw new Error("SQLite did not confirm the restored Library revision.");
+  legacyBootstrapRecoverySummary = result.legacyBootstrapRecovery ?? null;
+  const refreshed = await refreshPersistentLibrary({ revision: result.updatedAt });
+  return { ...result, refreshed };
+}
+
+// Explicitly keep the synchronized version (including intentional deletions)
+// after inspecting a retained browser entry. The original receipt is retained
+// for export; only a durable SQLite acknowledgement clears its pending state.
+export async function keepAcceptedLegacyLibraryEntries(ids, expectedUpdatedAt) {
+  if (!persistentAppStateReady || POPUP_HANDOFF || persistentAppOwnPendingSections.has("library")
+    || hasPendingLibraryForTab() || persistentAppWriteChains.has("library")
+    || persistentAppWriteTimers.has("library") || persistentAppUnresolvedConflicts.has("library"))
+    throw new Error("Finish saving current Library edits before reviewing older entries.");
+  const claim = (await fetchJson("/api/app-state/bootstrap-claim"))?.claim;
+  if (!sameLegacyBootstrapAuthority(claim, claim))
+    throw new Error("A current Library recovery profile claim is required.");
+  const result = await postJson("/api/app-state/bootstrap-claim/restore",
+    { ids, expectedUpdatedAt, decision: "keep", claim });
+  if (!sameLegacyBootstrapAuthority(claim, result?.claim))
+    throw new Error("The Library recovery account changed; no review receipt was acknowledged.");
+  if (result?.kept !== true || result?.updatedAt !== expectedUpdatedAt)
+    throw new Error("SQLite did not acknowledge the Library review.");
+  legacyBootstrapRecoverySummary = result.legacyBootstrapRecovery ?? null;
+  return result;
 }
 
 // Refresh a confirmed server revision without reloading the app or saving a stale

@@ -59,6 +59,7 @@ export function clientFeatureProblems(features) {
     tab: new Set(CORE_SETTINGS_TABS),
     filter: new Set(CORE_LIBRARY_FILTERS),
     home: new Set(CORE_HOME_CATEGORIES),
+    "title section": new Set(),
     "title subject": new Set(),
   };
   const claim = (kind, value, owner) => {
@@ -116,6 +117,7 @@ export function clientFeatureProblems(features) {
     }
     for (const section of feature.titleSections || []) {
       if (typeof section?.id !== "string" || !ID.test(section.id)) { problem(problems, `${owner}: invalid title section id ${JSON.stringify(section?.id)}`); continue; }
+      claim("title section", section.id, owner);
       if (typeof section.available !== "function" || typeof section.render !== "function") problem(problems, `${owner}: title section "${section.id}" needs available() and render()`);
     }
     // Title pages a feature owns: /title?f=<id>&item=<item>.

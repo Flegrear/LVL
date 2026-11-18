@@ -5,6 +5,7 @@
 
 const DEFAULT_EVENT_FIELDS = ["Layer", "Start", "End", "Style", "Name", "MarginL", "MarginR", "MarginV", "Effect", "Text"];
 const MAX_ASS_EVENTS = 20_000;
+const MAX_ASS_SOURCE_CHARS = 8_000_000;
 
 function assTime(value) {
   const match = /^(\d{1,3}):(\d\d):(\d\d)\.(\d{1,2})$/.exec(String(value || "").trim());
@@ -53,6 +54,10 @@ function readAssText(raw) {
 export function parseAssDialogueEvents(source, { maxEvents = MAX_ASS_EVENTS } = {}) {
   const limit = Number.isSafeInteger(maxEvents) ? Math.min(MAX_ASS_EVENTS, Math.max(0, maxEvents)) : MAX_ASS_EVENTS;
   if (!limit) return [];
+  // Event count alone cannot bound a single adversarial dialogue or line.
+  // Reject explicitly rather than silently accepting a truncated transcript.
+  if (String(source ?? "").length > MAX_ASS_SOURCE_CHARS)
+    throw new RangeError("ASS subtitle source exceeds the 8-million-character import limit");
   const result = [];
   const seen = new Set();
   let inEvents = false;
@@ -70,24 +75,36 @@ export function parseAssDialogueEvents(source, { maxEvents = MAX_ASS_EVENTS } = 
     const formatLine = /^\s*Format\s*:\s*(.*)$/i.exec(line);
     if (formatLine) {
       const fields = formatLine[1].split(",").map((field) => field.trim());
-      // Text is conventionally last, and can contain arbitrary commas.
-      if (fields.length >= 4 && fields.at(-1)?.toLowerCase() === "text"
-        && ["start", "end"].every((field) => fields.some((candidate) => candidate.toLowerCase() === field)))
+      // ASS permits reordered columns. Text may include commas; the other
+      // schema-defined columns are delimited from the left/right so those
+      // commas remain part of Text, including when it is not the last column.
+      const names = fields.map((field) => field.toLowerCase());
+      if (fields.length >= 4 && names.filter((field) => field === "text").length === 1
+        && ["start", "end"].every((field) => names.filter((name) => name === field).length === 1)
+        && fields.every(Boolean) && new Set(names).size === names.length)
         format = fields;
       continue;
     }
     const dialogue = /^\s*Dialogue\s*:\s*(.*)$/i.exec(line);
     if (!dialogue) continue;
-    const fields = [];
+    const fields = new Array(format.length);
+    const textIndex = format.findIndex((field) => field.toLowerCase() === "text");
     let remaining = dialogue[1];
-    for (let i = 1; i < format.length; i++) {
+    let valid = textIndex >= 0;
+    for (let i = 0; i < textIndex && valid; i++) {
       const separator = remaining.indexOf(",");
-      if (separator < 0) break;
-      fields.push(remaining.slice(0, separator));
+      if (separator < 0) { valid = false; break; }
+      fields[i] = remaining.slice(0, separator);
       remaining = remaining.slice(separator + 1);
     }
-    if (fields.length !== format.length - 1) continue;
-    fields.push(remaining);
+    for (let i = format.length - 1; i > textIndex && valid; i--) {
+      const separator = remaining.lastIndexOf(",");
+      if (separator < 0) { valid = false; break; }
+      fields[i] = remaining.slice(separator + 1);
+      remaining = remaining.slice(0, separator);
+    }
+    if (!valid) continue;
+    fields[textIndex] = remaining;
     const event = Object.fromEntries(format.map((name, i) => [name.toLowerCase(), fields[i]]));
     const startMs = assTime(event.start), endMs = assTime(event.end);
     if (startMs === null || endMs === null || endMs <= startMs) continue;
@@ -97,10 +114,18 @@ export function parseAssDialogueEvents(source, { maxEvents = MAX_ASS_EVENTS } = 
     const effect = String(event.effect || "").trim();
     const signsStyle = /(?:^|[\s_-])(?:signs?|songs?|karaoke|lyrics|op|ed|opening|ending)(?:$|[\s_-])/i.test(`${style} ${effect}`);
     const kind = signsStyle || content.signPosition || content.karaoke ? "sign" : "dialogue";
-    const identity = `${startMs}|${endMs}|${content.text}`;
-    if (seen.has(identity)) continue; // Redundant ASS overlay lines do not double dialogue.
+    // Matching time and words do not prove the same ASS event: different
+    // actors/layers/styles can speak simultaneously. Collapse only matching
+    // semantic events from repeated extraction of the same stream.
+    const identity = JSON.stringify([
+      startMs, endMs, content.text, String(event.layer || "").trim(),
+      String(event.name || "").trim(), style, effect,
+      String(event.text || "").trim(),
+    ]);
+    if (seen.has(identity)) continue;
     seen.add(identity);
-    result.push({ startMs, endMs, text: content.text, style, kind,
+    result.push({ startMs, endMs, text: content.text, style,
+      actor: String(event.name || "").trim(), layer: String(event.layer || "").trim(), kind,
       hasVisualEffects: content.containedDrawing || content.signPosition || content.karaoke });
     if (result.length >= limit) break;
   }
@@ -110,7 +135,16 @@ export function parseAssDialogueEvents(source, { maxEvents = MAX_ASS_EVENTS } = 
 export function assEventsToWebVtt(events, { includeSigns = true } = {}) {
   const cues = (Array.isArray(events) ? events : [])
     .filter((event) => includeSigns || event.kind !== "sign")
-    .map((event) => `${vttTime(event.startMs)} --> ${vttTime(event.endMs)}\n${event.text}`);
+    .filter((event) => Number.isFinite(event.startMs) && Number.isFinite(event.endMs)
+      && event.endMs > event.startMs)
+    .map((event) => {
+      // A WebVTT cue body must not inject a second block or timestamp arrow.
+      // Keep ordinary ASS line breaks and escape text as text, not VTT markup.
+      const body = String(event.text || "").replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;").replace(/>/g, "&gt;")
+        .replace(/\n(?:\s*\n)+/g, "\n");
+      return `${vttTime(event.startMs)} --> ${vttTime(event.endMs)}\n${body}`;
+    });
   return cues.length ? `WEBVTT\n\n${cues.join("\n\n")}\n` : "";
 }
 

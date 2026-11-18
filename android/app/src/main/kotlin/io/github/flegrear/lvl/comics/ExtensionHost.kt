@@ -37,6 +37,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.MediaType.Companion.toMediaTypeOrNull
 import okhttp3.Request
@@ -138,17 +141,48 @@ class ExtensionHost(private val context: Context) {
                 output.flush()
             }
         }
+        // Every socket owns its accepted replies. EOF must not abandon queued
+        // work or permit a late extension callback to write a second answer.
+        val replies = HostResponseDrain(writer = { message ->
+            runCatching { write(message) }
+            Unit
+        })
         try {
             write(buildJsonObject { put("ready", true); put("version", PROTOCOL_VERSION) })
             val input = BufferedReader(InputStreamReader(client.inputStream, Charsets.UTF_8))
             while (true) {
                 val line = input.readLine() ?: break
                 if (line.isBlank()) continue
-                scope.launch { permits.withPermit { answer(line, write) } }
+                val id = runCatching { json.parseToJsonElement(line).jsonObject["id"] }
+                    .getOrNull() ?: JsonNull
+                val ticket = replies.admit(id)
+                if (ticket == null) {
+                    runCatching {
+                        write(buildJsonObject {
+                            put("id", id)
+                            put("error", "Too many outstanding extension requests")
+                            put("status", 429)
+                        })
+                    }
+                    continue
+                }
+                val job = scope.launch {
+                    permits.withPermit { answer(line) { message -> replies.answer(ticket, message) } }
+                }
+                ticket.cancel = { job.cancel() }
             }
         } catch (error: Exception) {
             Log.w(TAG, "Connection ended: ${error.message}")
         } finally {
+            val canceled = replies.finish(15_000L) { ticket ->
+                buildJsonObject {
+                    put("id", ticket.id)
+                    put("error", "Extension host input closed before this request completed")
+                    put("status", 503)
+                    put("code", "runner-closed")
+                }
+            }
+            canceled.forEach { it.cancel?.invoke() }
             runCatching { client.close() }
         }
     }
@@ -250,6 +284,7 @@ class ExtensionHost(private val context: Context) {
                     put("open", state.open)
                     put("passed", state.passed)
                     put("pending", state.pending)
+                    put("revision", state.revision)
                     state.url?.let { put("url", it) }
                     state.generation?.let { put("generation", it) }
                     if (state.finishedAt > 0) put("at", state.finishedAt)
@@ -378,14 +413,53 @@ class ExtensionHost(private val context: Context) {
         }
     }
 
-    // A page for LVL's own engines, through the app's client: the WebView's cookies and user
-    // agent, Cloudflare checks passed in a hidden WebView, public addresses only.
-    private val pageClient by lazy { Injekt.get<NetworkHelper>().client.newBuilder().dns(PublicOnlyDns).build() }
+    // An optional versioned request must supply BOTH fields. Absent fields mean
+    // legacy, non-authoritative read-only behavior, never a verified cookie grant.
+    private fun expectedCookieRevision(
+        request: JsonObject, url: HttpUrl, verification: VerifySessionState.Snapshot,
+    ): Long? {
+        val hasRevision = request.containsKey("verificationRevision")
+        val hasUrl = request.containsKey("verificationUrl")
+        if (!hasRevision && !hasUrl) return null
+        if (!hasRevision || !hasUrl)
+            throw RequestError("Incomplete cookie verification epoch", 400, "invalid-verification")
+        val revisionValue = request["verificationRevision"] as? JsonPrimitive
+        val expectedRevision = revisionValue?.takeIf { !it.isString }?.longOrNull
+        if (expectedRevision == null || expectedRevision < 0L ||
+            expectedRevision > VerifySessionState.MAX_SAFE_REVISION)
+            throw RequestError("Invalid cookie verification revision", 400, "invalid-verification")
+        val urlValue = request["verificationUrl"] as? JsonPrimitive
+        val expectedUrl = urlValue?.takeIf { it.isString }?.contentOrNull
+        val normalized = expectedUrl?.let { runCatching { it.toHttpUrl().toString() }.getOrNull() }
+        if (normalized == null)
+            throw RequestError("Invalid cookie verification URL", 400, "invalid-verification")
+        if (normalized != url.toString())
+            throw RequestError("Cookie verification URL changed", 409, "check-open")
+        if (verification.open || verification.revision != expectedRevision)
+            throw RequestError("Cookie verification revision changed", 409, "check-open")
+        return expectedRevision
+    }
+
+    // Browser transport shares WebView cookies for request reads, but cannot
+    // write Set-Cookie from an in-flight response: the verification epoch may
+    // change before that response returns. Normal extension clients retain
+    // their original shared NetworkHelper cookie jar.
+    private val pageClient by lazy {
+        val network = Injekt.get<NetworkHelper>()
+        network.client.newBuilder().dns(PublicOnlyDns).cookieJar(object : CookieJar {
+            override fun loadForRequest(url: HttpUrl): List<Cookie> = network.cookieJar.loadForRequest(url)
+            override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+                // No automatic browserRequest writeback, including redirects.
+            }
+        }).build()
+    }
 
     private fun browserRequest(request: JsonObject): JsonElement {
         val url = request.need("url").toHttpUrl()
         if (url.scheme != "https" && url.scheme != "http") throw RequestError("Only web addresses can be fetched")
-        if (VerifyActivity.open) throw RequestError("Finish the site verification before trying again", 409, "check-open")
+        val verification = VerifyActivity.state
+        if (verification.open) throw RequestError("Finish the site verification before trying again", 409, "check-open")
+        expectedCookieRevision(request, url, verification)
         val method = (request.text("method") ?: "GET").uppercase()
         val maxBytes = (request["maxBytes"]?.jsonPrimitive?.longOrNull ?: (8L * 1024 * 1024)).coerceIn(1, MAX_IMAGE_BYTES)
         val builder = Request.Builder().url(url)
@@ -407,11 +481,27 @@ class ExtensionHost(private val context: Context) {
         if (method == "GET" || method == "HEAD") builder.method(method, null)
         else builder.method(method, (body ?: ByteArray(0)).toRequestBody(contentType?.toMediaTypeOrNull()))
         pageClient.newCall(builder.build()).execute().use { response ->
+            // Versioned callers may not use a different final origin as
+            // authority for the exact originally requested URL.
+            if (request.containsKey("verificationRevision") &&
+                (response.request.url.scheme != url.scheme ||
+                    response.request.url.host != url.host ||
+                    response.request.url.port != url.port))
+                throw RequestError("Browser redirect changed verification origin", 409, "check-open")
             val bytes = response.body.byteStream().use { it.readAtMost((maxBytes + 1).toInt()) }
             if (bytes.size > maxBytes) throw RequestError("The page is too large", 502)
-            return buildJsonObject {
+            // A visible challenge may have started and finished while this
+            // network request was in flight. The closed state alone is NOT
+            // permission to return its old response/cookies to the caller.
+            val result = buildJsonObject {
                 put("status", response.code)
                 put("url", response.request.url.toString())
+                // Returned metadata is a candidate for the Node consumer to
+                // fence at actual application time, NOT evidence of application.
+                put("verificationRevision", verification.revision)
+                put("verificationUrl", url.toString())
+                put("applied", false)
+                put("useGuaranteed", false)
                 put("headers", buildJsonObject {
                     response.headers.names().forEach { name ->
                         val values = response.headers.values(name)
@@ -421,41 +511,152 @@ class ExtensionHost(private val context: Context) {
                 })
                 put("data", Base64.getEncoder().encodeToString(bytes))
             }
+            if (!VerifyActivity.isIdleRevision(verification.revision))
+                throw RequestError("Site verification changed during the request", 409, "check-open")
+            return result
         }
     }
 
     // The site's cookies once it can be read (a check passed now or on the Verify screen),
     // as Set-Cookie strings, with the user agent they belong to.
+    //
+    // CookieManager exposes only the Cookie request header, NOT each cookie's
+    // original Domain, Path, Secure or expiry attributes. Never invent
+    // Domain=<host>; Path=/ here: a host-only /login cookie could otherwise
+    // gain authority on sibling subdomains and unrelated /api endpoints.
+    // Instead transfer a host-only cookie scoped to the exact requested path.
+    // That may require verification again for other paths; it cannot silently
+    // widen the browser session's authority.
     private fun siteCookies(request: JsonObject): JsonElement {
         val url = request.need("url").toHttpUrl()
-        if (VerifyActivity.open) throw RequestError("Finish the site verification before trying again", 409, "check-open")
+        val verification = VerifyActivity.state
+        if (verification.open) throw RequestError("Finish the site verification before trying again", 409, "check-open")
+        expectedCookieRevision(request, url, verification)
         // The extension client and the Verify WebView already use the same CookieManager.
         // Fetching this URL here would initiate another Cloudflare check before the cookies
         // could be handed back to the extension, even when the user just passed it.
         val network = Injekt.get<NetworkHelper>()
         val header = android.webkit.CookieManager.getInstance().getCookie(url.toString()).orEmpty()
-        return buildJsonObject {
+        val scopedPath = url.encodedPath
+        val secure = if (url.scheme == "https") "; Secure" else ""
+        val result = buildJsonObject {
             put("cookies", buildJsonArray {
-                header.split(';').map { it.trim() }.filter { it.contains('=') }.forEach { add(JsonPrimitive("$it; Domain=${url.host}; Path=/")) }
+                header.split(';').map { it.trim() }.filter { it.contains('=') }.forEach {
+                    val transferred = "$it; Path=$scopedPath$secure"
+                    // Invalid cookie attributes must not let an injected Path or
+                    // Domain override the conservative browser-URL scope.
+                    val parsed = okhttp3.Cookie.parse(url, transferred)
+                    if (parsed != null && parsed.hostOnly && parsed.path == scopedPath &&
+                        (url.scheme != "https" || parsed.secure)) add(JsonPrimitive(transferred))
+                }
             })
             put("userAgent", network.defaultUserAgentProvider())
+            // Legacy clients may ignore these; do not claim the consumer used
+            // a revision until that exact consumer enforces it.
+            put("verificationRevision", verification.revision)
+            put("verificationUrl", url.toString())
+            put("applied", false)
+            put("useGuaranteed", false)
         }
+        if (!VerifyActivity.isIdleRevision(verification.revision))
+            throw RequestError("Site verification changed while reading cookies", 409, "check-open")
+        return result
     }
 
     // Cookies from a check LVL passed elsewhere, and that browser's user agent.
     private fun cookies(request: JsonObject): JsonElement {
         val url = request.need("url").toHttpUrl()
+        val verification = VerifyActivity.state
+        if (verification.open)
+            throw RequestError("Finish the site verification before applying cookies", 409, "check-open")
+        val expectedRevision = expectedCookieRevision(request, url, verification)
+            ?: throw RequestError("Cookie import requires an exact verification epoch", 409, "check-open")
         val network = Injekt.get<NetworkHelper>()
-        val list = (request["cookies"] as? JsonArray).orEmpty().mapNotNull { (it as? JsonPrimitive)?.contentOrNull }
+        val supplied = request["cookies"] as? JsonArray
+            ?: throw RequestError("Invalid cookie list", 400, "invalid-verification")
+        if (supplied.size > 64)
+            throw RequestError("Too many cookies for one verification import", 400, "invalid-verification")
+        val list = supplied.map { (it as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+            ?: throw RequestError("Invalid cookie", 400, "invalid-verification") }
+        if (list.any { it.length > 4096 })
+            throw RequestError("Cookie exceeds the import limit", 400, "invalid-verification")
+        val userAgentValue = request["userAgent"]
+        val userAgent = (userAgentValue as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+        if (userAgentValue != null && (userAgent == null || userAgent.length > 512))
+            throw RequestError("Invalid cookie user agent", 400, "invalid-verification")
+        // An inferred CookieManager header cannot authorize a wider Domain or
+        // Path. This versioned import is only for the exact host and path.
+        for (text in list) {
+            val cookie = Cookie.parse(url, text)
+            if (cookie == null || !cookie.hostOnly || cookie.path != url.encodedPath ||
+                (url.scheme == "https" && !cookie.secure))
+                throw RequestError("Cookie exceeds verified URL scope", 409, "check-open")
+        }
         // A cookie read from the shared WebView jar is already installed with its original
         // domain/path. Re-applying an inferred host-only copy could replace its scope.
         val missing = list.filter { text ->
             val cookie = okhttp3.Cookie.parse(url, text)
             cookie != null && network.cookieJar.value(url, cookie.name) != cookie.value
         }
-        val added = network.cookieJar.add(url, missing)
-        request.text("userAgent")?.let { network.setUserAgent(it) }
+        // Same monitor as begin/complete/destroyed, so a new Verify epoch
+        // cannot be admitted between the check and these synchronous writes.
+        // WebView's actual asynchronous persistence remains a physical gate.
+        val added = VerifyActivity.withIdleRevision(expectedRevision) {
+            val count = network.cookieJar.add(url, missing)
+            userAgent?.let { network.setUserAgent(it) }
+            count
+        } ?: throw RequestError("Site verification changed before cookie application", 409, "check-open")
         return buildJsonObject { put("added", added) }
+    }
+}
+
+/**
+ * Connection-local reply ownership for protocol v1. The 15-second EOF window
+ * is bounded for pending handlers, and the same monitor prevents an already
+ * canceled callback from publishing a second response. Socket I/O itself is
+ * not a process quiescence or hard network-write deadline.
+ */
+internal class HostResponseDrain(
+    private val writer: (JsonObject) -> Unit,
+    private val maximumPending: Int = 64,
+) {
+    init { require(maximumPending > 0) }
+    class Ticket internal constructor(val id: JsonElement) {
+        @Volatile var cancel: (() -> Unit)? = null
+    }
+
+    private val monitor = Object()
+    private val pending = LinkedHashSet<Ticket>()
+    private var accepting = true
+
+    fun admit(id: JsonElement): Ticket? = synchronized(monitor) {
+        if (!accepting || pending.size >= maximumPending) null
+        else Ticket(id).also { pending.add(it) }
+    }
+
+    fun answer(ticket: Ticket, reply: JsonObject): Boolean = synchronized(monitor) {
+        if (!pending.remove(ticket)) return@synchronized false
+        try { writer(reply) } finally { monitor.notifyAll() }
+        true
+    }
+
+    fun finish(timeoutMs: Long, canceled: (Ticket) -> JsonObject): List<Ticket> {
+        require(timeoutMs >= 0L)
+        return synchronized(monitor) {
+            accepting = false
+            val deadline = System.nanoTime() + timeoutMs * 1_000_000L
+            while (pending.isNotEmpty()) {
+                val remaining = deadline - System.nanoTime()
+                if (remaining <= 0L) break
+                monitor.wait(remaining / 1_000_000L, (remaining % 1_000_000L).toInt())
+            }
+            val unfinished = pending.toList()
+            for (ticket in unfinished) {
+                pending.remove(ticket)
+                try { writer(canceled(ticket)) } finally { monitor.notifyAll() }
+            }
+            unfinished
+        }
     }
 }
 

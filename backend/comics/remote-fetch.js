@@ -20,9 +20,9 @@ const LIMITS = Object.freeze({ timeoutMs: 25_000, maxBytes: 8 * 1024 * 1024, red
 const RETRY_STATUS = new Set([500, 502, 503, 504, 520, 521, 522, 523, 524]);
 
 function ipv4Private(address) {
-  const [a, b, c] = address.split(".").map(Number);
+  const [a, b, c, d] = address.split(".").map(Number);
   return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31)
-    || (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 0 || c === 2))
+    || (a === 192 && b === 168) || (a === 192 && b === 0 && (c === 2 || (c === 0 && d !== 9 && d !== 10)))
     || (a === 192 && b === 88 && c === 99) || (a === 198 && (b === 18 || b === 19 || (b === 51 && c === 100)))
     || (a === 203 && b === 0 && c === 113) || a >= 224;
 }
@@ -61,12 +61,17 @@ export function isPublicAddress(address) {
     return !ipv4Private(octets.join("."));
   }
   const first = words[0];
-  // Preserve the existing loopback/unspecified, ULA, link-local, multicast,
-  // NAT64 and documentation-address restrictions, regardless of textual form.
+  // Preserve existing mapped/compatible public IPv4 support above. Native
+  // globally routed IPv6 must be in 2000::/3; transition tunnels can carry
+  // private IPv4 destinations even when the outer IPv6 address looks public.
   if (words.slice(0, 7).every((value) => value === 0) && words[7] <= 1) return false;
   if ((first & 0xfe00) === 0xfc00 || (first & 0xffc0) === 0xfe80 || (first & 0xffc0) === 0xfec0 || (first & 0xff00) === 0xff00) return false;
   if (first === 0x64 && words[1] === 0xff9b) return false;
-  return !(first === 0x2001 && words[1].toString(16).startsWith("db8"));
+  if ((first & 0xe000) !== 0x2000) return false;
+  if (first === 0x2002 || (first === 0x2001 && words[1] === 0)) return false; // 6to4 / Teredo
+  if (first === 0x2001 && (words[1] === 0x0002 || (words[1] & 0xfff0) === 0x0010 || (words[1] & 0xfff0) === 0x0020))
+    return false; // benchmarking and protocol-assignment ranges
+  return !(first === 0x2001 && words[1] === 0x0db8); // documentation
 }
 
 export function checkUrl(value) {
@@ -74,7 +79,7 @@ export function checkUrl(value) {
   try { url = new URL(String(value)); } catch { throw Object.assign(new Error("Invalid address"), { status: 400 }); }
   if (url.protocol !== "https:" && url.protocol !== "http:") throw Object.assign(new Error("Only web addresses can be fetched"), { status: 400 });
   if (url.username || url.password) throw Object.assign(new Error("Addresses with passwords aren't fetched"), { status: 400 });
-  const host = url.hostname.replace(/^\[|\]$/g, "");
+  const host = url.hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "");
   if (net.isIP(host) && !isPublicAddress(host)) throw Object.assign(new Error("Local addresses aren't fetched"), { status: 400 });
   if (/^(?:localhost|.*\.localhost|.*\.local|.*\.internal|.*\.lan|.*\.home\.arpa)$/i.test(host)) throw Object.assign(new Error("Local addresses aren't fetched"), { status: 400 });
   return url;
@@ -88,7 +93,10 @@ export function safeLookup(resolve = dns.lookup, isAllowed = isPublicAddress) {
     const opts = typeof options === "object" && options ? options : {};
     resolve(hostname, { ...opts, all: true }, (error, addresses) => {
       if (error) return cb(error);
-      const list = (Array.isArray(addresses) ? addresses : [{ address: addresses, family: net.isIP(addresses) }]).filter((item) => isAllowed(item.address));
+      const list = (Array.isArray(addresses) ? addresses : [{ address: addresses, family: net.isIP(addresses) }])
+        .filter((item) => item && (net.isIP(item.address) === 4 || net.isIP(item.address) === 6)
+          && (!item.family || item.family === net.isIP(item.address)) && isAllowed(item.address))
+        .map((item) => ({ address: item.address, family: net.isIP(item.address) }));
       if (!list.length) return cb(Object.assign(new Error("The site resolved to a local address"), { code: "EPRIVATE" }));
       if (opts.all) return cb(null, list);
       return cb(null, list[0].address, list[0].family);
@@ -104,6 +112,38 @@ export async function checkHost(value, resolve = dns.lookup) {
   if (net.isIP(host)) return url;
   await new Promise((done, reject) => safeLookup(resolve)(host, { all: true }, (error) => (error ? reject(Object.assign(error, { status: 400 })) : done())));
   return url;
+}
+
+function abortFailure(signal) {
+  if (signal?.reason instanceof Error) return signal.reason;
+  return Object.assign(new Error("The request was cancelled"), { name: "AbortError", code: "ABORT_ERR", status: 499 });
+}
+
+function waitFor(ms, signal) {
+  if (signal?.aborted) return Promise.reject(abortFailure(signal));
+  return new Promise((resolve, reject) => {
+    let timer;
+    const cleanup = () => { clearTimeout(timer); signal?.removeEventListener("abort", cancel); };
+    const cancel = () => { cleanup(); reject(abortFailure(signal)); };
+    timer = setTimeout(() => { cleanup(); resolve(); }, Math.max(0, ms));
+    signal?.addEventListener("abort", cancel, { once: true });
+    if (signal?.aborted) cancel();
+  });
+}
+
+function observeAbort(promise, signal) {
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(abortFailure(signal));
+  return new Promise((resolve, reject) => {
+    const cleanup = () => signal.removeEventListener("abort", cancel);
+    const cancel = () => { cleanup(); reject(abortFailure(signal)); };
+    signal.addEventListener("abort", cancel, { once: true });
+    Promise.resolve(promise).then(
+      (value) => { cleanup(); resolve(value); },
+      (error) => { cleanup(); reject(error); },
+    );
+    if (signal.aborted) cancel();
+  });
 }
 
 // Paces requests per host: at most `perHost` at once, `gapMs` between starts.
@@ -127,7 +167,8 @@ function hostPacer({ gapMs, perHost, now }) {
       if (idle(state)) hosts.delete(host);
     }
   };
-  return async function run(host, task, pace = null) {
+  return async function run(host, task, pace = null, signal = null) {
+    if (signal?.aborted) throw abortFailure(signal);
     pruneIdle();
     const state = hosts.get(host) || { active: 0, last: 0, queue: [], pace: null, idleAt: null, startTurn: Promise.resolve() };
     if (hosts.has(host)) hosts.delete(host);
@@ -136,34 +177,50 @@ function hostPacer({ gapMs, perHost, now }) {
     if (pace) state.pace = pace;
     const gap = Math.max(gapMs, state.pace?.gapMs || 0);
     const limit = Math.max(1, Math.min(perHost, state.pace?.perHost || perHost));
-    if (state.active >= limit || state.queue.length)
-      await new Promise((resolve) => state.queue.push(resolve));
-    else state.active += 1;
-    // The active permit limits concurrent transfers; this short start-only
-    // baton serializes the *admission timestamp*, not the transfer. Two
-    // overdue timers cannot both claim the same instant after a late wakeup.
-    const priorStart = state.startTurn;
-    let finishStart;
-    state.startTurn = new Promise((resolve) => { finishStart = resolve; });
-    await priorStart;
+    if (state.active >= limit || state.queue.length) {
+      await new Promise((resolve, reject) => {
+        const owner = { resume: () => { signal?.removeEventListener("abort", cancel); resolve(); } };
+        const cancel = () => {
+          const index = state.queue.indexOf(owner);
+          if (index === -1) return; // Already admitted: the owner's finally releases the permit.
+          state.queue.splice(index, 1);
+          signal?.removeEventListener("abort", cancel);
+          if (idle(state)) state.idleAt = now();
+          pruneIdle();
+          reject(abortFailure(signal));
+        };
+        state.queue.push(owner);
+        signal?.addEventListener("abort", cancel, { once: true });
+        if (signal?.aborted) cancel();
+      });
+    } else state.active += 1;
     try {
-      for (;;) {
-        const currentGap = Math.max(gapMs, state.pace?.gapMs || gap);
-        const wait = state.last + currentGap - now();
-        if (wait <= 0) break;
-        await new Promise((resolve) => setTimeout(resolve, wait));
-        // Re-read the actual clock and last admitted start after every wake.
+      if (signal?.aborted) throw abortFailure(signal);
+      // The active permit limits concurrent transfers. This short baton
+      // serializes the admission timestamp, not the transfer.
+      const priorStart = state.startTurn;
+      let finishStart;
+      state.startTurn = new Promise((resolve) => { finishStart = resolve; });
+      try {
+        await observeAbort(priorStart, signal);
+        for (;;) {
+          const currentGap = Math.max(gapMs, state.pace?.gapMs || gap);
+          const wait = state.last + currentGap - now();
+          if (wait <= 0) break;
+          await waitFor(wait, signal);
+        }
+        if (signal?.aborted) throw abortFailure(signal);
+        state.last = now();
+      } finally {
+        finishStart();
       }
-      state.last = now();
+      return await task();
     } finally {
-      finishStart();
-    }
-    try { return await task(); } finally {
       state.active -= 1;
       const currentLimit = Math.max(1, Math.min(perHost, state.pace?.perHost || perHost));
       while (state.active < currentLimit && state.queue.length) {
         state.active += 1; // Reserve the permit before resuming its queued owner.
-        state.queue.shift()();
+        state.queue.shift().resume();
       }
       if (idle(state)) state.idleAt = now();
       pruneIdle();
@@ -177,39 +234,80 @@ function decode(buffer, encoding, maxBytes) {
   if (kind === "gzip" || kind === "x-gzip") return zlib.gunzipSync(buffer, options);
   if (kind === "br") return zlib.brotliDecompressSync(buffer, options);
   if (kind === "deflate") { try { return zlib.inflateSync(buffer, options); } catch { return zlib.inflateRawSync(buffer, options); } }
+  // Identity/no encoding previously bypassed maxDecodedBytes if maxBytes
+  // allowed a larger wire response.
+  if (buffer.length > maxBytes) throw new Error("Decoded body is too large");
   return buffer;
 }
 
+// A verified repository replacement may move a *public* source search POST
+// from one origin to another. Tokens and arbitrary request bodies cannot make
+// that move. All origin, source and revision evidence is checked again by a
+// transport-owner verifier immediately before the foreign request is sent.
+const CLIENT_BOUND_FIELD = /(?:token|secret|auth|cookie|passw(?:ord|d)|session|csrf|signature|nonce|api[-_]?key|client[-_]?key|private[-_]?key)|^key$/i;
+function hasClientBoundFields(value, depth = 0) {
+  if (depth > 12) return true;
+  if (!value || typeof value !== "object") return false;
+  if (value instanceof URLSearchParams) return [...value.keys()].some((key) => CLIENT_BOUND_FIELD.test(key));
+  if (Array.isArray(value)) return value.some((item) => hasClientBoundFields(item, depth + 1));
+  return Object.entries(value).some(([key, item]) =>
+    CLIENT_BOUND_FIELD.test(key) || hasClientBoundFields(item, depth + 1));
+}
+
 export function createRemoteFetch({ lookup = dns.lookup, transport = { http, https }, limits = {}, now = Date.now, userAgent = BROWSER_UA,
-  sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+  sleep = null, verifyRepositoryMigration = null } = {}) {
   const config = { ...LIMITS, ...limits };
   const jar = createSiteCookieJar({ now });
   const pace = hostPacer({ gapMs: config.gapMs, perHost: config.perHost, now });
   // Validate even injected DNS implementations at the final socket lookup.
   const checkedLookup = safeLookup(lookup);
 
-  function once(url, { method, headers, body, timeoutMs, maxBytes }) {
+  function once(url, { method, headers, body, timeoutMs, maxBytes, signal }) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) { reject(abortFailure(signal)); return; }
       const lib = url.protocol === "https:" ? transport.https : transport.http;
-      const request = lib.request(url, { method, headers, lookup: checkedLookup, timeout: timeoutMs }, (response) => {
+      let settled = false;
+      let request;
+      const finish = (callback, value) => {
+        if (settled) return;
+        settled = true;
+        signal?.removeEventListener("abort", cancel);
+        callback(value);
+      };
+      const cancel = () => request.destroy(abortFailure(signal));
+      request = lib.request(url, { method, headers, lookup: checkedLookup, timeout: timeoutMs }, (response) => {
         const chunks = [];
         let size = 0;
         response.on("data", (chunk) => {
+          if (settled) return;
           size += chunk.length;
-          if (size > maxBytes) { request.destroy(Object.assign(new Error("The page is too large"), { status: 502 })); return; }
+          if (size > maxBytes) {
+            const error = Object.assign(new Error("The page is too large"), { status: 502 });
+            finish(reject, error);
+            request.destroy(error);
+            return;
+          }
           chunks.push(chunk);
         });
-        response.on("end", () => resolve({ status: response.statusCode, headers: response.headers, raw: Buffer.concat(chunks) }));
-        response.on("error", reject);
+        response.on("end", () => finish(resolve, { status: response.statusCode, headers: response.headers, raw: Buffer.concat(chunks) }));
+        response.on("error", (error) => finish(reject, error));
+        response.on("aborted", () => finish(reject, Object.assign(new Error("The site interrupted its answer"), { status: 502 })));
+        response.on("close", () => {
+          if (!settled) finish(reject, Object.assign(new Error("The site closed its answer"), { status: 502 }));
+        });
       });
       request.on("timeout", () => request.destroy(Object.assign(new Error("The site took too long to answer"), { status: 504 })));
-      request.on("error", (error) => reject(error.code === "EPRIVATE" ? Object.assign(error, { status: 400 }) : error));
+      request.on("error", (error) => finish(reject, error.code === "EPRIVATE" ? Object.assign(error, { status: 400 }) : error));
+      signal?.addEventListener("abort", cancel, { once: true });
+      if (signal?.aborted) { cancel(); return; }
       if (body) request.write(body);
       request.end();
     });
   }
 
   // options: { method, headers, form (object -> urlencoded), referer, lang, accept, maxBytes, timeoutMs }
+  // `migration` is *identity context*, not authority. Only the trusted
+  // constructor's verifyRepositoryMigration callback can approve a POST hop.
   async function request(input, options = {}) {
     let url = checkUrl(input);
     if (options.httpsOnly && url.protocol !== "https:")
@@ -217,18 +315,39 @@ export function createRemoteFetch({ lookup = dns.lookup, transport = { http, htt
     const credentialOrigin = url.origin;
     let method = options.method || (options.form || options.json !== undefined ? "POST" : "GET");
     let body = options.form ? new URLSearchParams(options.form).toString() : options.json !== undefined ? JSON.stringify(options.json) : options.body ?? null;
+    let droppedBody = false;
+    let migratedBody = false;
+    let pendingMigration = null;
     const bodyType = options.form ? "application/x-www-form-urlencoded; charset=UTF-8" : options.json !== undefined ? "application/json" : options.contentType || "text/plain;charset=UTF-8";
     const maxBytes = Math.min(options.maxBytes || config.maxBytes, 40 * 1024 * 1024);
     const maxDecodedBytes = Math.min(options.maxDecodedBytes || maxBytes, 40 * 1024 * 1024);
+    // One budget covers pacer queues, inter-request gaps, retries and all
+    // redirects. Socket timeout alone begins too late for queued callers.
+    const timeoutMs = Math.max(1, Math.min(Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : config.timeoutMs, 120_000));
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const externalCancel = () => controller.abort(options.signal?.reason instanceof Error ? options.signal.reason : abortFailure(options.signal));
+    options.signal?.addEventListener("abort", externalCancel, { once: true });
+    if (options.signal?.aborted) externalCancel();
+    const timeout = setTimeout(() => controller.abort(Object.assign(new Error("The site took too long to answer"), { status: 504, code: "ETIMEDOUT" })), timeoutMs);
+    const pause = (ms) => sleep ? observeAbort(Promise.resolve().then(() => sleep(ms)), signal) : waitFor(ms, signal);
+    try {
     for (let hop = 0; hop <= config.redirects; hop += 1) {
+      if (signal.aborted) throw abortFailure(signal);
       const sameOrigin = url.origin === credentialOrigin;
       // Header values supplied by a site engine may include its auth tokens.
       // After a cross-origin redirect, forward only ordinary representation
       // hints; the destination receives its own host-scoped cookies.
-      const crossOriginHeader = /^(?:accept|accept-language|accept-encoding|content-type|user-agent|cache-control|x-requested-with|range)$/i;
+      const crossOriginHeader = /^(?:accept|accept-language|accept-encoding|user-agent|cache-control|range)$/i;
       const suppliedHeaders = Object.fromEntries(Object.entries(options.headers || {})
-        .filter(([key]) => !/^(?:host|connection|proxy-authorization|transfer-encoding|content-length)$/i.test(key)
-          && (sameOrigin || crossOriginHeader.test(key))));
+        .filter(([key, value]) => !/^(?:host|connection|proxy-authorization|transfer-encoding|content-length)$/i.test(key)
+          && (!droppedBody || !/^(?:content-type|content-encoding)$/i.test(key))
+          && (sameOrigin || crossOriginHeader.test(key)
+            // An AJAX hint is harmless after a POST was converted to a
+            // GET/HEAD; an unrelated origin is never given the original
+            // caller's AJAX context, or a custom value for this header.
+            || (droppedBody && /^(?:GET|HEAD)$/i.test(method)
+              && /^x-requested-with$/i.test(key) && value === "XMLHttpRequest"))));
       const headers = {
         "User-Agent": userAgent,
         Accept: options.accept || "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -251,11 +370,28 @@ export function createRemoteFetch({ lookup = dns.lookup, transport = { http, htt
       for (let attempt = 0; ; attempt += 1) {
         const canRetry = method === "GET" && attempt < config.retryDelays.length;
         try {
-          result = await pace(url.hostname, () => once(current, { method, headers, body, timeoutMs: options.timeoutMs || config.timeoutMs, maxBytes }), options.pace || null);
+          result = await pace(url.hostname, async () => {
+            if (pendingMigration) {
+              // Verify at the final transport admission, *after* host pacing
+              // and any queue wait, so a revoked source generation cannot
+              // authorize a request that was merely queued earlier.
+              const claim = pendingMigration;
+              const proof = await verifyRepositoryMigration(claim);
+              if (proof?.verified !== true || proof.sourceId !== claim.sourceId
+                || proof.repositoryId !== claim.repositoryId || proof.revision !== claim.revision
+                || proof.generation !== claim.generation
+                || proof.previousOrigin !== claim.previousOrigin
+                || proof.replacementOrigin !== claim.replacementOrigin)
+                throw Object.assign(new Error("A request body cannot be redirected to another site"), { status: 400 });
+              pendingMigration = null;
+              if (signal.aborted) throw abortFailure(signal);
+            }
+            return once(current, { method, headers, body, timeoutMs, maxBytes, signal });
+          }, options.pace || null, signal);
         } catch (error) {
           // A dropped connection is tried again; a timeout isn't (it already took the full time).
-          if (!canRetry || !(/^(?:ECONNRESET|EPIPE|ECONNABORTED)$/.test(error.code || "") || /socket hang up/i.test(error.message || ""))) throw error;
-          await sleep(config.retryDelays[attempt]);
+          if (signal.aborted || !canRetry || !(/^(?:ECONNRESET|EPIPE|ECONNABORTED)$/.test(error.code || "") || /socket hang up/i.test(error.message || ""))) throw error;
+          await pause(config.retryDelays[attempt]);
           continue;
         }
         jar.store(url, result.headers["set-cookie"]);
@@ -264,18 +400,54 @@ export function createRemoteFetch({ lookup = dns.lookup, transport = { http, htt
         try { peek = decode(result.raw, result.headers["content-encoding"], maxDecodedBytes); } catch {}
         if (peek && isBotCheck({ status: result.status, headers: result.headers, buffer: peek })) break;
         const after = Number(result.headers["retry-after"]);
-        await sleep(Number.isFinite(after) && after >= 0 ? Math.min(10_000, after * 1000) : config.retryDelays[attempt]);
+        await pause(Number.isFinite(after) && after >= 0 ? Math.min(10_000, after * 1000) : config.retryDelays[attempt]);
       }
       if ([301, 302, 303, 307, 308].includes(result.status) && result.headers.location) {
         const next = checkUrl(new URL(result.headers.location, url).href);
         if (options.httpsOnly && next.protocol !== "https:")
           throw Object.assign(new Error("HTTPS is required for this download"), { status: 400 });
-        // A site that moved domain (kagane.cx -> kagane.moe) answers every path with the same
-        // path on the new host; its API posts must stay posts there. Other 301/302s after a POST
-        // turn into a GET, as in browsers.
+        // A provider-controlled redirect is not evidence that its destination
+        // belongs to the same source. Preserve POST across a foreign origin
+        // only with a fresh, exact repository-backed migration grant.
         const moved = next.host !== url.host && next.pathname === url.pathname && next.search === url.search && next.protocol === url.protocol;
+        const nextMethod = result.status === 303 && method !== "HEAD" ? "GET"
+          : (result.status === 301 || result.status === 302) && method === "POST" && !moved ? "GET" : method;
+        const nextBody = nextMethod === method ? body : null;
+        if (next.origin !== url.origin && (nextBody !== null || !/^(?:GET|HEAD)$/i.test(nextMethod))) {
+          const context = options.migration;
+          const scoped = context && typeof context === "object"
+            && /^-?\d{1,20}$/.test(String(context.sourceId ?? ""))
+            && typeof context.repositoryId === "string" && context.repositoryId.length > 0
+            && typeof context.revision === "string" && context.revision.length > 0
+            && typeof context.generation === "string" && context.generation.length > 0;
+          // Apply the check to the exact body that won request serialization:
+          // form takes precedence over json. Both supplied at once must not
+          // let safe JSON metadata disguise a credential-bearing form.
+          const publicBody = options.form
+            ? typeof options.form === "object" && !hasClientBoundFields(options.form)
+            : options.json !== undefined && options.json && typeof options.json === "object"
+              && !hasClientBoundFields(options.json);
+          const eligible = typeof verifyRepositoryMigration === "function" && scoped && publicBody
+              && method === "POST" && nextMethod === "POST" && !migratedBody && moved
+              && url.origin === credentialOrigin && url.protocol === "https:" && next.protocol === "https:"
+              && ![...url.searchParams.keys()].some((key) => CLIENT_BOUND_FIELD.test(key));
+          if (!eligible) throw Object.assign(new Error("A request body cannot be redirected to another site"), { status: 400 });
+          // The verifier is supplied by the trusted server, not a site
+          // engine. It must consult current repository/source revision and
+          // generation state at final socket admission. A request assertion
+          // alone cannot grant its own migration authority.
+          pendingMigration = {
+            sourceId: context.sourceId, repositoryId: context.repositoryId,
+            revision: context.revision, generation: context.generation,
+            previousOrigin: credentialOrigin, replacementOrigin: next.origin,
+            previousUrl: url.href, replacementUrl: next.href, status: result.status,
+          };
+          migratedBody = true;
+        }
         url = next;
-        if (!moved && (result.status === 303 || ((result.status === 301 || result.status === 302) && method === "POST"))) { method = "GET"; body = null; }
+        method = nextMethod;
+        if (body !== null && nextBody === null) droppedBody = true;
+        body = nextBody;
         continue;
       }
       let buffer;
@@ -291,6 +463,10 @@ export function createRemoteFetch({ lookup = dns.lookup, transport = { http, htt
       };
     }
     throw Object.assign(new Error("Too many redirects"), { status: 502 });
+    } finally {
+      clearTimeout(timeout);
+      options.signal?.removeEventListener("abort", externalCancel);
+    }
   }
   return { request };
 }

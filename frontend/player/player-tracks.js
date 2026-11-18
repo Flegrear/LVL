@@ -1,5 +1,6 @@
 // Audio and subtitle track choice for the current source.
-import { embeddedTrackMatchesSource } from "../../shared/subtitles/subtitle-stream.js";
+import { embeddedTrackMatchesSource, mediaSourceOwnerKey, mediaSourcesMatch } from "../../shared/subtitles/subtitle-stream.js";
+import { resolveVerifiedSubtitleCueReference } from "../../shared/subtitles/subtitle-identity.js";
 import { normalizeAudioMode } from "../../shared/media/audio-policy.js";
 import { renderSubtitleWorkspace, state, video } from "../../app.js";
 import { $ } from "../app/dom.js";
@@ -7,6 +8,10 @@ import { audioOutputMode, preferredAudioLanguage } from "./player-menus.js";
 import { libraryChapterName } from "../library/library-page.js";
 import { browserCanPlay } from "./browser-media.js";
 import { serverCanConvertVideo } from "./video-conversion-capability.js";
+import {
+  FILE_AUDIO_PREFERENCES_KEY, FILE_AUDIO_PREFERENCES_SCHEMA, fileAudioChoice,
+  matchFileAudioChoice, verifiedAudioFileOwner,
+} from "./audio-file-preference.js";
 
 export const LANGUAGE_NAMES = { EN: "English", ES: "Spanish", FR: "French", DE: "German", IT: "Italian", PT: "Portuguese", JA: "Japanese", KO: "Korean", ZH: "Chinese", RU: "Russian", NL: "Dutch", PL: "Polish", TR: "Turkish" };
 export const languageName = (code) => LANGUAGE_NAMES[String(code || "").toUpperCase()] || String(code || "");
@@ -37,8 +42,8 @@ export function normalizeCollectionTitle(...candidates) {
   const qualityTag = raw.match(/\[(BDRip|BluRay|WEB[- .]?DL|WEBRip|HDTV|DVDRip)\]/i)?.[1];
   let base = raw
     .replace(/\bSeason\s+\d+\b.*$/i, "")
-    .replace(/\bS\d{1,2}E\d{1,3}\b.*$/i, "")
-    .replace(/\b\d{1,2}x\d{1,3}\b.*$/i, "")
+    .replace(/\bS\d{1,2}E\d{1,4}\b.*$/i, "")
+    .replace(/\b\d{1,2}x\d{1,4}\b.*$/i, "")
     .replace(/\s+(?:19|20)\d{2}\s+(?=(?:2160p|1080p|720p|576p|480p|4K|WEB[- .]?DL|WEBRip|BluRay|BDRip|HDTV|DVDRip)\b).*$/i, "")
     .replace(/\s+\b(?:2160p|1080p|720p|576p|480p|4K|WEB[- .]?DL|WEBRip|BluRay|BDRip|HDTV|DVDRip|REMUX)\b.*$/i, "")
     .replace(/\[(?:UNCENSORED|1080p|720p|2160p|4K|HEVC|H\.?26[45]|x26[45]|10bit|8bit|AAC[^\]]*|DTS[^\]]*)\]/gi, "")
@@ -51,7 +56,7 @@ export function normalizeCollectionTitle(...candidates) {
 
 export function episodeIdentity(fileName) {
   const raw = String(fileName || "").replace(/\.[^.]+$/, "").replace(/[._]+/g, " ");
-  const match = raw.match(/\bS(\d{1,2})E(\d{1,3})\b/i) || raw.match(/(?:^|\D)(\d{1,2})x(\d{1,3})(?:\D|$)/i);
+  const match = raw.match(/\bS(\d{1,2})E(\d{1,4})\b/i) || raw.match(/(?:^|\D)(\d{1,2})x(\d{1,4})(?:\D|$)/i);
   if (!match) return { code: "VIDEO", title: cleanMediaTitle(fileName) };
   const code = `S${match[1].padStart(2, "0")}E${match[2].padStart(2, "0")}`;
   const marker = match[0].trim();
@@ -73,7 +78,7 @@ export function sourceTagFor(file, collectionTitle) {
 export function updatePlayerIdentity(title, episode = null) {
   const mainTitle = String(title || "Untitled").trim() || "Untitled";
   const code = String(episode?.code || "VIDEO").toUpperCase();
-  const match = code.match(/^S(\d{1,2})E(\d{1,3})$/);
+  const match = code.match(/^S(\d{1,2})E(\d{1,4})$/);
   $("#media-title").textContent = mainTitle;
   const label = match ? `${mainTitle}: S${Number(match[1])} E${Number(match[2])}` : mainTitle;
   if ($("#player-now-title")) $("#player-now-title").textContent = label;
@@ -90,6 +95,31 @@ const seriesAudioPreferences = (() => {
       && typeof choice === "object" && !Array.isArray(choice)).slice(-80));
   } catch { return new Map(); }
 })();
+
+// v1 is immutable migration input: preserve its records (including unknown
+// legacy intent) until an explicit user selection provides current probe
+// evidence. An unsupported future v2 document must also remain untouched.
+let fileAudioPreferences = (() => {
+  try {
+    const raw = localStorage.getItem(FILE_AUDIO_PREFERENCES_KEY);
+    if (!raw) return { schema: FILE_AUDIO_PREFERENCES_SCHEMA, byFile: {} };
+    const parsed = JSON.parse(raw);
+    return parsed && parsed.schema === FILE_AUDIO_PREFERENCES_SCHEMA
+      && parsed.byFile && typeof parsed.byFile === "object"
+      && !Array.isArray(parsed.byFile) ? parsed : null;
+  } catch { return null; }
+})();
+
+function rememberFileAudioTrack(track, index, count, source) {
+  const choice = fileAudioChoice(source, track, index, count, state.currentMediaProbe?.audioTracks);
+  if (!choice || !fileAudioPreferences) return;
+  const next = { ...fileAudioPreferences,
+    byFile: { ...fileAudioPreferences.byFile, [choice.fileOwner]: choice } };
+  try {
+    localStorage.setItem(FILE_AUDIO_PREFERENCES_KEY, JSON.stringify(next));
+    fileAudioPreferences = next;
+  } catch (error) { console.warn("Could not save file audio selection:", error); }
+}
 
 function sourceAudioPreferenceKey(source = state.currentSource) {
   const key = String(source?.seriesKey || (source?.catalogId
@@ -119,6 +149,11 @@ function audioTrackIdentity(track) {
     || titledLanguage;
   return { language, title };
 }
+
+// Kept in the audio-preference section so the existing isolated preference
+// harness can exercise legacy saved records without importing the full app.
+const sourceAudioFileKey = (source) =>
+  typeof mediaSourceOwnerKey === "function" ? mediaSourceOwnerKey(source) : "";
 
 function sourceAudioCatalogKey(source = state.currentSource) {
   const id = String(source?.catalogId || "").trim().toLowerCase().slice(0, 100);
@@ -156,11 +191,26 @@ function catalogAudioPreference(catalogKey) {
 
 export function rememberSeriesAudioTrack(track, index, source = state.currentSource) {
   const key = sourceAudioPreferenceKey(source);
-  if (!key || !Number.isInteger(index) || index < 0) return;
-  const identity = audioTrackIdentity(track);
+  if (!Number.isInteger(index) || index < 0) return;
   const count = Array.isArray(state.currentMediaProbe?.audioTracks) ? state.currentMediaProbe.audioTracks.length : 0;
+  // This exact file/stream (or explicitly same-file ordinal) takes priority
+  // over any legacy title/series heuristic at next playback.
+  rememberFileAudioTrack(track, index, count, source);
+  if (!key) return;
+  const identity = audioTrackIdentity(track);
+  const explicitLanguage = String(track?.language || "").trim().toLowerCase();
+  const provenLanguage = /^(?!und$|unknown$)[a-z]{2,3}$/.test(explicitLanguage);
+  // A language guessed from an unverified title is NOT a durable series dub.
+  // Preserve the raw probe title only as exact metadata; a title-only choice
+  // will be applied exclusively to the same verified file.
+  if (!provenLanguage) identity.language = "";
+  if (!track?.title?.trim?.()) identity.title = "";
+  if (!identity.language && !identity.title) return;
   lastAudioChoiceAt = Math.max(Date.now(), lastAudioChoiceAt + 1);
-  const choice = { ...identity, index, count, selectedAt: lastAudioChoiceAt };
+  // An unlabeled ordinal is meaningful only within the selected media file.
+  // Labeled preferences can still follow a dub across episodes and reorders.
+  const choice = { ...identity, index, count, fileOwner: sourceAudioFileKey(source),
+    provenLanguage, selectedAt: lastAudioChoiceAt };
   const catalogKey = sourceAudioCatalogKey(source);
   const prior = seriesAudioPreferences.get(key);
   const catalogs = prior?.catalogPreferences && typeof prior.catalogPreferences === "object"
@@ -186,6 +236,15 @@ export function rememberSeriesAudioTrack(track, index, source = state.currentSou
 export function preferredAudioTrackIndex(media, source = state.currentSource) {
   const tracks = Array.isArray(media?.audioTracks) ? media.audioTracks : [];
   if (!tracks.length) return 0;
+  const owner = verifiedAudioFileOwner(source);
+  const preciseChoice = owner && fileAudioPreferences?.byFile?.[owner];
+  const preciseIndex = matchFileAudioChoice(tracks, preciseChoice, source);
+  if (preciseChoice) {
+    // An explicit v2 file/stream selection is current authority. If FFprobe
+    // no longer advertises that stream, fall back to the safe default rather
+    // than replaying an older v1 title/ordinal onto a different audio stream.
+    return preciseIndex >= 0 ? preciseIndex : 0;
+  }
   const key = sourceAudioPreferenceKey(source);
   let saved = key ? seriesAudioPreferences.get(key) : null;
   const catalogKey = sourceAudioCatalogKey(source);
@@ -200,6 +259,26 @@ export function preferredAudioTrackIndex(media, source = state.currentSource) {
     // Once scoped choices exist, another catalog cannot inherit them.
   }
   if (saved) {
+    const sameFile = Boolean(saved.fileOwner && saved.fileOwner === sourceAudioFileKey(source));
+    // v1 predates provenLanguage. A legacy *pair* of language and specific
+    // track title can still be honored if a unique present probe stream has
+    // BOTH matching fields and an explicit language. Never use its ordinal,
+    // accept a title-only guess, or carry a modern explicitly unproven choice.
+    if (!sameFile && saved.provenLanguage !== true) {
+      if (saved.provenLanguage !== undefined || saved.fileOwner
+        || typeof saved.title !== "string" || !saved.title.trim()
+        || typeof saved.language !== "string" || !saved.language.trim()) return 0;
+      const expectedLanguage = audioTrackIdentity({ language: saved.language }).language;
+      const expectedTitle = saved.title.trim().toLowerCase().replace(/\s+/g, " ");
+      const exactLegacy = tracks.map((track, index) => {
+        const explicit = String(track?.language || "").trim().toLowerCase();
+        const actual = audioTrackIdentity(track);
+        return /^(?!und$|unknown$)[a-z]{2,3}$/.test(explicit)
+          && expectedLanguage && actual.language === expectedLanguage
+          && actual.title === expectedTitle ? index : -1;
+      }).filter(index => index >= 0);
+      return exactLegacy.length === 1 ? exactLegacy[0] : 0;
+    }
     const identities = tracks.map(audioTrackIdentity);
     const exact = identities.findIndex((track) => track.title && track.title === saved.title
       && (!saved.language || track.language === saved.language));
@@ -220,11 +299,12 @@ export function preferredAudioTrackIndex(media, source = state.currentSource) {
       // Never fall back to the same index in a different language.
       return 0;
     }
-    if (saved.title) {
+    if (saved.title && sameFile) {
       const byTitle = identities.findIndex((track) => track.title === saved.title);
       if (byTitle >= 0) return byTitle;
     }
-    if (Number.isInteger(saved.index) && saved.index >= 0 && saved.index < tracks.length
+    if (saved.fileOwner && saved.fileOwner === sourceAudioFileKey(source)
+      && Number.isInteger(saved.index) && saved.index >= 0 && saved.index < tracks.length
       && saved.count === tracks.length) return saved.index;
     return 0;
   }
@@ -242,6 +322,7 @@ export function transcodeQuery(startSeconds, audioIndex = state.selectedAudioTra
   const codec = String(state.currentMediaProbe?.video?.codec || "").toLowerCase();
   const bitDepth = Number(state.currentMediaProbe?.compatibility?.video?.bitDepth)
     || Number(state.currentMediaProbe?.video?.bitDepth) || (/p10|10le|10be/i.test(String(state.currentMediaProbe?.video?.pixelFormat || "")) ? 10 : 8);
+  let forceH264 = Boolean(state.transcodeContext?.forceH264);
   if (state.transcodeContext?.copyVideo) {
     params.set("video", "copy");
   }
@@ -256,7 +337,7 @@ export function transcodeQuery(startSeconds, audioIndex = state.selectedAudioTra
       // request says video=copy. Keep the client seek clock in the SAME mode
       // as the real encoder; otherwise it waits for nonexistent GOP preroll
       // after accurate input seeking and can end in native MediaError4.
-      state.transcodeContext.forceH264 = true;
+      forceH264 = true;
     }
   }
   if (codec === "av1" && state.transcodeContext?.copyVideo) {
@@ -267,15 +348,17 @@ export function transcodeQuery(startSeconds, audioIndex = state.selectedAudioTra
       && !state.currentMediaProbe?.compatibility?.video?.hdrKind
       && !state.currentMediaProbe?.video?.dolbyVision) {
       // Keep the seek clock aligned if the server must actually re-encode AV1.
-      state.transcodeContext.forceH264 = true;
+      forceH264 = true;
     }
   }
   // A codec that was advertised as playable may still fail on this PC.
   // An error-triggered compatibility retry must not select that codec again.
-  if (state.transcodeContext?.forceH264) {
+  if (forceH264) {
     params.delete("hevc");
     params.delete("av1");
     params.set("video", "h264");
+    // Query construction is side-effect-free: the caller commits a discovered
+    // fallback only after the current decoder/source accepts this URL.
   }
   return params;
 }
@@ -326,16 +409,48 @@ export function activeTrack() {
 }
 
 export function currentSourceTracks() {
-  const sourceTag = state.currentSource?.sourceTag;
-  if (!sourceTag) return state.tracks;
-  return state.tracks.filter((track) => track.sourceTag === sourceTag &&
-    (track.origin !== "embedded" || embeddedTrackMatchesSource(track, state.currentSource)));
+  const source = state.currentSource;
+  if (!mediaSourceOwnerKey(source)) return [];
+  return state.tracks.filter((track) => mediaSourcesMatch(track.source, source)
+    && (track.origin !== "embedded" || embeddedTrackMatchesSource(track, source)));
 }
 
-export function selectSubtitleTrackForCards(track) {
+// Read an additive v2 cue reference only against the current verified file
+// AND actual container stream, never by title, UI ordinal, or legacy cue ID.
+// This does not rekey, evict or opportunistically link saved legacy cards.
+export function resolveCurrentSubtitleCueReference(reference) {
+  if (!reference || reference.schema !== "lvl.subtitle-cue-ref.v2") return null;
+  let found = null;
+  for (const track of currentSourceTracks()) {
+    const stored = track?.verifiedStreamReference;
+    if (track.origin !== "embedded" || !Number.isSafeInteger(track.embeddedStreamIndex)
+      || !stored || stored.schema !== reference.schema
+      || stored.mediaOwner !== reference.mediaOwner
+      || stored.streamIndex !== reference.streamIndex
+      || stored.streamIndex !== track.embeddedStreamIndex) continue;
+    const cue = resolveVerifiedSubtitleCueReference(reference, state.currentSource,
+      track.embeddedStreamIndex, track.cues);
+    if (!cue) continue;
+    // Two ambiguous matching live records must never silently choose a card.
+    if (found) return null;
+    found = { track, cue };
+  }
+  return found;
+}
+
+export function selectSubtitleTrackForCards(track, cueReference = null) {
   // Subtitle selection changes the analysis language, not the player identity.
   // Reject stale UI cards left behind by an asynchronous source transition.
-  if (!track || !currentSourceTracks().some((item) => item.id === track.id)) return false;
+  const scoped = currentSourceTracks();
+  // Even within the same file, an old card cannot select a replacement track
+  // which happens to reuse a legacy ID.
+  if (!track || scoped.filter((item) => item.id === track.id).length !== 1
+    || !scoped.includes(track)) return false;
+  // A versioned saved cue additionally fences the exact file/stream/content.
+  // Legacy callers with no verified reference retain their prior behavior;
+  // unresolved records are never silently migrated or deleted.
+  if (cueReference !== null && resolveCurrentSubtitleCueReference(cueReference)?.track !== track)
+    return false;
   state.selectedTrackId = track.id;
 
   renderSubtitleWorkspace();

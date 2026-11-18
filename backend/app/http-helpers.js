@@ -3,6 +3,7 @@ import fs from "node:fs";
 import crypto from "node:crypto";
 import net from "node:net";
 import { port } from "../../server.js";
+import { localMutationAllowed } from "./mutation-admission.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -99,11 +100,8 @@ export function localRequestRejected(req, res) {
     json(res, 403, { error: "This app only answers on 127.0.0.1" });
     return true;
   }
-  if (req.method === "GET" || req.method === "HEAD") return false;
-  const site = String(req.headers["sec-fetch-site"] || "").toLowerCase();
-  const origin = typeof req.headers.origin === "string" ? req.headers.origin.toLowerCase() : "";
-  if ((site && site !== "same-origin" && site !== "none") || (origin && origin !== `http://${host}`)) {
-    json(res, 403, { error: "Requests from other sites can't change this app's data" });
+  if (!localMutationAllowed(req, `http://${host}`)) {
+    json(res, 403, { error: "This request isn't authorized to change local app data" });
     return true;
   }
   return false;

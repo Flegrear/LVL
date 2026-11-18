@@ -6,7 +6,7 @@
 // Comics feature stops. Nothing runs when the runner isn't installed or Comics is off.
 // In LVL's Android app the same protocol goes to the app's extension host (connectHost).
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import net from "node:net";
@@ -62,55 +62,139 @@ export function connectHost(socketPath, connect = (target) => net.connect(target
 
 export function createExtRunner({ home = runnerHome(), java = runnerJava(home), dataDir, spawnImpl = spawn, idleMs = IDLE_MS, log = console,
   hostSocket = process.env.LVL_EXT_HOST_SOCKET || "", connectImpl = connectHost } = {}) {
-  let child = null;
-  let ready = null;
-  let nextId = 0;
-  let lastUsed = 0;
-  let idleTimer = null;
-  let lastError = "";
+  let child = null, ready = null, nextId = 0, generation = null;
+  let retiring = null, retirementTimer = null, idleTimer = null;
+  let lastUsed = 0, lastError = "", cancelSupported = false, quarantinedHost = false;
   const pending = new Map();
   const stderr = [];
-  const loaded = new Map(); // verified package, publisher, content and version -> Promise<load result>
-
+  const loaded = new Map();
   const available = () => Boolean(dataDir && (hostSocket || (home && java)));
 
-  function settleAll(error) {
-    for (const [, entry] of pending) { clearTimeout(entry.timer); entry.reject(error); }
-    pending.clear();
+  function settle(id, entry, error, value) {
+    if (pending.get(id) !== entry) return;
+    pending.delete(id);
+    clearTimeout(entry.timer);
+    clearTimeout(entry.cancelTimer);
+    if (entry.signal && entry.abort) entry.signal.removeEventListener("abort", entry.abort);
+    if (error) entry.reject(error);
+    else { touch(); entry.resolve(value); }
+  }
+
+  function stop(reason = failure("The extension runner stopped", 503)) {
+    const proc = child;
+    const hadRequests = pending.size > 0;
+    child = null; ready = null; generation = null; cancelSupported = false;
+    loaded.clear();
+    if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
+    for (const [id, entry] of [...pending]) settle(id, entry, reason);
+    if (!proc) return;
+    // The Android host is not our child process. Reconnection is prohibited
+    // after abandoning work until its separate owner proves a fresh host.
+    if (hostSocket && hadRequests) quarantinedHost = true;
+    retiring = proc;
+    try { proc.stdin.end(); } catch {}
+    clearTimeout(retirementTimer);
+    retirementTimer = setTimeout(() => {
+      if (retiring === proc) try { proc.kill(); } catch {}
+    }, 3000);
+    retirementTimer.unref?.();
+  }
+
+  function retire(proc, reason) {
+    if (child !== proc) return;
+    lastError = reason;
+    // stop() quarantines a socket only when that host has abandoned requests.
+    stop(failure(reason, 503, "runner-retired"));
   }
 
   function start() {
     if (ready) return ready;
+    if (retiring) return Promise.reject(failure("The old runner has not exited", 503, "runner-retiring"));
+    if (quarantinedHost) return Promise.reject(failure("The extension host requires an externally verified restart", 503, "runner-quarantined"));
     if (!available()) return Promise.reject(failure("The extension runner isn't installed", 503, "no-runner"));
     fs.mkdirSync(dataDir, { recursive: true });
     const proc = hostSocket ? connectImpl(hostSocket) : spawnImpl(java, runnerArgs(home, dataDir), { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
     child = proc;
+    generation = randomUUID();
+    cancelSupported = false;
     ready = new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { reject(failure("The extension runner didn't start")); stop(); }, START_TIMEOUT_MS);
-      proc.on("error", (error) => { clearTimeout(timer); lastError = error.message; reject(failure(`The extension runner couldn't start (${error.message})`)); });
-      proc.on("exit", (code) => {
-        clearTimeout(timer);
-        if (child === proc) { child = null; ready = null; loaded.clear(); }
-        const error = failure(`The extension runner stopped${code ? ` (exit ${code})` : ""}`);
-        reject(error);
-        settleAll(error);
+      let handshook = false;
+      const timeout = setTimeout(() => {
+        reject(failure("Extension runner readiness timed out"));
+        retire(proc, "Extension runner readiness timed out");
+      }, START_TIMEOUT_MS);
+      proc.on("error", (error) => {
+        if (child !== proc) return;
+        clearTimeout(timeout);
+        const message = handshook ? "Extension runner transport failed" : "The extension runner couldn't start";
+        reject(failure(message, 503, handshook ? "runner-transport-failed" : "runner-start-failed"));
+        const details = message + ": " + String(error?.message || "unknown").slice(0, 120);
+        if (!handshook && !hostSocket && proc.pid == null) {
+          // A failed spawn has no PID and no native owner to await.
+          lastError = details;
+          stop(failure(details, 503, "runner-start-failed"));
+          if (retiring === proc) {
+            retiring = null;
+            clearTimeout(retirementTimer);
+            retirementTimer = null;
+          }
+          return;
+        }
+        retire(proc, details);
       });
-      // readline re-emits its input's errors; the process's own "error" handler reports them.
-      readline.createInterface({ input: proc.stdout }).on("error", () => {}).on("line", (line) => {
+      proc.on("exit", (code) => {
+        clearTimeout(timeout);
+        if (retiring === proc) { retiring = null; clearTimeout(retirementTimer); retirementTimer = null; }
+        if (child !== proc) return;
+        child = null; ready = null; generation = null; cancelSupported = false; loaded.clear();
+        if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
+        const error = failure("Extension runner exited: " + String(code), 503, "runner-exited");
+        reject(error);
+        for (const [id, entry] of [...pending]) settle(id, entry, error);
+      });
+      const reader = readline.createInterface({ input: proc.stdout });
+      reader.on("error", () => {});
+      reader.on("close", () => {
+        if (child === proc) retire(proc, "Extension runner response stream closed");
+      });
+      reader.on("line", (line) => {
+        if (child !== proc) return;
         let message;
         try { message = JSON.parse(line); } catch { return; }
-        if (message.ready) { clearTimeout(timer); resolve(message); return; }
+        if (!message || typeof message !== "object") return;
+        if (message.ready) {
+          if (handshook) { retire(proc, "Extension runner repeated its readiness handshake"); return; }
+          handshook = true;
+          clearTimeout(timeout);
+          cancelSupported = Number(message.version) >= 2 && message.cancelQuiesced === true;
+          resolve(message);
+          return;
+        }
         const entry = pending.get(message.id);
-        if (!entry) return;
-        pending.delete(message.id);
-        clearTimeout(entry.timer);
-        if (message.error !== undefined) entry.reject(failure(String(message.error), Number(message.status) || 502, message.code || ""));
-        else entry.resolve(message.result);
+        if (!entry || entry.proc !== proc) return;
+        if (entry.state === "cancelling") {
+          if (message.cancelAck !== true || message.generation !== entry.generation) return;
+          if (message.quiesced === true) settle(message.id, entry, entry.cancelError);
+          else retire(proc, "Cancellation did not prove terminal quiescence");
+          return;
+        }
+        if (entry.state !== "pending") return;
+        // A version-2 owner must echo the exact epoch for every response;
+        // missing or foreign epochs are not legacy compatibility evidence.
+        if (cancelSupported && message.generation !== entry.generation) {
+          retire(proc, "Extension response generation mismatch");
+          return;
+        }
+        if (message.generation !== undefined && message.generation !== entry.generation) return;
+        if (message.cancelAck === true) { retire(proc, "Unexpected cancellation acknowledgment"); return; }
+        if (message.error !== undefined) settle(message.id, entry, failure(String(message.error), Number(message.status) || 502, message.code || ""));
+        else settle(message.id, entry, null, message.result);
       });
       proc.stderr.on("data", (chunk) => {
-        for (const text of String(chunk).split(/\r?\n/)) {
-          if (!text.trim()) continue;
-          stderr.push(text.slice(0, 400));
+        if (child !== proc) return;
+        for (const line of String(chunk).split(/\r?\n/)) {
+          if (!line.trim()) continue;
+          stderr.push(line.slice(0, 400));
           if (stderr.length > STDERR_LINES) stderr.shift();
         }
       });
@@ -122,25 +206,69 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
   function touch() {
     lastUsed = Date.now();
     if (idleTimer) return;
-    idleTimer = setInterval(() => { if (child && !pending.size && Date.now() - lastUsed > idleMs) stop(); }, 60_000);
+    idleTimer = setInterval(() => {
+      if (child && pending.size === 0 && Date.now() - lastUsed > idleMs) stop();
+    }, 60_000);
     idleTimer.unref?.();
   }
 
-  async function call(op, args = {}, { timeoutMs = CALL_TIMEOUT_MS } = {}) {
+  function requestCancel(proc, id, entry, error) {
+    if (child !== proc || pending.get(id) !== entry || entry.state !== "pending") return;
+    entry.state = "cancelling";
+    entry.cancelError = error;
+    clearTimeout(entry.timer);
+    if (!cancelSupported) {
+      retire(proc, "The extension host lacks a terminal cancellation protocol");
+      return;
+    }
+    entry.cancelTimer = setTimeout(() => {
+      if (child === proc && pending.get(id) === entry)
+        retire(proc, "The extension did not quiesce before its cancellation deadline");
+    }, 3000);
+    // A pending request must retain a real bounded retirement deadline even
+    // when the socket/child goes silent and there are no other active handles.
+    const frame = { op: "cancel", id: "cancel-" + id, cancelOf: id, generation: entry.generation };
+    try {
+      proc.stdin.write(JSON.stringify(frame) + "\n", (error) => {
+        if (error && child === proc && pending.get(id) === entry) retire(proc, "Cancellation frame write failed");
+      });
+    } catch { retire(proc, "Cancellation frame transport failed"); }
+  }
+
+  async function call(op, args = {}, { timeoutMs = CALL_TIMEOUT_MS, signal } = {}) {
+    if (signal?.aborted) throw failure("The extension request was aborted", 499, "aborted");
     await start();
     touch();
-    const proc = child;
-    if (!proc) throw failure("The extension runner stopped");
+    const proc = child, owner = generation;
+    if (!proc || !owner) throw failure("The extension runner stopped", 503);
+    if (signal?.aborted) throw failure("The extension request was aborted", 499, "aborted");
+    if (!Number.isSafeInteger(nextId + 1)) {
+      retire(proc, "Extension request ID exhausted");
+      throw failure("Extension request ID exhausted", 503);
+    }
     const id = ++nextId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(failure("The extension took too long to answer", 504)); }, timeoutMs);
-      pending.set(id, { resolve: (value) => { touch(); resolve(value); }, reject, timer });
-      proc.stdin.write(`${JSON.stringify({ ...args, id, op })}\n`);
+      const entry = { proc, generation: owner, state: "pending", resolve, reject,
+        signal, abort: null, timer: null, cancelTimer: null, cancelError: null };
+      pending.set(id, entry);
+      entry.timer = setTimeout(() => requestCancel(proc, id, entry,
+        failure("The extension took too long to answer", 504, "extension-timeout")),
+      Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : CALL_TIMEOUT_MS);
+      // Keep the deadline alive until response or terminal cancellation; do
+      // not let an unresponsive legacy host strand an unsettled promise.
+      if (signal) {
+        entry.abort = () => requestCancel(proc, id, entry, failure("The extension request was aborted", 499, "aborted"));
+        signal.addEventListener("abort", entry.abort, { once: true });
+      }
+      try {
+        proc.stdin.write(JSON.stringify({ ...args, id, op, generation: owner }) + "\n", (error) => {
+          if (error && child === proc && pending.get(id) === entry) retire(proc, "Extension request write failed");
+        });
+      } catch { retire(proc, "Extension request transport failed"); }
+      if (signal?.aborted) entry.abort();
     });
   }
 
-  // The desktop JVM verifies the signed APK itself. This cache can only reuse a previous
-  // admission for identical file content and the same explicit repository authority.
   function load(apkPath, key, { fingerprint = "", packageName = "" } = {}) {
     const signer = String(fingerprint).replaceAll(":", "").toLowerCase();
     if (!/^[0-9a-f]{64}$/.test(signer) || !/^[a-zA-Z][a-zA-Z0-9_]*(?:\.[a-zA-Z][a-zA-Z0-9_]*)+$/.test(packageName))
@@ -150,8 +278,7 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
       const stat = fs.statSync(apkPath);
       if (!stat.isFile() || stat.size < 1 || stat.size > 20 * 1024 * 1024) throw new Error("invalid size");
       contentHash = createHash("sha256").update(fs.readFileSync(apkPath)).digest("hex");
-    }
-    catch { return Promise.reject(failure("The extension file could not be read", 403, "extension-trust")); }
+    } catch { return Promise.reject(failure("The extension file could not be read", 403, "extension-trust")); }
     const cacheKey = JSON.stringify([key, packageName, signer, contentHash]);
     if (!loaded.has(cacheKey)) {
       const loading = call("load", { apk: apkPath, packageName, fingerprint: signer }, { timeoutMs: 180_000 });
@@ -161,22 +288,10 @@ export function createExtRunner({ home = runnerHome(), java = runnerJava(home), 
     return loaded.get(cacheKey);
   }
 
-  function stop() {
-    const proc = child;
-    child = null;
-    ready = null;
-    loaded.clear();
-    if (idleTimer) { clearInterval(idleTimer); idleTimer = null; }
-    settleAll(failure("The extension runner stopped"));
-    if (!proc) return;
-    try { proc.stdin.end(); } catch {}
-    const kill = setTimeout(() => { try { proc.kill(); } catch {} }, 3000);
-    kill.unref?.();
-  }
-
   return {
     available, call, load, stop,
     running: () => Boolean(child),
-    status: () => ({ available: available(), running: Boolean(child), home: hostSocket ? "android-app" : home, lastError, log: [...stderr] }),
+    status: () => ({ available: available(), running: Boolean(child), home: hostSocket ? "android-app" : home,
+      lastError, log: [...stderr], retiring: Boolean(retiring), quarantinedHost, outstanding: pending.size }),
   };
 }

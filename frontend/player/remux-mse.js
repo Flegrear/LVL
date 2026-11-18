@@ -194,18 +194,36 @@ function copiedAvcMime(init) {
 function appendBuffer(sourceBuffer, bytes, signal) {
   return new Promise((resolve, reject) => {
     if (signal.aborted) return reject(signal.reason || Error('MSE closed'));
+    let settled = false;
     const done = () => {
       sourceBuffer.removeEventListener('updateend', succeed);
       sourceBuffer.removeEventListener('error', failed);
-      signal.removeEventListener('abort', failed);
+      signal.removeEventListener('abort', aborted);
     };
-    const succeed = () => { done(); resolve(); };
-    const failed = () => { done(); reject(Error('MSE append interrupted')); };
+    const settle = error => {
+      if (settled) return;
+      settled = true;
+      done();
+      if (error) reject(error);
+      else resolve();
+    };
+    const succeed = () => settle(signal.aborted
+      ? Error('MSE append interrupted') : null);
+    const failed = () => settle(Error('MSE append interrupted'));
+    const aborted = () => {
+      // Abort only the buffer operation whose listener is still attached.
+      // A stale updateend must never complete a successor append. The
+      // abort() call releases an in-flight SourceBuffer update if supported.
+      settle(Error('MSE append interrupted'));
+      if (sourceBuffer.updating && typeof sourceBuffer.abort === 'function') {
+        try { sourceBuffer.abort(); } catch {}
+      }
+    };
     sourceBuffer.addEventListener('updateend', succeed, { once: true });
     sourceBuffer.addEventListener('error', failed, { once: true });
-    signal.addEventListener('abort', failed, { once: true });
+    signal.addEventListener('abort', aborted, { once: true });
     try { sourceBuffer.appendBuffer(bytes); }
-    catch (error) { done(); reject(error); }
+    catch (error) { settle(error); }
   });
 }
 
@@ -466,11 +484,13 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
     releaseRestore = releaseThisRestore;
     try {
       windowRequest?.abort();
-      windowRequest = new AbortController();
+      const restoreRequest = new AbortController();
+      windowRequest = restoreRequest;
       const query = new URLSearchParams({
         producer: producerToken, start: absoluteSeconds.toFixed(3),
       });
-      const requestSignal = AbortSignal.any([signal, windowRequest.signal, AbortSignal.timeout(8000)]);
+      const restoreSignal = AbortSignal.any([signal, restoreRequest.signal]);
+      const requestSignal = AbortSignal.any([restoreSignal, AbortSignal.timeout(8000)]);
       response = await fetchImpl(`${windowUrl}?${query}`,
         { signal: requestSignal, cache: 'no-store' });
       if (!isActive() || serial !== windowSerial || !response.ok ||
@@ -514,12 +534,16 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
         await new Promise(resolve => setTimeout(resolve, 30));
       if (!liveTracker?.boundary || liveAppendPending || !isActive() || serial !== windowSerial) return false;
       await serialize(async () => {
-        if (serial !== windowSerial || !isActive() || !liveTracker?.boundary || liveAppendPending)
+        if (serial !== windowSerial || !isActive() || restoreSignal.aborted
+          || !liveTracker?.boundary || liveAppendPending)
           throw Error('Stale cached window');
         for (const fragment of fragments) {
-          if (serial !== windowSerial || !isActive())
+          if (serial !== windowSerial || !isActive() || restoreSignal.aborted)
             throw Error('Cancelled cached window append');
-          await appendBuffer(buffer, fragment, signal);
+          // Cancel on THIS exact cached seek, not only full-session close.
+          // Reusing one live SourceBuffer must not permit cancelled A fragments
+          // to append after a newer B window/seek has claimed the same session.
+          await appendBuffer(buffer, fragment, restoreSignal);
         }
       });
       const restored = isActive() && serial === windowSerial &&
@@ -595,8 +619,13 @@ export function createRemuxMseSession({video, url, windowUrl, onFailure, isCurre
           const consumed = liveTracker.push(available);
           const part = available.subarray(0, consumed);
           liveAppendPending = true;
-          await appendLiveBytes(part);
-          liveAppendPending = false;
+          try { await appendLiveBytes(part); }
+          finally {
+            // Quota, abort and decoder errors must release the producer's
+            // boundary flag; an abandoned A may not keep a later cached
+            // window permanently gated behind a failed live append.
+            liveAppendPending = false;
+          }
           at += consumed;
           // Network reads need not end at MP4 atom boundaries. Enforce lead
           // inside a coalesced read before starting its next complete fragment.

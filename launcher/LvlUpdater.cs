@@ -18,6 +18,40 @@ using System.Web.Script.Serialization;
 
 namespace LanguageVideoLearner
 {
+    // The browser never gets the bridge secret. Only the server that inherited
+    // it from this launcher can answer the request-specific HTTP challenge.
+    internal static class WindowsHealthProof
+    {
+        public static string NewChallenge()
+        {
+            byte[] bytes = new byte[24];
+            using (RandomNumberGenerator rng = RandomNumberGenerator.Create()) rng.GetBytes(bytes);
+            return Convert.ToBase64String(bytes).Replace('+', '-').Replace('/', '_').TrimEnd('=');
+        }
+
+        public static bool Verify(string challenge, string returned, string bridge)
+        {
+            if (string.IsNullOrEmpty(challenge) || string.IsNullOrEmpty(returned) || string.IsNullOrEmpty(bridge)) return false;
+            int colon = bridge.IndexOf(':');
+            if (colon < 1 || colon + 1 >= bridge.Length) return false;
+            try
+            {
+                byte[] key = Convert.FromBase64String(bridge.Substring(colon + 1));
+                if (key.Length != 32) return false;
+                byte[] expected;
+                using (HMACSHA256 mac = new HMACSHA256(key))
+                    expected = mac.ComputeHash(Encoding.UTF8.GetBytes("LVL-Windows-Child:v1:" + challenge));
+                byte[] received = Convert.FromBase64String(returned);
+                if (received.Length != expected.Length) return false;
+                int difference = 0;
+                for (int i = 0; i < expected.Length; i++) difference |= expected[i] ^ received[i];
+                return difference == 0;
+            }
+            catch (FormatException) { return false; }
+            catch (CryptographicException) { return false; }
+        }
+    }
+
     internal sealed class PackagedUpdater
     {
         private const string ReleasesUrl = "https://api.github.com/repos/Flegrear/LVL/releases?per_page=20";
@@ -32,6 +66,7 @@ namespace LanguageVideoLearner
         private static readonly Regex UpdateFolderName = new Regex(@"\ALVL-update-[0-9a-f]{32}\z", RegexOptions.CultureInvariant);
         private readonly object gate = new object();
         private readonly string root;
+        private readonly int appPort;
         private readonly string preferencesFile;
         private readonly Log log;
         private readonly Control invoker;
@@ -54,6 +89,12 @@ namespace LanguageVideoLearner
         private System.Threading.Timer leftoverRetry;
         private string activeUpdateFolder;
         private string currentInstallToken;
+        // Public presentation identity has its own durable settings record.
+        // Status exposes neither the internal lease credential nor local payload location.
+        private string publicAttemptId;
+        private string publicAttemptVersion;
+        private long receivedBytes;
+        private Release activeDownloadRelease;
         private bool handoffUncertain;
         private const string InstallOwnerFormat = "lvl-windows-install-owner-v1";
 
@@ -70,7 +111,7 @@ namespace LanguageVideoLearner
         [DllImport("kernel32.dll", EntryPoint = "CloseHandle", SetLastError = true)]
         private static extern bool ClosePhysicalHandle(IntPtr handle);
 
-        private static string CanonicalInstallTarget(string target)
+        internal static string CanonicalInstallTarget(string target)
         {
             string cursor = Path.GetFullPath(target).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             List<string> missing = new List<string>();
@@ -261,7 +302,12 @@ namespace LanguageVideoLearner
                         if (!child.HasExited)
                         {
                             child.Kill();
-                            child.WaitForExit(3000);
+                            // WaitForExit(timeout) may return false without an
+                            // exception. That is NOT proof the detached Setup
+                            // exited: keep its lease instead of admitting a
+                            // second writer while the first is still alive.
+                            if (!child.WaitForExit(3000) || !child.HasExited)
+                                throw new IOException("Detached installer child did not stop");
                         }
                     }
                     catch
@@ -313,15 +359,36 @@ namespace LanguageVideoLearner
                 {
                     try
                     {
-                        HttpWebRequest check = (HttpWebRequest)WebRequest.Create(
-                            "http://127.0.0.1:4273/api/app-updates/status");
+                        string bridgeAddress;
+                        lock (gate)
+                            bridgeAddress = bridge == null || string.IsNullOrEmpty(secret)
+                                ? null : ((IPEndPoint)bridge.LocalEndpoint).Port + ":" + secret;
+                        if (string.IsNullOrEmpty(bridgeAddress))
+                        {
+                            Thread.Sleep(250);
+                            continue;
+                        }
+                        string challenge = WindowsHealthProof.NewChallenge();
+                        HttpWebRequest check = (HttpWebRequest)WebRequest.Create(RestartStatusUrl(appPort));
                         check.Proxy = null;
                         check.Timeout = 1200;
                         check.ReadWriteTimeout = 1200;
+                        check.Headers["X-LVL-Windows-Challenge"] = challenge;
                         using (HttpWebResponse response = (HttpWebResponse)check.GetResponse())
                         using (StreamReader reader = new StreamReader(response.GetResponseStream()))
                         {
-                            string body = reader.ReadToEnd();
+                            if (!WindowsHealthProof.Verify(challenge,
+                                    response.Headers["X-LVL-Windows-Proof"], bridgeAddress)) continue;
+                            StringBuilder bounded = new StringBuilder();
+                            char[] bytes = new char[2048];
+                            int count;
+                            while ((count = reader.Read(bytes, 0, bytes.Length)) > 0)
+                            {
+                                if (bounded.Length + count > 16384)
+                                    throw new InvalidDataException("Restart status exceeds safe limit");
+                                bounded.Append(bytes, 0, count);
+                            }
+                            string body = bounded.ToString();
                             Dictionary<string, object> status = json.Deserialize<Dictionary<string, object>>(body);
                             object installed;
                             if (status != null && status.TryGetValue("installed", out installed)
@@ -341,10 +408,21 @@ namespace LanguageVideoLearner
                     log.Write("updater", "Keeping recovery backup: restarted LVL has not served its expected version");
                     return;
                 }
+                // The detached Node helper must bind this exact parent process
+                // to its lossless OS creation ticks and physical executable.
+                // PID alone is never restart authority.
+                int launcherPid;
+                long launcherBirth;
+                using (Process launcher = Process.GetCurrentProcess())
+                {
+                    launcherPid = launcher.Id;
+                    launcherBirth = launcher.StartTime.ToUniversalTime().Ticks;
+                }
                 using (Process ack = Process.Start(new ProcessStartInfo(node,
                     Quote(helper) + " ack-any --app-root " + Quote(root)
                     + " --version " + Quote(installedVersion)
-                    + " --launcher-pid " + Process.GetCurrentProcess().Id) {
+                    + " --launcher-pid " + launcherPid
+                    + " --launcher-start-ticks " + launcherBirth.ToString(CultureInfo.InvariantCulture)) {
                     WorkingDirectory = root, UseShellExecute = false, CreateNoWindow = true,
                 }))
                 {
@@ -358,6 +436,7 @@ namespace LanguageVideoLearner
         private sealed class Release
         {
             public string Version;
+            public string Tag;
             public string SetupName;
             public string SetupUrl;
             public string ChecksumUrl;
@@ -371,9 +450,25 @@ namespace LanguageVideoLearner
             return !string.IsNullOrEmpty(appRoot) && File.Exists(Path.Combine(appRoot, "installed-app.json"));
         }
 
+        // Legacy native callers still use the default app port.
         public PackagedUpdater(string appRoot, Log appLog, Control owner, Action<string> onNotice)
+            : this(appRoot, appLog, owner, onNotice, 4273)
+        {
+        }
+
+        private static string RestartStatusUrl(int port)
+        {
+            if (port <= 1024 || port > 65535) throw new ArgumentOutOfRangeException("port");
+            return "http://127.0.0.1:" + port.ToString(CultureInfo.InvariantCulture) + "/api/app-updates/status";
+        }
+
+        public PackagedUpdater(string appRoot, Log appLog, Control owner, Action<string> onNotice, int port)
         {
             root = Path.GetFullPath(appRoot);
+            // The install target stays rooted in appRoot, independent of port.
+            // The acknowledgement helper receives that same canonical target.
+            if (port <= 1024 || port > 65535) throw new ArgumentOutOfRangeException("port");
+            appPort = port;
             log = appLog;
             invoker = owner;
             notify = onNotice;
@@ -601,17 +696,91 @@ namespace LanguageVideoLearner
         {
             lock (gate)
             {
+                Release asset = available;
+                Release downloadingAsset = downloading ? activeDownloadRelease : null;
+                string attemptId = (available == null || publicAttemptVersion == available.Version)
+                    ? publicAttemptId : null;
+                bool installOwned = InstallOwned();
+                // Only a matching completed attempt can override the generic
+                // server-side install-start watchdog. Never infer success here.
+                string setupFailure = !downloading && !installOwned && error == null
+                    ? ReadSetupFailure() : null;
                 return new {
                     installed = true, enabled = true, automatic, intervalDays,
                     lastCheckedAt = lastCheckedUtc == DateTime.MinValue ? null : lastCheckedUtc.ToString("o"),
                     installedVersion,
                     available = available != null,
                     availableVersion = available == null ? null : available.Version,
-                    checking, downloading, installing = InstallOwned(), error,
+                    checking, downloading, installing = installOwned, error = error ?? setupFailure,
+                    attemptId,
+                    availableAsset = asset == null ? null : new {
+                        version = asset.Version, releaseTag = asset.Tag, assetName = asset.SetupName,
+                        sha256 = asset.PayloadHash, size = asset.PayloadHash == null ? (long?)null : asset.PayloadSize,
+                        kind = asset.IsPatch ? "patch" : "installer",
+                        identity = asset.PayloadHash == null ? null : "sha256:" + asset.PayloadHash,
+                    },
+                    download = downloadingAsset == null ? null : new {
+                        bytes = receivedBytes,
+                        total = downloadingAsset.PayloadHash == null ? (long?)null : downloadingAsset.PayloadSize,
+                        kind = downloadingAsset.IsPatch ? "patch" : "installer",
+                        attemptId,
+                        assetIdentity = downloadingAsset.PayloadHash == null ? null : "sha256:" + downloadingAsset.PayloadHash,
+                    },
                     notice = available == null ? null : new { message = "LVL " + available.Version + " is available" },
                     noticePending,
                 };
             }
+        }
+
+        // A Setup diagnostic is a hint to the UI, not a signature, ownership
+        // record, successful version receipt or authority to clean a journal.
+        internal static string ParseSetupFailure(string content, string attempt, string version)
+        {
+            if (string.IsNullOrEmpty(content) || content.Length > 512
+                || !Regex.IsMatch(attempt ?? "", @"\A[a-f0-9]{32}\z")
+                || !Regex.IsMatch(version ?? "", @"\A\d+\.\d+\.\d+\z"))
+                return null;
+            string[] fields = content.Replace("\r\n", "\n").Split('\n');
+            if (fields.Length != 6 || fields[5] != ""
+                || fields[0] != "lvl-setup-failure-v1"
+                || fields[1] != attempt || fields[2] != version
+                || !Regex.IsMatch(fields[3], @"\A[a-z][a-z0-9-]{0,39}\z"))
+                return null;
+            int helperExit;
+            if (!int.TryParse(fields[4], NumberStyles.Integer,
+                CultureInfo.InvariantCulture, out helperExit)
+                || helperExit < -1 || helperExit > 65535) return null;
+            return "Verified Setup failed at " + fields[3]
+                + (helperExit >= 0 ? " (helper exit "
+                    + helperExit.ToString(CultureInfo.InvariantCulture) + ")" : "")
+                + ". See the attempt's LVL-setup.log for the complete installer error.";
+        }
+
+        private string ReadSetupFailure()
+        {
+            if (available == null || publicAttemptId == null || publicAttemptVersion == null
+                || available.Version != publicAttemptVersion
+                || publicAttemptVersion == installedVersion) return null;
+            try
+            {
+                string filePath = Path.Combine(Path.GetDirectoryName(preferencesFile),
+                    "installer-outcomes", publicAttemptId + ".status");
+                using (FileStream input = new FileStream(filePath, FileMode.Open,
+                    FileAccess.Read, FileShare.ReadWrite))
+                {
+                    if (input.Length > 512) return null;
+                    byte[] bytes = new byte[513];
+                    int count = 0, read;
+                    while (count < bytes.Length && (read = input.Read(bytes,
+                        count, bytes.Length - count)) > 0) count += read;
+                    if (count > 512 || input.ReadByte() >= 0) return null;
+                    return ParseSetupFailure(Encoding.UTF8.GetString(bytes, 0, count),
+                        publicAttemptId, publicAttemptVersion);
+                }
+            }
+            catch (IOException) { return null; }
+            catch (UnauthorizedAccessException) { return null; }
+            catch (ArgumentException) { return null; }
         }
 
         private void StartCheck(bool initiatedManually)
@@ -663,6 +832,16 @@ namespace LanguageVideoLearner
             lock (gate)
             {
                 if (checking || downloading || available == null || string.IsNullOrEmpty(available.ChecksumUrl)) return false;
+                // The packaged patch and full setup currently signal/relaunch
+                // LVL on the fixed public installer port. Allowing a custom
+                // --port here could quit the wrong instance or acknowledge a
+                // different listener after detached setup. The update remains
+                // available to install after restarting this copy on 4273.
+                if (appPort != 4273)
+                {
+                    error = "Updates require LVL to run on its installed port 4273. Restart LVL without --port before installing.";
+                    return false;
+                }
                 string token;
                 if (!TryReserveInstall(out token))
                 {
@@ -672,6 +851,20 @@ namespace LanguageVideoLearner
                 currentInstallToken = token;
                 handoffUncertain = false;
                 selected = available;
+                publicAttemptId = Guid.NewGuid().ToString("N");
+                publicAttemptVersion = selected.Version;
+                receivedBytes = 0;
+                activeDownloadRelease = selected;
+                if (!SaveSettings())
+                {
+                    currentInstallToken = null;
+                    publicAttemptId = null;
+                    publicAttemptVersion = null;
+                    activeDownloadRelease = null;
+                    ReleaseInstallOwner(token);
+                    error = "Could not record the update attempt";
+                    return false;
+                }
                 downloading = true;
                 error = null;
             }
@@ -684,11 +877,12 @@ namespace LanguageVideoLearner
 
         private void DownloadAndRun(Release release)
         {
-            string token;
-            lock (gate) token = currentInstallToken;
+            string token, attempt;
+            lock (gate) { token = currentInstallToken; attempt = publicAttemptId; }
             string folder = Path.Combine(Path.GetTempPath(), "LVL-update-" + Guid.NewGuid().ToString("N"));
             string setupPath = Path.Combine(folder, release.SetupName);
             lock (gate) activeUpdateFolder = folder;
+            bool handoffSucceeded = false;
             try
             {
                 Directory.CreateDirectory(folder);
@@ -699,7 +893,9 @@ namespace LanguageVideoLearner
                 if (release.PayloadHash != null && !release.PayloadHash.Equals(expected, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidDataException("Release checksum disagrees with manifest");
                 if (expected == null) throw new InvalidDataException("Release has no matching SHA-256 checksum");
-                DownloadInstaller(release.SetupUrl, setupPath, release.IsPatch);
+                DownloadInstaller(release.SetupUrl, setupPath, release.IsPatch, delegate(long count) {
+                    lock (gate) if (currentInstallToken == token) receivedBytes = count;
+                });
                 string actual;
                 using (SHA256 digest = SHA256.Create())
                 using (FileStream file = File.OpenRead(setupPath)) actual = BitConverter.ToString(digest.ComputeHash(file)).Replace("-", "");
@@ -725,29 +921,54 @@ namespace LanguageVideoLearner
                                 + " --install-token " + Quote(token)
                                 + " --relaunch";
                             StartOwnedChild(node, arguments, false);
+                            handoffSucceeded = true;
                         }
                         else
                         {
                             // Full setup is only needed for launcher/runtime/
                             // dependency changes. It runs silently, stops only
                             // this public launcher, then restarts the new app.
-                            StartOwnedChild(setupPath, SilentSetupArguments + " /LVLInstallToken=" + token, true);
+                            // The old client cannot observe a detached Setup
+                            // terminal error. Inno writes its own per-attempt log
+                            // independently of this launcher's lifetime.
+                            StartOwnedChild(setupPath, SilentSetupArguments
+                                + " /LVLInstallToken=" + token
+                                + " /LVLAttemptId=" + attempt
+                                + " /LOG=" + Quote(Path.Combine(folder, "LVL-setup.log")), true);
+                            handoffSucceeded = true;
                         }
-                        log.Write("updater", "Launched verified LVL update " + release.Version);
+                        log.Write("updater", "Launched verified LVL update " + release.Version
+                            + " (attempt " + attempt + "; setup completion not yet verified)");
                     }
                     catch (Exception issue)
                     {
-                        lock (gate) { error = "Could not open the verified installer: " + issue.Message; activeUpdateFolder = null; }
+                        // A diagnostic failure after transfer does not change the launch result.
+                        if (handoffSucceeded) return;
+                        lock (gate)
+                        {
+                            error = handoffUncertain
+                                ? "Could not confirm installer handoff: " + issue.Message
+                                : "Could not open the verified installer: " + issue.Message;
+                            if (!handoffUncertain) activeUpdateFolder = null;
+                        }
                         if (!handoffUncertain)
+                        {
                             ReleaseInstallOwner(token);
-                        notify("LVL update could not start. Check the launcher log.");
-                        try { Directory.Delete(folder, true); } catch (Exception) { }
+                            try { Directory.Delete(folder, true); } catch (Exception) { }
+                        }
+                        notify(handoffUncertain ? "LVL could not confirm the installer handoff."
+                            : "LVL update could not start. Check the launcher log.");
                     }
-                    finally { lock (gate) { downloading = false; currentInstallToken = null; } RefreshMenu(); }
+                    finally
+                    {
+                        lock (gate) { downloading = false; currentInstallToken = null; }
+                        try { RefreshMenu(); } catch (Exception) { }
+                    }
                 });
             }
             catch (Exception issue)
             {
+                if (handoffSucceeded || handoffUncertain) return;
                 lock (gate) { error = issue.Message; downloading = false; activeUpdateFolder = null; }
                 ReleaseInstallOwner(token);
                 log.Write("updater", "Could not download and validate LVL update: " + issue.Message);
@@ -909,7 +1130,7 @@ namespace LanguageVideoLearner
                     // Never offer an update without a verified checksum asset.
                     if (checksumUrl == null) continue;
                     Release candidate = new Release {
-                        Version = version, SetupName = setupName,
+                        Version = version, Tag = tag, SetupName = setupName,
                         SetupUrl = setupUrl, ChecksumUrl = checksumUrl, IsPatch = patch,
                     };
                     if (next == null || CompareVersions(candidate.Version, next.Version) < 0) next = candidate;
@@ -1028,7 +1249,7 @@ namespace LanguageVideoLearner
                     if ((kind != "patch" && kind != "installer") || name != (kind == "patch" ? "LVL-update-v" + version + ".zip" : "LVL-Setup.exe") || (Value(checksum, "name") != name + ".sha256" && Value(checksum, "name") != "SHA256SUMS"))
                         throw new InvalidDataException("Invalid Windows release assets");
                     records.Add(payload);
-                    result = new Release { Version = version, IsPatch = kind == "patch", SetupName = name, SetupUrl = Value(payload, "url"), ChecksumUrl = Value(checksum, "url"), PayloadHash = Value(payload, "sha256"), ChecksumHash = Value(checksum, "sha256"), PayloadSize = PositiveSize(payload, "size", 2L * 1024 * 1024 * 1024), ChecksumSize = PositiveSize(checksum, "size", 65536) };
+                    result = new Release { Version = version, Tag = tag, IsPatch = kind == "patch", SetupName = name, SetupUrl = Value(payload, "url"), ChecksumUrl = Value(checksum, "url"), PayloadHash = Value(payload, "sha256"), ChecksumHash = Value(checksum, "sha256"), PayloadSize = PositiveSize(payload, "size", 2L * 1024 * 1024 * 1024), ChecksumSize = PositiveSize(checksum, "size", 65536) };
                 }
                 else
                 {
@@ -1167,7 +1388,7 @@ namespace LanguageVideoLearner
             }
         }
 
-        private static void DownloadInstaller(string url, string destination, bool isPatch)
+        private static void DownloadInstaller(string url, string destination, bool isPatch, Action<long> onBytes)
         {
             if (!ValidAssetUrl(url)) throw new InvalidOperationException("Invalid LVL setup URL");
             ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072;
@@ -1188,6 +1409,7 @@ namespace LanguageVideoLearner
                     if (total > 2L * 1024 * 1024 * 1024)
                         throw new InvalidDataException("LVL update download is unexpectedly large");
                     output.Write(buffer, 0, read);
+                    if (onBytes != null) onBytes(total);
                 }
                 if (total < (isPatch ? 100 : 1024 * 1024))
                     throw new InvalidDataException("LVL update download is unexpectedly small");
@@ -1224,25 +1446,33 @@ namespace LanguageVideoLearner
                     DateTime parsed;
                     if (DateTime.TryParse((string)value, null, System.Globalization.DateTimeStyles.RoundtripKind, out parsed)) lastCheckedUtc = parsed.ToUniversalTime();
                 }
+                string attempt = Value(settings, "publicAttemptId"), version = Value(settings, "publicAttemptVersion");
+                if (Regex.IsMatch(attempt ?? "", @"\A[0-9a-f]{32}\z") && Regex.IsMatch(version ?? "", @"\A\d+\.\d+\.\d+\z"))
+                {
+                    publicAttemptId = attempt;
+                    publicAttemptVersion = version;
+                }
             }
             catch (Exception failure) { log.Write("updater", "Could not read update settings: " + failure.GetType().Name); }
         }
 
-        private void SaveSettings()
+        private bool SaveSettings()
         {
             try
             {
                 Directory.CreateDirectory(Path.GetDirectoryName(preferencesFile));
                 string data = json.Serialize(new {
                     automatic, intervalDays,
-                    lastCheckedAt = lastCheckedUtc == DateTime.MinValue ? null : lastCheckedUtc.ToString("o")
+                    lastCheckedAt = lastCheckedUtc == DateTime.MinValue ? null : lastCheckedUtc.ToString("o"),
+                    publicAttemptId, publicAttemptVersion
                 });
                 string pending = preferencesFile + ".tmp";
                 File.WriteAllText(pending, data, Encoding.UTF8);
                 if (File.Exists(preferencesFile)) File.Replace(pending, preferencesFile, null);
                 else File.Move(pending, preferencesFile);
+                return true;
             }
-            catch (Exception failure) { log.Write("updater", "Could not save update settings: " + failure.GetType().Name); }
+            catch (Exception failure) { log.Write("updater", "Could not save update settings: " + failure.GetType().Name); return false; }
         }
     }
 }

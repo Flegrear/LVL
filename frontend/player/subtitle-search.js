@@ -16,6 +16,10 @@ import {
   alignCurrentSubtitleSet, subtitleFingerprint, subtitleTimelineFit, syncTrackToBestReference,
 } from "./subtitle-timing.js";
 import { applySavedSubtitleSync, scheduleAudioSync } from "./audio-sync.js";
+import { playbackLoadRequestId } from "./torrent-playback.js";
+import {
+  downloadExactSubtitleZipMember, showExactSubtitleZipChoices,
+} from "./subtitle-zip-member-choice.js";
 
 function subtitleSearchLanguages() {
   return preferredLanguagePair().join(",");
@@ -241,6 +245,23 @@ function populateSubtitleSearchFromCurrentSource() {
 // slower provider response arrives after a source change or another search.
 let webSubtitleSearchRevision = 0;
 let webSubtitleResultsSource = null;
+const activeWebSubtitleImports = new Set();
+const activeWebSubtitleButtons = new WeakMap();
+let activeWebSubtitleMemberPicker = null;
+let webSubtitleZipChoiceCancelledRevision = -1;
+
+// Called by the actual playback intent owner before it publishes another
+// source/load. This aborts outstanding HTTP requests and resolves any member
+// choice without applying A's late subtitle to B or retaining a dead dialog.
+export function retireWebSubtitleImports({ closeDialog = false } = {}) {
+  for (const job of [...activeWebSubtitleImports]) job.cancel();
+  activeWebSubtitleMemberPicker?.cancel();
+  activeWebSubtitleMemberPicker = null;
+  if (closeDialog) {
+    const dialog = $("#subtitle-web-dialog");
+    if (dialog?.open) dialog.close();
+  }
+}
 function subtitleReleaseScore(result, sourceName) {
   const normalizedSource = normalizeCollectionTitle(sourceName || "").toLowerCase();
   const sourceTokens = new Set(normalizedSource
@@ -281,7 +302,12 @@ function bestSubtitleIndexesByLanguage(results, languageList) {
 async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {}) {
   const sourceAtSearch = state.currentSource;
   const searchRevision = ++webSubtitleSearchRevision;
-  const currentSearch = () => state.currentSource === sourceAtSearch && searchRevision === webSubtitleSearchRevision;
+  retireWebSubtitleImports();
+  webSubtitleZipChoiceCancelledRevision = -1;
+  const dialogAtSearch = $("#subtitle-web-dialog");
+  const currentSearch = () => state.currentSource === sourceAtSearch
+    && searchRevision === webSubtitleSearchRevision
+    && (!dialogAtSearch || dialogAtSearch.open);
   const discardStaleSearch = () => {
     // Only clear this request's own outstanding progress message. A newer
     // request or unrelated UI update owns its message independently.
@@ -342,6 +368,7 @@ async function performWebSubtitleSearch({ auto = false, forceBroad = false } = {
         const result = state.webSubtitleResults[index];
         if (currentSourceTracks().some((track) => track.language === String(result.language || "").toUpperCase())) continue;
         const imported = await importWebSubtitle(index, null, { quiet: true });
+        if (webSubtitleZipChoiceCancelledRevision === searchRevision) return;
         if (!currentSearch()) { discardStaleSearch(); return; }
         if (imported) added.push(String(result.language || "").toUpperCase());
       }
@@ -363,8 +390,13 @@ export async function searchWebSubtitles(event) {
 }
 
 export async function openSubtitleSearch({ auto = false } = {}) {
+  // Reopening the same dialog/source after a previous close is a new search
+  // ownership epoch. A late old search must never populate this new session.
+  webSubtitleSearchRevision += 1;
+  retireWebSubtitleImports();
   const defaults = populateSubtitleSearchFromCurrentSource();
-  $("#subtitle-web-dialog").showModal();
+  const dialog = $("#subtitle-web-dialog");
+  if (!dialog.open) dialog.showModal();
   if (!auto) {
     setToolStatus("#subtitle-web-status", "");
     return;
@@ -378,19 +410,70 @@ async function importWebSubtitle(index, button = null, { quiet = false } = {}) {
   if (webSubtitleResultsSource !== sourceAtSelection) return false;
   const result = state.webSubtitleResults[index];
   if (!result) return false;
-  const apiKey = state.subdlKey;
+  const dialog = $("#subtitle-web-dialog");
+  if (!dialog?.open) return false;
+  // Two clicks on one result are competing owners. The later click retires
+  // the first request/picker; its late HTTP response may not import twice.
+  for (const active of [...activeWebSubtitleImports]) {
+    if (active.result === result && active.source === sourceAtSelection)
+      active.cancel();
+  }
+  const originalRequest = Object.freeze({
+    apiKey: state.subdlKey, url: result.url, label: result.label,
+  });
+  const searchRevision = webSubtitleSearchRevision;
+  const loadId = playbackLoadRequestId;
+  const controller = new AbortController();
+  const job = {
+    controller, picker: null, result, source: sourceAtSelection,
+    cancel() {
+      job.picker?.cancel();
+      controller.abort("Subtitle import owner retired");
+    },
+  };
+  const current = () => !controller.signal.aborted && dialog.open
+    && state.currentSource === sourceAtSelection
+    && playbackLoadRequestId === loadId
+    && webSubtitleSearchRevision === searchRevision
+    && webSubtitleResultsSource === sourceAtSelection
+    && state.webSubtitleResults[index] === result;
+  activeWebSubtitleImports.add(job);
+  if (button) activeWebSubtitleButtons.set(button, job);
+  dialog.addEventListener("close", job.cancel, { signal: controller.signal });
+  dialog.addEventListener("cancel", job.cancel, { signal: controller.signal });
   const previous = button?.textContent || "Add";
   if (button) {
     button.disabled = true;
     button.textContent = "Loading…";
   }
   try {
-    const data = await postJson("/api/subtitles/download", { apiKey, url: result.url, label: result.label });
-    if (state.currentSource !== sourceAtSelection || webSubtitleResultsSource !== sourceAtSelection
-      || state.webSubtitleResults[index] !== result) {
-      if (button) { button.disabled = false; button.textContent = previous; }
-      return false;
-    }
+    const data = await downloadExactSubtitleZipMember({
+      originalRequest,
+      postDownload: (payload) => postJson("/api/subtitles/download", payload,
+        { signal: controller.signal }),
+      isCurrent: current,
+      chooseMember: async (members, { changedArchive }) => {
+        if (!current()) return null;
+        activeWebSubtitleMemberPicker?.cancel();
+        const picker = showExactSubtitleZipChoices({
+          members, dialog, isCurrent: current, changedArchive,
+          returnFocus: button,
+        });
+        job.picker = picker;
+        activeWebSubtitleMemberPicker = picker;
+        try {
+          const selected = await picker.promise;
+          if (selected === null && current())
+            webSubtitleZipChoiceCancelledRevision = searchRevision;
+          return selected;
+        } finally {
+          if (job.picker === picker) job.picker = null;
+          if (activeWebSubtitleMemberPicker === picker)
+            activeWebSubtitleMemberPicker = null;
+        }
+      },
+    });
+    if (!data || !current()) return false;
     const label = (data.filename || result.label || "Web subtitle").replace(/\.(srt|vtt)$/i, "");
     const added = addSubtitleText(data.text, label, data.language || result.language, {
       origin: "web",
@@ -408,11 +491,23 @@ async function importWebSubtitle(index, button = null, { quiet = false } = {}) {
     if (!quiet) setToolStatus("#subtitle-web-status", "Subtitle added");
     return true;
   } catch (error) {
-    if (button) {
-      button.disabled = false;
-      button.textContent = previous;
-    }
-    if (!quiet && state.currentSource === sourceAtSelection) setToolStatus("#subtitle-web-status", error.message, true);
+    // Auto-search also needs to disclose a broken/changed ZIP contract; it
+    // must not silently discard ZIP results while treating the provider as
+    // though it returned no selectable subtitle.
+    if (current() && (!quiet || /ZIP|archive|member/i.test(String(error?.message || ""))))
+      setToolStatus("#subtitle-web-status", error.message, true);
     return false;
+  } finally {
+    activeWebSubtitleImports.delete(job);
+    job.cancel();
+    // Keep the already-Added marker for the exact chosen result, but undo a
+    // retired/cancelled Loading state without changing another source's UI.
+    if (button && activeWebSubtitleButtons.get(button) === job) {
+      activeWebSubtitleButtons.delete(button);
+      if (button.textContent === "Loading…") {
+        button.disabled = false;
+        button.textContent = previous;
+      }
+    }
   }
 }

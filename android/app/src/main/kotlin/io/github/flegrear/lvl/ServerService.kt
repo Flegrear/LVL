@@ -43,6 +43,14 @@ class ServerService : Service(), AppUpdater.Server {
         private val readinessLock = Object()
         private var readinessSerial = 0L
         @Volatile private var activeChild: Child? = null
+        // Android can retire one Service object after another instance has
+        // already begun starting. Old onDestroy callbacks must not overwrite
+        // the current instance's process-wide startup status.
+        @Volatile private var statusService: ServerService? = null
+        // Android can create a replacement Service before the prior instance's
+        // shutdown worker finishes. A process-wide gate prevents two Node children
+        // even across those distinct Service objects.
+        private val nodeOwnership = NodeStartupOwnership()
 
         fun currentChild(): Child? = activeChild?.takeIf { isCurrentChild(it) }
 
@@ -87,6 +95,7 @@ class ServerService : Service(), AppUpdater.Server {
     private var serverThread: Thread? = null
     private var recovered = false
     private var replacing = false
+    @Volatile private var destroyed = false
     private val extensionHost by lazy { ExtensionHost(this) }
     val updater by lazy { AppUpdater(this, this) }
 
@@ -106,23 +115,42 @@ class ServerService : Service(), AppUpdater.Server {
             stopSelf()
             return START_NOT_STICKY
         }
+        statusService = this
         launchServer()
         return START_STICKY
     }
 
     override fun onDestroy() {
-        synchronized(lifecycle) { activeChild = null }
-        process?.destroy()
-        runCatching { extensionHost.stop() }
-        runCatching { updater.stop() }
-        running = false
-        state = "Stopped"
+        synchronized(lifecycle) {
+            destroyed = true
+            if (activeChild?.process === process) activeChild = null
+        }
+        // Service.onDestroy runs on Android's main thread. The existing bounded
+        // close-stdin -> wait -> destroy -> force-kill -> join protocol must run
+        // off that thread. Never permit this old instance to relaunch afterward.
+        thread(name = "lvl-service-stop", isDaemon = false) {
+            val stopped = runCatching { stopServer() }
+                .onFailure { Log.e("LVL-Server", "Service teardown failed", it) }
+                .getOrDefault(false)
+            if (!stopped) Log.e("LVL-Server", "Node/worker did not terminate within service stop bounds")
+            runCatching { extensionHost.stop() }
+                .onFailure { Log.e("LVL-Server", "Extension host stop failed", it) }
+            runCatching { updater.stop() }
+                .onFailure { Log.e("LVL-Server", "Update bridge stop failed", it) }
+            signalReadiness()
+        }
+        if (statusService === this) {
+            statusService = null
+            running = false
+            state = "Stopped"
+        }
         signalReadiness()
         super.onDestroy()
     }
 
     private fun launchServer() {
         synchronized(lifecycle) {
+            if (destroyed) return
             if (replacing || process?.isAlive == true || starting) return
             starting = true
             state = "Starting the server…"
@@ -153,6 +181,9 @@ class ServerService : Service(), AppUpdater.Server {
     }
 
     private fun restoreFailedUpdate(): Boolean {
+        // Only the generation that owned startup may restore app.old. In particular,
+        // a second Service denied the Node slot must not roll back the live server.
+        if (!nodeOwnership.canRollBack()) return false
         if (!AppFiles.updatePending(this)) return false
         val failureState = state
         state = "Restoring the previous version…"
@@ -174,6 +205,7 @@ class ServerService : Service(), AppUpdater.Server {
     // AppUpdater.Server
     override fun restart(change: () -> Unit) {
         synchronized(lifecycle) {
+            check(!destroyed) { "The service has stopped" }
             check(!replacing) { "An update is already restarting the server" }
             replacing = true
             state = "Updating LVL…"
@@ -222,7 +254,7 @@ class ServerService : Service(), AppUpdater.Server {
                 if (stable) {
                     synchronized(lifecycle) {
                         // A stopped/replaced generation cannot retire a newer backup.
-                        if (isCurrentChild(child) && !replacing) {
+                        if (isCurrentChild(child) && !replacing && !destroyed) {
                             AppFiles.confirmUpdate(this)
                             updater.onServerStarted()
                             state = "Server running"
@@ -233,7 +265,7 @@ class ServerService : Service(), AppUpdater.Server {
                 }
                 if (SystemClock.elapsedRealtime() >= healthDeadline) {
                     synchronized(lifecycle) {
-                        if (isCurrentChild(child) && !replacing) {
+                        if (isCurrentChild(child) && !replacing && !destroyed) {
                             state = "The server failed authenticated health checks"
                             // Leaving the child alive indefinitely would strand app.old
                             // after an invalid banner. Its worker performs rollback only
@@ -244,7 +276,7 @@ class ServerService : Service(), AppUpdater.Server {
                     signalReadiness()
                     if (child.process.isAlive && !child.process.waitFor(2, TimeUnit.SECONDS)) {
                         synchronized(lifecycle) {
-                            if (isCurrentChild(child) && !replacing) child.process.destroyForcibly()
+                            if (isCurrentChild(child) && !replacing && !destroyed) child.process.destroyForcibly()
                         }
                     }
                     return@thread
@@ -260,8 +292,13 @@ class ServerService : Service(), AppUpdater.Server {
         var ownedProcess: Process? = null
         var ownedChild: Child? = null
         var terminalState: String? = null
+        var ownsNodeGeneration = false
         startup("server_run_begin")
         try {
+            // This class-wide reservation covers recovery, spawn, rollback and
+            // terminal publication, including overlapping Service instances.
+            nodeOwnership.acquire(isStopped = { destroyed }, nowMs = { SystemClock.elapsedRealtime() })
+            ownsNodeGeneration = true
             // Once per app start: finish or undo a swap the app was closed in the middle of.
             if (!recovered) {
                 AppFiles.recoverInterrupted(this)
@@ -313,15 +350,22 @@ class ServerService : Service(), AppUpdater.Server {
                 File(nativeDir, "libffmpeg_exec.so").takeIf { it.isFile }?.let { put("FFMPEG_BIN", it.path) }
                 File(nativeDir, "libffprobe_exec.so").takeIf { it.isFile }?.let { put("FFPROBE_BIN", it.path) }
             }
-            val started = builder.start()
-            ownedProcess = started
-            val child = Child(started, identity, childAccessToken)
-            ownedChild = child
-            synchronized(lifecycle) {
-                process = started
-                activeChild = child
+            // Spawn and publish are protected by the same lifecycle lock used
+            // by onDestroy. No child may appear after teardown captured state.
+            val (started, child) = synchronized(lifecycle) {
+                check(!destroyed) { "The service stopped during server startup" }
+                val spawned = builder.start()
+                nodeOwnership.register(spawned)
+                // Record the exact child immediately: an exception constructing
+                // its UI handle must still stop and await this Node process.
+                ownedProcess = spawned
+                val handle = Child(spawned, identity, childAccessToken)
+                process = spawned
+                activeChild = handle
                 running = true
+                spawned to handle
             }
+            ownedChild = child
             startup("node_spawned")
             state = "Waiting for authenticated LVL health…"
             signalReadiness()
@@ -359,7 +403,9 @@ class ServerService : Service(), AppUpdater.Server {
             }
             val code = started.waitFor()
             // An early banner followed by a crash is also a failed update.
-            if (AppFiles.updatePending(this)) relaunch = restoreFailedUpdate()
+            if (ownsNodeGeneration && !destroyed) {
+                if (AppFiles.updatePending(this)) relaunch = restoreFailedUpdate()
+            }
             if (!relaunch) terminalState = "The server stopped (exit $code)"
         } catch (error: Throwable) {
             Log.e("LVL-Server", "start failed", error)
@@ -382,24 +428,31 @@ class ServerService : Service(), AppUpdater.Server {
             }
             // ProcessBuilder failures and malformed staged assets also need rollback,
             // but only after the failed child has actually exited.
-            if (AppFiles.updatePending(this)) relaunch = restoreFailedUpdate()
-            if (!relaunch) terminalState = "The server couldn't start: ${error.message}"
+            if (ownsNodeGeneration && !destroyed) {
+                if (AppFiles.updatePending(this)) relaunch = restoreFailedUpdate()
+            }
+            if (ownsNodeGeneration && !relaunch) terminalState = "The server couldn't start: ${error.message}"
         } finally {
             synchronized(lifecycle) {
                 if (activeChild === ownedChild) activeChild = null
                 if (serverThread === Thread.currentThread()) {
                     // An older worker may never erase a newer worker's process handle.
                     if (process === ownedProcess && ownedProcess?.isAlive != true) process = null
-                    running = process?.isAlive == true
+                    if (ownsNodeGeneration && !destroyed) running = process?.isAlive == true
                     starting = process?.isAlive == true
                     // Publish a terminal failure only once rollback is ruled out.
                     // During an intentional update stop, restart() owns the state.
-                    if (!relaunch && !replacing && terminalState != null) state = terminalState
+                    if (!destroyed && statusService === this) {
+                        if (!relaunch && !replacing && terminalState != null) state = terminalState
+                    }
                 }
             }
+            // Keep the gate until after exact-child cleanup, rollback decisions,
+            // and terminal state publication have completed.
+            if (ownsNodeGeneration) nodeOwnership.release(ownedProcess)
             signalReadiness()
         }
-        if (relaunch) launchServer()
+        if (relaunch && !destroyed) launchServer()
     }
 
     private fun notification(): Notification {

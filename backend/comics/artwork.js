@@ -70,7 +70,44 @@ export function createCatalogArtworkResolver({
   const pending = new Map();
   const queued = [];
   const imagePending = new Map();
+  const queuedImages = [];
   let active = 0;
+  let activeImages = 0;
+
+  // Deduplication shares the provider/cache operation, NOT the first caller's
+  // wall-clock budget. A dismissed/slow-scrolling card must not cancel or poison
+  // another live card requesting exactly the same verified artwork.
+  function forCaller(promise, deadline) {
+    const remaining = Number(deadline) - Date.now();
+    if (remaining <= 0) return Promise.reject(Object.assign(new Error("Artwork deadline elapsed"), { status: 504 }));
+    if (!Number.isFinite(remaining)) return promise;
+    let timer;
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(Object.assign(new Error("Artwork deadline elapsed"), { status: 504 })), remaining);
+      }),
+    ]).finally(() => clearTimeout(timer));
+  }
+
+  // Cover bytes are larger than metadata: keep independent, bounded image
+  // admission instead of starting one fetch/decode for every catalog card.
+  // The cached data path is subject to the same concurrency budget.
+  function startImages() {
+    while (activeImages < Math.max(1, maxParallel) && queuedImages.length) {
+      const job = queuedImages.shift();
+      activeImages++;
+      void (async () => {
+        try { job.resolve(await job.load()); }
+        catch (error) { job.reject(error); }
+        finally {
+          imagePending.delete(job.key);
+          activeImages--;
+          startImages();
+        }
+      })();
+    }
+  }
 
   function remember(id, cover, ttlMs, failed = false) {
     metadata.delete(id);
@@ -113,15 +150,18 @@ export function createCatalogArtworkResolver({
       return cached.cover;
     }
     metadata.delete(key);
-    if (pending.has(key)) return pending.get(key);
+    if (pending.has(key)) return forCaller(pending.get(key), deadline);
     if (queued.length >= 24 || Date.now() >= deadline)
       throw Object.assign(new Error("Artwork lookup queue is full or expired"), { status: 503 });
     let resolve, reject;
     const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
     pending.set(key, promise);
-    queued.push({ key, titles, deadline, resolve, reject });
+    // Shared provider request has a bounded independent budget. Each caller
+    // waits only until its own deadline; an early caller never determines the
+    // later caller's provider deadline.
+    queued.push({ key, titles, deadline: Date.now() + 17_000, resolve, reject });
     startQueued();
-    return promise;
+    return forCaller(promise, deadline);
   }
 
   async function fetchCover(cover, deadline = Infinity) {
@@ -149,15 +189,20 @@ export function createCatalogArtworkResolver({
   async function image(cover, { deadline = Infinity } = {}) {
     if (!catalogCoverUrlAllowed(cover?.url, cover)) throw new Error("Invalid catalog cover identity");
     const key = `catalog-original-v1:${cover.mangaId}:${cover.coverId}:${cover.filename}`;
-    if (imagePending.has(key)) return imagePending.get(key);
-    const job = (async () => {
-      const cached = await imageCache.get(key, () => fetchCover(cover, deadline));
+    if (imagePending.has(key)) return forCaller(imagePending.get(key), deadline);
+    if (Date.now() >= deadline || queuedImages.length >= 24)
+      throw Object.assign(new Error("Artwork image queue is full or expired"), { status: 503 });
+    let resolve, reject;
+    const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+    imagePending.set(key, promise);
+    queuedImages.push({ key, resolve, reject, load: async () => {
+      const cached = await imageCache.get(key, () => fetchCover(cover, Date.now() + 6000));
       const size = imageDimensions(cached.buffer, cached.type);
       if (!size) throw new Error("Cached catalog image is malformed");
       return { ...cached, ...size };
-    })().finally(() => imagePending.delete(key));
-    imagePending.set(key, job);
-    return job;
+    } });
+    startImages();
+    return forCaller(promise, deadline);
   }
 
   return { find, image };

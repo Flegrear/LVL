@@ -23,6 +23,8 @@
 // version, so an upgrade that changes them is caught instead of failing
 // silently.
 
+import { isIP } from "node:net";
+
 const TURNOVER_INTERVAL_MS = 30_000;
 const MIN_AGE_MS = 30_000;
 const DROPS_PER_ROUND = 2;
@@ -33,16 +35,41 @@ const SLOW_FLOOR_BYTES = 16 * 1024;
 const BAN_SOLE_FAILURES = 2;
 const FAILED_PIECE = /^Piece (\d+) failed verification$/;
 
-// Several peers on this computer, or behind one router, share an address,
-// so those are told apart by port too.
+// A failed piece is attributable to one network endpoint, including its port.
+// Never turn a missing address/port into a shared ban key, and normalize mapped
+// IPv4 / equivalent IPv6 spellings before comparing connected and queued peers.
+function normalizedPeerHost(value) {
+  if (typeof value !== "string") return null;
+  let host = value.trim().toLowerCase();
+  if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+  const zoneAt = host.indexOf("%");
+  const zone = zoneAt >= 0 ? host.slice(zoneAt + 1) : "";
+  if (zoneAt >= 0) host = host.slice(0, zoneAt);
+  if (zoneAt >= 0 && !/^[\w.-]{1,32}$/.test(zone)) return null;
+  if (isIP(host) === 4) return zoneAt >= 0 ? null : host;
+  if (isIP(host) !== 6) return null;
+  try {
+    const ipv6 = new URL(`http://[${host}]/`).hostname.slice(1, -1);
+    const mapped = /^::ffff:([\da-f]{1,4}):([\da-f]{1,4})$/.exec(ipv6);
+    if (mapped && zoneAt < 0) {
+      const high = Number.parseInt(mapped[1], 16);
+      const low = Number.parseInt(mapped[2], 16);
+      return `${high >>> 8}.${high & 255}.${low >>> 8}.${low & 255}`;
+    }
+    return `[${ipv6}${zoneAt >= 0 ? `%${zone}` : ""}]`;
+  } catch { return null; }
+}
+
 function peerKey(wire) {
-  const host = String(wire?.remoteAddress || "");
-  const local = /^(?:127\.|::1$|::ffff:127\.|10\.|192\.168\.|172\.(?:1[6-9]|2\d|3[01])\.)/.test(host);
-  return local ? `${host}:${wire?.remotePort}` : host;
+  const host = normalizedPeerHost(wire?.remoteAddress);
+  const port = Number(wire?.remotePort);
+  return host && Number.isSafeInteger(port) && port >= 1 && port <= 65535
+    ? `${host}:${port}` : null;
 }
 const speedOf = (wire) => { try { return Number(wire.downloadSpeed()) || 0; } catch { return 0; } };
 // "1.2.3.4:6881" or "[::1]:6881", as trackers and peer exchange hand them over.
 function keyOfAddress(address) {
+  if (typeof address !== "string") return null;
   const match = /^\[([^\]]+)\]:(\d+)$/.exec(address) || /^([^:]+):(\d+)$/.exec(address);
   return match ? peerKey({ remoteAddress: match[1], remotePort: Number(match[2]) }) : null;
 }
@@ -87,7 +114,10 @@ export function attachPeerManager(torrent, {
   const stat = (key) => { let r = record.get(key); if (!r) record.set(key, r = { sole: 0, failed: 0, verified: 0 }); return r; };
 
   function onVerified(index) {
-    for (const wire of contributors.get(index) || []) stat(info.get(wire)?.key ?? peerKey(wire)).verified++;
+    for (const wire of contributors.get(index) || []) {
+      const key = info.get(wire)?.key ?? peerKey(wire);
+      if (key) stat(key).verified++;
+    }
     contributors.delete(index);
     pendingSince.delete(index);
   }
@@ -100,6 +130,7 @@ export function attachPeerManager(torrent, {
     contributors.delete(index);
     for (const wire of wires) {
       const key = info.get(wire)?.key ?? peerKey(wire);
+      if (!key) continue; // Unidentified peers cannot create a shared ban.
       const r = stat(key);
       r.failed++;
       if (wires.length === 1) r.sole++;
@@ -107,7 +138,7 @@ export function attachPeerManager(torrent, {
     }
   }
   function ban(wire, key) {
-    if (banned.has(key)) return;
+    if (!key || banned.has(key)) return;
     banned.add(key);
     if (wire.peerId) banned.add(wire.peerId);
     counts.banned++;
@@ -146,7 +177,8 @@ export function attachPeerManager(torrent, {
       .sort((a, b) => speedOf(a) - speedOf(b))
       .slice(0, Math.min(DROPS_PER_ROUND, waiting()));
     for (const wire of candidates) {
-      recentlyDropped.set(info.get(wire)?.key ?? peerKey(wire), now());
+      const key = info.get(wire)?.key ?? peerKey(wire);
+      if (key) recentlyDropped.set(key, now());
       counts.dropped++;
       wire.destroy();
     }
@@ -198,7 +230,9 @@ export function attachPeerManager(torrent, {
   // before WebTorrent dials them, instead of connecting just to hang up.
   const originalAddPeer = torrent.addPeer;
   const guardedAddPeer = function addPeer(peer, source) {
-    const key = typeof peer === "string" ? keyOfAddress(peer) : peerKey(peer);
+    const key = typeof peer === "string" ? keyOfAddress(peer)
+      : peerKey({ remoteAddress: peer?.remoteAddress ?? peer?.host,
+        remotePort: peer?.remotePort ?? peer?.port });
     const dropped = key && recentlyDropped.get(key);
     if (key && (banned.has(key) || dropped && now() - dropped < RECENT_DROP_MS && full() && waiting() > 0)) {
       counts.refused++;

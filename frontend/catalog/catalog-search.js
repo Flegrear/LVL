@@ -5,7 +5,7 @@ import { state, TITLE_STATUS } from "../../app.js";
 import { $, setToolStatus } from "../app/dom.js";
 import { fetchJson } from "../app/http.js";
 import { importCatalogStream } from "../player/torrent-playback.js";
-import { buildLibrarySeries, librarySeriesKey, normalizeLibrarySourceMeta } from "../library/library-data.js";
+import { buildLibrarySeries, librarySeriesForCatalog, librarySeriesKey, normalizeLibrarySourceMeta } from "../library/library-data.js";
 import { openHomeTitle, savedTitleBadge } from "../title/title-page.js";
 import { homeTitleIndex } from "../home/home-page.js";
 import { t } from "../ui/ui-i18n.js";
@@ -84,8 +84,7 @@ function renderCatalogResults(results) {
   const ranked = rankCatalogSearchResults(results, $("#catalog-search-input")?.value || "");
   container.innerHTML = ranked.map((meta) => {
     const item = catalogCardItem(meta, { category: meta.type === "movie" ? "movie" : "tv" });
-    const match = savedSeries.find((series) => (meta.id && series.catalogId === meta.id)
-      || series.key === librarySeriesKey(meta.name));
+    const match = librarySeriesForCatalog(meta, savedSeries);
     const details = item.meta.filter(Boolean).map(escapeHtml).join(" - ");
     const saved = match ? savedTitleBadge(match)?.label : "";
     return `<button class="catalog-search-result" type="button" data-title-id="${escapeHtml(meta.id)}" aria-label="Open ${escapeHtml(item.title)} in Library">
@@ -174,10 +173,15 @@ let catalogSearchTimer = null;
 let catalogSearchRequest = null;
 let catalogSearchVersion = 0;
 let catalogSearchKindActive = "video";
+let catalogSearchResultsQuery = "";
+let catalogSearchInFlightQuery = "";
 const catalogSearchCache = new Map();
 
 function searchCacheKey(kind, query) { return `${kind}:${query.toLocaleLowerCase()}`; }
 function rememberCatalogSearch(kind, query, results) {
+  // Comics are editable in this app. A five-minute response cache could hide
+  // a newly added, renamed or removed title until the cache expired.
+  if (kind === "comics") return;
   const key = searchCacheKey(kind, query);
   catalogSearchCache.delete(key);
   catalogSearchCache.set(key, { results, savedAt: Date.now() });
@@ -205,6 +209,7 @@ function cancelCatalogSearch() {
   catalogSearchTimer = null;
   catalogSearchRequest?.abort();
   catalogSearchRequest = null;
+  catalogSearchInFlightQuery = "";
   catalogSearchVersion += 1;
 }
 
@@ -225,6 +230,7 @@ export function closeCatalogSearch({ restoreFocus = false } = {}) {
   $("#section-search-title")?.setAttribute("aria-expanded", "false");
   cancelCatalogSearch();
   state.catalogResults = [];
+  catalogSearchResultsQuery = "";
   catalogSearchKindActive = "video";
   if (restoreFocus) $(({
     "topbar-catalog-search-host": "#home-search-title",
@@ -244,6 +250,7 @@ export function openCatalogSearch(source = "topbar") {
   }
   cancelCatalogSearch();
   state.catalogResults = [];
+  catalogSearchResultsQuery = "";
   catalogSearchKindActive = kind;
   setCatalogSearchLabels(kind);
   host.appendChild(shell);
@@ -267,6 +274,7 @@ async function performCatalogSearch(query) {
   const requestKind = catalogSearchKindActive;
   const controller = new AbortController();
   catalogSearchRequest = controller;
+  catalogSearchInFlightQuery = query;
   if (!state.catalogResults.length) setToolStatus("#catalog-status", requestKind === "comics" ? searchText("Loading…") : "Searching…");
   try {
     const data = requestKind === "comics"
@@ -277,6 +285,7 @@ async function performCatalogSearch(query) {
       || $("#catalog-search-input").value.trim() !== query) return;
     state.catalogResults = requestKind === "comics"
       ? (Array.isArray(data.items) ? data.items : []) : (Array.isArray(data.results) ? data.results : []);
+    catalogSearchResultsQuery = query;
     rememberCatalogSearch(requestKind, query, state.catalogResults);
     setToolStatus("#catalog-status", requestKind === "comics"
       ? (state.catalogResults.length ? searchText("{count} titles", { count: state.catalogResults.length }) : searchText("No results"))
@@ -285,25 +294,40 @@ async function performCatalogSearch(query) {
     else renderCatalogResults(state.catalogResults);
   } catch (error) {
     if (requestVersion !== catalogSearchVersion || controller.signal.aborted || !catalogSearchIsOpen()
-      || currentCatalogSearchKind() !== requestKind || catalogSearchKindActive !== requestKind) return;
+      || currentCatalogSearchKind() !== requestKind || catalogSearchKindActive !== requestKind
+      || $("#catalog-search-input").value.trim() !== query) return;
     const message = error.message || "Title search failed";
     setToolStatus("#catalog-status", requestKind === "comics" ? searchText("Couldn't load comics") : message, true);
     $("#catalog-results").innerHTML = requestKind === "comics"
       ? emptyMarkup({ compact: true, icon: "alert", title: searchText("Couldn't load comics"), text: String(message) })
       : emptyMarkup({ compact: true, icon: "alert", title: "Couldn't search titles", text: `${message}. Check your connection and try Search again.` });
   } finally {
-    if (catalogSearchRequest === controller) catalogSearchRequest = null;
+    if (catalogSearchRequest === controller) {
+      catalogSearchRequest = null;
+      catalogSearchInFlightQuery = "";
+    }
   }
 }
 
 export function searchCatalogTitles(event) {
   event.preventDefault();
-  const first = $("#catalog-results .catalog-search-result");
+  const query = $("#catalog-search-input").value.trim();
+  const kind = currentCatalogSearchKind();
+  // An input can change before the 220 ms debounce runs. The old results are
+  // still in the DOM in that interval; Enter must never open their first row.
+  const currentResults = catalogSearchKindActive === kind && catalogSearchResultsQuery === query;
+  const first = currentResults ? $("#catalog-results .catalog-search-result") : null;
   if (first && catalogSearchKindActive === "comics" && first.dataset.comicsOpen) first.click();
   else if (first && catalogSearchKindActive === "video") openCatalogResult(first.dataset.titleId);
-  else {
-    const query = $("#catalog-search-input").value.trim();
-    if (query.length >= 2) void performCatalogSearch(query);
+  else if (query.length >= 2) {
+    if (catalogSearchRequest && catalogSearchInFlightQuery === query && catalogSearchKindActive === kind) return;
+    if (!currentResults) {
+      state.catalogResults = [];
+      catalogSearchResultsQuery = "";
+      $("#catalog-results").innerHTML = "";
+    }
+    $("#catalog-search-panel").hidden = false;
+    void performCatalogSearch(query);
   }
 }
 
@@ -316,15 +340,17 @@ export function queueCatalogSearch() {
   }
   const query = $("#catalog-search-input").value.trim();
   state.catalogResults = [];
+  catalogSearchResultsQuery = "";
   $("#catalog-results").innerHTML = "";
   const panel = $("#catalog-search-panel");
   panel.hidden = !query;
   $("#catalog-search-input")?.setAttribute("aria-expanded", query ? "true" : "false");
   setToolStatus("#catalog-status", "");
   if (!query) return;
-  const cached = catalogSearchCache.get(searchCacheKey(kind, query));
+  const cached = kind === "comics" ? null : catalogSearchCache.get(searchCacheKey(kind, query));
   if (cached && cached.savedAt > Date.now() - 5 * 60_000) {
     state.catalogResults = cached.results;
+    catalogSearchResultsQuery = query;
     if (kind === "comics") {
       renderComicSearchResults(cached.results);
       setToolStatus("#catalog-status", cached.results.length ? searchText("{count} titles", { count: cached.results.length }) : searchText("No results"));
@@ -339,6 +365,7 @@ export function queueCatalogSearch() {
   const local = kind === "comics" ? comicLocalMatches(query) : catalogLocalMatches(query);
   if (local.length) {
     state.catalogResults = local;
+    catalogSearchResultsQuery = query;
     if (kind === "comics") renderComicSearchResults(local);
     else renderCatalogResults(local);
   } else setToolStatus("#catalog-status", kind === "comics"

@@ -6,6 +6,7 @@ import { escapeHtml } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { atEnd, cascadeBridgePageWindow, cascadeBridgeSameOwner, clickAction, colorTemperatureFilter, comfortFilter, createReaderChapterAdvanceGate, createReaderScrollIntentController, createReaderTapGuard, createReaderUnitTransition, CREDIT_STRIP_ROWS, creditStripRows, defaultMode, keyAction, knownLatestReaderChapter, MAX_NEXT_CHAPTER_PRELOAD, nextChapterPreloadTargets, normalizeComfort, normalizeMode, normalizeNextChapterPreload, readerAndroidTapAction, readerChapterIdentity, readerChapterNeighbours, readerChapterPosition, readerPageCount, readerSourceAtLatest, spreadOf, startPage, step, stripStep, wheelAction } from "./reader-core.js";
 import { createOrderedReaderPages, readerPageAtOffset } from "./reader-page-window.js";
+import { loadPageWithCacheRecovery } from "./image-decode-recovery.js";
 
 const COMFORT_KEY = "lvl-reader-comfort-v1";
 const DISPLAY_KEY = "lvl-reader-display-v1";
@@ -472,12 +473,19 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
 
   function saveSoon(immediate = false) {
     clearTimeout(saveTimer);
-    const payload = { fileId, page: current, pages, finished: atEnd(current, pages, pairing()) };
-    const send = () => api.saveProgress(payload).catch(() => {});
+    const payload = { fileId, page: current, pages, finished: atEnd(current, pages, pairing()),
+      ...(info.file?.revision ? { revision: info.file.revision } : {}) };
+    const send = () => api.saveProgress(payload, { close: immediate }).catch(() => {});
     if (immediate) return send();
     saveTimer = setTimeout(send, 800);
     return undefined;
   }
+  // A normal close attempts a keepalive PUT; a tab/app pagehide also takes a
+  // final mounted-only snapshot. Neither event claims a server acknowledgment
+  // before the serialized network writer actually accepts the response.
+  window.addEventListener("pagehide", () => {
+    if (!closed && root.isConnected) void saveSoon(true);
+  }, { signal: listeners.signal });
 
   // Local files go to the next file on disk; source chapters follow the chapter index.
   function chapterTargets() {
@@ -733,7 +741,7 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
   }
 
   function loadDecodedPage(n, signal) {
-    return new Promise((resolve, reject) => {
+    const load = (address) => new Promise((resolve, reject) => {
       const img = new Image();
       img.className = "reader__page";
       img.dataset.page = String(n);
@@ -755,8 +763,15 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
       signal.addEventListener("abort", abort, { once: true });
       img.addEventListener("load", complete, { once: true });
       img.addEventListener("error", failed, { once: true });
-      img.src = src(n);
+      img.src = address;
     });
+    const address = src(n);
+    // Local archive bytes and already-trimmed blob URLs must not enter a
+    // remote cache recovery route. Only exact remote page image failures can
+    // request one decoder-proven, incarnation-scoped source refetch.
+    return fileId.startsWith("ex-") && address === url(n)
+      ? loadPageWithCacheRecovery(address, { loadImage: load, signal })
+      : load(address);
   }
 
   function render() {
@@ -971,6 +986,10 @@ export async function openReader(host, { fileId, page = null, comic = {}, api, c
     chapterAdvance.reset();
     current = next;
     render();
+    // Explicit page-turn intent is distinct from layout/thumbnail/scroll
+    // measurements calling updateCount(). A restored unacknowledged journal
+    // may only be superseded after a deliberate new page selection.
+    if (root.isConnected) onPage?.(fileId, current, { explicitPageTurn: true });
     saveSoon();
   }
 

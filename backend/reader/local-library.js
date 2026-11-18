@@ -5,10 +5,11 @@ import fs from "node:fs/promises";
 import { watch as watchFolder } from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
-import { IMAGE_EXT, listPages } from "./pages.js";
+import { IMAGE_EXT, listPages, archiveContentWitness, invalidateArchive } from "./pages.js";
 import { normalizeSeriesName, parseReleaseName } from "../../shared/reading/release-name.js";
 import { compareUnitNumbers } from "../../shared/reading/units.js";
-import { EXT_CHAPTER_ID, WORK_ID } from "../../shared/reading/ids.js";
+import { EXT_CHAPTER_ID, WORK_ID, isSyncableSourceTitleKey } from "../../shared/reading/ids.js";
+import { createProgressTransaction } from "./progress-transaction.js";
 
 export const SCAN_LIMITS = Object.freeze({ depth: 6, files: 20_000 });
 const ARCHIVE_EXT = /\.(?:cbz|zip)$/i;
@@ -20,6 +21,16 @@ export const fileIdFor = (fullPath, { platform = path.sep === "\\" ? "win32" : "
   `f${hash(platform === "win32" ? path.resolve(fullPath).toLowerCase() : path.resolve(fullPath), 16)}`;
 const legacyFileIdFor = (fullPath) => `f${hash(path.resolve(fullPath).toLowerCase(), 16)}`;
 export const localIdFor = (seriesKey) => `local-${hash(seriesKey)}`;
+// A normalized display title is only a search hint. Files with distinct
+// spelling/provenance must never share that hint as a durable work identity.
+export const localSeriesKeyFor = (series, file, root, anilistHint = null) => {
+  const shown = String(series || "").normalize("NFC").replace(/\s+/g, " ").trim();
+  const relative = path.relative(root, path.dirname(file)).split(path.sep).join("/");
+  const scope = relative === "." ? "" : relative;
+  if (Number.isSafeInteger(Number(anilistHint)) && Number(anilistHint) > 0)
+    return `series2:anilist:${Number(anilistHint)}:${hash(scope, 16)}`;
+  return `series2:${hash(`${scope}\n${shown}`, 20)}:${normalizeSeriesName(shown).slice(0, 70)}`;
+};
 // A chapter or volume number as stored with a read chapter ("12", "12.5"), else null.
 const unitNumber = (value) => (/^\d{1,5}(?:\.\d{1,2})?$/.test(String(value ?? "")) ? String(value) : null);
 
@@ -37,18 +48,40 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     CREATE TABLE IF NOT EXISTS comic_remote_progress (
       work_id TEXT NOT NULL, file_id TEXT NOT NULL, page INTEGER NOT NULL, pages INTEGER NOT NULL,
       finished INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL, PRIMARY KEY (work_id, file_id));
+    -- The last exact image opened for a source chapter, scoped to its work.
+    -- Separate from the portable progress row: older peers can still sync its
+    -- page/finished fields without inheriting an unverified page ordering.
+    CREATE TABLE IF NOT EXISTS comic_remote_page_witness (
+      work_id TEXT NOT NULL, file_id TEXT NOT NULL, manifest_witness TEXT NOT NULL,
+      image_witness TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY (work_id, file_id));
     -- A reading-session pointer, never a second page/finished authority.
     -- Updated only when a verified reader opens; imports and chapter browsing
     -- cannot replace the last chapter/source the user actually opened.
     CREATE TABLE IF NOT EXISTS comic_resume_sessions (
       work_id TEXT PRIMARY KEY, file_id TEXT NOT NULL, opened_at INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS comic_read_units (work_id TEXT NOT NULL, unit_id TEXT NOT NULL, volume TEXT, chapter TEXT, finished_at INTEGER NOT NULL, PRIMARY KEY (work_id, unit_id));
+    -- When a folder is scanned before the destination of a move, preserve the
+    -- verified missing-file identity until the destination is discovered.
+    CREATE TABLE IF NOT EXISTS comic_missing_files (
+      file_id TEXT PRIMARY KEY, old_path TEXT NOT NULL, file_dev TEXT NOT NULL,
+      file_ino TEXT NOT NULL, content_rev TEXT, previous_json TEXT NOT NULL, at INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS comic_missing_files_inode ON comic_missing_files(file_dev, file_ino);
   `);
+  // A path is a location; a filesystem incarnation is (device,inode,ctime).
+  // These metadata witnesses are cheap to check on periodic scans and keep
+  // moved archives distinct from independent copies. Unknown legacy witnesses
+  // are backfilled without rewriting their saved history.
+  const fileColumns = new Set(db.prepare("PRAGMA table_info(comic_files)").all().map((row) => row.name));
+  for (const field of ["file_dev", "file_ino", "file_ctime", "content_rev"])
+    if (!fileColumns.has(field)) db.exec(`ALTER TABLE comic_files ADD COLUMN ${field} TEXT`);
   // Old records have exactly one known owner; migrate only that association.
   // Repeating this insertion is harmless, including after an interrupted start.
   db.exec(`INSERT OR IGNORE INTO comic_remote_progress (work_id, file_id, page, pages, finished, updated_at)
     SELECT work_id, file_id, page, pages, finished, updated_at FROM comic_progress
     WHERE file_id LIKE 'ex-%' AND work_id IS NOT NULL`);
+  // Additive persisted CAS generations and triggers. These are installed on
+  // the actual SQLite tables: direct Core sync/legacy SQL cannot bypass them.
+  const readerTxn = createProgressTransaction({ db, now });
   const atomic = (run) => {
     db.exec("SAVEPOINT comic_reading_atomic");
     try { const result = run(); db.exec("RELEASE comic_reading_atomic"); return result; }
@@ -62,19 +95,33 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     folderScanned: db.prepare("UPDATE comic_folders SET scanned_at = ?, files = ?, error = ? WHERE path = ?"),
     filesIn: db.prepare("SELECT * FROM comic_files WHERE folder = ?"),
     file: db.prepare("SELECT * FROM comic_files WHERE id = ?"),
-    upsertFile: db.prepare(`INSERT INTO comic_files (id, folder, path, kind, size, mtime, pages, series, series_key, volume, volume_end, chapter, chapter_end, anilist_hint, match, error, seen_at)
-      VALUES (@id, @folder, @path, @kind, @size, @mtime, @pages, @series, @series_key, @volume, @volume_end, @chapter, @chapter_end, @anilist_hint, 'pending', @error, @seen_at)
+    upsertFile: db.prepare(`INSERT INTO comic_files (id, folder, path, kind, size, mtime, pages, series, series_key, volume, volume_end, chapter, chapter_end, anilist_hint, match, error, seen_at, file_dev, file_ino, file_ctime, content_rev)
+      VALUES (@id, @folder, @path, @kind, @size, @mtime, @pages, @series, @series_key, @volume, @volume_end, @chapter, @chapter_end, @anilist_hint, 'pending', @error, @seen_at, @file_dev, @file_ino, @file_ctime, @content_rev)
       ON CONFLICT(id) DO UPDATE SET folder = excluded.folder, path = excluded.path, kind = excluded.kind,
         size = excluded.size, mtime = excluded.mtime, pages = excluded.pages, series = excluded.series,
         series_key = excluded.series_key, volume = excluded.volume, volume_end = excluded.volume_end,
         chapter = excluded.chapter, chapter_end = excluded.chapter_end, anilist_hint = excluded.anilist_hint,
-        error = excluded.error, seen_at = excluded.seen_at`),
+        file_dev = excluded.file_dev, file_ino = excluded.file_ino, file_ctime = excluded.file_ctime,
+        content_rev = excluded.content_rev, error = excluded.error, seen_at = excluded.seen_at`),
+    fileByPath: db.prepare("SELECT * FROM comic_files WHERE path = ?"),
+    filesByInode: db.prepare("SELECT * FROM comic_files WHERE file_dev = ? AND file_ino = ?"),
+    missingByInode: db.prepare("SELECT * FROM comic_missing_files WHERE file_dev = ? AND file_ino = ?"),
+    missingById: db.prepare("SELECT * FROM comic_missing_files WHERE file_id = ?"),
+    saveMissing: db.prepare(`INSERT INTO comic_missing_files (file_id, old_path, file_dev, file_ino, content_rev, previous_json, at)
+      VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(file_id) DO UPDATE SET old_path = excluded.old_path,
+      file_dev = excluded.file_dev, file_ino = excluded.file_ino, content_rev = excluded.content_rev,
+      previous_json = excluded.previous_json, at = excluded.at`),
+    forgetMissing: db.prepare("DELETE FROM comic_missing_files WHERE file_id = ?"),
+    backfillFileProof: db.prepare("UPDATE comic_files SET file_dev = ?, file_ino = ?, file_ctime = ?, content_rev = ? WHERE id = ?"),
     resetFile: db.prepare("UPDATE comic_files SET work_id = NULL, match = 'pending', reason = NULL WHERE id = ?"),
     touchFile: db.prepare("UPDATE comic_files SET seen_at = ? WHERE id = ?"),
     deleteFile: db.prepare("DELETE FROM comic_files WHERE id = ?"),
     deleteFilesIn: db.prepare("DELETE FROM comic_files WHERE folder = ?"),
     pending: db.prepare("SELECT * FROM comic_files WHERE match = 'pending' AND error IS NULL ORDER BY series_key"),
     setMatch: db.prepare("UPDATE comic_files SET work_id = ?, match = ?, reason = ? WHERE series_key = ? AND match IN ('pending', 'auto', 'local')"),
+    setSeriesKey: db.prepare("UPDATE comic_files SET series_key = ? WHERE id = ?"),
+    setFileOwner: db.prepare("UPDATE comic_files SET work_id = ?, match = ?, reason = ? WHERE id = ?"),
+    filesForSeriesKey: db.prepare("SELECT * FROM comic_files WHERE series_key = ?"),
     setMatchManual: db.prepare("UPDATE comic_files SET work_id = ?, match = 'manual', reason = ? WHERE work_id = ?"),
     filesOf: db.prepare("SELECT * FROM comic_files WHERE work_id = ? AND error IS NULL"),
     anyOwnedFile: db.prepare("SELECT 1 FROM comic_files WHERE work_id = ? LIMIT 1"),
@@ -90,6 +137,13 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     progressOf: db.prepare("SELECT * FROM comic_progress WHERE work_id = ?"),
     remoteProgress: db.prepare("SELECT * FROM comic_remote_progress WHERE work_id = ? AND file_id = ?"),
     remoteProgressOf: db.prepare("SELECT * FROM comic_remote_progress WHERE work_id = ?"),
+    remotePageWitness: db.prepare("SELECT manifest_witness, image_witness, updated_at FROM comic_remote_page_witness WHERE work_id = ? AND file_id = ?"),
+    saveRemotePageWitness: db.prepare(`INSERT INTO comic_remote_page_witness
+      (work_id, file_id, manifest_witness, image_witness, updated_at) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(work_id, file_id) DO UPDATE SET manifest_witness = excluded.manifest_witness,
+        image_witness = excluded.image_witness, updated_at = excluded.updated_at`),
+    deleteRemotePageWitness: db.prepare("DELETE FROM comic_remote_page_witness WHERE work_id = ? AND file_id = ?"),
+    deleteAllRemotePageWitnesses: db.prepare("DELETE FROM comic_remote_page_witness WHERE file_id = ?"),
     resumeOf: db.prepare("SELECT file_id, opened_at FROM comic_resume_sessions WHERE work_id = ?"),
     rememberResume: db.prepare(`INSERT INTO comic_resume_sessions (work_id, file_id, opened_at) VALUES (?, ?, ?)
       ON CONFLICT(work_id) DO UPDATE SET file_id = excluded.file_id, opened_at = MAX(comic_resume_sessions.opened_at + 1, excluded.opened_at)`),
@@ -113,16 +167,52 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
   };
 
   const defaultFolder = path.join(dataRoot, "comics");
-  let watchers = [];
+  const watchers = new Map();
   let timer = null;
   let scanning = null;
+  let scanEpoch = 0;
+  let scanRunner = null;
   const debounce = new Map();
   const folderGenerations = new Map();
+  const attachWatcher = (folder) => {
+    if (!timer || watchers.has(folder)) return;
+    try {
+      const watcher = watchFolder(folder, { recursive: true }, () => {
+        if (!timer) return;
+        clearTimeout(debounce.get(folder));
+        const wait = setTimeout(() => scanRunner?.(), WATCH_DEBOUNCE_MS);
+        wait.unref?.();
+        debounce.set(folder, wait);
+      });
+      watcher.on("error", () => {
+        watcher.close();
+        if (watchers.get(folder) === watcher) watchers.delete(folder);
+      });
+      watchers.set(folder, watcher);
+    } catch {}
+  };
+  const detachWatcher = (folder) => {
+    watchers.get(folder)?.close();
+    watchers.delete(folder);
+    clearTimeout(debounce.get(folder));
+    debounce.delete(folder);
+  };
+  // Capture ambiguous old normalized-key groups before migrating any of their
+  // rows. Otherwise the first migration could conceal the collision from the
+  // second file scanned in the same or a different watched folder.
+  const legacyTokenGroups = new Map();
+  for (const row of db.prepare("SELECT series_key, series, path, folder, anilist_hint FROM comic_files").all()) {
+    if (row.series_key.startsWith("series2:")) continue;
+    if (!legacyTokenGroups.has(row.series_key)) legacyTokenGroups.set(row.series_key, new Set());
+    legacyTokenGroups.get(row.series_key).add(
+      localSeriesKeyFor(row.series, row.path, row.folder, row.anilist_hint));
+  }
   const liveFolder = (root, generation) => (folderGenerations.get(root) || 0) === generation && Boolean(q.folderPresent.get(root));
   const deleteFileHistory = (id) => {
     q.forgetResumeFile.run(id);
     q.deleteProgress.run(id);
     q.deleteRemote.run(id);
+    q.deleteAllRemotePageWitnesses.run(id);
     q.deleteReadUnit.run(id);
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'comic_chapter_choices'").get())
       db.prepare("DELETE FROM comic_chapter_choices WHERE unit_id = ?").run(id);
@@ -171,6 +261,34 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     }
     return true;
   });
+  const migrateLegacySeriesKey = (old, key) => {
+    if (!old || old.series_key === key) return;
+    atomic(() => {
+      const rows = q.filesForSeriesKey.all(old.series_key);
+      const originalTokens = new Set(rows.map((row) =>
+        localSeriesKeyFor(row.series, row.path, row.folder, row.anilist_hint)));
+      if (Math.max(originalTokens.size, legacyTokenGroups.get(old.series_key)?.size || 0) > 1
+        && old.work_id && old.match !== "manual") {
+        // The legacy normalized key joined distinct raw titles or source
+        // folders. Only this file's witnessed history moves to its own work.
+        // Never copy ambiguous source links or an unverified AniList match.
+        const ownId = localIdFor(key);
+        const occupied = q.localTitle.get(ownId);
+        if (occupied && occupied.series_key !== key) throw new Error("Local work collision");
+        const inherited = q.localTitle.get(old.work_id);
+        q.addLocal.run(ownId, old.series, key, now(), now());
+        if (inherited && inherited.status !== "PLANNING")
+          q.setLocalStatus.run(inherited.status, now(), ownId);
+        transferReadState(old.id, old.work_id, ownId);
+        q.setFileOwner.run(ownId, "local", "separated-legacy-provenance", old.id);
+      } else if (old.work_id) {
+        const previous = q.override.get(key);
+        if (!previous || previous.work_id === old.work_id)
+          q.setOverride.run(key, old.work_id, now());
+      }
+      q.setSeriesKey.run(key, old.id);
+    });
+  };
   // Some older reader paths (including explicit bulk unread) still write the
   // legacy row. Honor it only for the same owner and only if actually newer.
   const currentRemote = (id, workId) => {
@@ -269,8 +387,27 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       if (!liveFolder(root, generation)) return { folder: root, files: 0, error: "Folder removed", complete: false, errors: [] };
       complete = walked.complete;
       errors = [...walked.errors];
+      if (path.sep !== "\\") {
+        // Migrate an older case-folded ID from its *recorded exact path*
+        // before enumerating case-distinct new files. If a.cbz is visited
+        // before A.cbz, the historical lowercased ID belongs to A.cbz, not
+        // to whichever spelling the directory walker happens to see first.
+        // This is a path-owner migration, never a merge by title or inode.
+        for (const [legacyId, previous] of [...known]) {
+          if (!liveFolder(root, generation)) return { folder: root, files: 0, error: "Folder removed", complete: false, errors: [] };
+          const exactId = fileIdFor(previous.path);
+          if (exactId === legacyId || legacyId !== legacyFileIdFor(previous.path)) continue;
+          if (!migrateFileId(legacyId, exactId)) {
+            complete = false;
+            if (errors.length < 8) errors.push(`Cannot migrate conflicting legacy history: ${previous.path}`.slice(0, 200));
+            continue;
+          }
+          known.delete(legacyId);
+          known.set(exactId, q.file.get(exactId));
+        }
+      }
       for (const { full, kind } of walked.found) {
-        const id = fileIdFor(full);
+        let id = q.fileByPath.get(full)?.id || fileIdFor(full);
         let stat2;
         try { stat2 = await fs.stat(full); }
         catch (problem) {
@@ -282,9 +419,71 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         count += 1;
         const size = kind === "folder" ? 0 : stat2.size;
         const mtime = Math.round(stat2.mtimeMs);
-        let old = known.get(id);
+        const file_dev = String(stat2.dev);
+        const file_ino = String(stat2.ino);
+        const file_ctime = String(stat2.ctimeMs);
+        let content_rev;
+        let witnessFailure = null;
+        try {
+          content_rev = kind === "cbz" ? await archiveContentWitness(full, stat2)
+            : crypto.createHash("sha256").update([file_dev, file_ino, file_ctime, String(size), String(mtime)].join(":")).digest("hex").slice(0, 20);
+          const after = await fs.stat(full);
+          if (after.dev !== stat2.dev || after.ino !== stat2.ino || after.size !== stat2.size
+            || after.mtimeMs !== stat2.mtimeMs || after.ctimeMs !== stat2.ctimeMs)
+            throw new Error("Archive changed during scan");
+        } catch (problem) {
+          const message = String(problem?.message || problem);
+          // An unreadable ZIP is a verified *parse failure*, not a missing
+          // file. Publish its error while preserving the last known identity
+          // and reading history. Races and I/O errors remain incomplete scans.
+          if (kind === "cbz" && /^(?:Not a ZIP archive|Invalid archive size|Invalid ZIP(?:64)? directory)$/.test(message)) {
+            // The format failure is authoritative only for the inode that was
+            // statted before verification. A concurrent replacement is a
+            // transient scan race and cannot authorize folder pruning.
+            const after = await fs.stat(full).catch(() => null);
+            if (!after || after.dev !== stat2.dev || after.ino !== stat2.ino ||
+                after.size !== stat2.size || after.mtimeMs !== stat2.mtimeMs ||
+                after.ctimeMs !== stat2.ctimeMs) {
+              complete = false;
+              if (errors.length < 8) errors.push(`Archive changed during verification: ${full}`.slice(0, 200));
+              continue;
+            }
+            witnessFailure = message === "Invalid archive size" ? "Not a ZIP archive" : message;
+            content_rev = null;
+            invalidateArchive(full);
+          } else {
+            complete = false;
+            if (errors.length < 8) errors.push(`Cannot verify ${full}: ${message}`.slice(0, 200));
+            continue;
+          }
+        }
+        if (!liveFolder(root, generation)) return { folder: root, files: 0, error: "Folder removed", complete: false, errors: [] };
+        // An inode and its witnessed content can move across watched folders.
+        // Missing-file proofs survive whichever folder was scanned first.
+        // Copies, live hardlinks and same-name archives never qualify.
+        let moved = false;
+        let movedProof = null;
+        if (!q.fileByPath.get(full)) {
+          const candidates = [
+            ...q.filesByInode.all(file_dev, file_ino).filter((row) => row.path !== full),
+            ...q.missingByInode.all(file_dev, file_ino).map((proof) => {
+              try { return { ...JSON.parse(proof.previous_json), missingProof: proof }; } catch { return null; }
+            }).filter(Boolean),
+          ].filter((row) => row.kind === kind && row.size === size
+            && row.content_rev?.startsWith("v2-") && row.content_rev === content_rev
+            && (!row.missingProof || started - row.missingProof.at <= 30 * 24 * 60 * 60_000));
+          const unique = [...new Map(candidates.map((row) => [row.id || row.file_id, row])).values()];
+          const missing = [];
+          for (const row of unique) if (!(await fs.stat(row.path).catch(() => null))) missing.push(row);
+          if (missing.length === 1 && !q.file.get(id)) {
+            id = missing[0].id;
+            movedProof = missing[0];
+            moved = true;
+          }
+        }
+        let old = known.get(id) || q.file.get(id) || movedProof;
         if (path.sep !== "\\") {
-          const occupied = old || q.file.get(id);
+          const occupied = moved ? null : old || q.file.get(id);
           // Before this fix A.cbz and a.cbz used the same lowercased id.
           // Keep the historical row with the exact path that owned it.
           if (occupied && path.resolve(occupied.path) !== path.resolve(full)) {
@@ -321,18 +520,41 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
           }
         }
         known.delete(id);
-        if (old && old.size === size && old.mtime === mtime) { q.touchFile.run(started, id); continue; }
+        if (moved && old) {
+          const { kind: oldKind, pages, series, series_key, volume, volume_end, chapter,
+            chapter_end, anilist_hint, error } = old;
+          q.upsertFile.run({ id, folder: root, path: full, kind: oldKind, size, mtime,
+            pages, series, series_key, volume, volume_end, chapter, chapter_end,
+            anilist_hint, error, seen_at: started, file_dev, file_ino, file_ctime, content_rev });
+          if (old.work_id) q.setFileOwner.run(old.work_id, old.match, old.reason, id);
+          q.forgetMissing.run(id);
+          continue;
+        }
+        if (old && !old.error && old.size === size && old.mtime === mtime
+            && (old.content_rev === content_rev || (!old.content_rev && kind !== "cbz"))) {
+          if (old.content_rev !== content_rev || old.file_ctime !== file_ctime)
+            q.backfillFileProof.run(file_dev, file_ino, file_ctime, content_rev, id);
+          if (!old.series_key.startsWith("series2:")) {
+            const key = localSeriesKeyFor(old.series, full, root, old.anilist_hint);
+            migrateLegacySeriesKey(old, key);
+          }
+          q.touchFile.run(started, id);
+          continue;
+        }
+        if (old && old.content_rev !== content_rev) invalidateArchive(full);
         const { parsed, series } = describe(full, kind, root);
         let pages = 0;
         let info = null;
-        let fileError = null;
-        try {
-          const listed = await listPages({ path: full, kind, mtime });
-          pages = listed.pages.length;
-          info = listed.comicInfo;
-          if (!pages) fileError = "No pages";
-        } catch (problem) {
-          fileError = String(problem?.message || "Unreadable").slice(0, 200);
+        let fileError = witnessFailure;
+        if (!witnessFailure) {
+          try {
+            const listed = await listPages({ path: full, kind, mtime, content_rev });
+            pages = listed.pages.length;
+            info = listed.comicInfo;
+            if (!pages) fileError = "No pages";
+          } catch (problem) {
+            fileError = String(problem?.message || "Unreadable").slice(0, 200);
+          }
         }
         if (!liveFolder(root, generation)) return { folder: root, files: 0, error: "Folder removed", complete: false, errors: [] };
         const name = info?.series || series;
@@ -340,23 +562,40 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
           id, folder: root, path: full, kind, size, mtime, pages, series: name, series_key: normalizeSeriesName(name) || id,
           volume: parsed.volume ?? (info?.volume || null), volume_end: parsed.volumeEnd, chapter: parsed.chapter ?? (info?.number || null),
           chapter_end: parsed.chapterEnd, anilist_hint: info?.anilistId || null, error: fileError, seen_at: started,
+          file_dev, file_ino, file_ctime, content_rev,
         };
+        next.series_key = localSeriesKeyFor(name, full, root, next.anilist_hint);
         if (fileError && old) {
           // Failed reads do not establish a new comic identity. Keep the last
           // successfully parsed chapter fields while marking the current
           // bytes unreadable. The next good parse must compare against that
           // verified identity, rather than against a filename fallback.
           for (const field of ["kind", "pages", "series", "series_key", "volume", "volume_end",
-            "chapter", "chapter_end", "anilist_hint"]) next[field] = old[field];
+            "chapter", "chapter_end", "anilist_hint", "file_dev", "file_ino", "file_ctime", "content_rev"]) next[field] = old[field];
         }
         atomic(() => {
-          if (old && !fileError && ["kind", "series_key", "volume", "volume_end", "chapter", "chapter_end", "anilist_hint"]
-            .some((key) => String(old[key] ?? "") !== String(next[key] ?? ""))) {
+          if (old && !fileError && !old.series_key.startsWith("series2:") && old.series_key !== next.series_key
+            && (old.content_rev === next.content_rev
+              || (!old.content_rev?.startsWith("v2-")
+                && ["kind", "volume", "volume_end", "chapter", "chapter_end", "anilist_hint"]
+                  .every((key) => String(old[key] ?? "") === String(next[key] ?? "")))))
+            migrateLegacySeriesKey(old, next.series_key);
+          if (old && !fileError && ((old.content_rev?.startsWith("v2-") && old.content_rev !== next.content_rev)
+            || ["kind", "volume", "volume_end", "chapter", "chapter_end", "anilist_hint"]
+              .some((key) => String(old[key] ?? "") !== String(next[key] ?? "")))) {
             // A different chapter at the same location is a new read identity.
             deleteFileHistory(id);
             q.resetFile.run(id);
           }
           q.upsertFile.run(next);
+          if (old && !fileError && old.series_key !== next.series_key
+            && old.work_id && old.match === "manual") {
+            // An explicit user match is authoritative across a filename or
+            // key migration. Later chapters inherit that exact work choice.
+            const prior = q.override.get(next.series_key);
+            if (!prior || prior.work_id === old.work_id)
+              q.setOverride.run(next.series_key, old.work_id, now());
+          }
         });
       }
       if (!complete) error = `Incomplete scan: ${errors.join("; ")}`.slice(0, 200);
@@ -367,7 +606,14 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     }
     if (!liveFolder(root, generation)) return { folder: root, files: 0, error: "Folder removed", complete: false, errors: [] };
     atomic(() => {
-      if (complete) for (const id of known.keys()) q.deleteFile.run(id);
+      if (complete) for (const [id, previous] of known) {
+        // A removed path is a possible move, not permission to erase saved
+        // progress. Preserve only exact inode provenance, never title guesses.
+        if (previous.file_dev && previous.file_ino)
+          q.saveMissing.run(id, previous.path, previous.file_dev, previous.file_ino,
+            previous.content_rev, JSON.stringify(previous), started);
+        q.deleteFile.run(id);
+      }
       q.folderScanned.run(started, count, error, root);
     });
     return { folder: root, files: count, error, complete, errors };
@@ -402,8 +648,13 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       if (!workId && search) {
         try {
           const wanted = normalizeSeriesName(row.series);
-          const hit = (await search(row.series)).find((comic) => [comic.title, ...(comic.aliases || [])].some((name) => normalizeSeriesName(name) === wanted));
-          if (hit) { workId = `anilist-${hit.anilistId}`; reason = "title"; }
+          const candidates = (await search(row.series)).filter((comic) =>
+            Number.isSafeInteger(Number(comic.anilistId)) && Number(comic.anilistId) > 0
+            && [comic.title, ...(comic.aliases || [])].some((name) => normalizeSeriesName(name) === wanted));
+          const exact = [...new Set(candidates.map((comic) => Number(comic.anilistId)))];
+          if (exact.length === 1) { workId = `anilist-${exact[0]}`; reason = "title"; }
+          // Equal normalized titles with different catalogue IDs are
+          // unverified. Keep them local until the user explicitly matches.
         } catch (problem) {
           log.warn?.("Comic match search failed:", problem?.message);
           // Online title metadata is optional. Keep readable archives visible
@@ -438,6 +689,8 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         if (!stillPending()) continue;
         const localId = workId?.startsWith("local-") ? workId : localIdFor(key);
         atomic(() => {
+          const occupied = q.localTitle.get(localId);
+          if (occupied && occupied.series_key !== key) throw new Error("Local comic identity collision");
           q.addLocal.run(localId, row.series, key, now(), now());
           q.setMatch.run(localId, "local", "unmatched", key);
         });
@@ -450,10 +703,16 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
 
   async function scanAll(options = {}) {
     if (scanning) return scanning;
+    const epoch = scanEpoch;
     scanning = (async () => {
       await ensureDefaultFolder();
+      if (epoch !== scanEpoch) return { folders: [], matched: [], cancelled: true };
       const folders = [];
-      for (const folder of q.folders.all()) folders.push(await scanFolder(folder.path));
+      for (const folder of q.folders.all()) {
+        if (epoch !== scanEpoch) return { folders, matched: [], cancelled: true };
+        folders.push(await scanFolder(folder.path));
+      }
+      if (epoch !== scanEpoch) return { folders, matched: [], cancelled: true };
       const matched = await matchPending(options);
       return { folders, matched };
     })().finally(() => { scanning = null; });
@@ -464,6 +723,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     const progress = q.progress.get(row.id);
     return {
       id: row.id, name: path.basename(row.path), kind: row.kind, pages: row.pages, series: row.series,
+      revision: row.content_rev || null,
       volume: row.volume, volumeEnd: row.volume_end, chapter: row.chapter, chapterEnd: row.chapter_end, match: row.match,
       progress: progress ? { page: progress.page, pages: progress.pages, finished: Boolean(progress.finished), updatedAt: progress.updated_at } : null,
     };
@@ -472,6 +732,49 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
 
   return {
     defaultFolder,
+    progressGeneration: (workId, fileId) => readerTxn.generation(String(workId), String(fileId)),
+    installExtendedProgressTriggers: () => readerTxn.ensureExtended(),
+    // All native/legacy clients retain their existing progress methods; only
+    // v1 durable journal traffic is fenced by exact operation+generation.
+    saveLocalProgressCAS(input) {
+      return readerTxn.accept(input, {
+        validate: () => {
+          const row = q.file.get(input.fileId);
+          return Boolean(row && row.work_id === input.workId && row.content_rev === input.contentWitness
+            && input.sourceId === "local" && row.error == null
+            && Number(row.pages) === input.pages);
+        },
+        save: () => {
+          const saved = this.saveProgress({ fileId: input.fileId, page: input.page,
+            pages: input.pages, finished: input.finished });
+          if (saved && (input.finished || input.page === input.pages - 1))
+            input.markFinished?.(input.workId, input.fileId);
+          return saved;
+        },
+      });
+    },
+    saveRemoteProgressCAS(input) {
+      const chapterSource = db.prepare("SELECT source_id, path FROM comic_ext_chapters WHERE id = ?");
+      const ownedSource = db.prepare(`SELECT 1 FROM comic_work_sources WHERE work_id = ?
+        AND kind = 'ext' AND source_id = ? AND manga_id = ? LIMIT 1`);
+      return readerTxn.accept(input, {
+        validate: () => {
+          const chapter = chapterSource.get(input.fileId);
+          return Boolean(chapter && chapter.source_id === input.sourceId
+            && typeof input.chapterPath === "string" && chapter.path === input.chapterPath
+            && typeof input.mangaId === "string" && input.mangaId.length > 0
+            && ownedSource.get(input.workId, input.sourceId, input.mangaId));
+        },
+        save: () => {
+          const saved = this.saveRemoteProgress({ id: input.fileId, workId: input.workId,
+            page: input.page, pages: input.pages, chapter: input.chapter, volume: input.volume,
+            manifestWitness: input.contentWitness, imageWitness: input.imageWitness });
+          if (saved?.finished) input.markFinished?.(input.workId, input.fileId);
+          return saved;
+        },
+      });
+    },
+    priorProgressCAS: (input) => readerTxn.prior(input),
     ensureDefaultFolder,
     folders: () => q.folders.all().map((row) => ({ path: row.path, isDefault: Boolean(row.is_default), addedAt: row.added_at, scannedAt: row.scanned_at, files: row.files, error: row.error })),
     async addFolder(folder) {
@@ -480,6 +783,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       const stat = await fs.stat(full).catch(() => null);
       if (!stat?.isDirectory()) throw new Error("That folder doesn't exist");
       q.addFolder.run(full, 0, now());
+      attachWatcher(full);
       return full;
     },
     removeFolder(folder) {
@@ -488,8 +792,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         const removed = q.removeFolder.run(full).changes > 0;
         if (removed) {
           folderGenerations.set(full, (folderGenerations.get(full) || 0) + 1);
-          clearTimeout(debounce.get(full));
-          debounce.delete(full);
+          detachWatcher(full);
           for (const row of q.filesIn.all(full)) deleteFileHistory(row.id);
           q.deleteFilesIn.run(full);
         }
@@ -499,6 +802,31 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     scanAll,
     matchPending,
     file: (id) => q.file.get(String(id)) || null,
+    // A reader may open immediately after an external archive replacement,
+    // before the ten-minute watcher scan. Verify bytes before any page or
+    // progress route is allowed to use the persisted manifest/revision.
+    async refreshFile(id) {
+      const row = q.file.get(String(id));
+      if (!row) return null;
+      const stat = await fs.stat(row.path);
+      const revision = row.kind === "cbz" ? await archiveContentWitness(row.path, stat)
+        : crypto.createHash("sha256").update([
+          String(stat.dev), String(stat.ino), String(stat.ctimeMs), String(stat.size), String(Math.round(stat.mtimeMs)),
+        ].join(":")).digest("hex").slice(0, 20);
+      const verifiedStat = await fs.stat(row.path);
+      if (verifiedStat.dev !== stat.dev || verifiedStat.ino !== stat.ino
+        || verifiedStat.ctimeMs !== stat.ctimeMs || verifiedStat.mtimeMs !== stat.mtimeMs
+        || verifiedStat.size !== stat.size)
+        throw new Error("Archive changed while opening. Retry.");
+      if (revision !== row.content_rev || Number(row.size) !== (row.kind === "cbz" ? stat.size : 0)
+        || Number(row.mtime) !== Math.round(stat.mtimeMs)) {
+        await scanAll();
+        const refreshed = q.file.get(String(id));
+        if (!refreshed || refreshed.path !== row.path || refreshed.content_rev !== revision)
+          throw new Error("Archive changed while scanning. Retry.");
+      }
+      return q.file.get(String(id)) || null;
+    },
     files: (workId) => q.filesOf.all(String(workId)).map(fileView).sort(sortFiles),
     // Route preflight is about ownership, not immediate readability. A title
     // with only errored files can still be rematched with its reading history.
@@ -509,9 +837,18 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
     setLocalStatus: (id, status) => q.setLocalStatus.run(status, now(), String(id)).changes > 0,
     // A title with no files (a comic read from sources only); kept if it exists.
     createTitle({ id, title, seriesKey, status = "NONE" }) {
+      const owner = String(id);
+      const fullKey = String(seriesKey);
+      if (fullKey.startsWith("mihon:") && !isSyncableSourceTitleKey(fullKey))
+        throw new Error("Mihon source path is too long or cannot be synced; no comic was saved");
+      // A hash collision or older truncated key is ambiguous. Keep the old title
+      // and every mark until verified original provider provenance is supplied.
+      const previous = q.localTitle.get(owner);
+      if (previous && previous.series_key !== fullKey)
+        throw new Error("Comic identity collision: existing source provenance differs");
       db.prepare("INSERT OR IGNORE INTO comic_local_titles (id, title, series_key, status, added_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)")
-        .run(String(id), String(title).slice(0, 200), String(seriesKey).slice(0, 300), String(status), now(), now());
-      return q.localTitle.get(String(id)) || null;
+        .run(owner, String(title).slice(0, 200), fullKey, String(status), now(), now());
+      return q.localTitle.get(owner) || null;
     },
     renameTitle: (id, title) => db.prepare("UPDATE comic_local_titles SET title = ?, updated_at = ? WHERE id = ?").run(String(title).slice(0, 200), now(), String(id)).changes > 0,
     // Hide a local title: its files stay on disk but are no longer listed.
@@ -618,7 +955,8 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       return true;
     },
     // Chapters read from a source: id is "ex-<20 hex>" (see backend/comics/ext-sources.js).
-    saveRemoteProgress({ id, workId, page, pages, chapter = null, volume = null }) {
+    saveRemoteProgress({ id, workId, page, pages, chapter = null, volume = null,
+      manifestWitness = null, imageWitness = null }) {
       if (!EXT_CHAPTER_ID.test(String(id)) || !WORK_ID.test(String(workId))) return null;
       const total = Math.max(1, Math.min(Number(pages) || 1, 10_000));
       const at = Math.max(0, Math.min(Number(page) || 0, total - 1));
@@ -629,6 +967,9 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
         const shadow = q.progress.get(String(id));
         if (!shadow || shadow.work_id === String(workId))
           q.saveProgress.run(String(id), String(workId), at, total, at >= total - 1 ? 1 : 0, when);
+        if (/^[0-9a-f]{24}$/.test(manifestWitness || "") && /^[0-9a-f]{24}$/.test(imageWitness || ""))
+          q.saveRemotePageWitness.run(String(workId), String(id), manifestWitness, imageWitness, when);
+        else q.deleteRemotePageWitness.run(String(workId), String(id));
         if (at >= total - 1) q.markRead.run(String(workId), String(id), unitNumber(volume), unitNumber(chapter), when);
       });
       const row = q.remoteProgress.get(String(workId), String(id));
@@ -645,6 +986,7 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       }
       return { chapters, volumes, units: rows.length, readChapters: [...new Set(rows.map((row) => row.chapter).filter(Boolean))], readVolumes: [...new Set(rows.filter((row) => !row.chapter).map((row) => row.volume).filter(Boolean))] };
     },
+    remotePageWitness: (workId, id) => q.remotePageWitness.get(String(workId), String(id)) || null,
     remoteProgress: (id, workId = null) => workId
       ? currentRemote(String(id), String(workId)) || null
       : q.progress.get(String(id)) || null,
@@ -660,6 +1002,9 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       atomic(() => {
         reconcileLegacy(String(id), String(workId));
         q.remoteSave.run(String(workId), String(id), spot, total, finished ? 1 : 0, when);
+        // Incoming progress has no page-manifest proof. Never apply this
+        // device's old witness to a page number supplied by another device.
+        q.deleteRemotePageWitness.run(String(workId), String(id));
         const shadow = q.progress.get(String(id));
         if (!shadow || shadow.work_id === String(workId))
           q.saveProgress.run(String(id), String(workId), spot, total, finished ? 1 : 0, when);
@@ -668,28 +1013,28 @@ export function createLocalLibrary({ db, dataRoot, now = Date.now, log = console
       return { id: String(id), saved: true };
     },
     start({ search, ensureLibrary } = {}) {
+      if (timer) return;
       const run = () => scanAll({ search, ensureLibrary }).catch((problem) => log.warn?.("Comic scan failed:", problem?.message));
-      void run();
+      scanRunner = run;
       timer = setInterval(run, RESCAN_MS);
       timer.unref?.();
-      for (const folder of q.folders.all()) {
-        try {
-          const watcher = watchFolder(folder.path, { recursive: true }, () => {
-            clearTimeout(debounce.get(folder.path));
-            const wait = setTimeout(run, WATCH_DEBOUNCE_MS);
-            wait.unref?.();
-            debounce.set(folder.path, wait);
-          });
-          watcher.on("error", () => {});
-          watchers.push(watcher);
-        } catch {}
-      }
+      for (const folder of q.folders.all()) attachWatcher(folder.path);
+      // The default folder is created by the first scan on a new profile.
+      // Install its watcher only after that creation has finished.
+      void run().then(() => {
+        if (timer) for (const folder of q.folders.all()) attachWatcher(folder.path);
+      });
     },
     stop() {
       clearInterval(timer);
+      timer = null;
+      scanRunner = null;
+      scanEpoch++;
       for (const wait of debounce.values()) clearTimeout(wait);
-      for (const watcher of watchers) watcher.close();
-      watchers = [];
+      debounce.clear();
+      for (const folder of [...watchers.keys()]) detachWatcher(folder);
+      for (const folder of q.folders.all())
+        folderGenerations.set(folder.path, (folderGenerations.get(folder.path) || 0) + 1);
     },
   };
 }

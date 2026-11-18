@@ -35,15 +35,30 @@ export function embeddedSubtitleCovers(track, seconds) {
 export function embeddedSubtitleCoverageEnd(track, seconds) {
   const at = Number(seconds);
   if (!Number.isFinite(at) || at < 0) return null;
-  let end = null;
-  const aligned = subtitleWindowStart(at);
-  if (track?.embeddedCompletedWindows?.includes(aligned)) end = aligned + EMBEDDED_WINDOW_SECONDS;
+  // Intervals may arrive as adjacent aligned and focused windows, in any
+  // order. Merge their union from the seek point before choosing a prefetch
+  // boundary, so [0,180)+[180,360) does not trigger a redundant 180s fetch.
+  const intervals = [];
+  for (const start of track?.embeddedCompletedWindows || []) {
+    if (Number.isFinite(Number(start)) && Number(start) >= 0)
+      intervals.push([Number(start), Number(start) + EMBEDDED_WINDOW_SECONDS]);
+  }
   if (Array.isArray(track?.embeddedCompletedRanges)) {
     for (const range of track.embeddedCompletedRanges) {
       const start = Number(range?.start), finish = Number(range?.end);
-      if (Number.isFinite(start) && Number.isFinite(finish) && start >= 0
-        && start <= at && finish > at && finish > start) end = Math.max(end ?? 0, finish);
+      if (Number.isFinite(start) && Number.isFinite(finish) && start >= 0 && finish > start)
+        intervals.push([start, finish]);
     }
+  }
+  intervals.sort((a, b) => a[0] - b[0]);
+  let end = null;
+  for (const [start, finish] of intervals) {
+    if (end === null) {
+      if (at >= start && at < finish) end = finish;
+      continue;
+    }
+    if (start > end) break;
+    end = Math.max(end, finish);
   }
   return end;
 }
@@ -62,24 +77,38 @@ export function embeddedExtractionError(text) {
   return result ? result[1].trim().slice(0, 200) : "";
 }
 
-// Media stream indexes are only unique within one file. Different torrent
-// releases (even episodes with the same display title) can have identical
-// stream numbers and must not reuse each other's embedded subtitle tracks.
+// Caption owners are media files, never display titles or transient decoder
+// URLs. An unknown legacy owner is deliberately not eligible for a broad
+// match: that caption can be reimported under the active source.
+export function mediaSourceOwnerKey(source) {
+  if (!source || typeof source !== "object") return "";
+  if (source.kind === "torrent") {
+    const index = Number(source.fileIndex);
+    if (!Number.isSafeInteger(index) || index < 0
+      || source.fileIndex === null || source.fileIndex === undefined || source.fileIndex === "") return "";
+    const hash = String(source.infoHash || source.libraryId || "").trim().toLowerCase();
+    if (/^[a-f0-9]{40}$/.test(hash)) return `torrent:${hash}:${index}`;
+    const session = String(source.sessionId || "").trim();
+    return session ? `torrent-session:${session}:${hash}:${index}` : "";
+  }
+  if (source.kind === "local") {
+    const instance = String(source.fileInstanceId || source.contentId || "").trim();
+    return instance ? `local:${instance}` : "";
+  }
+  return "";
+}
+
+export function mediaSourcesMatch(a, b) {
+  const owner = mediaSourceOwnerKey(a);
+  return Boolean(owner && owner === mediaSourceOwnerKey(b));
+}
+
+// A stream index is only unique inside its owning media file. Callers that
+// select a particular embedded track also compare its embeddedStreamIndex.
 export function embeddedTrackMatchesSource(track, source) {
   const original = track?.source;
   if (!original || !source || original.kind !== "torrent" || source.kind !== "torrent") return false;
-  const index = (value) => value !== null && value !== undefined
-    && !(typeof value === "string" && !value.trim())
-    && Number.isSafeInteger(Number(value)) && Number(value) >= 0 ? Number(value) : null;
-  if (index(original.fileIndex) === null || index(original.fileIndex) !== index(source.fileIndex)) return false;
-  const originalLibrary = String(original.libraryId || "").toLowerCase();
-  const currentLibrary = String(source.libraryId || "").toLowerCase();
-  if (originalLibrary && currentLibrary && originalLibrary !== currentLibrary) return false;
-  const originalFile = String(original.fileName || "").trim().toLowerCase();
-  const currentFile = String(source.fileName || "").trim().toLowerCase();
-  if (originalFile && currentFile && originalFile !== currentFile) return false;
-  if (originalLibrary && currentLibrary) return true; // Same infohash + file index across sessions.
-  return Boolean(original.sessionId && original.sessionId === source.sessionId);
+  return mediaSourcesMatch(original, source);
 }
 
 export function mergeSubtitleWindows(existing = [], incoming = [], trackId = "subtitle") {
@@ -89,13 +118,21 @@ export function mergeSubtitleWindows(existing = [], incoming = [], trackId = "su
     const endMs = Number(cue?.endMs);
     const text = String(cue?.text || "").trim();
     if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs || !text) continue;
-    const key = `${startMs}|${endMs}|${text}`;
+    // A repeated extraction of the same event is a duplicate; simultaneous
+    // ASS actors/layers/styles with identical words are not. Do not erase
+    // semantic ownership supplied by an ASS event during window stitching.
+    const semantic = ["actor", "layer", "style", "kind"].map((field) => String(cue?.[field] ?? ""));
+    const key = JSON.stringify([startMs, endMs, text, ...semantic]);
     if (!seen.has(key)) seen.set(key, { ...cue });
   }
   return [...seen.values()].sort((a, b) => a.startMs - b.startMs || a.endMs - b.endMs)
     .map((cue) => {
       let hash = 2166136261;
-      for (const char of cue.text) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
+      const semantic = ["actor", "layer", "style", "kind"]
+        .map((field) => String(cue?.[field] ?? ""));
+      // Legacy unannotated cue IDs must remain stable across the upgrade.
+      const identityText = semantic.some(Boolean) ? [cue.text, ...semantic].join("\u0000") : cue.text;
+      for (const char of identityText) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619);
       return { ...cue, id: `${trackId}-${Math.round(cue.startMs)}-${Math.round(cue.endMs)}-${(hash >>> 0).toString(36)}`, trackId };
     });
 }

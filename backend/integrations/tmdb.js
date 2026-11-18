@@ -128,11 +128,19 @@ export function createTmdbClient({ key, fetchImpl = globalThis.fetch, minGapMs =
     },
     /** A movie's TMDB id from its title and year (for Letterboxd exports, which have no ids). */
     async searchMovie(title, year = null) {
-      const data = await request("/search/movie", { query: String(title || "").slice(0, 120), year: year || undefined });
-      const wanted = String(title || "").toLowerCase();
-      const results = data.results || [];
-      const exact = results.find((result) => String(result.title || "").toLowerCase() === wanted && (!year || yearOf(result.release_date) === Number(year)));
-      return (exact || results[0])?.id || null;
+      const normalizeTitle = (value) => String(value || "").normalize("NFKC").toLocaleLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, " ").trim().replace(/\s+/g, " ");
+      const wanted = normalizeTitle(title);
+      if (!wanted) return null;
+      const expectedYear = Number(year) || null;
+      const data = await request("/search/movie", { query: String(title).slice(0, 120), year: expectedYear || undefined });
+      const matches = new Set((Array.isArray(data.results) ? data.results : [])
+        .filter((result) => Number.isSafeInteger(result?.id) && result.id > 0
+          && result.media_type !== "tv" && !result.adult
+          && (!expectedYear || yearOf(result.release_date) === expectedYear)
+          && [result.title, result.original_title].some((name) => normalizeTitle(name) === wanted))
+        .map((result) => result.id));
+      return matches.size === 1 ? matches.values().next().value : null;
     },
   };
 }

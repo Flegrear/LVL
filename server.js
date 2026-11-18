@@ -9,7 +9,9 @@ import WebTorrent from "webtorrent";
 import ffmpegPath from "ffmpeg-static";
 import ffprobeStatic from "ffprobe-static";
 import { createStorageManager } from "./backend/persistence/storage.js";
+import { sourceProtectedCacheAllowance } from "./backend/persistence/source-cache-headroom.js";
 import { readLegacyMediaUsage } from "./backend/persistence/legacy-media.js";
+import { legacyBootstrapClaimApi, legacyBootstrapClaimSectionApi, legacyBootstrapClaimRestoreApi } from "./backend/persistence/legacy-bootstrap-claim-api.js";
 import { createRecsStore } from "./backend/recommendations/recs-store.js";
 import { createRecsService } from "./backend/recommendations/recs-service.js";
 import { createAniListClient } from "./backend/integrations/anilist.js";
@@ -28,19 +30,20 @@ import { isTorrentFileFullyVerified } from "./backend/media/verified-torrent-fil
 import { createIndexedVideoCache } from "./backend/media/indexed-video-cache.js";
 import { createPopupRoutes, createPopupWindow } from "./backend/media/popup-window.js";
 import { createPopupProgram } from "./backend/media/popup-program.js";
+import { createMediaResourceShutdown } from "./backend/media/media-shutdown.js";
 import { createUpdatePolicy } from "./backend/app-updates/update-policy.js";
 import { json, localRequestRejected, methodNotAllowed, readJsonBody } from "./backend/app/http-helpers.js";
 import { addBuiltInAssets, PUBLIC_ASSETS, serveStatic } from "./backend/app/static-files.js";
 import { handleApi } from "./backend/app/api-routes.js";
 import {
   evictTorrentSessionIfIdle, internalTorrentSource, removeTorrentSession,
-  torrentSessionHasActiveBorrower,
+  retireOrphanTorrentDirectoryIfIdle, torrentSessionHasActiveBorrower,
 } from "./backend/torrents/torrent-sessions.js";
 import { emitProgressiveReady } from "./backend/streaming/torrent-stream.js";
 import { isVideoConversionAvailable } from "./backend/streaming/transcode.js";
 import { catalogSearchResults } from "./backend/catalog/catalog-api.js";
 import { requestNativeUpdate } from "./backend/app-updates/updates-api.js";
-import { enforcePlayerStorage } from "./backend/persistence/storage-api.js";
+import { enforcePlayerStorage, runStorageOperation } from "./backend/persistence/storage-api.js";
 
 export const root = path.dirname(fileURLToPath(import.meta.url));
 export const port = Number(process.env.PORT || 4173);
@@ -65,7 +68,7 @@ export const torrentRoot = path.join(torrentShareRoot, `port-${port}`);
 const appDataRoot = process.env.LANGUAGE_VIDEO_LEARNER_DATA_ROOT
   ? path.resolve(process.env.LANGUAGE_VIDEO_LEARNER_DATA_ROOT)
   : path.join(root, "data");
-export const appDatabase = createAppDatabase(path.join(appDataRoot, "language-video-learner.sqlite3"));
+export let appDatabase = null;
 // The borderless pop-up player window (LVL-Popup.exe, WebView2) and its own browser profile.
 // An installed LVL reuses the pinned program release (patches can't carry programs).
 const popupProgram = createPopupProgram({
@@ -78,8 +81,7 @@ const popupWindow = createPopupWindow({
   boundsFile: path.join(appDataRoot, "runtime", "popup-bounds.json"),
 });
 export const handlePopupApi = createPopupRoutes({ popup: popupWindow, program: popupProgram, port, json, readJsonBody, methodNotAllowed });
-setTimeout(() => { void popupProgram.ensure(); }, 5000).unref();
-export const recsStore = createRecsStore({ db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta });
+export let recsStore = null;
 export const releaseCalendar = createReleaseCalendarService({
   getTmdbKey: () => recsStore.settings().tmdbKey,
   anilistEndpoint: process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL || undefined,
@@ -90,13 +92,11 @@ export const animeDiscovery = createAnimeDiscoveryService({ endpoint: process.en
 // One AniList client (one request queue and rate limit) for recommendations and features.
 const anilistClient = createAniListClient(process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL ? { endpoint: process.env.LANGUAGE_VIDEO_LEARNER_ANILIST_URL, minGapMs: 0 } : {});
 // Picks are matched to catalog titles with the same search the Add a title dialog uses.
-export const recs = createRecsService({
-  store: recsStore,
-  anilist: anilistClient,
-  searchCatalog: (query) => catalogSearchResults(query),
-});
+export let recs = null;
 export const storage = createStorageManager({
-  appDatabase,
+  // The manager captures these accessors; they resolve only after this instance
+  // owns the listen socket and has opened its schema-checked database.
+  appDatabase: { getMeta: (...args) => appDatabase.getMeta(...args), setMeta: (...args) => appDatabase.setMeta(...args) },
   legacyMediaUsage: () => readLegacyMediaUsage(appDatabase.sqlite),
   sessionsRoot: torrentRoot,
   sharedRoot: torrentShareRoot,
@@ -114,37 +114,28 @@ export const storage = createStorageManager({
     busy: torrentSessionHasActiveBorrower(session),
   })),
   removeSession: (id, incarnation) => evictTorrentSessionIfIdle(id, incarnation),
+  retireOrphanDirectoryIfIdle: (id, removeDirectory) =>
+    retireOrphanTorrentDirectoryIfIdle(id, removeDirectory),
 });
+// Every optional cache writer shares the same original-source headroom gate.
+// All physical bytes are counted by storage.playerCacheAllowance's fresh
+// filesystem scan; reserve only the not-yet-downloaded original selected
+// source bytes, without counting each selected file more than once.
+const optionalMediaCacheAllowance = async (additionalBytes, identity = null) => {
+  return sourceProtectedCacheAllowance({
+    sessions: torrentSessions.values(),
+    identity,
+    additionalBytes,
+    allowance: reservation => storage.playerCacheAllowance(reservation),
+    isVerifiedComplete: (torrent, fileIndex) => isTorrentFileFullyVerified(torrent, fileIndex),
+  });
+};
 // Progressive remux outputs live beside (and are counted with) WebTorrent's
 // per-session source bytes, never in a second unlimited storage pool.
 export const remuxSegmentCache = createRemuxSegmentCache({
   sessionsRoot: torrentRoot,
   enabled: () => storage.limits().remuxCacheEnabled === true,
-  allowance: async (cacheBytes, identity) => {
-    // Reserve ALL not-yet-downloaded bytes for active selected source files.
-    // Without this, a remux duplicate could starve a 12 GB torrent before its
-    // remaining pieces arrive, despite passing a momentary 20 GB usage check.
-    let sourceHeadroom = 0;
-    for (const active of torrentSessions.values()) {
-      if (active.id !== identity.sessionId && (Number(active.openStreams) || 0) < 1) continue;
-      // One torrent session may stream several episode files concurrently;
-      // reserving only its preferred index lets optional cache output starve
-      // another in-flight source. Deduplicate tracked file indices, including
-      // the conversion currently requesting this allowance.
-      const fileIndices = new Set(active.activeStreamFiles?.keys() || []);
-      if (active.id === identity.sessionId) fileIndices.add(identity.fileIndex);
-      if (!fileIndices.size && Number.isInteger(active.preferredFileIndex))
-        fileIndices.add(active.preferredFileIndex);
-      for (const index of fileIndices) {
-        const file = Number.isInteger(index) ? active.torrent?.files?.[index] : null;
-        if (file) sourceHeadroom += Math.max(0, Number(file.length) - (Number(file.downloaded) || 0));
-      }
-    }
-    const gate = await storage.playerCacheAllowance({
-      additionalBytes: cacheBytes, reservedSourceBytes: sourceHeadroom,
-    });
-    return { allowed: gate.allowed, availableBytes: gate.availableBytes };
-  },
+  allowance: (cacheBytes, identity) => optionalMediaCacheAllowance(cacheBytes, identity),
 });
 export const MAX_TORRENT_FILES = 128;
 export const MAX_TORRENT_VIDEO_BYTES = 20 * 1024 * 1024 * 1024;
@@ -181,7 +172,7 @@ export const mime = {
 
 addBuiltInAssets();
 
-export const torrentClient = new WebTorrent({ maxConns: 40 });
+export let torrentClient = null;
 export const torrentSessions = new Map();
 export const playbackTrace = createPlaybackTrace();
 export const streamHealth = createStreamHealth();
@@ -207,7 +198,7 @@ export const indexedVideoCache = createIndexedVideoCache({
   // storage budget must instead preserve downloaded pieces for the next play.
   enabled: () => !IS_ANDROID_RUNTIME && storage.limits().remuxCacheEnabled === true,
   canEncode: isVideoConversionAvailable,
-  allowance: bytes => storage.playerCacheAllowance({ additionalBytes: bytes }),
+  allowance: bytes => optionalMediaCacheAllowance(bytes),
   isCurrent: identity => {
     const session = torrentSessions.get(identity.sessionId);
     const file = session?.torrent?.files?.[identity.fileIndex];
@@ -234,7 +225,7 @@ export const progressiveStarts = new Map();
 export const progressiveIslandStarts = new Map();
 export const progressiveVerifiedSource = createProgressiveVerifiedSource({
   sessionsRoot:torrentRoot,ffprobePath,
-  allowance:bytes=>storage.playerCacheAllowance({additionalBytes:bytes}),
+  allowance:bytes=>optionalMediaCacheAllowance(bytes),
   isCurrent:identity=>{
     const session=torrentSessions.get(identity.sessionId);
     const file=session?.torrent?.files?.[identity.fileIndex];
@@ -253,7 +244,7 @@ export const progressiveIndexCache = createProgressiveIndexCache({
   // produce duplicate GOP sections on resource-constrained phones.
   enabled: () => !IS_ANDROID_RUNTIME && storage.limits().remuxCacheEnabled === true,
   canEncode: isVideoConversionAvailable,
-  allowance: bytes => storage.playerCacheAllowance({ additionalBytes: bytes }),
+  allowance: bytes => optionalMediaCacheAllowance(bytes),
   isCurrent: identity => {
     const session = torrentSessions.get(identity.sessionId);
     const file = session?.torrent?.files?.[identity.fileIndex];
@@ -276,73 +267,161 @@ export const progressiveIndexCache = createProgressiveIndexCache({
   },
   onReady: emitProgressiveReady,
 });
-// A Windows cache file can remain locked by an in-flight HTTP reader when the
-// user disables retention. Retry safe indexed-only cleanup on next startup;
-// never touch selected torrent source pieces or other player data.
-if (IS_ANDROID_RUNTIME || storage.limits().remuxCacheEnabled === false)
-  void indexedVideoCache.purgeAll().catch(error => console.warn("Indexed-cache cleanup:", error?.message || error));
-if (IS_ANDROID_RUNTIME || storage.limits().remuxCacheEnabled === false)
-  void progressiveIndexCache.purgeAll().catch(error => console.warn("Progressive-index cleanup:", error?.message || error));
-
-torrentClient.on("error", (error) => {
-  console.error("WebTorrent client error:", error);
-});
-
 // Automatic updates wait until no video is open; see backend/app-updates/update-policy.js.
-export const updatePolicy = UPDATE_BRIDGE ? createUpdatePolicy({
-  request: requestNativeUpdate,
-  prefsFile: path.join(appDataRoot, "app-update-policy.json"),
-  isBusy: () => torrentSessions.size > 0 || activeTranscodes.size > 0,
-  patchCapable: () => fs.existsSync(path.join(root, "runtime", "update-apply.mjs")),
-  log: (message) => console.log(`Updates: ${message}`),
-}) : null;
-setInterval(() => { void enforcePlayerStorage(); }, 30_000).unref?.();
+export let updatePolicy = null;
 
 // Optional features (reader, franchises, reading sources) plug in through
 // backend/features/registry.js; core routes always take precedence.
 const serverFeatures = createServerFeatureHost(SERVER_FEATURES, { coreAssets: PUBLIC_ASSETS });
 for (const [route, asset] of serverFeatures.assets) PUBLIC_ASSETS.set(route, asset);
-serverFeatures.init({
-  db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta,
-  dataRoot: appDataRoot, port, root, json, readJsonBody, methodNotAllowed,
-  rejectNonLocal: localRequestRejected, anilist: anilistClient,
-  // Sync reads and writes these like another LVL window would.
-  appState: { readSection: appDatabase.readSection, sectionUpdatedAt: appDatabase.sectionUpdatedAt, compareAndSwapSection: appDatabase.compareAndSwapSection },
-  recs: recsStore,
-});
-
 const server = http.createServer(async (req, res) => {
   try {
     const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
     if (url.pathname.startsWith("/api/")) {
+      if (url.pathname === "/api/app-state/bootstrap-claim"
+        || url.pathname === "/api/app-state/bootstrap-claim/section"
+        || url.pathname === "/api/app-state/bootstrap-claim/restore") {
+        // This narrow additive endpoint is Core-owned. It takes the same
+        // local-origin guard as every existing mutable /api route before
+        // offering or consuming an account/profile bootstrap claim.
+        if (!localRequestRejected(req, res))
+          await (url.pathname.endsWith("/section")
+            ? legacyBootstrapClaimSectionApi
+            : url.pathname.endsWith("/restore")
+              ? legacyBootstrapClaimRestoreApi : legacyBootstrapClaimApi)(req, res, {
+            appDatabase, json, readJsonBody, methodNotAllowed,
+          });
+        return;
+      }
       let handled = await handleApi(req, res, url);
-      if (!handled && !res.headersSent) handled = await serverFeatures.handleApi(req, res, url);
-      if (!handled) json(res, 404, { error: "API route not found" });
+      if (!handled && !res.headersSent && !res.writableEnded && !res.destroyed)
+        handled = await serverFeatures.handleApi(req, res, url);
+      if (!handled && !res.headersSent && !res.writableEnded && !res.destroyed)
+        json(res, 404, { error: "API route not found" });
       return;
     }
     if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed(res, ["GET", "HEAD"]);
     serveStatic(req, res, url);
   } catch (error) {
     console.error(error);
-    if (!res.headersSent) json(res, error.statusCode || 500, { error: error.message || "Internal server error" });
-    else res.destroy();
+    if (!res.headersSent && !res.writableEnded && !res.destroyed)
+      json(res, error.statusCode || 500, { error: error.message || "Internal server error" });
+    else if (!res.writableEnded && !res.destroyed) res.destroy();
   }
 });
 
+// All owned asynchronous work and scheduled callbacks are acquired only after listen.
 let shuttingDown = false;
-async function shutdown() {
+const stopOwnedMedia = createMediaResourceShutdown({
+  popupWindow, popupProgram, activeTranscodes, torrentSessions,
+  removeTorrentSession, timeoutMs: 2200,
+});
+const ownedTimers = new Set();
+const ownedWork = new Set();
+function trackOwned(work, label) {
+  const promise = Promise.resolve(work).catch((error) => {
+    if (!shuttingDown) console.warn(`${label}:`, error?.message || error);
+  });
+  ownedWork.add(promise);
+  void promise.finally(() => ownedWork.delete(promise));
+  return promise;
+}
+function timerOwned(callback, delay, interval = false) {
+  const timer = interval ? setInterval(callback, delay) : setTimeout(() => {
+    ownedTimers.delete(timer);
+    callback();
+  }, delay);
+  timer.unref?.();
+  ownedTimers.add(timer);
+  return timer;
+}
+async function closeListener() {
+  if (!server.listening) return;
+  await new Promise((resolve) => {
+    let finished = false;
+    const finish = () => { if (finished) return; finished = true; clearTimeout(deadline); resolve(); };
+    const deadline = setTimeout(() => { server.closeAllConnections?.(); finish(); }, 1800);
+    deadline.unref?.();
+    try {
+      server.close(finish);
+      server.closeIdleConnections?.();
+    } catch { finish(); }
+  });
+}
+// stopScheduler snapshots both the active recommendation refresh and the
+// independent library import before fencing their last possible SQLite writes.
+// Its bounded drain is the only supported shutdown contract after stopping.
+function drainRecommendations(timeoutMs = 5200) {
+  if (!recs) return Promise.resolve(true);
+  return Promise.resolve(recs.stopScheduler({ timeoutMs }))
+    .then(result => result?.drained === true, () => false);
+}
+async function boundedSettled(tasks, timeoutMs) {
+  let deadline;
+  try {
+    return await Promise.race([
+      Promise.allSettled(tasks).then(() => true),
+      new Promise(resolve => {
+        deadline = setTimeout(() => resolve(false), timeoutMs);
+        deadline.unref?.();
+      }),
+    ]);
+  } finally { clearTimeout(deadline); }
+}
+async function shutdown({ exitCode = 0 } = {}) {
   if (shuttingDown) return;
   shuttingDown = true;
-  // Close active torrent readers promptly. On Android the session manager
-  // retains verified downloads for reuse; desktop keeps its normal cleanup.
-  setTimeout(() => process.exit(0), 8000).unref();
-  popupWindow.stop();
-  await serverFeatures.stop();
-  for (const ffmpeg of activeTranscodes) {
-    if (!ffmpeg.killed) ffmpeg.kill();
+  const forced = setTimeout(() => process.exit(exitCode || 0), 8000);
+  forced.unref?.();
+  // Any failure before a drain completes must retain the database handle;
+  // a stopped scheduler's status.running alone doesn't include libraryRun.
+  let recsDrained = !recs;
+  let ownedWorkDrained = false;
+  let recommendations = Promise.resolve(true);
+  // Acquire the media owner before the first await so every new admission sees
+  // its closed fence, including requests already suspended in an async route.
+  const mediaShutdown = stopOwnedMedia();
+  try {
+    for (const timer of ownedTimers) { clearInterval(timer); clearTimeout(timer); }
+    ownedTimers.clear();
+    recommendations = drainRecommendations();
+    // server.close immediately stops accepting requests. Close keepalive sockets
+    // before tearing down services that could still be serving requests.
+    await closeListener();
+    const services = serverFeatures.stop({ timeoutMs: 1500 });
+    const caches = boundedSettled([
+      indexedVideoCache.stopAll?.(),
+      progressiveIndexCache.stopAll?.(),
+      ...ownedWork,
+    ], 1600);
+    await services;
+    ownedWorkDrained = await caches;
+    if (!ownedWorkDrained) { console.warn("LVL shutdown: cache work exceeded drain deadline"); exitCode = 1; }
+    // Media's owner handles child close confirmation, pop-up disposal and
+    // exact-incarnation torrent retirement. Calling it once preserves its
+    // singleton contract if another stop path has already begun.
+    const media = await mediaShutdown;
+    if (!media.complete) { console.warn("LVL shutdown: media resources did not all close"); exitCode = 1; }
+    if (torrentClient) await new Promise((resolve) => {
+      const timeout = setTimeout(resolve, 800);
+      timeout.unref?.();
+      try { torrentClient.destroy(() => { clearTimeout(timeout); resolve(); }); }
+      catch { clearTimeout(timeout); resolve(); }
+    });
+    recsDrained = await recommendations;
+    if (!recsDrained) { console.warn("LVL shutdown: recommendation refresh is still draining"); exitCode = 1; }
+  } catch (error) {
+    console.error("LVL shutdown:", error);
+    exitCode = 1;
+  } finally {
+    // Never close a SQLite connection beneath an in-flight recommendations
+    // writer. On deadline expiry, leave its handle for process teardown.
+    if (recsDrained && ownedWorkDrained && !recs?.status?.().running) {
+      try { appDatabase?.close(); } catch (error) { console.warn("Database close:", error); exitCode = 1; }
+    } else exitCode = 1;
+    clearTimeout(forced);
+    process.exit(exitCode);
   }
-  for (const id of [...torrentSessions.keys()]) await removeTorrentSession(id);
-  torrentClient.destroy(() => process.exit(0));
 }
 
 process.once("SIGINT", shutdown);
@@ -356,25 +435,69 @@ if (STARTED_BY_LAUNCHER) {
   process.stdin.resume();
 }
 
+function initializeOwnedRuntime() {
+  // No application database, recommendation schema migration or cache mutation
+  // can occur in the losing process when another LVL owns this port.
+  appDatabase = createAppDatabase(path.join(appDataRoot, "language-video-learner.sqlite3"));
+  recsStore = createRecsStore({ db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta });
+  recs = createRecsService({
+    store: recsStore,
+    anilist: anilistClient,
+    searchCatalog: (query) => catalogSearchResults(query),
+  });
+  torrentClient = new WebTorrent({ maxConns: 40 });
+  torrentClient.on("error", (error) => console.error("WebTorrent client error:", error));
+  updatePolicy = UPDATE_BRIDGE ? createUpdatePolicy({
+    request: requestNativeUpdate,
+    prefsFile: path.join(appDataRoot, "app-update-policy.json"),
+    isBusy: () => torrentSessions.size > 0 || activeTranscodes.size > 0,
+    patchCapable: () => fs.existsSync(path.join(root, "runtime", "update-apply.mjs")),
+    log: (message) => console.log(`Updates: ${message}`),
+  }) : null;
+  serverFeatures.init({
+    db: appDatabase.sqlite, getMeta: appDatabase.getMeta, setMeta: appDatabase.setMeta,
+    dataRoot: appDataRoot, port, root, json, readJsonBody, methodNotAllowed,
+    rejectNonLocal: localRequestRejected, anilist: anilistClient,
+    // Sync reads and writes these like another LVL window would.
+    appState: { readSection: appDatabase.readSection, sectionUpdatedAt: appDatabase.sectionUpdatedAt, compareAndSwapSection: appDatabase.compareAndSwapSection },
+    recs: recsStore,
+  });
+}
+
+server.on("error", (error) => {
+  console.error(`LVL could not listen on 127.0.0.1:${port}:`, error?.message || error);
+  void shutdown({ exitCode: 1 });
+});
 server.listen(port, "127.0.0.1", () => {
-  console.log(`LVL running at http://127.0.0.1:${port}`);
-  // Only after listening: a second copy on the same port fails to start and never gets here.
-  // Android keeps torrent pieces between restarts. Trim idle downloads to its
-  // storage allowance rather than treating every retained folder as orphaned.
-  if (IS_ANDROID_RUNTIME) {
-    void storage.enforcePlayer()
-      .then(({ evicted }) => { if (evicted.length) console.log(`Player storage: trimmed ${evicted.length} older download(s) over the limit`); })
-      .catch((error) => console.warn("Startup cleanup failed:", error.message));
-  } else {
-    void storage.clearOrphans()
-      .then((removed) => { if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`); })
-      .catch((error) => console.warn("Startup cleanup failed:", error.message));
+  if (shuttingDown) return;
+  try {
+    initializeOwnedRuntime();
+    console.log(`LVL running at http://127.0.0.1:${port}`);
+    timerOwned(() => { if (!shuttingDown) trackOwned(popupProgram.ensure(), "Pop-up program"); }, 5000);
+    if (IS_ANDROID_RUNTIME || storage.limits().remuxCacheEnabled === false) {
+      trackOwned(indexedVideoCache.purgeAll(), "Indexed-cache cleanup");
+      trackOwned(progressiveIndexCache.purgeAll(), "Progressive-index cleanup");
+    }
+    // Android retains verified download pieces; desktop reclaims only its own
+    // orphaned session directories, after ownership has been proven.
+    if (IS_ANDROID_RUNTIME) {
+      trackOwned(runStorageOperation(() => storage.enforcePlayer()).then(({ evicted }) => {
+        if (evicted.length) console.log(`Player storage: trimmed ${evicted.length} older download(s) over the limit`);
+      }), "Startup cleanup");
+    } else {
+      trackOwned(runStorageOperation(() => storage.clearOrphans()).then(removed => {
+        if (removed) console.log(`Player storage: removed ${removed} download folder(s) left by an earlier run`);
+      }), "Startup cleanup");
+    }
+    recs.startScheduler();
+    timerOwned(() => { if (!shuttingDown) trackOwned(enforcePlayerStorage(), "Scheduled storage check"); }, 30_000, true);
+    if (updatePolicy) {
+      timerOwned(() => { if (!shuttingDown) trackOwned(updatePolicy.tick(), "Update policy"); }, 5000);
+      timerOwned(() => { if (!shuttingDown) trackOwned(updatePolicy.tick(), "Update policy"); }, 30_000, true);
+    }
+    trackOwned(serverFeatures.start(), "Feature startup");
+  } catch (error) {
+    console.error("LVL startup failed:", error);
+    void shutdown({ exitCode: 1 });
   }
-  // Automatic recommendation updates (only when switched on in Settings).
-  recs.startScheduler();
-  if (updatePolicy) {
-    setTimeout(() => { void updatePolicy.tick(); }, 5_000).unref?.();
-    setInterval(() => { void updatePolicy.tick(); }, 30_000).unref?.();
-  }
-  void serverFeatures.start();
 });

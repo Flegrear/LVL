@@ -132,7 +132,10 @@ export function attachTorrentRequestScheduler(torrent, {
       // A synchronous WebTorrent error has become asynchronous at this boundary.
       // Surface it on the torrent's existing error channel, then stop scheduling.
       dispose();
-      torrent.emit("error", error);
+      // Disposal removes our own error listener. If no session owns the
+      // torrent yet, EventEmitter would throw this error out of a later tick.
+      // Only deliver it to an actual remaining owner.
+      if (torrent.listenerCount?.("error") > 0) torrent.emit("error", error);
     }
   }
 

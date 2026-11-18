@@ -14,8 +14,26 @@ export const STATUS_LABELS = Object.freeze({
 
 // Same translation table as the rest of the app (feature strings are registered there).
 const tr = (_ctx, text, params) => t(text, params);
-// Labels for chapters read from sources ("Chapter 12 · MangaDex"), shown in the reader bar.
-export const readerNames = new Map();
+// Provisional reader display hints are NOT chapter identity. A single provider
+// chapter can legitimately be linked to more than one work, so scope each hint
+// to the work. Bound the cache across long sessions and refresh its LRU order.
+export const readerNameKey = (workId, readerId) => `${workId}\n${readerId}`;
+const READER_NAME_LIMIT = 256;
+export const readerNames = new class extends Map {
+  get(key) {
+    if (!super.has(key)) return undefined;
+    const value = super.get(key);
+    super.delete(key);
+    super.set(key, value);
+    return value;
+  }
+  set(key, value) {
+    super.delete(key);
+    super.set(key, value);
+    while (this.size > READER_NAME_LIMIT) super.delete(this.keys().next().value);
+    return this;
+  }
+}();
 
 // ---- Library cache (one request; refreshed after every change). Keys are
 // "anilist-<id>" or "local-<hash>" (files without an AniList match).

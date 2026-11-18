@@ -1,14 +1,15 @@
 // Subtitles inside the video file: listing, importing and loading more.
 import { parseSubtitle } from "../../shared/subtitles/subtitle-text.js";
+import { verifiedSubtitleCueReference, verifiedSubtitleStreamReference } from "../../shared/subtitles/subtitle-identity.js";
 import { escapeHtml } from "../ui/ui.js";
 import {
   completedWebVttText, EMBEDDED_WINDOW_SECONDS, embeddedExtractionError, embeddedSubtitleCoverageEnd,
-  embeddedSubtitleCovers, embeddedSubtitleSeekStart, embeddedTrackMatchesSource,
+  embeddedSubtitleCovers, embeddedSubtitleSeekStart, embeddedTrackMatchesSource, mediaSourceOwnerKey,
   mergeSubtitleWindows, subtitleWindowStart,
 } from "../../shared/subtitles/subtitle-stream.js";
 import { defaultEmbeddedSubtitleTrack } from "./embedded-subtitle-default.js";
 import { frame, renderSubtitleWorkspace, state, video } from "../../app.js";
-import { $ } from "../app/dom.js";
+import { $ as app$ } from "../app/dom.js";
 import { absolutePlaybackSeconds, playerSubtitleSeconds, presentedSubtitleSeconds, updatePlayerPreferenceButtons } from "./player-core.js";
 import {
   currentSourceTracks, normalizeTrackLanguage, preferredLanguagePair, syncSelectedTrackForSource,
@@ -17,6 +18,8 @@ import { renderSubtitles, subtitleRenderMemo, trackLanguageName } from "./subtit
 import { subtitleFingerprint } from "./subtitle-timing.js";
 import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import { addSubtitleText } from "./subtitle-search.js";
+
+const $ = selector => frame?.querySelector?.(selector) || app$(selector);
 
 export function embeddedSubtitleLabel(track, index) {
   const title = String(track?.title || "").trim();
@@ -27,12 +30,33 @@ export function embeddedSubtitleLabel(track, index) {
 
 export const embeddedSubtitleImports = new Map();
 const embeddedSubtitleAttempts = new Map();
+const embeddedSubtitleBusyUntil = new Map();
+const unknownSubtitleSources = new WeakMap();
+let nextUnknownSubtitleSource = 0;
+const MAX_EMBEDDED_RETRY_RECORDS = 256;
+function retainBoundedRetryRecord(cache, key, value) {
+  cache.delete(key);
+  cache.set(key, value);
+  while (cache.size > MAX_EMBEDDED_RETRY_RECORDS) cache.delete(cache.keys().next().value);
+}
 // Async imports can finish after a later Hide/Show or track switch. Only the
 // most recent explicit caption choice is allowed to activate a loading track.
 let subtitleVisibilityRevision = 0;
 export function noteSubtitleVisibilityIntent() { subtitleVisibilityRevision += 1; }
 export function embeddedSubtitleImportKey(source, streamIndex) {
-  return `${source?.sessionId || ""}:${source?.fileIndex ?? ""}:${source?.sourceTag || ""}:${streamIndex}`;
+  const index = Number(streamIndex);
+  if (!Number.isSafeInteger(index) || index < 0 || !source || typeof source !== "object") return "";
+  // Never make an import retry/flight owned by a mutable display label. A
+  // rename keeps the same file and stream; identical display names on another
+  // file never share its HTTP extraction or transient error cooldown.
+  const verified = mediaSourceOwnerKey(source);
+  if (verified) return `${verified}:stream:${index}`;
+  let ephemeral = unknownSubtitleSources.get(source);
+  if (!ephemeral) {
+    ephemeral = ++nextUnknownSubtitleSource;
+    unknownSubtitleSources.set(source, ephemeral);
+  }
+  return `unverified-object:${ephemeral}:stream:${index}`;
 }
 
 export async function importEmbeddedSubtitleTrack(track, button = null, { startSeconds = null, automatic = false, activate = false, urgent = false, focused = false } = {}) {
@@ -57,6 +81,10 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
   // seek directly into MKV and keep the absolute VTT timestamps.
   const windowStart = focused ? embeddedSubtitleSeekStart(seekPosition) : subtitleWindowStart(seekPosition);
   const attemptKey = `${key}:${windowStart}`;
+  // A 429 is a server capacity signal. Use a separate explicit cooldown,
+  // rather than forging an earlier saved attempt timestamp to bypass the
+  // ordinary 60-second torrent-piece retry rule.
+  if (automatic && (embeddedSubtitleBusyUntil.get(attemptKey) || 0) > Date.now()) return false;
   const lastAttempt = embeddedSubtitleAttempts.get(attemptKey) || 0;
   // A standard 360s extraction and a 359s focused extraction address nearly
   // the same data. Count both toward the short explicit-seek retry guard.
@@ -102,7 +130,7 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
     inFlight.abort("playback moved to a different subtitle window");
     embeddedSubtitleAttempts.delete(`${key}:${inFlight.windowStart}`);
   }
-  embeddedSubtitleAttempts.set(attemptKey, Date.now());
+  retainBoundedRetryRecord(embeddedSubtitleAttempts, attemptKey, Date.now());
   const controller = new AbortController();
   controller.windowStart = windowStart;
   controller.seekPosition = seekPosition;
@@ -169,7 +197,25 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
       imported = added.track;
       imported.embeddedStreamIndex = Number(track.streamIndex);
     }
-    imported.cues = mergeSubtitleWindows(imported.cues, cues, imported.id);
+    // Additive, verified v2 stream provenance for future exact cue/card
+    // migration. Keep existing IDs and any unresolved saved cards intact.
+    const streamReference = verifiedSubtitleStreamReference(source, track.streamIndex);
+    const earlierReference = imported.verifiedStreamReference;
+    // Do not overwrite a retained future/foreign reference with an assumed
+    // migration. The HTTP stream index is the actual container index, never
+    // the UI order or a display label. Legacy cue IDs remain unchanged.
+    const sameVerifiedStream = streamReference && (!earlierReference
+      || (earlierReference.schema === streamReference.schema
+        && earlierReference.mediaOwner === streamReference.mediaOwner
+        && earlierReference.streamIndex === streamReference.streamIndex));
+    if (sameVerifiedStream) imported.verifiedStreamReference = streamReference;
+    imported.cues = mergeSubtitleWindows(imported.cues, cues, imported.id).map((cue) => {
+      // A legacy/future cue reference is durable user data. Only annotate
+      // unreferenced cues when both exact file and container stream are proven.
+      if (!sameVerifiedStream || Object.hasOwn(cue, "verifiedCueReference")) return cue;
+      const reference = verifiedSubtitleCueReference(streamReference, cue);
+      return reference ? { ...cue, verifiedCueReference: reference } : cue;
+    });
     imported.fingerprint = subtitleFingerprint(imported.cues);
     imported.exactMedia = true;
     imported.offsetMs = 0;
@@ -243,6 +289,7 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
           origin: "embedded", exactMedia: true, provider: "Embedded", release: source.fileName || "", allowEmpty: true,
         }).track;
         imported.embeddedStreamIndex = Number(track.streamIndex);
+        imported.verifiedStreamReference = verifiedSubtitleStreamReference(source, track.streamIndex);
         imported.exactMedia = true;
         imported.offsetMs = 0;
         imported.syncAnchors = [];
@@ -281,7 +328,10 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
       // The two-worker subtitle cap can reject a request while other chapters
       // are extracting. A transient 429 should retry on a nearby playback
       // tick, not be treated like unavailable torrent pieces for 60 seconds.
-      if (automatic && error?.httpStatus === 429) embeddedSubtitleAttempts.set(attemptKey, Date.now() - 57_000);
+      if (automatic && error?.httpStatus === 429) {
+        embeddedSubtitleAttempts.delete(attemptKey);
+        retainBoundedRetryRecord(embeddedSubtitleBusyUntil, attemptKey, Date.now() + 3000);
+      }
       if (imported) {
         imported.embeddedImportPartial = true;
 
@@ -304,15 +354,33 @@ export async function importEmbeddedSubtitleTrack(track, button = null, { startS
 
 let initialEmbeddedSubtitleSource = "";
 let initialEmbeddedSubtitleRequestSerial = 0;
+// Leaving Watch without any floating/PiP playback retires the extraction
+// owner even though the media source object remains the same. Abort before
+// its queued chunks can repaint hidden captions; allow the exact file/window
+// to retry when Watch is deliberately opened again. Keep completed cues and
+// their verified references intact.
+export function retireEmbeddedSubtitleImports(reason = "playback left Watch") {
+  noteSubtitleVisibilityIntent();
+  ++initialEmbeddedSubtitleRequestSerial;
+  initialEmbeddedSubtitleSource = "";
+  for (const [key, request] of embeddedSubtitleImports) {
+    request.abort(reason);
+    embeddedSubtitleAttempts.delete(`${key}:${request.windowStart}`);
+    if (embeddedSubtitleImports.get(key) === request) embeddedSubtitleImports.delete(key);
+  }
+}
 export function enableDefaultEmbeddedSubtitles(media, playbackSeconds = 0, { urgent = false } = {}) {
   const source = state.currentSource;
   if (source?.kind !== "torrent") return;
-  const key = `${source.sessionId}:${source.fileIndex}:${source.sourceTag}`;
   const candidate = defaultEmbeddedSubtitleTrack({ media, attached: currentSourceTracks(),
     captionsEnabled: state.subtitlesVisible, languages: preferredLanguagePair(), normalizeLanguage: normalizeTrackLanguage });
   if (!candidate) return;
+  // The default stream may change after a better probe; a caption label rename
+  // must not reopen the same extraction, and another embedded stream must not
+  // inherit this stream's automatic-import latch.
+  const key = embeddedSubtitleImportKey(source, Number(candidate.streamIndex));
   if (initialEmbeddedSubtitleSource === key) {
-    const inFlight = embeddedSubtitleImports.get(embeddedSubtitleImportKey(source, Number(candidate.streamIndex)));
+    const inFlight = embeddedSubtitleImports.get(key);
     if (!inFlight || (inFlight.windowStart <= playbackSeconds
       && playbackSeconds < inFlight.windowStart + EMBEDDED_WINDOW_SECONDS
       && (!urgent || Math.abs(playbackSeconds - inFlight.seekPosition) < 12))) return;

@@ -41,7 +41,9 @@ export function mergeImportedLibrary(payload) {
   let added = 0;
   incoming.forEach((raw) => {
     if (!raw || typeof raw !== "object") return;
-    const id = String(raw.id || "").slice(0, 400);
+    // Library IDs are opaque: valid IDs can be longer than 400 characters and
+    // share the same prefix. Truncating would merge unrelated saved titles.
+    const id = String(raw.id || "");
     const title = String(raw.displayTitle || raw.title || "").slice(0, 500);
     if (!id || !title) return;
     const safe = {
@@ -62,7 +64,13 @@ export function mergeImportedLibrary(payload) {
     byId.set(id, current ? { ...safe, ...current } : safe);
     if (!current) added += 1;
   });
-  state.library = [...byId.values()];
+  const mergedLibrary = [...byId.values()];
+  if (mergedLibrary.length > 5000) throw new Error("Import would exceed the 5000-record Library limit.");
+  // The server admits the full ID domain up to its aggregate 48 MiB section
+  // budget. Reject overflow explicitly before changing any in-memory state.
+  if (new TextEncoder().encode(JSON.stringify(mergedLibrary)).byteLength > 48 * 1024 * 1024)
+    throw new Error("Import would exceed the Library's 48 MiB saved-data limit.");
+  state.library = mergedLibrary;
   if (Array.isArray(payload?.cards)) {
     const cards = new Map(payload.cards.slice(0, 20_000).filter((card) => card && card.id).map((card) => [String(card.id), card]));
     for (const card of state.cards) if (card && card.id) cards.set(String(card.id), card);

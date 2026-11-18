@@ -7,6 +7,7 @@ import {
   verifiedAniListLibraryIdentity,
 } from "./anilist-library.js";
 import { resolveVerifiedAniListLibraryLinks } from "./anilist-auto-association.js";
+import { authenticatedAniListReadDue } from "./anilist-auth-refresh.js";
 import {
   ANILIST_AUTH_LIBRARY_QUERY, ANILIST_CALLBACK_PATH, ANILIST_LIST_QUERY, ANILIST_OAUTH_PENDING,
   ANILIST_OAUTH_STORAGE, ANILIST_SAVE_PROGRESS, ANILIST_SINGLE_PROGRESS_QUERY, ANILIST_SYNC_QUEUE,
@@ -36,8 +37,8 @@ import {
   invalidateAniListUnwatchApprovals,
 } from "../watch/watched-status.js";
 import {
-  addCatalogPlaceholder, buildLibrarySeries, libraryEntryById, librarySeriesKey,
-  updateLibrarySeriesEntries,
+  addCatalogPlaceholder, buildLibrarySeries, findLibrarySeriesByKey,
+  libraryEntryById, librarySeriesForEntry, librarySeriesKey, updateLibrarySeriesEntries,
 } from "../library/library-data.js";
 import { renderLibrary, updateLibrarySummary } from "../library/library-page.js";
 import { refreshTitlePage } from "../title/title-page.js";
@@ -51,8 +52,20 @@ let anilistAutoStatusMessage = "";
 let anilistAutoRetryAfter = 0;
 let anilistAutoLastQueueSnapshot = null;
 let anilistAutoImportWarning = "";
+// In-flight local authenticated imports are cancellable when the browser
+// account changes. No token is retained by these controllers.
+const authenticatedImportControllers = new Set();
+function abortPendingAuthenticatedImports() {
+  for (const controller of authenticatedImportControllers) controller.abort();
+  authenticatedImportControllers.clear();
+}
 
 let anilistLibraryRun = null;
+let anilistLibraryRunOwner = null;
+let anilistLibraryReadyTimer = null;
+let anilistLibraryReadyPending = null;
+let anilistLibraryReadyDeadline = 0;
+let anilistLibraryReadyVersion = "";
 let communityScoreBackfillStarted = false;
 export function backfillAniListCommunityScores() {
   if (communityScoreBackfillStarted || !persistentAppStateReady
@@ -87,7 +100,14 @@ export function authenticatedTitleAniList(subject, account) {
   const key = subject?.seriesKey || subject?.key;
   const catalogId = subject?.catalogId || subject?.id || "";
   if (!key) return null;
-  const series = buildLibrarySeries().find((item) => item.key === key && (!catalogId || item.catalogId === catalogId));
+  const series = typeof findLibrarySeriesByKey === "function" ? findLibrarySeriesByKey(key)
+    : (() => {
+      // Source-backed score fixtures and legacy consumers may provide only a
+      // Library snapshot. A strictly unique key lookup is still read-only.
+      const matching = buildLibrarySeries().filter((item) => item.key === key || item.routeKey === key);
+      return matching.length === 1 ? matching[0] : null;
+    })();
+  if (catalogId && series?.catalogId !== catalogId) return null;
   return series ? seriesAniList(series, account.userId) : null;
 }
 
@@ -95,6 +115,15 @@ export async function saveUserAniListScore(subject, season, score) {
   if (!anilistScoreSyncEnabled() || !["anime", "anime-movie"].includes(subject?.kind)) return "";
   if (anilistAutoDevTestRun) throw new Error("The AniList diagnostics test is running. Your score was saved locally; retry after it finishes.");
   const account = readAniListAccount(localStorage);
+  // The title's local score edit may have waited behind an earlier save in
+  // the immutable per-work queue. Never reinterpret its captured A-account
+  // media as B's entry just because both accounts list the same anime ID.
+  // This is only a write fence: the local LVL score is already saved.
+  if ((Number.isSafeInteger(subject?.accountUserId) && subject.accountUserId > 0
+      && subject.accountUserId !== account?.userId)
+    || (Number.isSafeInteger(subject?.anilist?.accountUserId) && subject.anilist.accountUserId > 0
+      && subject.anilist.accountUserId !== account?.userId))
+    throw new Error("The AniList account changed while this rating was queued. Your LVL rating was saved locally; nothing was sent to AniList.");
   const linked = authenticatedTitleAniList(subject, account);
   const part = resolveAniListScorePart(linked, season);
   const rendered = resolveAniListScorePart(subject?.anilist, season);
@@ -322,11 +351,13 @@ async function autoLinkAniListWatchedSeries(account) {
       const match = matchPublicAniListSeasons({ media, title: meta.name, year, seasons });
       const links = verifiedPublicAniListLinks(match, { userId: account.userId, year, catalogId: series.catalogId });
       if (!links.length || readAniListAccount(localStorage)?.token !== account.token) continue;
-      const current = buildLibrarySeries().find((item) => item.key === series.key && item.catalogId === series.catalogId);
+      const current = findLibrarySeriesByKey(series.routeKey || series.key);
+      if (current?.catalogId !== series.catalogId || !current.sources.some((source) =>
+        series.sources.some((original) => original.id === source.id))) continue;
       if (!current || seriesAniList(current, account.userId)?.seasons?.length
         || current.sources.some((entry) => (entry.anilistManualLinks || []).some((link) => link.userId === account.userId)
           || (entry.anilistAutoLinks || []).some((link) => link.userId === account.userId))) continue;
-      updateLibrarySeriesEntries(current.key, (entry) => {
+      updateLibrarySeriesEntries(current.routeKey || current.key, (entry) => {
         if (entry !== current.sources[0]) return;
         entry.anilistAutoLinks = links.map((link) => ({ ...link, verifiedAt: Date.now() }));
       });
@@ -356,8 +387,13 @@ export async function autoLinkNewlyAddedAnime({ catalogId, seriesKey, entryId, a
       const now = readAniListAccount(localStorage);
       return now?.userId === account.userId && now?.token === account.token;
     };
-    const currentSeries = () => buildLibrarySeries().find((item) => item.key === seriesKey
-      && item.catalogId === catalogId && item.sources.some((entry) => entry.id === entryId));
+    const currentSeries = () => {
+      // Entry identity can be revalidated from the current grouped snapshot;
+      // unlike a title alias, the concrete entryId survives a title rename.
+      const candidates = buildLibrarySeries().filter((series) => series.catalogId === catalogId
+        && series.sources.some((entry) => entry.id === entryId));
+      return candidates.length === 1 ? candidates[0] : null;
+    };
     const needsLink = (series) => series && !seriesAniList(series, account.userId)?.seasons?.length
       && !series.sources.some((entry) => (entry.anilistManualLinks || []).some((link) => link.userId === account.userId)
         || (entry.anilistAutoLinks || []).some((link) => link.userId === account.userId));
@@ -395,6 +431,7 @@ function gatherAniListWatchedQueue() {
   const accountId = readAniListAccount(localStorage)?.userId;
   for (const series of buildLibrarySeries()) {
     if (series.type !== "series") continue;
+    const workKey = series.routeKey || series.key;
     const info = seriesAniList(series, accountId);
     if (!info?.seasons?.length) {
       // Unlisted anime like JoJo may already have completed local episodes,
@@ -411,7 +448,7 @@ function gatherAniListWatchedQueue() {
       }
       continue;
     }
-    mappedSeries.add(series.key);
+    mappedSeries.add(workKey);
     const foreign = new Set();
     const watchedChapters = {};
     for (const item of series.sources) for (const [code, watched] of Object.entries(item.watchedChapters || {})) {
@@ -436,9 +473,16 @@ function gatherAniListWatchedQueue() {
       return { ...episode, progress: { ...episode.progress, finished }, finished };
     }));
     const plan = planAniListWatchSync({
-      seasons: info.seasons, type: series.type, seriesKey: series.key,
+      seasons: info.seasons, type: series.type, seriesKey: workKey,
       ranges: info.ranges || [],
-      episodes, watchedChapters, queue: stored.filter((row) => row.seriesKey === series.key && !unwatched.has(row.code) && !foreign.has(row.code)),
+      // Old name-only pending keys are usable only if they uniquely resolve
+      // to this unchanged work. The resulting queue is emitted under routeKey.
+      episodes, watchedChapters, queue: stored.filter((row) => {
+        const resolved = typeof findLibrarySeriesByKey === "function" ? findLibrarySeriesByKey(row.seriesKey) : null;
+        const owned = row.seriesKey === workKey || resolved?.routeKey === workKey;
+        if (owned) mappedSeries.add(row.seriesKey);
+        return owned && !unwatched.has(row.code) && !foreign.has(row.code);
+      }),
     });
     const rejects = new Set(plan.blockedQueue);
     found.push(...plan.queue.filter((row) => !rejects.has(row)));
@@ -484,7 +528,7 @@ function verifiedAniListCreationKeys(userId) {
     for (const entry of series.sources) {
       for (const link of entry.anilistManualLinks || []) {
         if (link.userId === userId && canLinkAniListTv({ id: link.anilistId,
-          format: link.format, episodes: link.episodes })) allowed.add(`${series.key}\0${link.anilistId}`);
+          format: link.format, episodes: link.episodes })) allowed.add(`${series.routeKey || series.key}\0${link.anilistId}`);
       }
       for (const link of entry.anilistAutoLinks || []) {
         if (link.userId === userId && link.catalogId === series.catalogId
@@ -492,7 +536,7 @@ function verifiedAniListCreationKeys(userId) {
           && Number.isSafeInteger(link.episodes) && link.episodes > 0
           && Number.isSafeInteger(link.start) && link.start > 0
           && link.end === link.start + link.episodes - 1)
-          allowed.add(`${series.key}\0${link.anilistId}`);
+          allowed.add(`${series.routeKey || series.key}\0${link.anilistId}`);
       }
     }
   }
@@ -760,15 +804,53 @@ async function syncAniListAuto({ manual = false } = {}) {
   return anilistAutoRun;
 }
 
+// Periodic owner-verified reads are independent of automatic outbound watch
+// writes and of two-way score edits. Both of those can be disabled while the
+// user still needs an updated, account-owned AniList snapshot.
+let lastAuthenticatedReadAttempt = { userId: null, generation: null, at: 0 };
+
+export function scheduleAuthenticatedAniListRead() {
+  if (anilistAutoDevTestRun || !persistentAppStateReady) return null;
+  const account = readAniListAccount(localStorage);
+  if (!account?.token) return null;
+  const generation = anilistAutoAuthGeneration;
+  const now = Date.now();
+  if (!authenticatedAniListReadDue({
+    userId: account.userId, generation,
+    syncedAt: Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) || 0,
+    now, lastAttempt: lastAuthenticatedReadAttempt,
+  })) return null;
+  // A manual import or startup read already owns this exact account snapshot.
+  if (anilistLibraryRun && anilistLibraryRunOwner?.userId === account.userId
+    && anilistLibraryRunOwner?.token === account.token) return anilistLibraryRun;
+  lastAuthenticatedReadAttempt = { userId: account.userId, generation, at: now };
+  // The token is used only by the existing same-origin, independently verified
+  // backend bridge. No token is saved on the backend, and a scheduled read must
+  // never trigger AniList score mutations or an unverified username import.
+  return syncAniListLibrary({ quiet: true, skipScoreSync: true }).catch((error) => {
+    if (generation === anilistAutoAuthGeneration
+      && readAniListAccount(localStorage)?.userId === account.userId)
+      console.warn("Scheduled AniList authenticated read deferred:", error?.message);
+    return null;
+  });
+}
+
 export function scheduleAniListAutoSync(delay = 3500) {
-  if (anilistAutoDevTestRun || !persistentAppStateReady || !readAniListAccount(localStorage)
-    || !readAniListPreference(localStorage).enabled) return;
+  if (anilistAutoDevTestRun || !persistentAppStateReady || !readAniListAccount(localStorage)) return;
+  void Promise.resolve(scheduleAuthenticatedAniListRead()).catch(() => {});
+  if (!readAniListPreference(localStorage).enabled) return;
   clearTimeout(anilistAutoTimer);
   anilistAutoTimer = window.setTimeout(() => {
     anilistAutoTimer = 0;
     void Promise.resolve(syncAniListAuto()).then(() => flushAniListUnwatches({ interactive: false }));
   }, delay);
 }
+
+// This timer is read-only and runs even when automatic outbound progress
+// updates and two-way score writes are both turned off. It does not prevent the
+// page from closing or imply a server-side refresh while the browser is closed.
+if (typeof window !== "undefined" && typeof window.setInterval === "function")
+  window.setInterval(() => { void Promise.resolve(scheduleAuthenticatedAniListRead()).catch(() => {}); }, 10 * 60_000);
 
 async function connectVerifiedAniListAccount(auth, generation) {
     const data = await anilistGraphql(auth.token, ANILIST_VIEWER_QUERY);
@@ -794,6 +876,7 @@ async function connectVerifiedAniListAccount(auth, generation) {
       enabled: !switchedAccount && !changedKnownOwner,
       lastPull: 0, lastPush: 0,
     });
+    abortPendingAuthenticatedImports();
     localStorage.setItem(ANILIST_OAUTH_STORAGE, JSON.stringify({
       ...auth, userId: viewer.id, username: viewer.name,
     }));
@@ -852,7 +935,21 @@ export function wireAniListAutoSettings() {
         .then((result) => showAniListAutoStatus(result?.scores ? aniListScoreSummary(result.scores)
           : "AniList scores read. Your AniList list couldn't be verified for this account, so no scores were changed."))
         .catch((error) => showAniListAutoStatus(error.message, true));
-    } else showAniListAutoStatus("Anime score syncing disabled. Local ratings and AniList scores are preserved.");
+    } else {
+      // OFF takes effect in this browser immediately. Also disable server-side
+      // recommendation score precedence without an upstream network read;
+      // a pending true-enabled authenticated import cannot silently restore it.
+      abortPendingAuthenticatedImports();
+      showAniListAutoStatus("Anime score syncing disabled. Local ratings and AniList scores are preserved.");
+      void postJson("/api/recs/anilist/score-sync/disable", { userId: account.userId })
+        .then(() => {
+          if (readAniListAccount(localStorage)?.userId === account.userId) recsUi.invalidateRatings();
+        })
+        .catch((error) => {
+          if (readAniListAccount(localStorage)?.userId === account.userId)
+            showAniListAutoStatus(`Local AniList score sync is off. The recommendation score preference could not be saved: ${error.message}`, true);
+        });
+    }
   });
   $("#anilist-score-migrate")?.addEventListener("click", async (event) => {
     const button = event.currentTarget;
@@ -939,6 +1036,7 @@ export function wireAniListAutoSettings() {
   });
     $("#anilist-auto-disconnect")?.addEventListener("click", () => {
     ++anilistAutoAuthGeneration; // invalidate pending Viewer verification
+    abortPendingAuthenticatedImports();
     const oldUserId = Number(readStorageObject(ANILIST_OAUTH_STORAGE).userId)
       || Number(localStorage.getItem(ANILIST_QUEUE_OWNER_KEY)) || null;
     try {
@@ -983,18 +1081,46 @@ export function wireAniListAutoSettings() {
 
 async function syncAniListAuthenticatedRatings(account) {
   if (!account?.token) throw new Error("Connect AniList before refreshing your authenticated list.");
-  const data = await anilistGraphql(account.token, ANILIST_AUTH_LIBRARY_QUERY, { id: account.userId });
-  if (readAniListAccount(localStorage)?.token !== account.token)
+  if (readAniListAccount(localStorage)?.token !== account.token
+    || readAniListAccount(localStorage)?.userId !== account.userId)
     throw new Error("AniList account changed during Library import; retry with the connected account.");
-  if (Number(data?.Viewer?.id) !== account.userId
-      || (data.MediaListCollection !== null && !Array.isArray(data?.MediaListCollection?.lists))
-      || (data.MediaListCollection?.user && Number(data.MediaListCollection.user.id) !== account.userId))
-    throw new Error("AniList did not return a complete list for this account. Existing Library data was preserved.");
-  // This POST contains list metadata only. Never forward account.token or any
-  // Authorization header to LVL's local server.
-  const response = await postJson("/api/recs/anilist/authenticated", { ...data, scoreSyncEnabled: anilistScoreSyncEnabled() });
-  recsUi.invalidateRatings();
-  return response;
+  const controller = new AbortController();
+  authenticatedImportControllers.add(controller);
+  try {
+    // The sole destination is LVL's relative same-origin endpoint. The bearer
+    // is transient, never written to request JSON, provider metadata, logs,
+    // URL parameters or server storage. The backend independently asks the
+    // pinned AniList GraphQL origin for Viewer and the complete collection.
+    const response = await fetch("/api/recs/anilist/authenticated", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${account.token}` },
+      body: JSON.stringify({ userId: account.userId, scoreSyncEnabled: anilistScoreSyncEnabled() }),
+      credentials: "same-origin",
+      referrerPolicy: "no-referrer",
+      redirect: "error",
+      cache: "no-store",
+      signal: controller.signal,
+    });
+    const result = await response.json().catch(() => null);
+    if (!response.ok) {
+      const error = new Error(typeof result?.error === "string" ? result.error
+        : response.status === 401 ? "AniList authorization expired or was revoked. Reconnect your account."
+          : "AniList verification failed. Existing ratings and pending edits were preserved.");
+      error.status = response.status;
+      if (response.status === 401) error.authFailed = true;
+      throw error;
+    }
+    if (readAniListAccount(localStorage)?.token !== account.token
+      || readAniListAccount(localStorage)?.userId !== account.userId
+      || controller.signal.aborted)
+      throw new Error("AniList account changed during Library import; retry with the connected account.");
+    if (result?.settings?.anilist?.userId !== account.userId || result.settings.anilist.authenticated !== true)
+      throw new Error("AniList did not confirm the current account. Existing Library data was preserved.");
+    recsUi.invalidateRatings();
+    return result;
+  } finally {
+    authenticatedImportControllers.delete(controller);
+  }
 }
 
 // A manual Sync now can fill *missing* AniList scores from explicitly saved app
@@ -1032,7 +1158,7 @@ async function syncMissingLocalAniListScores(account) {
       await saveAniListScore({ account, mediaId: update.mediaId, score: update.score,
         expectedRaw: update.expectedRaw, graphql: anilistGraphql,
         stillConnected: () => {
-          const series = buildLibrarySeries().find((item) => item.key === update.seriesKey);
+          const series = findLibrarySeriesByKey(update.seriesKey);
           const part = series && resolveAniListScorePart(seriesAniList(series, account.userId), update.season);
           return Boolean(anilistScoreSyncEnabled()
             && readAniListAccount(localStorage)?.token === account.token
@@ -1096,6 +1222,7 @@ function copyAniListScoresIntoLvl(account, { snapshotAt = 0 } = {}) {
       try {
         await postJson("/api/ratings", { catalogId: update.catalogId, seriesKey: update.seriesKey, season: update.season,
           title: update.title, kind: update.kind, year: update.year, score: update.score, status: update.status,
+          expectedLocalUpdatedAt: update.expectedLocalUpdatedAt,
           provenance: { source: "anilist", accountUserId: account.userId, mediaId: update.mediaId, score: update.score } });
         result.copied++;
         result.changes.push({ title: update.title, season: update.season, from: update.previous, to: update.score });
@@ -1129,11 +1256,12 @@ function aniListScoreSummary(result) {
 }
 
 export function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = false, skipScoreSync = false } = {}) {
-  if (anilistLibraryRun) return anilistLibraryRun;
+  const account = readAniListAccount(localStorage);
+  if (anilistLibraryRun && anilistLibraryRunOwner?.userId === (account?.userId || null)
+    && anilistLibraryRunOwner?.token === (account?.token || null)) return anilistLibraryRun;
   if (status) setToolStatus(status, "Adding your AniList list to the Library. The first time takes up to half a minute.");
   else if (!quiet) toast("Adding your AniList list to the Library");
-  const account = readAniListAccount(localStorage);
-  anilistLibraryRun = Promise.resolve()
+  const request = Promise.resolve()
     .then(() => account && !skipAuthPull ? syncAniListAuthenticatedRatings(account) : null)
     .then(async (authenticated) => {
       if (account && readAniListAccount(localStorage)?.token !== account.token)
@@ -1186,7 +1314,16 @@ export function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = 
       else if (!quiet) toast(error.message || "Couldn't add your AniList list", { tone: "error" });
       throw error;
     })
-    .finally(() => { anilistLibraryRun = null; });
+    .finally(() => {
+      // An earlier account's completion must not clear the newer account's
+      // active import after reauthorization.
+      if (anilistLibraryRun === request) {
+        anilistLibraryRun = null;
+        anilistLibraryRunOwner = null;
+      }
+    });
+  anilistLibraryRunOwner = { userId: account?.userId || null, token: account?.token || null };
+  anilistLibraryRun = request;
   return anilistLibraryRun;
 }
 
@@ -1195,12 +1332,39 @@ export function syncAniListLibrary({ quiet = false, status = "", skipAuthPull = 
 // empty or half-loaded Library.
 export function maybeSyncAniListLibrary(overview) {
   const syncedAt = Number(overview?.settings?.anilist?.syncedAt) || 0;
-  if (!syncedAt || anilistLibraryRun) return;
-  if (Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) >= syncedAt) return;
-  if (!persistentAppStateReady) {
-    window.setTimeout(() => maybeSyncAniListLibrary(overview), 1000);
+  const connected = readAniListAccount(localStorage);
+  const version = `${connected?.userId || "none"}:${syncedAt}`;
+  if (anilistLibraryReadyVersion !== version) {
+    anilistLibraryReadyVersion = version;
+    anilistLibraryReadyDeadline = 0;
+  }
+  if (!syncedAt || Number(localStorage.getItem(ANILIST_LIBRARY_KEY)) >= syncedAt) {
+    if (anilistLibraryReadyTimer !== null) window.clearTimeout(anilistLibraryReadyTimer);
+    anilistLibraryReadyTimer = null;
+    anilistLibraryReadyPending = null;
+    anilistLibraryReadyDeadline = 0;
     return;
   }
+  if (anilistLibraryRun && anilistLibraryRunOwner?.userId === (connected?.userId || null)
+    && anilistLibraryRunOwner?.token === (connected?.token || null)) return;
+  if (!persistentAppStateReady) {
+    // The settings view can emit several overview changes while saved state
+    // loads. Coalesce them into one bounded retry owner rather than spawning
+    // concurrent recursive one-second loops.
+    anilistLibraryReadyPending = overview;
+    if (!anilistLibraryReadyDeadline) anilistLibraryReadyDeadline = Date.now() + 120_000;
+    if (anilistLibraryReadyTimer !== null || Date.now() >= anilistLibraryReadyDeadline) return;
+    anilistLibraryReadyTimer = window.setTimeout(() => {
+      anilistLibraryReadyTimer = null;
+      const pending = anilistLibraryReadyPending;
+      if (pending) maybeSyncAniListLibrary(pending);
+    }, 1000);
+    return;
+  }
+  if (anilistLibraryReadyTimer !== null) window.clearTimeout(anilistLibraryReadyTimer);
+  anilistLibraryReadyTimer = null;
+  anilistLibraryReadyPending = null;
+  anilistLibraryReadyDeadline = 0;
   void syncAniListLibrary({ quiet: true }).catch(() => {});
 }
 

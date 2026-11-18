@@ -18,6 +18,27 @@ const SPANISH = {
   "All": "Todo", "Movies": "Películas", "TV Shows": "Series", "Series": "Series", "Anime": "Anime", "Movie": "Película", "TV": "TV",
   "Search titles": "Buscar títulos", "Matching titles": "Títulos encontrados", "Shuffle picks": "Mezclar recomendaciones", "Open Library": "Abrir biblioteca", "Featured titles": "Títulos destacados",
   "Add a title": "Añadir un título", "Magnet link": "Enlace magnet", "More library actions": "Más acciones de biblioteca",
+  "Library entries need review": "Hay entradas de la biblioteca para revisar",
+  "{count} saved Library versions can be reviewed and recovered.": "Hay {count} versiones guardadas de la biblioteca para revisar y recuperar.",
+  "Review saved entries": "Revisar entradas guardadas", "Review saved Library entries": "Revisar entradas guardadas de la biblioteca",
+  "Missing from the accepted Library": "No está en la biblioteca aceptada", "Different from the accepted version": "Es distinta de la versión aceptada",
+  "An accepted entry with this ID is already present": "Ya existe una entrada aceptada con este ID",
+  "Compare records": "Comparar registros", "Saved browser version": "Versión guardada en el navegador",
+  "Accepted Library version": "Versión aceptada de la biblioteca", "Missing": "No existe",
+  "These browser records were saved when Library synchronized. The accepted Library and its watching progress stay authoritative. A missing record might have been deleted on another device; restore it only after review.": "Estos registros del navegador se conservaron al sincronizar la biblioteca. La biblioteca aceptada y su progreso tienen prioridad. Una entrada ausente puede haber sido eliminada en otro dispositivo: recupérala solo después de revisarla.",
+  "{count} entries to review": "{count} entradas para revisar", "{count} entries already exist": "{count} entradas ya existen",
+  "Export retained records": "Exportar registros conservados", "Refresh review": "Actualizar revisión", "Restore selected": "Recuperar seleccionadas",
+  "Keep accepted selected": "Conservar la versión aceptada de las seleccionadas", "Accepted Library versions kept.": "Se conservaron las versiones aceptadas de la biblioteca.",
+  "Loading saved Library entries…": "Cargando entradas guardadas de la biblioteca…",
+  "Select an entry to restore.": "Selecciona una entrada para recuperar.",
+  "Some selected entries already exist. Review the accepted versions before restoring.": "Algunas entradas seleccionadas ya existen. Revisa las versiones aceptadas antes de recuperarlas.",
+  "Selected entries restored to Library.": "Entradas seleccionadas recuperadas en la biblioteca.",
+  "Restored in SQLite. Refresh after current Library edits finish.": "Recuperadas en SQLite. Actualiza cuando terminen las ediciones pendientes de la biblioteca.",
+  "Library changed on another device or tab. Review the updated versions; your selection is preserved.": "La biblioteca cambió en otro dispositivo o pestaña. Revisa las versiones actualizadas; se conserva tu selección.",
+  "Could not restore selected entries.": "No se pudieron recuperar las entradas seleccionadas.",
+  "Could not load saved Library entries.": "No se pudieron cargar las entradas guardadas de la biblioteca.",
+  "Export retained records for complete data": "Exporta los registros conservados para ver los datos completos",
+  "Review pages": "Páginas de revisión",
   "More playback controls": "Más controles de reproducción", "More controls": "Más controles",
   "Play a video file": "Reproducir un archivo de vídeo", "Import a library": "Importar una biblioteca", "Export the library": "Exportar la biblioteca",
   "Filter your library": "Filtrar tu biblioteca", "Sort": "Ordenar", "Recent": "Recientes", "Recently added": "Añadidos recientemente", "Title": "Título",
@@ -161,7 +182,7 @@ function lookupTranslation(locale, key) {
   if (Object.hasOwn(featureTranslations[locale], key)) return featureTranslations[locale][key];
   return undefined;
 }
-function knownTranslationKey(key) {
+export function knownTranslationKey(key) {
   return Object.hasOwn(UI_TRANSLATIONS.en, key) || Object.hasOwn(featureTranslations.en, key);
 }
 

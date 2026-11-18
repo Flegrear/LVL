@@ -1,4 +1,5 @@
 // Small anchored menus: open, close and keyboard.
+import { dismissTopOverlay, floatingOverlayHost, getTopOverlayOwner, registerOverlayOwner } from "./overlay-host.js";
 // Popup menus (title actions, More): open at the pointer (right-click) or under their button,
 // move with arrow keys, close with Escape, Tab or a click outside, and give focus back.
 export let openMenuState = null;
@@ -6,8 +7,14 @@ export let openMenuState = null;
 export function openPopupMenu(menu, { anchor = null, x = null, y = null, focusFirst = true } = {}) {
   if (!menu) return;
   closePopupMenu({ restoreFocus: false });
-  // A modal dialog makes everything outside it inert: open the menu inside the top open dialog.
-  const host = [...document.querySelectorAll("dialog[open]")].pop() || document.body;
+  // The focused modal is the active top-layer owner, even when it is not the
+  // last dialog in DOM order. PiP anchors have their own document and viewport.
+  const doc = anchor?.ownerDocument || menu.ownerDocument || document;
+  const viewport = doc.defaultView || window;
+  const host = floatingOverlayHost(anchor || menu, doc);
+  // If several unregistered, unfocused native modals are open, do not guess
+  // their top-layer order and accidentally open this menu behind a modal.
+  if (!host) return;
   if (menu.parentElement !== host) host.append(menu);
   menu.hidden = false;
   menu.style.visibility = "hidden";
@@ -22,16 +29,16 @@ export function openPopupMenu(menu, { anchor = null, x = null, y = null, focusFi
   if (atPointer) {
     // Put right-click menus beside the clicked point, not below a tall
     // chapter card; flip to stay within the viewport near the screen edge.
-    if (top + height > window.innerHeight - margin) top = y - height - 4;
-    if (left + width > window.innerWidth - margin) left = x - width - 4;
+    if (top + height > viewport.innerHeight - margin) top = y - height - 4;
+    if (left + width > viewport.innerWidth - margin) left = x - width - 4;
   } else if (anchor) {
     const rect = anchor.getBoundingClientRect();
     left = rect.right - width;
     top = rect.bottom + 6;
-    if (top + height > window.innerHeight - margin) top = rect.top - height - 6;
+    if (top + height > viewport.innerHeight - margin) top = rect.top - height - 6;
   }
-  const wantLeft = Math.round(Math.max(margin, Math.min(left, window.innerWidth - width - margin)));
-  const wantTop = Math.round(Math.max(margin, Math.min(top, window.innerHeight - height - margin)));
+  const wantLeft = Math.round(Math.max(margin, Math.min(left, viewport.innerWidth - width - margin)));
+  const wantTop = Math.round(Math.max(margin, Math.min(top, viewport.innerHeight - height - margin)));
   menu.style.left = `${wantLeft}px`;
   menu.style.top = `${wantTop}px`;
   // Inside a transformed ancestor, "fixed" is relative to that box: correct for it.
@@ -42,7 +49,17 @@ export function openPopupMenu(menu, { anchor = null, x = null, y = null, focusFi
   }
   menu.style.visibility = "";
   anchor?.setAttribute("aria-expanded", "true");
-  openMenuState = { menu, anchor };
+  // A menu hosted inside a modal must settle when the host closes, even when
+  // the dialog closes from a separate Cancel/Back action.
+  const hostController = new AbortController();
+  if (host !== doc.body) host.addEventListener("close",
+    () => { if (openMenuState?.menu === menu) closePopupMenu({ restoreFocus: false }); },
+    { signal: hostController.signal });
+  const disposeOwner = registerOverlayOwner(menu, {
+    kind: "popup-menu",
+    dismiss: () => { closePopupMenu(); return true; },
+  });
+  openMenuState = { menu, anchor, hostController, disposeOwner };
   if (focusFirst) menu.querySelector('[role="menuitem"]:not([disabled]):not([hidden])')?.focus({ preventScroll: true });
 }
 
@@ -50,15 +67,20 @@ export function closePopupMenu({ restoreFocus = true } = {}) {
   const current = openMenuState;
   if (!current) return;
   openMenuState = null;
+  current.disposeOwner?.();
+  current.hostController?.abort();
   current.menu.hidden = true;
   current.anchor?.setAttribute("aria-expanded", "false");
   if (restoreFocus && current.anchor?.isConnected) current.anchor.focus({ preventScroll: true });
 }
 
+const wiredPopupMenus = new WeakSet();
 export function wirePopupMenu(menu) {
-  menu?.addEventListener("keydown", (event) => {
+  if (!menu || wiredPopupMenus.has(menu)) return;
+  wiredPopupMenus.add(menu);
+  menu.addEventListener("keydown", (event) => {
     const items = [...menu.querySelectorAll('[role="menuitem"]:not([disabled]):not([hidden])')];
-    const index = items.indexOf(document.activeElement);
+    const index = items.indexOf(menu.ownerDocument?.activeElement);
     const go = (next) => {
       if (!items.length) return;
       event.preventDefault();
@@ -68,8 +90,14 @@ export function wirePopupMenu(menu) {
     else if (event.key === "ArrowUp") go(index - 1);
     else if (event.key === "Home") go(0);
     else if (event.key === "End") go(items.length - 1);
-    else if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closePopupMenu(); }
-    else if (event.key === "Tab") closePopupMenu({ restoreFocus: false });
+    else if (event.key === "Escape") {
+      if (dismissTopOverlay(menu.ownerDocument || document, { reason: "escape" })) {
+        event.preventDefault();
+        event.stopPropagation();
+      }
+    } else if (event.key === "Tab"
+      && getTopOverlayOwner(menu.ownerDocument || document)?.element === menu)
+      closePopupMenu({ restoreFocus: false });
   });
 }
 

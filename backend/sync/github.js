@@ -97,22 +97,36 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
     storage({ token, owner, repo }) {
       const base = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`;
       let branch = "";
-      const branchName = async () => branch || (branch = (await call(token(), "GET", base)).data.default_branch || "main");
+      let repositoryEtag = "";
+      let headTag = "";
+      let headSeen = null;
+      const branchName = async (refresh = false) => {
+        if (branch && !refresh) return branch;
+        const answer = await call(token(), "GET", base, repositoryEtag ? { etag: repositoryEtag } : {});
+        if (answer.notModified && branch) return branch;
+        repositoryEtag = answer.etag || "";
+        const next = answer.data?.default_branch || "main";
+        if (next !== branch) { headTag = ""; headSeen = null; }
+        branch = next;
+        return branch;
+      };
       // After every file is deleted the branch points at git's empty tree, which the trees API answers with 404.
       const emptyBranch = async () => {
         try { return (await call(token(), "GET", `${base}/branches/${encodeURIComponent(await branchName())}`)).data?.commit?.commit?.tree?.sha === EMPTY_TREE; } catch { return false; }
       };
-      let headTag = "";
-      let headSeen = null;
       return {
         // The branch's newest commit, as the storage's version: one small request, and when it
         // didn't change since the last call GitHub answers 304, which costs no request quota.
         async head() {
           let answer;
-          try { answer = await call(token(), "GET", `${base}/git/ref/heads/${encodeURIComponent(await branchName())}`, { etag: headTag }); } catch (error) {
-            // A new, empty repository has no branch yet.
-            if (error.status === 409 || error.status === 404) return { version: "" };
-            throw error;
+          let currentBranch = await branchName(true);
+          try { answer = await call(token(), "GET", `${base}/git/ref/heads/${encodeURIComponent(currentBranch)}`, { etag: headTag }); }
+          catch (error) {
+            if (error.status !== 404 && error.status !== 409) throw error;
+            const refreshed = await branchName(true);
+            if (refreshed === currentBranch) return { version: "" };
+            currentBranch = refreshed;
+            answer = await call(token(), "GET", `${base}/git/ref/heads/${encodeURIComponent(currentBranch)}`);
           }
           if (answer.notModified && headSeen !== null) return { version: headSeen };
           headTag = answer.etag || "";
@@ -121,7 +135,19 @@ export function createGitHub({ fetchImpl = fetch, api = API, login = LOGIN, user
         },
         async list() {
           let tree;
-          try { tree = (await call(token(), "GET", `${base}/git/trees/${encodeURIComponent(await branchName())}?recursive=1`)).data; } catch (error) {
+          let currentBranch = await branchName(true);
+          try { tree = (await call(token(), "GET", `${base}/git/trees/${encodeURIComponent(currentBranch)}?recursive=1`)).data; } catch (error) {
+            if (error.status === 404) {
+              const refreshed = await branchName(true);
+              if (refreshed !== currentBranch) {
+                currentBranch = refreshed;
+                tree = (await call(token(), "GET", `${base}/git/trees/${encodeURIComponent(currentBranch)}?recursive=1`)).data;
+              }
+            }
+            if (tree) {
+              if (tree.truncated) throw githubError("The sync repository has too many files to list", 500, "too-large");
+              return (tree.tree || []).filter((item) => item.type === "blob").map((item) => ({ path: item.path, version: item.sha }));
+            }
             // A new, empty repository has no tree yet.
             if (error.status === 409 || (error.status === 404 && /empty|branch/i.test(error.message))) return [];
             if (error.status === 404 && (await emptyBranch())) return [];

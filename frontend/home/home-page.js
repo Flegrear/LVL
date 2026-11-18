@@ -15,7 +15,7 @@ import { fetchJson } from "../app/http.js";
 import { renderWatchChapters } from "../watch/watch-page.js";
 import { libraryArtCached } from "../watch/episode-navigation.js";
 import {
-  addCatalogPlaceholder, buildLibrarySeries, librarySeriesChapterCount, librarySeriesKey,
+  addCatalogPlaceholder, buildLibrarySeries, librarySeriesChapterCount, librarySeriesForCatalog,
 } from "../library/library-data.js";
 import { libraryCardImage, renderLibrary } from "../library/library-page.js";
 import { openHomeTitle, openLibrarySeries, savedTitleBadge } from "../title/title-page.js";
@@ -23,6 +23,9 @@ import { animeBrowserMarkup, loadAnimeBrowser, renderAnimeBrowserResults } from 
 
 export const HOME_CATALOG_REFRESH_MS = 10 * 60 * 1000;
 let homeCatalogLoadPromise = null;
+let homeCatalogQueuedLoad = null;
+let homeCatalogQueuedForce = false;
+let homeCatalogQueuedRotate = false;
 
 export let homeTitleIndex = new Map();
 let homeHeroController = null;
@@ -45,9 +48,7 @@ function rebuildHomeTitleIndex() {
 }
 
 function homeLibraryMembership(librarySeries = buildLibrarySeries()) {
-  const keys = new Set(librarySeries.map((series) => series.key));
-  const ids = new Set(librarySeries.map((series) => series.catalogId).filter(Boolean));
-  return (meta) => Boolean(meta) && (keys.has(librarySeriesKey(meta.name)) || Boolean(meta.id && ids.has(meta.id)));
+  return (meta) => Boolean(librarySeriesForCatalog(meta, librarySeries));
 }
 
 function homeLibraryItems(librarySeries) {
@@ -56,7 +57,7 @@ function homeLibraryItems(librarySeries) {
     const chapters = librarySeriesChapterCount(series);
     const unit = series.type === "movie" ? "video" : "episode";
     return {
-      key: series.key,
+      key: series.routeKey || series.key,
       title: series.title,
       ...libraryCardImage(series),
       type: series.type,
@@ -93,8 +94,7 @@ function homeRowMarkup(row, { category, isInLibrary }) {
 function homeHeroSlides(hero, isInLibrary) {
   const savedSeries = buildLibrarySeries();
   return hero.map((meta) => {
-    const match = savedSeries.find((series) => (meta?.id && series.catalogId === meta.id)
-      || series.key === librarySeriesKey(meta.name));
+    const match = librarySeriesForCatalog(meta, savedSeries);
     return {
       ...heroSlideItem(meta),
       actions: [heroLibraryButtonMarkup(isInLibrary(meta), savedTitleBadge(match)?.label), heroDetailsButtonMarkup()],
@@ -343,7 +343,28 @@ export function renderHome() {
 }
 
 export async function loadHomeCatalog({ force = false, rotate = false } = {}) {
-  if (state.homeLoaded && rotate) {
+  if (homeCatalogLoadPromise) {
+    if (force || rotate) {
+      // Concurrent manual refreshes share one follow-up request. A request
+      // during the initial load is never silently swallowed by that old GET.
+      homeCatalogQueuedForce ||= force;
+      homeCatalogQueuedRotate ||= rotate;
+      if (!homeCatalogQueuedLoad) {
+        homeCatalogQueuedLoad = homeCatalogLoadPromise.catch(() => {}).then(() => {
+          const nextForce = homeCatalogQueuedForce;
+          const nextRotate = homeCatalogQueuedRotate;
+          homeCatalogQueuedForce = false;
+          homeCatalogQueuedRotate = false;
+          homeCatalogQueuedLoad = null;
+          return loadHomeCatalog({ force: nextForce, rotate: nextRotate });
+        });
+      }
+      return homeCatalogQueuedLoad;
+    }
+    if (!state.homeLoaded && $("#view-home")?.classList.contains("is-active")) renderHome();
+    return homeCatalogLoadPromise;
+  }
+  if (state.homeLoaded && rotate && !force) {
     state.homeCatalog.seed = (Number(state.homeCatalog.seed) || 0) + 1;
     if ($("#view-home")?.classList.contains("is-active")) renderHome();
     if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
@@ -356,10 +377,6 @@ export async function loadHomeCatalog({ force = false, rotate = false } = {}) {
     if ($("#view-library")?.classList.contains("is-active")) renderLibraryRecommendations();
     return;
   }
-  if (homeCatalogLoadPromise) {
-    if (!state.homeLoaded && $("#view-home")?.classList.contains("is-active")) renderHome();
-    return homeCatalogLoadPromise;
-  }
   if (!state.homeLoaded) {
     homeCatalogError = "";
     if ($("#view-home")?.classList.contains("is-active")) renderHome();
@@ -371,7 +388,8 @@ export async function loadHomeCatalog({ force = false, rotate = false } = {}) {
         movies: data.movies || [],
         series: data.series || [],
         anime: data.anime || [],
-        seed: Number(data.seed) || Math.floor(Date.now() / HOME_CATALOG_REFRESH_MS),
+        seed: (Number(data.seed) || Math.floor(Date.now() / HOME_CATALOG_REFRESH_MS))
+          + (rotate ? 1 : 0),
         stale: Boolean(data.stale),
         partial: Boolean(data.partial),
         generatedAt: Number(data.generatedAt) || 0,

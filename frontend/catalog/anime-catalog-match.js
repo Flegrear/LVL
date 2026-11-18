@@ -62,25 +62,59 @@ export function verifiedAnimeCatalogMatch(media, candidates = []) {
   return new Set(rootMatches.map((item) => item.id)).size === 1 ? rootMatches[0] : null;
 }
 
-// When the viewer has already linked a show to a specific IMDb catalog ID,
-// that is stronger identity evidence than a transient third-party search. A
-// later AniList season may omit the original show's year and the Library's
-// normalized series row may not have releaseInfo at all. Only reuse a single
-// *explicitly linked* matching series, never an unlinked/fuzzy title or two
-// competing incarnations with different IMDb IDs.
+/** Resolve *all* concurrent alias searches before selecting a catalog ID.
+ * The fastest provider response has no identity authority over a slower alias
+ * that points to a different known work. A failed search also leaves the
+ * crosswalk unresolved, since it may conceal a conflicting candidate.
+ */
+export async function resolveUniqueAnimeSearchBatch(media, names, search) {
+  const attempts = await Promise.allSettled(names.map((name) => Promise.resolve().then(() => search(name))));
+  if (attempts.some((entry) => entry.status === "rejected"))
+    throw Object.assign(new Error("Catalog search is temporarily unavailable. Please retry."), { code: "CATALOG_SEARCH_FAILED" });
+  if (attempts.some((entry) => !Array.isArray(entry.value)))
+    throw Object.assign(new Error("Catalog search returned incomplete data. Please retry."), { code: "CATALOG_SEARCH_FAILED" });
+  const results = attempts.flatMap((entry) => entry.value);
+  const batchMatches = attempts.map((entry) => verifiedAnimeCatalogMatch(media, entry.value))
+    .filter(Boolean);
+  const combined = verifiedAnimeCatalogMatch(media, results);
+  const matchedIds = new Set(batchMatches.map((entry) => entry.id));
+  if (matchedIds.size > 1 || (matchedIds.size && (!combined || !matchedIds.has(combined.id))))
+    throw Object.assign(new Error("Multiple catalog works match this anime. Choose an exact title to link."), { code: "CATALOG_AMBIGUOUS" });
+  if (!combined) {
+    const type = media?.format === "MOVIE" ? "movie" : "series";
+    const aliases = new Set([media?.title, media?.titleAlt,
+      animeCatalogRootName(media?.title), animeCatalogRootName(media?.titleAlt)]
+      .map(normalizeAnimeCatalogName).filter(Boolean));
+    // An ambiguous search result does not become harmless merely because a
+    // later fallback query could return only one of the competing IMDb IDs.
+    if (results.some((item) => item?.type === type && /^tt\d{5,12}$/.test(String(item?.id || ""))
+      && aliases.has(normalizeAnimeCatalogName(item.name))))
+      throw Object.assign(new Error("Multiple catalog works match this anime. Choose an exact title to link."), { code: "CATALOG_AMBIGUOUS" });
+    throw Object.assign(new Error("No exact catalog match."), { code: "CATALOG_NO_MATCH" });
+  }
+  return combined;
+}
+
+// A verified AniList media link can reuse a saved IMDb ID even if the title
+// has since been renamed. A shared title alone is not a provider crosswalk.
 export function verifiedAnimeLibraryCatalogMatch(media, library = []) {
-  if (media?.format === 'MOVIE') return null;
-  const roots = new Set([media?.title, media?.titleAlt]
-    .map(animeCatalogRootName).map(normalizeAnimeCatalogName).filter(Boolean));
-  if (!roots.size) return null;
+  const id = Number(media?.id);
+  if (!Number.isSafeInteger(id) || id <= 0) return null;
+  const type = media?.format === 'MOVIE' ? 'movie' : 'series';
+  const linkedTo = (entry) => (String(entry?.externalSource || '').toUpperCase() === 'ANILIST'
+    && Number(entry?.externalId) === id)
+    || Number(entry?.anilist?.anilistId) === id
+    || (entry?.anilist?.seasons || []).some((season) => Number(season?.anilistId) === id)
+    || [...(entry?.anilistManualLinks || []), ...(entry?.anilistAutoLinks || [])]
+      .some((link) => Number(link?.anilistId) === id);
   const candidates = library.filter(series =>
     /^tt\d{5,12}$/.test(String(series?.catalogId || ''))
-    && series?.type !== 'movie'
-    && roots.has(normalizeAnimeCatalogName(series?.title || '')));
+    && (series?.type === 'movie' ? 'movie' : 'series') === type
+    && (series?.sources || []).some(linkedTo));
   const uniqueIds = new Set(candidates.map(item => item.catalogId));
   if (uniqueIds.size !== 1) return null;
   const series = candidates[0];
-  return { id: series.catalogId, name: series.title, type: 'series' };
+  return { id: series.catalogId, name: series.title, type };
 }
 
 export function animeCatalogSearchNames(media) {

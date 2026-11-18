@@ -311,15 +311,31 @@ export function createProgressiveSeekController({
             isCurrent: () => !settled && !closed && active === attempt
               && !aborter.signal.aborted && sameSelection()
               && (video.src || video.currentSrc || '') === originalSrc,
+            // The loader itself changes video.src from the original URL to a
+            // new verified blob. Continue validating this exact intent and
+            // source generation AFTER that planned installation, without
+            // incorrectly requiring the original URL to remain installed.
+            isOwned: () => !settled && !closed && active === attempt
+              && !aborter.signal.aborted && sameSelection(),
           });
         } catch {
-          if (current()) finish(false, 'window-load-failed');
+          // A source change while the held loader rejects must settle the old
+          // attempt immediately, not leave its timer/frame owner live until the
+          // five-second watchdog fires. finish() is idempotent after cancel.
+          finish(false, current() ? 'window-load-failed' : 'stale-source');
           return;
         }
         if (settled) {
           try { windowResult?.dispose?.(); } catch {}
           return;
         }
+        // A loader can create an attached MSE object before a later source
+        // supersedes its promise. Own its disposer BEFORE every validation or
+        // context rejection, otherwise those early returns leak that decoder.
+        if (typeof windowResult?.dispose === 'function')
+          // A caller's disposer may be a receiver-dependent method. Preserve
+          // that exact attachment's receiver when a held seek is cancelled.
+          stagedDispose = () => windowResult.dispose();
         if (!sameSelection()) { finish(false, 'stale-source'); return; }
         if (!windowResult || windowResult.ready !== true
           || !finite(windowResult.baseSeconds) || windowResult.baseSeconds < 0
@@ -332,8 +348,6 @@ export function createProgressiveSeekController({
             || !windowResult.mediaSrc) return finish(false, 'invalid-media-source');
           expectedSrc = windowResult.mediaSrc;
         }
-        if (typeof windowResult.dispose === 'function')
-          stagedDispose = windowResult.dispose;
         if (!current()) return finish(false, 'stale-source');
         baseSeconds = windowResult.baseSeconds;
         localSeconds = targetSeconds - baseSeconds;
@@ -430,18 +444,27 @@ function awaitMseEvent(source, success, signal, timeoutMs, begin = () => {}) {
       source.removeEventListener(success, ok);
       source.removeEventListener('error', bad);
       source.removeEventListener('abort', bad);
-      signal.removeEventListener('abort', bad);
+      signal.removeEventListener('abort', aborted);
       if (error) reject(error);
       else resolve();
     };
     const ok = () => done();
     const bad = () => done(Error('MSE window unavailable'));
+    const aborted = () => {
+      // Cancel only the SourceBuffer update owned by this operation. Its
+      // late updateend must not settle a subsequent append.
+      done(Error('MSE window unavailable'));
+      if (success === 'updateend' && source.updating
+        && typeof source.abort === 'function') {
+        try { source.abort(); } catch {}
+      }
+    };
     const timer = setTimeout(bad, timeoutMs);
     source.addEventListener(success, ok);
     source.addEventListener('error', bad);
     source.addEventListener('abort', bad);
-    signal.addEventListener('abort', bad, { once: true });
-    if (signal.aborted) bad();
+    signal.addEventListener('abort', aborted, { once: true });
+    if (signal.aborted) aborted();
     else {
       try { begin(); }
       catch { bad(); }
@@ -467,9 +490,18 @@ export function createStandaloneProgressiveMseLoader({
   let closed = false;
   let currentWindow = null;
   let continuing = false;
-  const load = async ({ segment, targetSeconds, context, signal, isCurrent = () => true }) => {
+  const load = async ({ segment, targetSeconds, context, signal,
+    isCurrent, isOwned = isCurrent }) => {
+    // A direct caller must provide its own live source/generation guard.
+    // Capturing the installed URL also rejects a replacement during the GET,
+    // even if that caller's callback accidentally checks only a generation.
+    const originalVideoSrc = video.src || video.currentSrc || '';
     const selected = () => !closed && !signal?.aborted
-      && typeof isCurrent === 'function' && isCurrent();
+      && typeof isCurrent === 'function' && isCurrent()
+      && (video.src || video.currentSrc || '') === originalVideoSrc;
+    const installed = () => !closed && !signal?.aborted
+      && typeof isOwned === 'function' && isOwned()
+      && Boolean(objectUrl) && video.src === objectUrl;
     if (closed || signal?.aborted || !validContext(context)
       || !verifiedStandaloneParams(segment, targetSeconds)) return { ready: false };
     const mime = typeof context.mime === 'string' ? context.mime : '';
@@ -508,7 +540,8 @@ export function createStandaloneProgressiveMseLoader({
         video.src = objectUrl;
         video.load?.();
       });
-      if (closed || signal?.aborted || mediaSource.readyState !== 'open')
+      if (!installed()
+        || mediaSource.readyState !== 'open')
         throw Error('MSE source obsolete');
       mediaSource.duration = context.durationSeconds;
       const buffer = mediaSource.addSourceBuffer(mime);
@@ -516,7 +549,8 @@ export function createStandaloneProgressiveMseLoader({
       buffer.timestampOffset = offset;
       await awaitMseEvent(buffer, 'updateend', signal, timeoutMs,
         () => buffer.appendBuffer(result.bytes));
-      if (closed || signal?.aborted || buffer.updating || !buffer.buffered)
+      if (!installed()
+        || buffer.updating || !buffer.buffered)
         throw Error('MSE append unavailable');
       let covered = false;
       for (let i = 0; i < buffer.buffered.length; i++) {
@@ -525,22 +559,34 @@ export function createStandaloneProgressiveMseLoader({
           covered = true; break;
         }
       }
-      if (!covered) throw Error('Window does not buffer requested movie frame');
+      if (!covered || !installed())
+        throw Error('Window does not buffer requested movie frame');
       // Do NOT endOfStream here: the next independently verified GOP may
       // already exist on disk and can be appended to this SAME SourceBuffer.
       // Closing it after every 2s GOP would force a new FFmpeg stream on EOF.
+      const replacedWindow = currentWindow;
       currentWindow = {mediaSource,buffer,objectUrl,dispose,
         endSeconds:segment.endSeconds,id:segment.id,initHash:segment.initHash,
         sourceKey:context.sourceKey,generation:context.generation,
         audioIndex:context.audioIndex,audioMode:context.audioMode,
         durationSeconds:context.durationSeconds,mime};
+      // Direct callers may reuse this loader without a controller retaining
+      // the old disposer. Retire that superseded URL only AFTER the new
+      // verified window has been installed, never while it is still selected.
+      if (replacedWindow && replacedWindow.objectUrl !== objectUrl)
+        replacedWindow.dispose();
       return {ready:true, baseSeconds:0, mediaSrc:objectUrl, dispose};
     } catch {
       dispose();
+      // A failed replacement can leave an older verified window detached.
+      // Release it only when the video no longer references its exact URL.
+      // Never restore an old URL over another generation's selected source.
+      if (currentWindow && video.src !== currentWindow.objectUrl)
+        currentWindow.dispose();
       return {ready:false};
     }
   };
-  load.appendNext = async ({segment,context,signal,isCurrent=()=>true}={}) => {
+  load.appendNext = async ({segment,context,signal,isCurrent}={}) => {
     const win=currentWindow;
     if (closed || continuing || !win || signal?.aborted
       || typeof isCurrent !== 'function' || !isCurrent()
@@ -598,6 +644,8 @@ export function createStandaloneProgressiveMseLoader({
           } catch { /* browser may temporarily retain an older decoder frame */ }
         }
       }
+      if (closed || signal?.aborted || !isCurrent() || currentWindow !== win
+        || video.src !== win.objectUrl) return false;
       win.endSeconds=segment.endSeconds;
       win.id=segment.id;
       return true;

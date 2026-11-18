@@ -14,7 +14,7 @@ import { playbackIntentOwner } from "../player/playback-intent.js";
 import {
   renderWatchChapters, updateChapterButtons, watchEpisodeSourceLookups, watchEpisodeSourcesOpen,
 } from "./watch-page.js";
-import { currentChapterNavigation, libraryEntryById, librarySeriesKey } from "../library/library-data.js";
+import { currentChapterNavigation, libraryEntryById, librarySeriesForEntry } from "../library/library-data.js";
 import {
   addCatalogChapterSource, catalogChapterTarget, chapterUpcoming, invalidateManualCatalogPlayback,
   manualCatalogPlaybackId, savedCatalogChapters,
@@ -76,7 +76,16 @@ export function invalidateAutoNextAfterEpisodeEdit(series, code) {
   const source = state.currentSource;
   if (!source?.libraryId || source.fileIndex == null) return;
   const entry = libraryEntryById(source.libraryId);
-  if (!entry || (entry.seriesKey || librarySeriesKey(entry.title)) !== series?.key) return;
+  if (!entry || !series) return;
+  const exactOwner = (series.sources || []).some((item) => item.id === entry.id);
+  // A single legacy source with no group metadata remains addressable for
+  // immediate replay invalidation. More than one same-name source is not a
+  // verified episode association and must never authorize cross-source work.
+  const legacy = !Array.isArray(series.sources) && entry.seriesKey === series.key
+    && state.library.filter((item) => item.seriesKey === series.key).length === 1;
+  if (!exactOwner && !legacy) return;
+  if (exactOwner && typeof librarySeriesForEntry === "function"
+    && librarySeriesForEntry(entry)?.routeKey !== (series.routeKey || series.key)) return;
   const selected = entry.episodes?.find((episode) => Number(episode.fileIndex) === Number(source.fileIndex));
   if (String(selected?.code || "").toUpperCase() !== String(code || "").toUpperCase()) return;
   // A watched-state edit is a new user intent, even if it does not replace

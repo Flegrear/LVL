@@ -132,6 +132,19 @@ export function installPhonePlayerControls({
   moreHeading.textContent = "More controls";
   moreHeading.setAttribute("data-i18n", "More controls");
   morePanel.append(moreHeading);
+  // New controls can be registered after the phone adapter starts. Adopt
+  // direct children at each layout/restore boundary, including those added
+  // while the overflow panel is open. Preserve the existing DOM nodes and
+  // listeners across repeated fullscreen transitions.
+  const discoverRowChildren = () => {
+    for (const parent of [row, morePanel]) {
+      for (const node of parent?.children || []) {
+        if (node === moreButton || node === moreHeading || node === morePanel
+          || originalRowChildren.includes(node)) continue;
+        originalRowChildren.push(node);
+      }
+    }
+  };
   translateUi(moreButton);
   translateUi(morePanel);
   let lastOverflowFocus = null;
@@ -264,6 +277,7 @@ export function installPhonePlayerControls({
   // Original nodes and listeners survive every fullscreen/resize cycle.
   const restoreRow = () => {
     if (!row || !rowInFullscreen) return;
+    discoverRowChildren();
     const focusBeforeRestore = doc.activeElement;
     const focusWasInOverflow = focusBeforeRestore === moreButton
       || morePanel.contains?.(focusBeforeRestore);
@@ -291,6 +305,7 @@ export function installPhonePlayerControls({
   };
   const syncFullscreenRow = () => {
     if (!row || !touch()) return;
+    discoverRowChildren();
     if (!root.classList.contains("phone-player-fullscreen")) {
       restoreRow();
       return;

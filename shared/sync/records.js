@@ -21,6 +21,7 @@ export const SYNC_FORMAT_VERSION = 1;
 const TYPE_NAME = /^[a-z][a-z0-9-]{1,30}(?:\.[a-z][a-z0-9-]{1,30}){0,2}$/;
 const MAX_ID = 600;
 const MAX_VALUE_BYTES = 64 * 1024;
+const tooLarge = (message) => Object.assign(new Error(message), { status: 413, code: "sync_record_too_large" });
 
 // Composite ids: each part is URI-encoded and parts are joined with "/".
 export const joinId = (...parts) => parts.map((part) => encodeURIComponent(String(part))).join("/");
@@ -158,21 +159,23 @@ export function createRegistry(types = RECORD_TYPES, { now = Date.now } = {}) {
     if (typeof raw.id !== "string" || !raw.id || raw.id.length > MAX_ID || /[\u0000-\u001f\u007f]/.test(raw.id)) return { status: "invalid", reason: "bad id" };
     const stamp = parseStamp(raw.at);
     if (!stamp || !DEVICE_ID.test(stamp.device)) return { status: "invalid", reason: "bad stamp" };
-    if (stamp.ms > now() + MAX_AHEAD_MS) return { status: "invalid", reason: "stamp in the future" };
     if (!Number.isInteger(raw.schema) || raw.schema < 1) return { status: "invalid", reason: "bad schema" };
     if (raw.value !== null && !isPlainObject(raw.value)) return { status: "invalid", reason: "bad value" };
     if (raw.value !== null && byteSize(raw.value) > MAX_VALUE_BYTES) return { status: "invalid", reason: "value too large" };
     const change = { type: raw.type, id: raw.id, at: raw.at, schema: raw.schema, value: raw.value };
+    // Validate the complete shape before deferring. A malformed future record
+    // must not keep an otherwise valid immutable file on permanent retry.
+    const future = stamp.ms > now() + MAX_AHEAD_MS;
     const type = types[raw.type];
-    if (!type) return { status: "unknown", change };
+    if (!type) return { status: future ? "future" : "unknown", change };
     if (!type.id.test(raw.id)) return { status: "invalid", reason: `bad ${raw.type} id` };
-    if (raw.schema > type.schema) return { status: "newer", change };
+    if (raw.schema > type.schema) return { status: future ? "future" : "newer", change };
     let value = raw.value;
     for (let from = raw.schema; value !== null && from < type.schema; from += 1) value = type.upgrades[from](value);
     const cleaned = value === null ? null : clean(type, value);
     const missing = cleaned && (type.required || []).find((field) => !(field in cleaned));
     if (missing) return { status: "invalid", reason: `bad or missing ${missing}` };
-    return { status: "ok", change: { ...change, schema: type.schema, value: cleaned } };
+    return { status: future ? "future" : "ok", change: { ...change, schema: type.schema, value: cleaned } };
   }
 
   // A change made on this device. previous: the current change for the same item, if any;
@@ -187,7 +190,8 @@ export function createRegistry(types = RECORD_TYPES, { now = Date.now } = {}) {
     if (next && isPlainObject(previous?.value)) {
       for (const [key, field] of Object.entries(previous.value)) if (!(key in type.fields) && !(key in next)) next[key] = field;
     }
-    if (next && byteSize(next) > MAX_VALUE_BYTES) throw new Error(`The ${name} value is too large to sync`);
+    if (next && byteSize(next) > MAX_VALUE_BYTES)
+      throw tooLarge(`The ${name} value is too large to sync. Its local changes were retained.`);
     return { type: name, id, at, schema: type.schema, value: next };
   }
 
@@ -197,7 +201,7 @@ export function createRegistry(types = RECORD_TYPES, { now = Date.now } = {}) {
     const applied = [];
     for (const raw of raws) {
       const result = read(raw);
-      if (result.status === "invalid") continue;
+      if (result.status === "invalid" || result.status === "future") continue;
       const key = `${result.change.type} ${result.change.id}`;
       const current = state.get(key);
       if (current && compareStamps(result.change.at, current.at) <= 0) continue;
@@ -207,7 +211,12 @@ export function createRegistry(types = RECORD_TYPES, { now = Date.now } = {}) {
     return applied;
   }
 
-  return { types, read, make, merge, clean: (name, value) => clean(types[name], value) };
+  return { types, read, make, merge, clean: (name, value) => {
+    if (name === "video.title" && value && Object.hasOwn(value, "episodes")
+      && (!Array.isArray(value.episodes) || value.episodes.length > 1000))
+      throw tooLarge("The video.title episodes metadata is too large to sync without losing episode identities");
+    return clean(types[name], value);
+  } };
 }
 
 export const records = createRegistry();

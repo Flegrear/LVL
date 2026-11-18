@@ -4,6 +4,53 @@ export const DIRECTIONS = Object.freeze(["rtl", "ltr"]);
 export const THEMES = Object.freeze(["black", "dark", "sepia", "white"]);
 export const FITS = Object.freeze(["height", "width", "original"]);
 
+// A mounted reader must serialize its progress PUTs. Without this fence an old
+// slow page-2 request can arrive after page 8 and regress the persisted resume.
+// Coalesce not-yet-sent snapshots; an accepted reply is not inferred merely
+// because the request was scheduled.
+export function createReaderProgressQueue(write, { onError = () => {}, onAccepted = () => {}, onIdle = () => {} } = {}) {
+  if (typeof write !== "function") throw new TypeError("Progress writer required");
+  let pending = null;
+  let active = null;
+  function run() {
+    if (active) return active;
+    active = (async () => {
+      while (pending) {
+        const value = pending;
+        pending = null;
+        try {
+          const receipt = await write(value);
+          if (receipt != null) onAccepted(receipt, value);
+        } catch (error) {
+          try { onError(error, value); } catch { /* UI notification is not queue authority */ }
+        }
+      }
+    })().finally(() => {
+      active = null;
+      if (pending) void run();
+      else {
+        try { onIdle(); } catch { /* cleanup cannot be save authority */ }
+      }
+    });
+    return active;
+  }
+  return {
+    enqueue(value) { pending = { ...value }; return run(); },
+    async idle() { while (active || pending) await (active || run()); },
+  };
+}
+
+// Display names are never a provider identity. Manual navigation can offer
+// other sources, but exact sourceId candidates are ordered first and automatic
+// continuation only admits the same verified provider.
+export function orderedReaderSourceChoices(candidates, { kind, sourceId = "", strict = false } = {}) {
+  const items = Array.isArray(candidates) ? candidates : [];
+  const same = sourceId ? items.filter((item) => item?.kind === kind && item.sourceId === sourceId) : [];
+  if (strict) return same;
+  const choices = [...same, ...items.filter((item) => item?.kind === kind), ...items];
+  return [...new Map(choices.map((item) => [item.readerId, item])).values()];
+}
+
 // Manhwa and manhua are usually long vertical strips; manga reads right to left,
 // two pages at a time when the window is wide enough for a spread.
 export function defaultMode(comic = {}, { wide = false } = {}) {

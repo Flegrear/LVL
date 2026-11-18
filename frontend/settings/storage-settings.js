@@ -6,6 +6,7 @@ import { fetchJson, postJson } from "../app/http.js";
 import { renderSettingsTabs } from "./settings-page.js";
 import {
   absolutePlaybackSeconds, closeProgressiveEventStream, playerFastSeekAvailability, playerIsPlaying, restartTranscodeAt,
+  captureRemuxPreferenceIntent, remuxPreferenceIntentStillCurrent, restoreIndexedAfterRejectedRemuxPreference,
 } from "../player/player-core.js";
 import { evaluateFastSeekState } from "../player/fast-seek-state.js";
 
@@ -37,9 +38,12 @@ function updateStorageLimitSlider(slider) {
 }
 
 function paintStorageReport(report) {
+  // Storage reports often arrive after Settings was removed/replaced. A late
+  // response may update the cache but must never dereference a retired panel.
   remuxMseCacheAllowed = report?.limits?.remuxCacheEnabled === true;
   if (!remuxMseCacheAllowed && typeof closeProgressiveEventStream === "function")
     closeProgressiveEventStream();
+  if (!$("#settings-panel-storage")?.isConnected || !$("#storage-player-gb")?.isConnected) return;
   const toGB = (bytes) => String(Math.round((Number(bytes) / 1024 ** 3) * 100) / 100);
   const playerInput = $("#storage-player-gb");
   const playerSlider = $("#storage-player-slider");
@@ -87,7 +91,8 @@ function paintStorageReport(report) {
   }
   if (clipInput) { clipInput.min = toGB(report.ranges.clipBytes.min); clipInput.max = toGB(report.ranges.clipBytes.max); }
   const videos = Number(report.player.videos) || 0;
-  $("#storage-player-usage").textContent = `${formatStorage(report.player.usedBytes)} of ${formatStorage(report.limits.playerBytes)} used${videos ? ` by ${videos} video${videos === 1 ? "" : "s"}` : ""}`;
+  const playerUsage = $("#storage-player-usage");
+  if (playerUsage) playerUsage.textContent = `${formatStorage(report.player.usedBytes)} of ${formatStorage(report.limits.playerBytes)} used${videos ? ` by ${videos} video${videos === 1 ? "" : "s"}` : ""}`;
   setStorageMeter($("#storage-player-meter"), report.player.usedBytes, report.limits.playerBytes);
   const clips = report.clips;
   const lines = [clips.cardCount ? `${clips.cardCount.toLocaleString()} for cards` : "", clips.dictationCount ? `${clips.dictationCount.toLocaleString()} for dictation` : ""].filter(Boolean).join(" and ");
@@ -95,13 +100,14 @@ function paintStorageReport(report) {
   if (clipUsage) clipUsage.textContent = `${formatStorage(clips.usedBytes)} of ${formatStorage(report.limits.clipBytes)} used${lines ? `, ${lines}` : ""}`;
   setStorageMeter($("#storage-clip-meter"), clips.usedBytes, report.limits.clipBytes);
   const deckUsage = $("#storage-deck-usage");
-  if (deckUsage) deckUsage.textContent = report.decks.count
+  if (deckUsage?.isConnected) deckUsage.textContent = report.decks.count
     ? `${formatStorage(report.decks.mediaBytes)} in ${report.decks.count} deck${report.decks.count === 1 ? "" : "s"}`
     : "No decks with media";
   const leftovers = $("#storage-leftovers");
   if (leftovers) {
     leftovers.hidden = !(Number(report.player.leftoverBytes) > 0 || Number(report.player.leftoverFolders) > 0);
-    $("#storage-leftovers-title").textContent = `${formatStorage(report.player.leftoverBytes)} of leftover downloads`;
+    const title = $("#storage-leftovers-title");
+    if (title) title.textContent = `${formatStorage(report.player.leftoverBytes)} of leftover downloads`;
   }
   paintStorageRecommendations(report);
 }
@@ -133,25 +139,31 @@ function paintStorageRecommendations(report) {
   document.querySelectorAll('[data-storage-rec="clip-lines"]').forEach((node) => { node.textContent = lines.toLocaleString("en-US"); });
 }
 
-export async function renderSettingsStorage({ report = null } = {}) {
-  if (!$("#storage-player-gb")) return;
+export async function renderSettingsStorage({ report = null, mediaIntent = null } = {}) {
+  const panel = $("#settings-panel-storage");
+  if (!panel?.isConnected || !$("#storage-player-gb")?.isConnected) return;
   if (!report) {
     if (settingsStorageLoading) return;
     settingsStorageLoading = true;
     try {
       report = await fetchJson("/api/storage");
     } catch (error) {
-      setToolStatus("#storage-status", error.message || "Couldn't read the storage figures", true);
+      if (!mediaIntent || remuxPreferenceIntentStillCurrent(mediaIntent))
+        setToolStatus("#storage-status", error.message || "Couldn't read the storage figures", true);
       return;
     } finally {
       settingsStorageLoading = false;
     }
   }
+  if (!panel.isConnected || panel !== $("#settings-panel-storage")
+    || (mediaIntent && !remuxPreferenceIntentStillCurrent(mediaIntent))) return;
   paintStorageReport(report);
-  clientFeatures.run("storage:render", { report, panel: $("#settings-panel-storage") });
+  clientFeatures.run("storage:render", { report, panel });
 }
 
-async function saveStorageLimits(changes) {
+async function saveStorageLimits(changes, { mediaIntent = null, ownsChange = () => true } = {}) {
+  const ownsResponse = () => ownsChange()
+    && (!mediaIntent || remuxPreferenceIntentStillCurrent(mediaIntent));
   try {
     let report;
     try {
@@ -163,17 +175,19 @@ async function saveStorageLimits(changes) {
       const requested = formatStorage(Number(error.data.requestedBytes) || 0);
       if (!(await confirmDialog({ title: "Reduce the storage limit?", confirmLabel: "Reduce the limit",
         text: `Your ${affected} saved learning clips use ${used}, more than the new ${requested} limit. Some clips may be deleted.` }))) {
-        setToolStatus("#storage-status", "Storage limit unchanged; clips preserved.");
+        if (ownsResponse()) setToolStatus("#storage-status", "Storage limit unchanged; clips preserved.");
         return false;
       }
       report = await postJson("/api/storage/limits", { ...changes, confirmClipEviction: true });
     }
     playerStorageLimitCache = { value: report.limits.playerBytes, at: Date.now() };
-    paintStorageReport(report);
-    setToolStatus("#storage-status", "Saved");
+    if (ownsResponse()) {
+      paintStorageReport(report);
+      setToolStatus("#storage-status", "Saved");
+    }
     return true;
   } catch (error) {
-    setToolStatus("#storage-status", error.message || "Couldn't save the limit", true);
+    if (ownsResponse()) setToolStatus("#storage-status", error.message || "Couldn't save the limit", true);
     return false;
   }
 }
@@ -198,6 +212,7 @@ export async function playerStorageLimit() {
 }
 
 export function wireStorageSettings() {
+  let remuxCacheChangeSequence = 0;
   bindTabs($("#settings-tabs"), {
     onChange: (value) => {
       if (!learningEnabled && value === "coach") return;
@@ -218,7 +233,11 @@ export function wireStorageSettings() {
   limitChange($("#storage-clip-gb"), "clipGB");
   $("#storage-remux-cache-enabled")?.addEventListener("change", async (event) => {
     const toggle = event.currentTarget;
+    const changeSequence = ++remuxCacheChangeSequence;
+    const ownsChange = () => changeSequence === remuxCacheChangeSequence;
     const requested = toggle.checked;
+    const beforeRestart = captureRemuxPreferenceIntent();
+    let switchedFromIndexed = false;
     toggle.disabled = true;
     try {
       if (!requested && (video.dataset.indexed === "1" || video.dataset.progressive === "1")) {
@@ -231,24 +250,42 @@ export function wireStorageSettings() {
         // been accepted and installed before committing the destructive
         // settings change. On failure keep the cache enabled and playing.
         const switched = await restartTranscodeAt(position, { wasPlaying: playing, forceNative: true });
+        // An episode/source replacement during the native restart owns the
+        // player now. The old request must not restore that new source's UI.
+        if (!ownsChange()
+          || (beforeRestart.source && !remuxPreferenceIntentStillCurrent(beforeRestart, { allowNativeRestart: true }))) return;
         if (!switched) {
           toggle.checked = true;
           setToolStatus("#storage-status", "Could not switch playback source; cache remains enabled.");
           return;
         }
+        switchedFromIndexed = true;
       }
-      const saved = await saveStorageLimits({ remuxCacheEnabled: requested });
+      // The deliberate restart above changes the video URL/frame owner, not
+      // the source-load generation. Capture the installed native owner for the
+      // PUT; later seeks, loads, source, audio and language choices invalidate
+      // its right to roll back or repaint the current controls.
+      const mediaIntent = captureRemuxPreferenceIntent();
+      const saved = await saveStorageLimits({ remuxCacheEnabled: requested }, {
+        mediaIntent: mediaIntent.source ? mediaIntent : null,
+        ownsChange,
+      });
+      if (!ownsChange() || (mediaIntent.source && !remuxPreferenceIntentStillCurrent(mediaIntent))) return;
       if (!saved) {
         toggle.checked = !requested;
-        await renderSettingsStorage();
+        if (switchedFromIndexed && ownsChange()
+          && remuxPreferenceIntentStillCurrent(mediaIntent))
+          restoreIndexedAfterRejectedRemuxPreference(beforeRestart, mediaIntent);
+        await renderSettingsStorage({ mediaIntent: mediaIntent.source ? mediaIntent : null });
       }
     } finally {
-      toggle.disabled = false;
+      if (toggle.isConnected && ownsChange()) toggle.disabled = false;
     }
   });
   const playerSlider = $("#storage-player-slider");
   playerSlider?.addEventListener("input", () => {
-    $("#storage-player-gb").value = playerSlider.value;
+    const playerInput = $("#storage-player-gb");
+    if (playerInput) playerInput.value = playerSlider.value;
     updateStorageLimitSlider(playerSlider);
   });
   playerSlider?.addEventListener("change", () => {
@@ -271,7 +308,7 @@ export function wireStorageSettings() {
     } catch (error) {
       setToolStatus("#storage-status", error.message || "Couldn't free space", true);
     } finally {
-      button.disabled = false;
+      if (button.isConnected) button.disabled = false;
     }
   });
   $("#storage-leftovers-clear")?.addEventListener("click", async (event) => {
@@ -288,7 +325,7 @@ export function wireStorageSettings() {
     } catch (error) {
       setToolStatus("#storage-status", error.message || "Couldn't delete the leftovers", true);
     } finally {
-      button.disabled = false;
+      if (button.isConnected) button.disabled = false;
     }
   });
 }

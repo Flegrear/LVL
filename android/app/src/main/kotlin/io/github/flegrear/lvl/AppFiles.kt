@@ -3,9 +3,11 @@ package io.github.flegrear.lvl
 import android.content.Context
 import android.util.Log
 import android.os.SystemClock
-import java.io.BufferedInputStream
 import java.io.File
-import java.util.zip.ZipInputStream
+import java.nio.file.Files
+import java.security.MessageDigest
+import java.util.UUID
+import org.json.JSONObject
 
 /**
  * LVL's server files ship as one zip in the APK's assets. Node can't read inside the APK,
@@ -25,6 +27,7 @@ object AppFiles {
     private fun next(context: Context) = File(context.filesDir, "app.next")
     private fun old(context: Context) = File(context.filesDir, "app.old")
     private fun failed(context: Context) = File(context.filesDir, "app.failed")
+    private fun apkBackup(context: Context) = File(context.filesDir, "app.apk-previous")
 
     private fun startup(event: String) {
         Log.i("LVL-Startup", "event=$event t_ms=${SystemClock.elapsedRealtime()}")
@@ -35,8 +38,15 @@ object AppFiles {
         val staged = stagedManifest(context)
         val marker = File(target, MARKER)
         if (marker.isFile && marker.readText().trim() == staged.sha256) {
-            startup("app_cache_hit")
-            return target
+            val version = AppFilesTransaction.version(target)
+            if (AppFilesTransaction.runnable(target, staged.runtimeGeneration) &&
+                version != null &&
+                (version == staged.version && AppFilesTransaction.criticalVerified(target) ||
+                    compareVersions(version, staged.version) > 0)) {
+                AppFilesTransaction.finishApk(target, apkBackup(context), staged.runtimeGeneration, version)
+                startup("app_cache_hit")
+                return target
+            }
         }
 
         // An in-app update installed a newer version than this APK carries: keep it. Patches
@@ -49,47 +59,74 @@ object AppFiles {
         val sameRuntimeGeneration = File(target, ".lvl-android-runtime-generation").takeIf { it.isFile }
             ?.readText()?.trim() == staged.runtimeGeneration
         if (installed != null && sameRuntimeGeneration && compareVersions(installed, staged.version) > 0 &&
-            File(target, "server.js").isFile) {
+            AppFilesTransaction.runnable(target, staged.runtimeGeneration, installed)) {
             Log.i(TAG, "Keeping LVL $installed (this APK carries ${staged.version})")
             marker.writeText(staged.sha256)
+            AppFilesTransaction.finishApk(target, apkBackup(context), staged.runtimeGeneration, installed)
             startup("app_newer_version_kept")
             return target
         }
 
+        // An unconfirmed patch owns app.old. Do not replace its live target while
+        // ServerService may still need the old copy to roll the patch back.
+        check(!old(context).exists()) { "Pending LVL update must be resolved before APK extraction" }
         onProgress("Preparing LVL…")
         startup("app_zip_unpack_start")
         val incoming = File(context.filesDir, "app.incoming")
-        incoming.deleteRecursively()
-        incoming.mkdirs()
-        val root = incoming.canonicalPath + File.separator
-        var count = 0
-        ZipInputStream(BufferedInputStream(context.assets.open("lvl-app.zip"), 1 shl 16)).use { zip ->
-            while (true) {
-                val entry = zip.nextEntry ?: break
-                val out = File(incoming, entry.name)
-                // Never write outside the target folder, whatever the zip says.
-                check(out.canonicalPath.startsWith(root)) { "Unsafe path in lvl-app.zip: ${entry.name}" }
-                if (entry.isDirectory) {
-                    out.mkdirs()
-                } else {
-                    out.parentFile?.mkdirs()
-                    out.outputStream().use { zip.copyTo(it, 1 shl 16) }
-                    count += 1
-                    if (count % 500 == 0) onProgress("Preparing LVL… $count files")
+        val reusable = incoming.isDirectory &&
+            File(incoming, MARKER).takeIf { it.isFile }?.readText()?.trim() == staged.sha256 &&
+            AppFilesTransaction.runnable(incoming, staged.runtimeGeneration, staged.version) &&
+            AppFilesTransaction.criticalVerified(incoming)
+        if (!reusable) {
+            if (incoming.exists()) {
+                // app.incoming is exclusively an APK extraction scratch directory.
+                // An interrupted first installation has no older server; it must
+                // still be able to retry from the verified packaged ZIP.
+                check(incoming.isDirectory && !Files.isSymbolicLink(incoming.toPath())) {
+                    "Unexpected incoming extraction path"
+                }
+                check(AppFilesTransaction.retireOwnedDirectory(incoming)) { "Couldn't remove incomplete extraction" }
+            }
+            val digest = MessageDigest.getInstance("SHA-256")
+            var compressedBytes = 0L
+            context.assets.open("lvl-app.zip").buffered().use { input ->
+                val buffer = ByteArray(64 * 1024)
+                while (true) {
+                    val size = input.read(buffer)
+                    if (size < 0) break
+                    compressedBytes += size
+                    check(compressedBytes <= 256L * 1024 * 1024) { "Staged ZIP exceeds compressed size limit" }
+                    digest.update(buffer, 0, size)
                 }
             }
+            val actualSha = digest.digest().joinToString("") { "%02x".format(it) }
+            check(compressedBytes > 0 && actualSha == staged.sha256) { "Staged ZIP doesn't match its manifest" }
+            AppFilesTransaction.extract({ context.assets.open("lvl-app.zip") }, incoming) { count ->
+                onProgress("Preparing LVL… $count files")
+            }
+            check(AppFilesTransaction.runnable(incoming, staged.runtimeGeneration, staged.version)) {
+                "Staged LVL has no complete matching server/runtime"
+            }
+            AppFilesTransaction.sealCritical(incoming)
+            File(incoming, MARKER).writeText(staged.sha256)
         }
-        File(incoming, MARKER).writeText(staged.sha256)
-        target.deleteRecursively()
-        check(incoming.renameTo(target)) { "Couldn't move the unpacked files into place" }
+        if (target.exists()) {
+            check(AppFilesTransaction.promote(incoming, target, apkBackup(context))) {
+                "Couldn't replace the app; previous runnable copy retained for recovery"
+            }
+        } else {
+            check(incoming.renameTo(target)) { "Couldn't move the unpacked files into place" }
+        }
+        check(AppFilesTransaction.runnable(target, staged.runtimeGeneration, staged.version)) {
+            "Staged LVL failed verification after rename"
+        }
+        AppFilesTransaction.finishApk(target, apkBackup(context), staged.runtimeGeneration, staged.version)
         startup("app_zip_unpack_done")
         return target
     }
 
     /** LVL's version in the app folder (it changes with in-app updates), or null. */
-    fun installedVersion(context: Context): String? = runCatching {
-        Regex("\"version\"\\s*:\\s*\"(\\d+\\.\\d+\\.\\d+)\"").find(File(dir(context), "package.json").readText())?.groupValues?.get(1)
-    }.getOrNull()
+    fun installedVersion(context: Context): String? = AppFilesTransaction.version(dir(context))
 
     /**
      * After the app process ended in the middle of a swap: put a complete folder back in place.
@@ -97,30 +134,25 @@ object AppFiles {
      */
     fun recoverInterrupted(context: Context) {
         val target = dir(context)
-        if (!target.exists()) {
-            val ready = File(next(context), READY_MARKER).isFile
-            when {
-                ready && next(context).renameTo(target) -> Log.i(TAG, "Finished an interrupted update")
-                old(context).isDirectory && old(context).renameTo(target) -> Log.i(TAG, "Restored the previous version after an interrupted update")
+        AppFilesTransaction.recoverApk(target, apkBackup(context))
+        if (!AppFilesTransaction.runnable(target) && AppFilesTransaction.runnable(old(context))) {
+            if (target.exists()) {
+                val quarantined = File(context.filesDir, "app.update-incomplete")
+                check(!quarantined.exists() && target.renameTo(quarantined)) {
+                    "Couldn't isolate incomplete update before restoring previous version"
+                }
             }
+            check(old(context).renameTo(target)) { "Couldn't restore previous version after interrupted update" }
+            Log.i(TAG, "Restored the previous version after an interrupted update")
         }
-        next(context).takeIf { it.exists() }?.deleteRecursively()
-        failed(context).takeIf { it.exists() }?.deleteRecursively()
+        // app.next may be an intact verified patch that the installer can retry;
+        // app.failed may hold the only copy of a failed launch. Neither is ours
+        // to discard during ordinary startup.
     }
 
     /** Swaps a prepared update in (the server must be stopped). False if nothing was swapped. */
     fun swapInUpdate(context: Context): Boolean {
-        val target = dir(context)
-        val prepared = next(context)
-        if (!File(prepared, READY_MARKER).isFile) return false
-        old(context).deleteRecursively()
-        if (!target.renameTo(old(context))) return false
-        if (!prepared.renameTo(target)) {
-            old(context).renameTo(target)
-            return false
-        }
-        File(target, READY_MARKER).delete()
-        return true
+        return AppFilesTransaction.swapUpdate(dir(context), next(context), old(context))
     }
 
     /** True while a swapped-in update hasn't started yet (the previous version is kept). */
@@ -129,8 +161,13 @@ object AppFiles {
     /** The new version started: the previous one isn't needed any more. */
     fun confirmUpdate(context: Context) {
         val previous = old(context)
-        if (previous.exists()) {
-            previous.deleteRecursively()
+        if (previous.exists() && AppFilesTransaction.runnable(dir(context)) &&
+            AppFilesTransaction.runnable(previous) &&
+            compareVersions(installedVersion(context) ?: "0.0.0",
+                AppFilesTransaction.version(previous) ?: "0.0.0") > 0) {
+            check(AppFilesTransaction.retireOwnedDirectory(previous)) {
+                "Couldn't retire confirmed update rollback"
+            }
             Log.i(TAG, "LVL ${installedVersion(context)} started; removed the previous version")
         }
     }
@@ -138,24 +175,52 @@ object AppFiles {
     /** The new version didn't start: put the previous one back. Returns the version restored. */
     fun rollBackUpdate(context: Context): String? {
         val previous = old(context)
-        if (!previous.isDirectory) return null
+        if (!AppFilesTransaction.runnable(previous)) return null
         val target = dir(context)
-        failed(context).deleteRecursively()
-        if (target.exists() && !target.renameTo(failed(context))) target.deleteRecursively()
-        if (!previous.renameTo(target)) return null
-        failed(context).deleteRecursively()
+        // Previous failed launches are retained. Each failed update owns a fresh
+        // quarantine name; one older app.failed must never block recovery.
+        val displaced = if (failed(context).exists()) {
+            File(context.filesDir, "app.failed-" + UUID.randomUUID().toString())
+        } else failed(context)
+        if (target.exists() && (displaced.exists() || !target.renameTo(displaced))) return null
+        if (!previous.renameTo(target)) {
+            if (!target.exists() && displaced.exists()) displaced.renameTo(target)
+            return null
+        }
         return installedVersion(context)
     }
 
     data class Staged(val version: String, val sha256: String, val runtimeGeneration: String?)
 
     fun stagedManifest(context: Context): Staged {
-        val manifest = context.assets.open("lvl-app.json").bufferedReader().use { it.readText() }
-        val sha = Regex("\"sha256\"\\s*:\\s*\"([0-9a-f]{64})\"").find(manifest)?.groupValues?.get(1)
-            ?: error("lvl-app.json has no sha256")
-        val version = Regex("\"version\"\\s*:\\s*\"(\\d+\\.\\d+\\.\\d+)\"").find(manifest)?.groupValues?.get(1)
-            ?: error("lvl-app.json has no version")
-        val generation = Regex("\"runtimeGeneration\"\\s*:\\s*\"([^\"]+)\"").find(manifest)?.groupValues?.get(1)
+        val manifest = context.assets.open("lvl-app.json").bufferedReader().use { reader ->
+            val result = StringBuilder()
+            val block = CharArray(2048)
+            while (true) {
+                val length = reader.read(block)
+                if (length < 0) break
+                check(result.length + length <= 8192) { "Staged manifest exceeds size limit" }
+                result.append(block, 0, length)
+            }
+            result.toString()
+        }
+        check(manifest.length in 2..8192) { "Invalid staged manifest length" }
+        val json = JSONObject(manifest)
+        val allowed = setOf("version", "versionCode", "runtimeGeneration", "sha256",
+            "stagedAt", "testVersionOverride")
+        val actualKeys = json.keys().asSequence().toSet()
+        check(actualKeys.all { it in allowed } && actualKeys.containsAll(
+            setOf("version", "runtimeGeneration", "sha256"))) { "Unexpected staged manifest fields" }
+        check(json.opt("sha256") is String && json.opt("version") is String &&
+            json.opt("runtimeGeneration") is String) { "Incomplete staged manifest" }
+        val sha = json.getString("sha256")
+        val version = json.getString("version")
+        val generation = json.getString("runtimeGeneration")
+        check(Regex("^[0-9a-f]{64}$").matches(sha) &&
+            Regex("^(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)\\.(?:0|[1-9]\\d*)$").matches(version) &&
+            generation.length in 1..128 && Regex("^[a-zA-Z0-9._-]+$").matches(generation)) {
+            "Invalid staged manifest identity"
+        }
         return Staged(version, sha, generation)
     }
 

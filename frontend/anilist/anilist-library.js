@@ -80,7 +80,10 @@ export function isAniListImport(entry = {}) {
  */
 export function verifiedAniListLibraryIdentity(series, show) {
   const catalog = String(show?.imdbId || "");
-  if (/^tt\d{5,12}$/.test(catalog) && catalog === String(series?.catalogId || "")) return true;
+  const savedCatalog = String(series?.catalogId || "");
+  if (catalog && savedCatalog && catalog !== savedCatalog) return false;
+  if (show?.type && series?.type && show.type !== series.type) return false;
+  if (/^tt\d{5,12}$/.test(catalog) && catalog === savedCatalog) return true;
   const mediaId = Number(show?.anilistId);
   return Number.isSafeInteger(mediaId) && mediaId > 0 && (series?.sources || []).some((entry) =>
     String(entry.externalSource || "").toUpperCase() === "ANILIST"
@@ -90,25 +93,51 @@ export function verifiedAniListLibraryIdentity(series, show) {
 /**
  * series: the Library's titles ({ key, catalogId, aliases, sources: entries }); shows: the server's
  * list; keyOf: the Library's name → key rule. Returns { add: [{ show, info }], annotate: [{ series, info }],
- * remove: [entry ids], clear: [entry ids] }.
+ * remove: [entry ids], clear: [entry ids], suggest: [{ series, show, reason }] }.
+ * Suggestion never authorizes account-owned status, progress, scores, or merges.
  */
 export function planAniListLibrary({ series = [], shows = [], keyOf = (name) => String(name || "").trim().toLowerCase() } = {}) {
   const byCatalog = new Map();
   const byKey = new Map();
+  const byAniList = new Map();
+  const register = (map, key, item) => {
+    if (!key) return;
+    const matches = map.get(key) || new Set();
+    matches.add(item);
+    map.set(key, matches);
+  };
   for (const item of series) {
-    if (item.catalogId && !byCatalog.has(item.catalogId)) byCatalog.set(item.catalogId, item);
-    if (!byKey.has(item.key)) byKey.set(item.key, item);
-    for (const alias of item.aliases || []) if (!byKey.has(keyOf(alias))) byKey.set(keyOf(alias), item);
+    const type = item.type || item.catalogType || "series";
+    if (item.catalogId) register(byCatalog, `${type}:${item.catalogId}`, item);
+    for (const name of [item.key, item.title, ...(item.aliases || [])]) register(byKey, keyOf(name), item);
+    for (const entry of item.sources || []) {
+      if (String(entry.externalSource || "").toUpperCase() !== "ANILIST") continue;
+      const mediaId = Number(entry.externalId);
+      if (Number.isSafeInteger(mediaId) && mediaId > 0) register(byAniList, mediaId, item);
+    }
   }
   // A title made only of imported entries is the sync's own; one with anything else is yours.
   const importedOnly = (item) => item.sources.length > 0 && item.sources.every((entry) => isAniListImport(entry) && !(entry.episodes || []).length);
-  const plan = { add: [], annotate: [], remove: [], clear: [] };
+  const plan = { add: [], annotate: [], remove: [], clear: [], suggest: [] };
   const kept = new Set();
   const annotated = new Set();
   for (const show of shows) {
     const info = anilistInfo(show);
+    const type = show.type === "movie" ? "movie" : "series";
+    const matchingCatalog = [...(byCatalog.get(`${type}:${show.imdbId}`) || [])];
+    const matchingMedia = [...(byAniList.get(Number(show.anilistId)) || [])]
+      .filter((item) => verifiedAniListLibraryIdentity(item, show));
+    const verified = new Set([...matchingCatalog, ...matchingMedia]);
+    const verifiedMatch = verified.size === 1 ? [...verified][0] : null;
     const keys = [show.title, show.titleAlt].filter(Boolean).map(keyOf);
-    const existing = (show.imdbId && byCatalog.get(show.imdbId)) || keys.map((key) => byKey.get(key)).find(Boolean) || null;
+    const candidates = new Set(keys.flatMap((key) => [...(byKey.get(key) || [])]));
+    // A name can supply a human-review suggestion, but cannot grant a
+    // provider/account identity even when only one local title shares it.
+    const provisional = candidates.size === 1 ? [...candidates][0] : null;
+    if (verified.size === 0 && provisional
+      && (provisional.type || provisional.catalogType || "series") === type)
+      plan.suggest.push({ series: provisional, show, reason: "unverified-title-only" });
+    const existing = verifiedMatch;
     if (existing && !importedOnly(existing)) {
       // A title you added yourself stays as it is, with your AniList status on it. An earlier
       // import inside it (no videos) adds nothing, and its small AniList cover could win over

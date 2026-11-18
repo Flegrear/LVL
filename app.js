@@ -27,6 +27,8 @@ import {
   registerPhonePlayerNavigationHook, switchView, viewActive, viewFromLocation,
 } from "./frontend/app/navigation.js";
 import { closePopupMenu, openMenuState, openPopupMenu, wirePopupMenu } from "./frontend/ui/popup-menu.js";
+import { registerOverlayOwner } from "./frontend/ui/overlay-host.js";
+import { createPendingSelection } from "./frontend/ui/pending-selection.js";
 import { renderLocaleOptions, renderSettings, renderSettingsTabs } from "./frontend/settings/settings-page.js";
 import { wireStorageSettings } from "./frontend/settings/storage-settings.js";
 import {
@@ -41,7 +43,7 @@ import {
   continueProgressiveOrRecover, endScrub, fallbackActiveRemuxMseToNative, hidePlayerControls,
   isNewSourceFramePending, markPlaybackMotion, openTranscodeAt, playerArrowSeek, playerDurationMs, playerSubtitleSeconds,
   playerWantsMuted, presentedSubtitleSeconds, progressiveBufferEndAroundCurrent, progressTimeAt, recoverPlayback,
-  refreshSubtitleClockForInteraction, resumePlayback, revealPlayerControls,
+  captureRemuxPreferenceIntent, refreshSubtitleClockForInteraction, resumePlayback, revealPlayerControls,
   schedulePlayerControlsHide, seekPlayerBy, seekPlayerTo, setPlayerLoading, setPlayerMutePreference,
   showScrubTime, stopRecoveryWatch, syncPlayerSpeed, togglePlayback, transcodeStartAttempt,
   updateCompatControls, updatePlayerPreferenceButtons, watchMediaStatus, wirePlayerSourceButtons,
@@ -80,6 +82,7 @@ import {
 } from "./frontend/player/floating-player.js";
 import { openMagnetDialog, resolveMagnet, wireLocalVideoInput } from "./frontend/player/torrent-playback.js";
 import { createTimelineScrubController } from "./frontend/player/phone-seek-input.js";
+import { createOverlayEscapeCoordinator } from "./frontend/player/overlay-escape.js";
 import { registerPhonePlayerLifecycle } from "./frontend/player/phone-seek-lifecycle.js";
 import { installPhonePlayerControls } from "./frontend/phone/player-controls.js";
 import {
@@ -329,6 +332,40 @@ export const recsUi = createRecsUi({
 export const video = $("#video");
 export const playbackMetrics = installPlaybackTrace(video);
 export const frame = $("#video-frame");
+// Original player controls stay live when Document PiP rehomes #video-frame.
+// Resolve inside that frame first; external dialogs, Library and Settings
+// continue to use the opener's ordinary document.
+const player$ = selector => frame?.querySelector?.(selector) || $(selector);
+// Escape is one topmost-layer action, not N independent handlers. Register
+// the current nodes (not their labels) so overlapping popup/phone/notification
+// panels are dismissed in actual opening order. Generic menus keep their
+// existing typed closePopupMenu focus and ownership contract.
+const overlayEscape = createOverlayEscapeCoordinator({
+  window, document,
+  candidates: () => [
+    ...[...document.querySelectorAll("dialog[open]")].map((node) => ({
+      node, active: true, native: true, register: false, dismiss: () => node.close(),
+    })),
+    { node: openMenuState?.menu, register: false, active: Boolean(openMenuState?.menu && !openMenuState.menu.hidden),
+      dismiss: () => closePopupMenu() },
+    { node: $("#app-notifications-popover"), active: $("#app-notifications-popover")?.hidden === false,
+      dismiss: () => closeUpdateNotificationPopover({ restoreFocus: true }) },
+    { node: $("#catalog-search-shell"), active: catalogSearchIsOpen(),
+      dismiss: () => closeCatalogSearch({ restoreFocus: true }) },
+    ...["#player-source-menu", "#player-audio-menu", "#player-subtitle-menu", "#player-speed-menu"]
+      .map((selector) => ({ node: player$(selector),
+        active: frame.ownerDocument === document && player$(selector)?.hidden === false,
+        dismiss: () => { closePlayerPopovers(); player$("#speed-select")?.focus?.(); } })),
+    { node: player$("#phone-player-more-panel"), active: frame.ownerDocument === document
+      && player$("#phone-player-more-panel")?.hidden === false,
+      dismiss: () => phonePlayerUi?.onAndroidBack?.() },
+    ...[...document.querySelectorAll("#title-hero .title-rating-wrap[open]")].map((node) => ({
+      node, active: true, dismiss: () => { node.open = false; },
+    })),
+    { node: $(".app-shell"), active: $(".app-shell")?.classList.contains("sidebar-expanded"),
+      dismiss: () => { setSidebarExpanded(false); activeSidebarLauncher()?.focus(); } },
+  ],
+});
 // Set when this page is the borderless pop-up player window (index.html reads the handoff).
 export const POPUP_HANDOFF = window.__lvlPopupHandoff?.playback ? window.__lvlPopupHandoff : null;
 if (typeof ResizeObserver !== "undefined") new ResizeObserver(syncWatchEpisodeHeight).observe(frame);
@@ -662,11 +699,20 @@ document.addEventListener("keydown", (event) => {
   openCatalogSearch(viewActive("home") ? "topbar" : "section");
 });
 $("#library-export")?.addEventListener("click", exportLibraryDatabase);
+// Native showModal owns Escape/cancel; register its exact open generation with
+// the shared overlay stack after the browser accepts the modal. The returned
+// idempotent disposer is retired on close or the next explicit opening, never
+// by intercepting the native default or monkey-patching HTMLDialogElement.
+let disposeLibraryImportOverlay = null;
 $("#library-import")?.addEventListener("click", () => {
   setToolStatus("#library-import-status", "");
   const button = $("#anilist-import-connected");
   if (button) button.hidden = !readAniListAccount(localStorage);
-  $("#library-import-dialog")?.showModal();
+  const dialog = $("#library-import-dialog");
+  if (!dialog || dialog.open) return;
+  dialog.showModal();
+  disposeLibraryImportOverlay?.();
+  disposeLibraryImportOverlay = registerOverlayOwner(dialog, { kind: "modal" });
 });
 $("#anilist-import-connected")?.addEventListener("click", async (event) => {
   const button = event.currentTarget;
@@ -826,7 +872,7 @@ if (POPUP_HANDOFF) {
   }, true);
   // Escape closes the pop-up, as ✕ does.
   window.addEventListener("keydown", (event) => {
-    if (event.key !== "Escape" || event.defaultPrevented || $("#player-subtitle-menu")?.hidden === false) return;
+    if (event.key !== "Escape" || event.defaultPrevented || player$("#player-subtitle-menu")?.hidden === false) return;
     event.preventDefault();
     finishPopupWindow("close");
   });
@@ -946,7 +992,7 @@ $("#subtitle-preview-rotate")?.addEventListener("click", () => {
     else openPopupMenu(moreMenu, { anchor: moreButton });
   });
   moreMenu?.addEventListener("click", (event) => {
-    if (event.target.closest('[role="menuitem"]')) closePopupMenu({ restoreFocus: false });
+    if (event.target.closest('[role="menuitem"]')) closePopupMenu();
   });
   $("#library-open-file")?.addEventListener("click", () => $("#video-input")?.click());
 })();
@@ -1076,12 +1122,15 @@ wireLibraryRemoveDialog();
 $("#library-remove-entry")?.addEventListener("click", () => confirmLibraryRemoval());
 $("#library-remove-chapters")?.addEventListener("click", () => confirmLibraryRemoval({ removeChapters: true }));
 
+const libraryArtworkSelection = createPendingSelection();
 $("#library-context-menu").addEventListener("click", (event) => {
   const button = event.target.closest("[data-library-action]");
   if (!button || !libraryContextSeriesKey) return;
   const seriesKey = libraryContextSeriesKey;
   const series = buildLibrarySeries().find((item) => item.key === seriesKey);
-  closeLibraryContextMenu();
+  // Activating a menu command returns focus to the invoking card action.
+  // A following dialog or file picker can then claim focus deliberately.
+  closeLibraryContextMenu({ restoreFocus: true });
   if (!series) return;
   if (button.dataset.libraryAction === "mark-watched") {
     setLibraryTitleWatched(series, !isLibraryTitleMarkedWatched(series));
@@ -1092,7 +1141,7 @@ $("#library-context-menu").addEventListener("click", (event) => {
     return;
   }
   if (button.dataset.libraryAction === "custom-image") {
-    $("#library-custom-image-input").click();
+    if (libraryArtworkSelection.begin(seriesKey)) $("#library-custom-image-input").click();
     return;
   }
   if (button.dataset.libraryAction === "rename") {
@@ -1118,7 +1167,7 @@ $("#library-context-menu").addEventListener("click", (event) => {
 
 $("#library-custom-image-input").addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
-  const seriesKey = libraryContextSeriesKey;
+  const seriesKey = libraryArtworkSelection.take();
   event.target.value = "";
   if (!file || !seriesKey) return;
   try {
@@ -1137,6 +1186,7 @@ $("#library-custom-image-input").addEventListener("change", async (event) => {
     artworkNotice(error.message || "Could not use that image", true);
   }
 });
+$("#library-custom-image-input").addEventListener("cancel", () => libraryArtworkSelection.cancel());
 
 document.addEventListener("click", (event) => {
   // The click that opened a menu (on its button) reaches here too: keep that menu open.
@@ -1302,10 +1352,19 @@ if (window.matchMedia?.("(hover: none) and (pointer: coarse)")?.matches) {
   // Coalesce preview work and commit one seek; do not change desktop hovering.
   phoneTimelineScrub = createTimelineScrubController({
     range: compatProgress, frame: window,
+    captureOwner: () => captureRemuxPreferenceIntent(),
+    isOwnerCurrent: (ticket) => Boolean(ticket?.source
+      && ticket.source === state.currentSource
+      && ticket.loadGeneration === captureRemuxPreferenceIntent().loadGeneration
+      && ticket.context === state.transcodeContext
+      && ticket.videoSrc === video.src),
+    // Cancel only a still-owned obsolete startup seek immediately before the
+    // confirmed new target is handed to seekPlayerTo, not on preview/cancel.
+    cancelObsoleteSeek: () => cancelTranscodeStart({ preservePending: true }),
     onPreview: (seconds) => { showScrubTime(seconds); updateCompatControls(); },
     onScrubbingChange: (scrubbing) => { state.scrubbing = scrubbing; },
     onHidePreview: () => {
-      $("#player-scrub-time").hidden = true;
+      player$("#player-scrub-time").hidden = true;
       updateCompatControls();
     },
     onCommit: (target) => { if (playerDurationMs() > 0) seekPlayerTo(target); },
@@ -1351,7 +1410,7 @@ if (autoNextInline) {
 wirePlayerSourceButtons();
 $("#player-source-switcher")?.addEventListener("click", (event) => {
   event.stopPropagation();
-  const menu = $("#player-source-menu");
+  const menu = player$("#player-source-menu");
   const willOpen = menu.hidden;
   closePlayerPopovers(menu);
   if (willOpen) renderPlayerSourceMenu();
@@ -1359,7 +1418,7 @@ $("#player-source-switcher")?.addEventListener("click", (event) => {
 });
 $("#player-audio-switcher")?.addEventListener("click", (event) => {
   event.stopPropagation();
-  const menu = $("#player-audio-menu");
+  const menu = player$("#player-audio-menu");
   const willOpen = menu.hidden;
   closePlayerPopovers(menu);
   if (willOpen) renderPlayerAudioMenu();
@@ -1475,11 +1534,11 @@ $("#player-fullscreen").addEventListener("click", async () => {
   }
 });
 $("#speed-select").addEventListener("click", () => {
-  const menu = $("#player-speed-menu");
+  const menu = player$("#player-speed-menu");
   const opening = menu.hidden;
   closePlayerPopovers(opening ? menu : null);
   menu.hidden = !opening;
-  $("#speed-select").setAttribute("aria-expanded", String(opening));
+  player$("#speed-select").setAttribute("aria-expanded", String(opening));
   if (opening) menu.querySelector('[aria-checked="true"]')?.focus();
 });
 $("#player-speed-menu").addEventListener("click", (event) => {
@@ -1490,13 +1549,13 @@ $("#player-speed-menu").addEventListener("click", (event) => {
   video.defaultPlaybackRate = video.playbackRate;
   syncPlayerSpeed();
   closePlayerPopovers();
-  $("#speed-select").focus();
+  player$("#speed-select").focus();
 });
 $("#player-speed-menu").addEventListener("keydown", (event) => {
   if (event.key === "Escape") {
     event.preventDefault();
     closePlayerPopovers();
-    $("#speed-select").focus();
+    player$("#speed-select").focus();
   } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
     event.preventDefault();
     const options = [...event.currentTarget.querySelectorAll("[data-speed]")];
@@ -1562,9 +1621,11 @@ $("#subtitle-language").value = subtitleFinderLanguages();
 syncSubtitleFinderLanguageChips();
 setSidebarExpanded(false);
 applySubtitleStyle();
-renderAll();
 
 void hydratePersistentAppState().then(() => {
+  // The initial Library/route must use the SQLite-backed snapshot, or the
+  // browser-cache fallback after a failed hydration, before it becomes active.
+  switchView(viewFromLocation(), { historyMode: "replace" });
   watchRestoreReady = true;
   if (POPUP_HANDOFF) {
     void startPopupPlayback();
@@ -1587,8 +1648,11 @@ void hydratePersistentAppState().then(() => {
 }).catch((error) => {
   showAniListAutoStatus("Waiting for LVL Library hydration before AniList sync.", true);
   console.warn("AniList initialization deferred:", error?.message);
+  // The local-cache fallback still needs a navigable Library/Watch surface
+  // when an exceptional bootstrap failure escapes saved-state's own recovery.
+  switchView(viewFromLocation(), { historyMode: "replace" });
+  watchRestoreReady = true;
 });
-switchView(viewFromLocation(), { historyMode: "replace" });
 if (!POPUP_HANDOFF) void refreshPopupAvailability();
 window.addEventListener("online", () => scheduleAniListAutoSync(1000));
 window.addEventListener("focus", () => {

@@ -15,7 +15,7 @@
 // sync_items: the current change for every synced item, and a hash of what LVL had for it.
 import crypto from "node:crypto";
 import { createClock, newDeviceId, parseStamp } from "../../shared/sync/clock.js";
-import { records } from "../../shared/sync/records.js";
+import { createRegistry } from "../../shared/sync/records.js";
 import { verifiedVideoEpisodeKey, verifiedVideoWorkKey } from "../../shared/sync/video-state.js";
 import { deriveKeyBytes, fromBase64, importKeyBytes, newKdfSettings, passphraseMatches, toBase64 } from "../../shared/sync/crypto.js";
 import { SETTINGS_FILE, createSyncLog, newSettingsFile, readSettingsFile } from "../../shared/sync/log.js";
@@ -96,15 +96,35 @@ const legacyItemHash = (type, value) => {
 };
 
 export function createSyncService({ db, getMeta, setMeta, github, local, app = {}, repoName = SYNC_REPO, now = Date.now, log = console, timers = { setTimeout, clearTimeout } } = {}) {
+  const records = createRegistry(undefined, { now });
   db.exec("CREATE TABLE IF NOT EXISTS sync_items (item_key TEXT PRIMARY KEY, change_json TEXT NOT NULL, local_hash TEXT)");
+  db.exec(`CREATE TABLE IF NOT EXISTS sync_recovery_archive (
+    id TEXT PRIMARY KEY, created_at INTEGER NOT NULL, scope TEXT NOT NULL, backup_json TEXT NOT NULL
+  )`);
   const journal = createSyncJournal(db);
   const read = () => { try { return JSON.parse(getMeta(META_KEY) || "{}") || {}; } catch { return {}; } };
   let settings = read();
+  // setMeta() owns its own transaction. Journal/activation already hold the
+  // SQLite writer lock, so their checkpoint must use the raw statement.
+  const metaInTransaction = db.prepare(`INSERT INTO app_meta(key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value`);
+  const writeCheckpointLocked = (value) => {
+    try { return setMeta(META_KEY, value); }
+    catch (error) {
+      // app-db's public setMeta starts its own transaction, which SQLite
+      // rejects inside the journal's writer lock. Use the same SQL under that
+      // lock. Other failures, including injected persistence errors, propagate.
+      if (error?.code !== 'ERR_SQLITE_ERROR' || !/cannot start a transaction within a transaction/i.test(error.message))
+        throw error;
+      return metaInTransaction.run(META_KEY, value);
+    }
+  };
   const needsDevice = !settings.device;
   if (needsDevice) settings.device = newDeviceId();
   const save = () => setMeta(META_KEY, JSON.stringify(settings));
   if (needsDevice) save();
   let device = null; // the device sign-in in progress
+  let startingDevice = null; // pending device-code request and its connection intent
   let running = null;
   let runningOptions = null;
   let timer = null;
@@ -112,6 +132,8 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   let reloadNeeded = 0;
   let repoMissing = false;
   let stopped = false;
+  let closing = false;
+  let stopPromise = null;
   // The local mark last compared, and when each check last ran.
   let comparedMark = null;
   let lastRemoteAt = 0;
@@ -121,21 +143,58 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   let rateLimited = false;
   let storageCache = null;
   let accountEpoch = 0;
+  let authGeneration = 0;
   let lastObservedHead = null;
   let progressDeadline = 0;
   const scope = () => `${settings.device}:${settings.repo?.owner || ""}/${settings.repo?.name || ""}:${settings.encrypted ? "encrypted" : "plain"}`;
+  // Causal projection proofs belong to the exact device/repository/format
+  // scope. A different sign-in cannot inherit another account's accepted HLC.
+  const bindLocalCausality = (value = scope()) => local.setCausalScope?.(value);
+  bindLocalCausality();
   const saveCredentials = () => {
     const previous = getMeta(META_KEY);
     const updated = JSON.stringify(settings);
     const pending = journal.load();
     if (pending) {
       if (pending.scope !== scope()) throw new Error("Cannot authorize an unfinished sync for a different repository");
-      journal.rebindCheckpoint(pending.operationId, previous, updated, () => setMeta(META_KEY, updated));
+      journal.rebindCheckpoint(pending.operationId, previous, updated, () => writeCheckpointLocked(updated));
     } else setMeta(META_KEY, updated);
   };
   const assertEpoch = (epoch) => {
-    if (epoch !== accountEpoch || step() !== "ready")
+    if (stopped || epoch !== accountEpoch || step() !== "ready")
       throw Object.assign(new Error("Sync account changed while an operation was running; the original journal was preserved"), { code: "sync_account_changed" });
+  };
+  const setupAlive = (epoch) => {
+    if (stopped || closing || epoch !== accountEpoch)
+      throw Object.assign(new Error("Sync setup was cancelled or stopped"), { code: "sync_setup_cancelled", status: 409 });
+  };
+  const accountMatches = (user) => {
+    if (!user?.login) return false;
+    if (settings.accountId)
+      return Number.isSafeInteger(Number(user.id)) && Number(settings.accountId) === Number(user.id);
+    // Login-only legacy installations bind a verified account ID on reauth.
+    // Missing login must fail closed rather than authorize an arbitrary user.
+    return Boolean(settings.login && settings.login.toLowerCase() === user.login.toLowerCase());
+  };
+  const discardUnactivatedForeignRepo = (user) => {
+    if (settings.active || !settings.repo || accountMatches(user)) return;
+    // A repository selected while signed in as A must not remain selected
+    // after signing in as B. If this installation has any accepted history,
+    // require the existing recovery flow instead of silently discarding it.
+    if (journal.load() || db.prepare('SELECT 1 FROM sync_items LIMIT 1').get())
+      throw Object.assign(new Error('Recover the original repository before switching GitHub accounts'), {
+        code: 'sync_pending', status: 409,
+      });
+    Object.assign(settings, { repo: null, joining: false, encrypted: false, key: '', kdf: null,
+      seen: {}, deferredPaths: [], nextSeq: 1, remoteHead: '', snapshotVersion: null });
+    storageCache = null;
+    lastObservedHead = null;
+    comparedMark = null;
+  };
+  const rejectAccount = () => Object.assign(new Error("Reconnect the original GitHub account to recover its sync and pending edits"), { code: "sync_account_mismatch", status: 409 });
+  const requireJoiningEncrypted = () => {
+    if (settings.active || !settings.joining || !settings.repo)
+      throw Object.assign(new Error("Passphrase is available only while joining an existing encrypted sync"), { code: "sync_invalid_transition", status: 409 });
   };
   const requireIdle = () => {
     if (running) throw Object.assign(new Error("Sync is still in progress; finish its pending publication before changing accounts"), { code: "sync_in_progress", status: 409 });
@@ -158,37 +217,62 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   };
 
   // Setup is done: from now on this device syncs (keyBytes only for an encrypted sync).
-  function activate(keyBytes) {
+  function activate(keyBytes, extra = {}) {
     requireIdle();
+    if (stopped || closing) throw Object.assign(new Error("Sync setup stopped"), { code: "sync_setup_cancelled", status: 409 });
     accountEpoch++;
-    Object.assign(settings, { active: true, key: keyBytes ? toBase64(keyBytes) : "", seen: {}, nextSeq: 1, joining: false, remoteHead: "" });
-    db.exec("DELETE FROM sync_items");
-    journal.clear();
+    const updated = { ...settings, ...extra, active: true, key: keyBytes ? toBase64(keyBytes) : "", seen: {}, nextSeq: 1, joining: false, remoteHead: "" };
+    // Initial activation's item reset and metadata must commit as one unit.
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      db.exec("DELETE FROM sync_items");
+      writeCheckpointLocked(JSON.stringify(updated));
+      db.exec("COMMIT");
+    } catch (error) { db.exec("ROLLBACK"); throw error; }
+    settings = updated;
     comparedMark = null;
     lastObservedHead = null;
     progressDeadline = 0;
     rateLimited = false;
     retryAt = 0;
     lastFullAt = 0;
-    stopped = false;
     schedule(500);
   }
 
   async function ensureToken() {
     if (!settings.expiresAt || now() < settings.expiresAt - RENEW_BEFORE_MS) return;
     if (!settings.refreshToken) throw Object.assign(new Error("The GitHub sign-in ended; sign in again"), { code: "signed-out" });
+    const epoch = accountEpoch;
     const answer = await github.refresh({ clientId: app.clientId, refreshToken: settings.refreshToken });
+    assertEpoch(epoch);
     if (!answer.access_token) throw Object.assign(new Error("The GitHub sign-in couldn't renew; sign in again"), { code: "signed-out" });
     keepToken(answer);
   }
   // lvl-sync was cleared or made again (the user can do that on GitHub): lvl-sync.json is
   // written again, and when this device's own files are gone too, it sends all its data
   // again, as on its first sync. Another device's files already there are read as usual.
-  async function recoverStorage(storage, pulled) {
+  async function recoverStorage(storage, pulled, epoch) {
     if (!pulled.paths.has(SETTINGS_FILE)) {
       if (settings.key && !settings.kdf) throw Object.assign(new Error("lvl-sync.json is gone and this device can't write it again; disconnect and set up sync again"), { code: "set-up-again" });
       const text = settings.key ? await newSettingsFile({ key: await importKeyBytes(fromBase64(settings.key)), kdf: settings.kdf }) : await newSettingsFile();
-      try { await storage.write(SETTINGS_FILE, text, {}); } catch (error) { if (error.code !== "conflict") throw error; }
+      assertEpoch(epoch);
+      try { await storage.write(SETTINGS_FILE, text, {}); }
+      catch (error) {
+        if (error.code !== "conflict") throw error;
+        // A second device may have recreated the settings while this device
+        // was awaiting GitHub. Check the actual winning format and key before
+        // a subsequent append can publish in the wrong cipher.
+        const current = (await storage.list()).find(file => file.path === SETTINGS_FILE);
+        if (!current) throw error;
+        const remote = readSettingsFile(await storage.read(SETTINGS_FILE, current.version));
+        const encrypted = Boolean(settings.key);
+        if (Boolean(remote.encrypted) !== encrypted
+          || (encrypted && (!remote.check || !remote.kdf
+            || !await passphraseMatches(await importKeyBytes(fromBase64(settings.key)), remote.check))))
+          throw Object.assign(new Error("The repository settings changed while recovering; reconnect the original sync before publishing"), {
+            code: "sync_repo_settings_changed", status: 409,
+          });
+      }
     }
     const own = (path) => path.startsWith(`changes/${settings.device}/`) || path === `snapshots/${settings.device}.json`;
     const mine = Object.keys(settings.seen || {}).filter(own);
@@ -201,12 +285,14 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     return true;
   }
 
-  function keepToken(answer) {
+  function keepToken(answer, extra = {}) {
+    const original = { ...settings };
+    Object.assign(settings, extra);
     settings.token = answer.access_token;
     settings.refreshToken = answer.refresh_token || "";
     settings.expiresAt = answer.expires_in ? now() + Number(answer.expires_in) * 1000 : 0;
     storageCache = null;
-    saveCredentials();
+    try { saveCredentials(); } catch (error) { settings = original; throw error; }
   }
 
   function loadItems() {
@@ -218,12 +304,35 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     return { state, hashes };
   }
+  const pendingRecovery = () => {
+    const operation = journal.load();
+    const { state, hashes } = loadItems();
+    // Ordinary Library rows are not pending sync edits before this installation
+    // has ever activated a repository. Durable accepted rows or an outbox still
+    // require recovery even if the account metadata is incomplete.
+    const hasSyncHistory = Boolean(settings.active && settings.repo) || state.size > 0;
+    if (!hasSyncHistory) return { pending: Boolean(operation), journal: Boolean(operation),
+      localEdits: 0, scope: scope(), acceptedItems: 0, canArchive: true };
+    const exported = new Map(local.export().map(item => [
+      `${item.type} ${item.id}`, { type: item.type, value: records.clean(item.type, item.value) }]));
+    let localEdits = 0;
+    for (const [itemKey, item] of exported)
+      if (hashes.get(itemKey) !== itemHash(item.type, item.value)) localEdits++;
+    for (const [itemKey, change] of state)
+      if (local.types.includes(change.type) && change.value !== null && hashes.has(itemKey) && !exported.has(itemKey)) localEdits++;
+    return { pending: Boolean(operation || localEdits), journal: Boolean(operation), localEdits,
+      scope: scope(), acceptedItems: state.size, canArchive: true };
+  };
+  const listArchives = () => db.prepare('SELECT id, created_at, scope FROM sync_recovery_archive ORDER BY created_at DESC').all()
+    .map(row => ({ id: row.id, createdAt: row.created_at,
+      repo: String(row.scope).split(':')[1]?.slice(0, 160) || '' }));
   const putItem = db.prepare(`INSERT INTO sync_items (item_key, change_json, local_hash) VALUES (?, ?, ?)
     ON CONFLICT(item_key) DO UPDATE SET change_json = excluded.change_json, local_hash = excluded.local_hash`);
 
   async function publishPrepared(plan, syncLog, epoch = accountEpoch) {
     assertEpoch(epoch);
     if (plan.scope !== scope()) throw new Error("An unfinished sync belongs to a different repository or device; reconnect to the original sync to recover it");
+    bindLocalCausality(plan.scope);
     if (plan.baseCheckpoint !== undefined && getMeta(META_KEY) !== plan.baseCheckpoint)
       throw Object.assign(new Error("Sync checkpoint advanced in another process; retry with its current state"), { code: "sync_generation_changed" });
     let seq = plan.seq;
@@ -243,17 +352,22 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     if (plan.scope !== scope()) throw new Error("The sync account or repository changed before its checkpoint");
     assertEpoch(epoch);
     const nextSettings = { ...settings, seen: plan.seen, nextSeq: seq, clock: plan.clock, hashVersion: 2,
+      deferredPaths: plan.deferredPaths || [], snapshotVersion: plan.snapshotVersion || null,
       lastSyncAt: now(), sent: (settings.sent || 0) + plan.outgoing.length,
       received: (settings.received || 0) + plan.received,
       skippedFiles: (settings.skippedFiles || 0) + plan.skipped.length,
       refused: (settings.refused || 0) + plan.refused,
-      ...(plan.remoteChanged && plan.remoteHead ? { remoteHead: plan.remoteHead } : {}),
-      ...(plan.snapshotVersion ? { snapshotVersion: plan.snapshotVersion } : {}) };
+      ...(plan.remoteChanged && plan.remoteHead ? { remoteHead: plan.remoteHead } : {}) };
     // SQLite rolls back all item rows and the checkpoint if any individual row
     // fails. The outbox remains recoverable until that same commit deletes it.
     journal.commit(plan.operationId, () => {
+      if (plan.resetOwnFiles) db.exec("DELETE FROM sync_items");
       for (const [itemKey, json, hash] of plan.updates) putItem.run(itemKey, json, hash);
-      setMeta(META_KEY, JSON.stringify(nextSettings));
+      // Local authored events are not applied through the inbound producer
+      // route. Persist their original, prepared projection/HLC under the same
+      // commit as sync_items; later independent edits invalidate that proof.
+      local.recordAuthoredCausal?.(plan.outgoing, plan.causalProjections || []);
+      writeCheckpointLocked(JSON.stringify(nextSettings));
     }, plan.baseCheckpoint);
     settings = nextSettings;
     reloadNeeded += plan.appliedVideo;
@@ -270,6 +384,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
   // compareLocal: send this device's changes (false for an incoming-only check).
   async function syncOnce({ full = true, compareLocal = true } = {}, generationRetries = 0) {
     if (step() !== "ready") return { skipped: true };
+    bindLocalCausality();
     const epoch = accountEpoch;
     await ensureToken();
     assertEpoch(epoch);
@@ -287,7 +402,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       throw new Error("An unfinished sync belongs to another device or repository; reconnect to that sync before continuing");
     const key = settings.key ? await importKeyBytes(fromBase64(settings.key)) : null;
     assertEpoch(epoch);
-    const syncLog = createSyncLog({ storage, device: settings.device, key });
+    const syncLog = createSyncLog({ storage, device: settings.device, key, now });
     if (prior?.phase === "prepared") return publishPrepared(prior, syncLog, epoch);
     const restoring = prior?.phase === "preapply";
     const operationId = restoring ? prior.operationId : crypto.randomUUID();
@@ -297,7 +412,8 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       : typeof storage.head === "function" ? await storage.head() : null;
     assertEpoch(epoch);
     lastRemoteAt = now();
-    const remoteChanged = restoring ? prior.remoteChanged : full || !head || head.version !== (lastObservedHead ?? settings.remoteHead);
+    const remoteChanged = restoring ? prior.remoteChanged : full || Boolean(settings.deferredPaths?.length)
+      || !head || head.version !== (lastObservedHead ?? settings.remoteHead);
     let mark = restoring ? prior.mark : local.mark?.() ?? null;
     let sendLocal = restoring ? prior.sendLocal : full || (compareLocal && (mark === null || mark !== comparedMark));
     const checkedFull = restoring ? prior.full : full;
@@ -306,21 +422,23 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       return { sent: 0, received: 0, skippedFiles: [], refused: settings.refused || 0, idle: true };
     }
     const clock = createClock({ device: settings.device, last: settings.clock, now });
-    const pulled = restoring ? prior.pulled : remoteChanged ? await syncLog.pull(settings.seen || {})
-      : { changes: [], seen: settings.seen || {}, skipped: [], nextSeq: settings.nextSeq || 1 };
+    const pulled = restoring ? prior.pulled : remoteChanged ? await syncLog.pull(settings.seen || {},
+      { retryPaths: settings.deferredPaths || [] })
+      : { changes: [], seen: settings.seen || {}, skipped: [], deferred: settings.deferredPaths || [], nextSeq: settings.nextSeq || 1 };
     assertEpoch(epoch);
     const resetOwnFiles = restoring ? Boolean(prior.resetOwnFiles)
-      : pulled.paths ? await recoverStorage(storage, pulled) : false;
+      : pulled.paths ? await recoverStorage(storage, pulled, epoch) : false;
     assertEpoch(epoch);
     for (const change of pulled.changes) {
       const inspected = records.read(change);
-      if (inspected.status !== "invalid") clock.observe(inspected.change.at);
+      if (inspected.status !== "invalid" && inspected.status !== "future") clock.observe(inspected.change.at);
     }
     // Full scans must still inspect the remote tree and *actual* local hashes.
     // When nothing has changed, don't create and remove a SQLite journal just
     // to say that the repository was checked.
     if (!restoring && !resetOwnFiles && settings.hashVersion === 2
-      && pulled.changes.length === 0 && stable(pulled.seen) === stable(settings.seen)) {
+      && pulled.changes.length === 0 && !(pulled.deferred?.length)
+      && stable(pulled.seen) === stable(settings.seen)) {
       const { state, hashes } = loadItems();
       const projection = new Map(local.export().map((item) =>
         [`${item.type} ${item.id}`, { type: item.type, value: records.clean(item.type, item.value) }]));
@@ -387,9 +505,15 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     if (!restoring) {
       try { journal.save({ phase: "preapply", operationId, scope: scope(), startedAt,
       remoteChanged, remoteHead: head?.version || null, mark, sendLocal, full: checkedFull,
-      pulled: { changes: pulled.changes, seen: pulled.seen, skipped: pulled.skipped, nextSeq: pulled.nextSeq },
+      pulled: { changes: pulled.changes, seen: pulled.seen, skipped: pulled.skipped,
+        deferred: pulled.deferred || [], nextSeq: pulled.nextSeq },
       pending: [...pending], baseCheckpoint, resetOwnFiles }, baseCheckpoint, (operation) => {
-        if (resetOwnFiles) db.exec("DELETE FROM sync_items");
+        // Record old hashes, causal changes and local intent before resetting.
+        // Both the baseline journal and table deletion share a writer lock.
+        if (resetOwnFiles) {
+          operation.baselineRows = db.prepare("SELECT item_key, change_json, local_hash FROM sync_items").all();
+          db.exec('DELETE FROM sync_items');
+        }
         const captured = localProjection();
         operation.expectedLocal = captured;
         if (remoteChanged || settings.hashVersion !== 2) {
@@ -408,12 +532,16 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
         return syncOnce({ full, compareLocal }, generationRetries + 1);
       }
     }
-    if (resetOwnFiles) {
-      settings.nextSeq = 1;
-      settings.snapshotVersion = undefined;
-      if (!restoring) log.warn?.("Sync: lvl-sync no longer has this device's files; sending everything again");
-    }
+    if (resetOwnFiles && !restoring) log.warn?.("Sync: lvl-sync no longer has this device's files; restoring the durable baseline");
     const { state, hashes } = loadItems();
+    const baselineRows = resetOwnFiles ? (restoring ? prior.baselineRows : journal.load()?.baselineRows) : null;
+    if (Array.isArray(baselineRows)) {
+      state.clear(); hashes.clear();
+      for (const row of baselineRows) {
+        state.set(row.item_key, JSON.parse(row.change_json));
+        if (row.local_hash) hashes.set(row.item_key, row.local_hash);
+      }
+    }
     const before = new Map(state);
     // Enriching the format is not a user edit. Upgrade confirmed, unchanged
     // hashes before deciding whether this older installation has pending edits.
@@ -440,8 +568,38 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       if (itemHash(previous.type, prior) !== hash
         && !contextOnlyPlaybackDifference(previous.type, prior, previous)) dirty.add(itemKey);
     }
+    if (restoring && resetOwnFiles && !Array.isArray(prior.baselineRows)) {
+      // Legacy preapply journals deleted hashes before the baseline was saved.
+      // Protect their captured local values instead of guessing they are clean.
+      for (const itemKey of pending.keys()) dirty.add(itemKey);
+    }
     const arrived = records.merge(state, pulled.changes);
+    // A new installation can have exactly the same seeded item as an existing
+    // repository (notably the built-in Keiyoushi Comics repository). It is not
+    // a competing local edit when the full cleaned value agrees. Comparing
+    // after merge lets that remote record apply and retain its original HLC,
+    // instead of manufacturing a newer outgoing event and under-counting the
+    // received batch. A genuinely distinct local value still stays dirty and
+    // wins the initial join by receiving its own authored stamp.
+    if (remoteChanged) for (const [itemKey, value] of pending) {
+      if (value === null || hashes.has(itemKey) || before.has(itemKey)) continue;
+      const type = itemKey.slice(0, itemKey.indexOf(' '));
+      if (!local.types.includes(type)) continue;
+      const remote = state.get(itemKey);
+      if (remote && remote.value !== null && records.read(remote).status === "ok"
+        && itemHash(type, remote.value) === itemHash(type, value)) continue;
+      dirty.add(itemKey);
+    }
     const touched = new Set(arrived.map((change) => `${change.type} ${change.id}`));
+    // Preserve a genuine pending local title edit, while accepting a newer
+    // *same-account* imported display snapshot from its admitted remote title.
+    // The latter has no authentication authority and must not be overwritten
+    // just because the local user changed artwork during a first-time join.
+    if (typeof local.reconcileImportedSnapshot === "function") for (const change of arrived) {
+      if (change.type !== "video.title" || !dirty.has(`${change.type} ${change.id}`)) continue;
+      assertEpoch(epoch);
+      local.reconcileImportedSnapshot(change);
+    }
     for (const itemKey of intervening.keys()) {
       dirty.add(itemKey);
       const accepted = state.get(itemKey);
@@ -480,11 +638,16 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     // Changes for LVL's data that couldn't be applied before (an episode before its title) are tried again.
     const toApply = [...state.entries()].filter(([itemKey, change]) => local.types.includes(change.type)
+      // The journal retains opaque future-schema records for compatible peers.
+      // They must not be materialized by this older producer or acknowledged
+      // merely because their type name is locally recognized.
+      && records.read(change).status === "ok"
       && !dirty.has(itemKey)
       && !(change.type.startsWith("video.") && dirty.has(`video.title ${change.id.split("/")[0]}`)
         && !pending.has(`video.title ${change.id.split("/")[0]}`))
       && (touched.has(itemKey) || !hashes.has(itemKey) || historyToReplay.has(itemKey))).map(([, change]) => change);
     assertEpoch(epoch);
+    bindLocalCausality();
     const applied = toApply.length ? local.apply(toApply, before, {
       onLibraryApplied: (result) => journal.recordAppliedLibrary(operationId, result, localProjection),
       applyOtherAtomically: (apply) => journal.applyAndRecord(operationId, apply, localProjection),
@@ -504,7 +667,21 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       const itemKey = item.key;
       exported.add(itemKey);
       const value = item.value;
-      if (hashes.get(itemKey) === itemHash(item.type, value)) continue;
+      const retained = state.get(itemKey);
+      if (retained && records.read(retained).status !== "ok") {
+        // Keep newer/opaque wire state byte-for-byte in sync_items. A local
+        // edit cannot downgrade its schema or claim an unsupported ack; it
+        // stays in the local producer until an upgraded client reconciles it.
+        continue;
+      }
+      if (hashes.get(itemKey) === itemHash(item.type, value)) {
+        // Own immutable log files vanished: restore original causal records
+        // with their original HLC instead of inventing a newer watched event.
+        const old = before.get(itemKey);
+        if (resetOwnFiles && old && !touched.has(itemKey) && parseStamp(old.at)?.device === settings.device)
+          outgoing.push(old);
+        continue;
+      }
       // Preserve this projection's new full hash locally without issuing a new
       // watched/progress event. Otherwise a title-only edit would publish a
       // fabricated, newer watch intent (and override a genuine remote unwatch).
@@ -514,19 +691,18 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
         continue;
       }
       const authored = value.updatedAt ? { ...value, updatedBy: settings.device } : value;
-      let change;
-      try { change = records.make({ type: item.type, id: item.id, value: authored, at: clock.tick(), previous: state.get(itemKey) }); } catch (error) {
-        if (!/too large/.test(error.message) || !("episodes" in value)) throw error;
-        const { episodes, ...smaller } = value;
-        change = records.make({ type: item.type, id: item.id, value: smaller, at: clock.tick(), previous: state.get(itemKey) });
-      }
+      // A too-large title remains pending. Removing episodes here silently
+      // loses chapter/file identity on every other device.
+      const change = records.make({ type: item.type, id: item.id, value: authored,
+        at: clock.tick(), previous: state.get(itemKey) });
       outgoing.push(change);
       state.set(itemKey, change);
       hashes.set(itemKey, itemHash(item.type, value));
       touched.add(itemKey);
     }
     for (const [itemKey, change] of sendLocal ? state : []) {
-      if (!local.types.includes(change.type) || change.value === null || exported.has(itemKey) || !hashes.has(itemKey)) continue;
+      if (!local.types.includes(change.type) || change.value === null || exported.has(itemKey) || !hashes.has(itemKey)
+        || records.read(change).status !== "ok") continue;
       const removal = records.make({ type: change.type, id: change.id, value: null, at: clock.tick() });
       outgoing.push(removal);
       state.set(itemKey, removal);
@@ -578,10 +754,20 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     const plan = { phase: "prepared", schema: 1, operationId, scope: scope(), startedAt, full: checkedFull,
       baseCheckpoint: restoring ? prior.baseCheckpoint : baseCheckpoint,
       remoteChanged, remoteHead: head?.version || null, mark, sendLocal,
-      state: [...state], updates: [...keys].filter((itemKey) => state.has(itemKey)).map((itemKey) =>
+      state: [...state], updates: [...(resetOwnFiles ? state.keys() : keys)].filter((itemKey) => state.has(itemKey)).map((itemKey) =>
         [itemKey, JSON.stringify(state.get(itemKey)), hashes.get(itemKey) || null]),
-      outgoing, nextChunk: 0, seq: Math.max(pulled.nextSeq, settings.nextSeq || 1),
-      seen: { ...pulled.seen }, snapshotVersion: settings.snapshotVersion || null,
+      outgoing,
+      // Prepared content proofs survive network interruptions. Never take a
+      // fresh post-publication snapshot, which could conceal a same-ms local
+      // edit that occurred while the GitHub push was in flight.
+      causalProjections: outgoing.filter(change => change.type.startsWith("comic.") || change.type === "rating.lvl"
+        || change.type === "rating.imported").map(change => {
+        const itemKey = `${change.type} ${change.id}`;
+        return [itemKey, byKey.get(itemKey)?.value ?? null];
+      }),
+      nextChunk: 0, seq: resetOwnFiles ? pulled.nextSeq : Math.max(pulled.nextSeq, settings.nextSeq || 1),
+      resetOwnFiles, deferredPaths: pulled.deferred || [],
+      seen: { ...pulled.seen }, snapshotVersion: resetOwnFiles ? null : settings.snapshotVersion || null,
       received: applied.size, appliedVideo: [...applied].filter((change) => change.type.startsWith("video.")).length,
       skipped: pulled.skipped, refused: pulled.changes.filter((change) => records.read(change).status === "invalid").length,
       clock: clock.last() };
@@ -611,7 +797,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     return changed > 0;
   };
   async function tick() {
-    if (step() !== "ready" || running) return null;
+    if (stopped || closing || step() !== "ready" || running) return null;
     const t = now();
     if (t < retryAt) return null;
     let mark = null;
@@ -631,13 +817,14 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
 
   function schedule(ms = CHECK_EVERY_MS) {
     timers.clearTimeout(timer);
-    if (stopped) return;
+    if (stopped || closing) return;
     timer = timers.setTimeout(() => { void tick().catch(() => null).finally(() => { if (!stopped && step() === "ready") schedule(); }); }, ms);
     timer.unref?.();
   }
 
   // "Sync now", start and the 10-minute comparison are full; the tick's checks aren't.
   async function syncNow({ full = true, compareLocal = true } = {}) {
+    if (stopped || closing) throw Object.assign(new Error("Sync service stopped"), { code: "sync_stopped", status: 409 });
     // A manual full send must not be swallowed by an already-running, remote-only poll.
     if (running) {
       if ((full && !runningOptions.full) || (compareLocal && !runningOptions.compareLocal))
@@ -646,32 +833,48 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     if (now() < retryAt && lastError && rateLimited)
       throw Object.assign(new Error("GitHub is rate limited; retry after the reported cooldown"), { code: "rate-limited", retryAt });
+    const launchedEpoch = accountEpoch;
     runningOptions = { full, compareLocal };
-    running = syncOnce({ full, compareLocal }).then((result) => { lastError = ""; retryAt = 0; rateLimited = false; return result; }, (error) => {
-      lastError = String(error.message || error).slice(0, 300);
-      rateLimited = error.code === "rate-limited";
-      retryAt = now() + (rateLimited
-        ? Math.max(RETRY_MS, Math.min(MAX_RETRY_MS, Number(error.retryAfterMs) || RATE_LIMITED_RETRY_MS)) : RETRY_MS);
-      if (error.code === "signed-out") { settings.token = ""; saveCredentials(); }
-      log.warn?.("Sync:", lastError);
+    const task = syncOnce({ full, compareLocal }).then((result) => {
+      if (!stopped && launchedEpoch === accountEpoch) { lastError = ""; retryAt = 0; rateLimited = false; }
+      return result;
+    }, (error) => {
+      if (!stopped && launchedEpoch === accountEpoch) {
+        lastError = String(error.message || error).slice(0, 300);
+        rateLimited = error.code === "rate-limited";
+        retryAt = now() + (rateLimited
+          ? Math.max(RETRY_MS, Math.min(MAX_RETRY_MS, Number(error.retryAfterMs) || RATE_LIMITED_RETRY_MS)) : RETRY_MS);
+        if (error.code === "signed-out") {
+          const before = { ...settings };
+          settings.token = "";
+          try { saveCredentials(); } catch (saveError) { settings = before; throw saveError; }
+        }
+        log.warn?.("Sync:", lastError);
+      }
       throw error;
-    }).finally(() => { running = null; runningOptions = null; });
+    });
+    const inFlight = task.finally(() => {
+      if (running === inFlight) { running = null; runningOptions = null; }
+    });
+    running = inFlight;
     return running;
   }
 
   function scheduleDevicePoll(flow) {
-    if (device !== flow) return;
+    if (stopped || closing || device !== flow || flow.generation !== authGeneration) return;
     const remaining = flow.expiresAt - now();
     if (remaining <= 0) {
       lastError = "The GitHub sign-in code expired; start sign-in again";
       device = null;
+      authGeneration++;
       return;
     }
     flow.timer = timers.setTimeout(() => {
       void pollDevice().catch((error) => {
-        if (device !== flow) return;
+        if (stopped || device !== flow || flow.generation !== authGeneration) return;
         lastError = String(error.message || error).slice(0, 300);
         device = null;
+        authGeneration++;
       });
     }, Math.min(flow.interval * 1000, remaining));
     flow.timer.unref?.();
@@ -683,28 +886,35 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     if (now() >= flow.expiresAt) { scheduleDevicePoll(flow); return; }
     let answer;
     try { answer = await github.pollDevice({ clientId: app.clientId, deviceCode: flow.deviceCode }); } catch (error) {
-      if (device !== flow) return;
+      if (stopped || device !== flow || flow.generation !== authGeneration) return;
       lastError = String(error.message || error).slice(0, 300);
       scheduleDevicePoll(flow);
       return;
     }
-    if (device !== flow) return;
+    if (stopped || device !== flow || flow.generation !== authGeneration) return;
     if (answer.access_token) {
-      let login = "";
-      try { login = (await github.user(answer.access_token)).login || ""; } catch {}
-      // Looking up the account is asynchronous too; cancelling/restarting must win.
-      if (device !== flow) return;
-      if (settings.active && !settings.token &&
-        (!settings.login || login.toLowerCase() !== settings.login.toLowerCase())) {
-        lastError = "Reconnect with the original GitHub account to recover its pending sync";
-        device = null;
+      let user = null;
+      try { user = await github.user(answer.access_token); } catch {
+        if (device === flow) { lastError = "Couldn't verify the GitHub account; sign in again"; device = null; authGeneration++; }
         return;
       }
-      keepToken(answer);
-      settings.renew = Boolean(answer.refresh_token);
-      settings.login = login;
+      // Looking up the account is asynchronous too; cancelling/restarting must win.
+      if (stopped || device !== flow || flow.generation !== authGeneration) return;
+      if ((settings.active || journal.load()) && !accountMatches(user)) {
+        lastError = "Reconnect with the original GitHub account to recover its pending sync";
+        device = null;
+        authGeneration++;
+        return;
+      }
+      const old = { ...settings };
+      accountEpoch++;
+      try {
+        discardUnactivatedForeignRepo(user);
+        keepToken(answer, { renew: Boolean(answer.refresh_token), login: user.login,
+          accountId: Number.isSafeInteger(Number(user.id)) && Number(user.id) > 0 ? Number(user.id) : null, mode: "app" });
+      } catch (error) { settings = old; accountEpoch++; throw error; }
       device = null;
-      saveCredentials();
+      authGeneration++;
       return;
     }
     if (answer.error === "slow_down") flow.interval += 5;
@@ -715,6 +925,7 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     }
     lastError = answer.error === "access_denied" ? "The sign-in was cancelled on GitHub" : answer.error === "expired_token" ? "The code expired; sign in again" : (answer.error_description || "The sign-in didn't finish");
     device = null;
+    authGeneration++;
   }
 
   return {
@@ -729,29 +940,82 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
         syncing: Boolean(running), lastSyncAt: settings.lastSyncAt || 0, lastCheckedAt: Math.max(settings.lastSyncAt || 0, lastCheckAt), lastError, sent: settings.sent || 0, received: settings.received || 0,
         retryAt: rateLimited ? retryAt : 0,
         skippedFiles: settings.skippedFiles || 0, refused: settings.refused || 0, repoMissing,
+        recovery: settings.active && !settings.token ? pendingRecovery() : null,
+        archivedRecoveries: listArchives(),
+        canResumeArchived: !settings.active && !settings.repo && !settings.token && !journal.load() && !running,
         reloadNeeded: shown,
       };
     },
     acknowledgeReload() { reloadNeeded = 0; },
-    async startDevice({ renew = true } = {}) {
+    pendingRecovery,
+    archivedRecoveries: listArchives,
+    resumeArchived({ id } = {}) {
+      requireIdle();
+      if (settings.active || settings.repo || settings.token)
+        throw Object.assign(new Error('Disconnect the current sync before recovering an archived one'), { status: 409 });
+      if (typeof id !== 'string' || !/^[a-f0-9-]{36}$/i.test(id))
+        throw Object.assign(new Error('Select a valid local recovery archive'), { status: 400 });
+      const row = db.prepare('SELECT backup_json FROM sync_recovery_archive WHERE id=?').get(id);
+      if (!row) throw Object.assign(new Error('Recovery archive not found'), { status: 404 });
+      const backup = JSON.parse(row.backup_json);
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        db.exec('DELETE FROM sync_items');
+        for (const item of backup.items) putItem.run(item.item_key, item.change_json, item.local_hash);
+        db.exec('DELETE FROM sync_journal');
+        if (backup.operation) db.prepare('INSERT INTO sync_journal(id, operation_json) VALUES (1, ?)').run(JSON.stringify(backup.operation));
+        writeCheckpointLocked(JSON.stringify(backup.settings));
+        db.prepare('DELETE FROM sync_recovery_archive WHERE id=?').run(id);
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      settings = backup.settings;
+      accountEpoch++; authGeneration++; storageCache = null; comparedMark = null;
+      return this.status();
+    },
+    async startDevice({ renew = true, replace = false } = {}) {
+      if (stopped || closing) throw Object.assign(new Error("Sync service stopped"), { status: 409 });
       if (!app.clientId) throw Object.assign(new Error("LVL's GitHub App isn't set up in this build"), { status: 503 });
+      // Two requests for the SAME still-pending connection share one GitHub
+      // device-code request. Distinct renew/owner intent or explicit replace
+      // deliberately starts a new generation. Never share an already-issued
+      // code: a fresh Start after issuance is a new user authorization flow.
+      const requestedRenew = renew !== false;
+      const target = [accountEpoch, scope(), settings.accountId || "", settings.login || "",
+        settings.mode || ""].join("\u0000");
+      if (replace !== true && startingDevice?.generation === authGeneration
+        && startingDevice.renew === requestedRenew && startingDevice.target === target)
+        return startingDevice.promise;
       if (settings.active && !settings.token) {
         if (running) throw Object.assign(new Error("The old sync publication is still active"), { status: 409 });
       } else requireIdle();
       const startedEpoch = accountEpoch;
-      const answer = await github.startDevice({ clientId: app.clientId, renew });
-      if (startedEpoch !== accountEpoch) throw new Error("Sign-in was cancelled while GitHub was responding");
+      const attempt = ++authGeneration;
       if (device?.timer) timers.clearTimeout(device.timer);
-      device = { deviceCode: answer.device_code, userCode: answer.user_code, verificationUri: answer.verification_uri,
-        interval: Number(answer.interval) || 5, expiresAt: now() + (Number(answer.expires_in) || 900) * 1000 };
-      settings.mode = "app";
-      lastError = "";
-      scheduleDevicePoll(device);
-      return this.status();
+      device = null;
+      const promise = (async () => {
+        const answer = await github.startDevice({ clientId: app.clientId, renew: requestedRenew });
+        if (stopped || closing || attempt !== authGeneration || startedEpoch !== accountEpoch)
+          throw Object.assign(new Error("Sign-in was cancelled while GitHub was responding"), { code: "sync_auth_cancelled", status: 409 });
+        device = { deviceCode: answer.device_code, userCode: answer.user_code, verificationUri: answer.verification_uri,
+          generation: attempt, interval: Number(answer.interval) || 5, expiresAt: now() + (Number(answer.expires_in) || 900) * 1000 };
+        settings.mode = "app";
+        lastError = "";
+        scheduleDevicePoll(device);
+        return this.status();
+      })();
+      startingDevice = { generation: attempt, renew: requestedRenew, target, promise };
+      try { return await promise; }
+      finally { if (startingDevice?.promise === promise) startingDevice = null; }
     },
-    cancelDevice() { if (device?.timer) timers.clearTimeout(device.timer); device = null; },
+    cancelDevice() {
+      authGeneration++;
+      startingDevice = null;
+      if (device?.timer) timers.clearTimeout(device.timer);
+      device = null;
+    },
     // A fine-grained personal access token limited to one repository (Contents: read and write).
     async useToken({ token }) {
+      if (stopped || closing) throw Object.assign(new Error("Sync service stopped"), { status: 409 });
       if (!/^[\w-]{20,255}$/.test(String(token || ""))) throw Object.assign(new Error("That doesn't look like a GitHub token"), { status: 400 });
       const recovering = Boolean(settings.active && !settings.token);
       if (settings.active && !recovering) throw Object.assign(new Error("Disconnect the current sync before switching GitHub accounts"), { status: 409 });
@@ -761,47 +1025,68 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
         if (pending && pending.scope !== scope()) throw new Error("Pending sync belongs to another repository");
       } else requireIdle();
       const originalEpoch = accountEpoch;
+      const attempt = ++authGeneration;
       const user = await github.user(token);
-      if (originalEpoch !== accountEpoch) throw new Error("GitHub account changed during sign-in");
+      if (stopped || attempt !== authGeneration || originalEpoch !== accountEpoch) throw new Error("GitHub account changed during sign-in");
       if (recovering) {
         if (running) throw Object.assign(new Error("The old sync publication is still active"), { status: 409 });
-        if (!settings.login || user.login?.toLowerCase() !== settings.login.toLowerCase())
-          throw Object.assign(new Error("Reconnect the original GitHub account to recover its pending sync"), { status: 409 });
+        if (!accountMatches(user)) throw rejectAccount();
       } else requireIdle();
       accountEpoch++;
-      Object.assign(settings, { token, refreshToken: "", expiresAt: 0, renew: false, mode: "token", login: user.login || "" });
-      storageCache = null;
-      lastObservedHead = null;
-      saveCredentials();
+      const previous = { ...settings };
+      const previousCache = storageCache;
+      const previousHead = lastObservedHead;
+      try {
+        discardUnactivatedForeignRepo(user);
+        Object.assign(settings, { token, refreshToken: "", expiresAt: 0, renew: false, mode: "token", login: user.login || "",
+          accountId: Number.isSafeInteger(Number(user.id)) && Number(user.id) > 0 ? Number(user.id) : null });
+        storageCache = null;
+        lastObservedHead = null;
+        saveCredentials();
+      } catch (error) {
+        settings = previous;
+        storageCache = previousCache;
+        lastObservedHead = previousHead;
+        throw error;
+      }
       return this.status();
     },
     // Only a repository named lvl-sync, never another one of the account (some are public).
     async findRepo() {
+      if (stopped || closing) throw Object.assign(new Error("Sync service stopped"), { status: 409 });
       if (!settings.token) throw Object.assign(new Error("Sign in first"), { status: 400 });
       if (settings.active) return this.status();
       requireIdle();
       const originalEpoch = accountEpoch;
       const repos = await github.repositories(settings.token, { app: settings.mode !== "token" });
-      if (originalEpoch !== accountEpoch) throw new Error("GitHub account changed during repository lookup");
+      setupAlive(originalEpoch);
       requireIdle();
       const found = repos.find((repo) => repo.name.toLowerCase() === repoName.toLowerCase());
       if (!found) { repoMissing = true; return this.status(); }
       if (!found.private) throw Object.assign(new Error(`${found.owner}/${found.name} is public. Make it private on GitHub first (Settings › Danger Zone › Change visibility)`), { status: 400 });
-      repoMissing = false;
-      settings.repo = { owner: found.owner, name: found.name };
-      storageCache = null;
-      lastObservedHead = null;
-      accountEpoch++;
-      const lookupEpoch = accountEpoch;
-      const lookupStorage = storageFor();
+      // Reading the remote candidate can be slow. Keep the current account
+      // untouched until every read completes; a concurrent sign-in must not
+      // inherit a repository selected with the earlier account's token.
+      const candidate = { owner: found.owner, name: found.name };
+      const token = settings.token;
+      const lookupStorage = github.storage({ token: () => token, owner: candidate.owner, repo: candidate.name });
       const existing = (await lookupStorage.list()).find((file) => file.path === SETTINGS_FILE);
-      if (lookupEpoch !== accountEpoch) throw new Error("Repository lookup was cancelled before it finished");
+      setupAlive(originalEpoch);
       requireIdle();
-      settings.joining = Boolean(existing);
+      let remote = null;
       if (existing) {
-        const remote = readSettingsFile(await lookupStorage.read(SETTINGS_FILE, existing.version));
-        if (lookupEpoch !== accountEpoch) throw new Error("Repository lookup was cancelled before activation");
-        settings.encrypted = remote.encrypted ?? Boolean(remote.kdf);
+        remote = readSettingsFile(await lookupStorage.read(SETTINGS_FILE, existing.version));
+        setupAlive(originalEpoch);
+        requireIdle();
+      }
+      settings.repo = candidate;
+      storageCache = { key: `${candidate.owner}/${candidate.name}`, token, storage: lookupStorage };
+      lastObservedHead = null;
+      repoMissing = false;
+      settings.joining = Boolean(existing);
+      settings.encrypted = remote ? (remote.encrypted ?? Boolean(remote.kdf)) : false;
+      accountEpoch++;
+      if (existing) {
         // Another device already syncs here without a passphrase: this device joins at once.
         if (!settings.encrypted) activate(null);
       }
@@ -810,12 +1095,15 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
     },
     // A new sync in lvl-sync: plain by default; with encrypt, the files are encrypted with the passphrase.
     async startSync({ encrypt = false, passphrase = "" } = {}) {
+      if (stopped || closing) throw Object.assign(new Error("Sync service stopped"), { status: 409 });
       if (!settings.repo) throw Object.assign(new Error("Find the repository first"), { status: 400 });
+      if (settings.active || settings.joining) throw Object.assign(new Error("Sync is already configured; use the appropriate join step"), { status: 409 });
       requireIdle();
       const startedEpoch = accountEpoch;
       const storage = storageFor();
-      if ((await storage.list()).some((file) => file.path === SETTINGS_FILE)) return this.findRepo();
-      if (startedEpoch !== accountEpoch) throw new Error("Sync setup was cancelled during repository inspection");
+      const files = await storage.list();
+      setupAlive(startedEpoch);
+      if (files.some((file) => file.path === SETTINGS_FILE)) return this.findRepo();
       requireIdle();
       let bytes = null;
       let kdfUsed = null;
@@ -824,54 +1112,75 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
           const kdf = newKdfSettings();
           kdfUsed = kdf;
           bytes = await deriveKeyBytes(passphrase, kdf);
-          if (startedEpoch !== accountEpoch) throw new Error("Sync setup was cancelled during key derivation");
-          await storage.write(SETTINGS_FILE, await newSettingsFile({ key: await importKeyBytes(bytes), kdf }), {});
+          setupAlive(startedEpoch);
+          const text = await newSettingsFile({ key: await importKeyBytes(bytes), kdf });
+          setupAlive(startedEpoch);
+          await storage.write(SETTINGS_FILE, text, {});
         } else {
-          await storage.write(SETTINGS_FILE, await newSettingsFile(), {});
+          const text = await newSettingsFile();
+          setupAlive(startedEpoch);
+          await storage.write(SETTINGS_FILE, text, {});
         }
       } catch (error) {
         // Another device started the sync at the same moment: join that one.
-        if (error.code === "conflict") return this.findRepo();
+        if (error.code === "conflict") { setupAlive(startedEpoch); return this.findRepo(); }
         throw error;
       }
-      if (startedEpoch !== accountEpoch) throw new Error("Sync setup was cancelled after remote publication");
-      settings.encrypted = Boolean(encrypt);
-      if (encrypt) settings.kdf = kdfUsed;
-      activate(bytes);
-      save();
+      setupAlive(startedEpoch);
+      activate(bytes, { encrypted: Boolean(encrypt), kdf: kdfUsed });
       return this.status();
     },
     // Joining a sync another device encrypted.
     async setPassphrase({ passphrase }) {
-      if (!settings.repo) throw Object.assign(new Error("Find the repository first"), { status: 400 });
+      requireJoiningEncrypted();
+      if (stopped || closing) throw Object.assign(new Error("Sync service stopped"), { status: 409 });
       requireIdle();
       const startedEpoch = accountEpoch;
       const storage = storageFor();
       const existing = (await storage.list()).find((file) => file.path === SETTINGS_FILE);
-      if (startedEpoch !== accountEpoch) throw new Error("Passphrase setup was cancelled during repository lookup");
-      if (!existing) return this.startSync({ encrypt: true, passphrase });
+      setupAlive(startedEpoch);
+      if (!existing) throw Object.assign(new Error("The encrypted sync was removed; find the repository again"), { status: 409 });
       const remote = readSettingsFile(await storage.read(SETTINGS_FILE, existing.version));
-      const bytes = await deriveKeyBytes(passphrase, remote.kdf);
-      if (startedEpoch !== accountEpoch) throw new Error("Passphrase setup was cancelled before activation");
+      setupAlive(startedEpoch);
+      if (!remote.encrypted || !remote.kdf || !remote.check)
+        throw Object.assign(new Error("The repository does not contain a valid encrypted sync"), { status: 409 });
+      const bytes = await deriveKeyBytes(passphrase, remote.kdf, { existing: true });
+      setupAlive(startedEpoch);
       requireIdle();
       if (!(await passphraseMatches(await importKeyBytes(bytes), remote.check)))
         throw Object.assign(new Error("That passphrase doesn't match the one used on your other devices"), { status: 400 });
-      settings.kdf = remote.kdf;
-      activate(bytes);
-      save();
+      setupAlive(startedEpoch);
+      activate(bytes, { kdf: remote.kdf, encrypted: true });
       return this.status();
     },
     syncNow,
     // The timer's step (tests call it with their own clock).
     tick,
-    disconnect() {
-      requireIdle();
+    disconnect({ pending = 'reject' } = {}) {
+      if (running) throw Object.assign(new Error('Sync is still in progress'), { status: 409 });
+      const preview = pendingRecovery();
+      if (preview.pending && pending !== 'archive')
+        throw Object.assign(new Error('Pending edits require an explicit archive decision before disconnecting'),
+          { status: 409, code: 'sync_pending', recovery: preview });
+      const operation = journal.load();
+      const items = db.prepare('SELECT item_key, change_json, local_hash FROM sync_items').all();
+      const retained = { ...settings, token: '', refreshToken: '', expiresAt: 0 };
+      const archive = { settings: retained, items,
+        operation: operation ? { ...operation, baseCheckpoint: JSON.stringify(retained) } : null };
+      const next = { device: settings.device, clock: settings.clock };
+      db.exec('BEGIN IMMEDIATE');
+      try {
+        if (preview.pending) db.prepare('INSERT INTO sync_recovery_archive(id, created_at, scope, backup_json) VALUES (?, ?, ?, ?)')
+          .run(crypto.randomUUID(), now(), scope(), JSON.stringify(archive));
+        journal.clear();
+        db.exec('DELETE FROM sync_items');
+        writeCheckpointLocked(JSON.stringify(next));
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
       this.cancelDevice();
       timers.clearTimeout(timer);
       accountEpoch++;
-      settings = { device: settings.device, clock: settings.clock };
-      journal.clear();
-      db.exec("DELETE FROM sync_items");
+      settings = next;
       comparedMark = null;
       storageCache = null;
       lastObservedHead = null;
@@ -879,30 +1188,61 @@ export function createSyncService({ db, getMeta, setMeta, github, local, app = {
       retryAt = 0;
       rateLimited = false;
       lastCheckAt = 0;
-      save();
       lastError = "";
       return this.status();
     },
-    start() { stopped = false; if (step() === "ready") schedule(5000); },
+    start() {
+      if (closing && !stopped)
+        throw Object.assign(new Error('Sync shutdown is still draining'), { code: 'sync_stopping', status: 409 });
+      if (stopped) { accountEpoch++; authGeneration++; }
+      closing = false; stopped = false;
+      if (step() === 'ready') schedule(5000);
+    },
     // LVL is closing: within a 1.5 s cooperative drain window, wait for an
     // incoming-only poll before flushing the local mark it has not acknowledged.
     // A hung network operation is not proof of durable remote delivery.
     async stop() {
-      stopped = true;
+      if (stopPromise) return stopPromise;
+      if (stopped) return;
+      closing = true;
       timers.clearTimeout(timer);
       this.cancelDevice();
-      if (step() !== "ready") return;
-      const drain = async () => {
-        if (running) await running.catch(() => null);
-        if (step() !== "ready") return;
-        let mark = null;
-        try { mark = local.mark?.() ?? null; } catch {}
-        if (mark === null || mark === comparedMark) return;
-        await syncNow({ full: false, compareLocal: true }).catch(() => null);
+      const beganAt = performance.now();
+      const captured = running;
+      // Shutdown's timer must be real time even when the regular scheduler is
+      // injected with a deterministic test clock. The entire drain shares one
+      // budget, so a cooperative poll cannot add another 1.5 s for flushing.
+      const withinBudget = async (task) => {
+        const remaining = Math.max(0, 1500 - (performance.now() - beganAt));
+        if (!remaining) return false;
+        let timeout;
+        try {
+          return await Promise.race([
+            Promise.resolve(task).then(() => true, () => true),
+            new Promise(resolve => { timeout = setTimeout(() => resolve(false), remaining); }),
+          ]);
+        } finally { clearTimeout(timeout); }
       };
-      let wait = null;
-      await Promise.race([drain(), new Promise((resolve) => { wait = timers.setTimeout(resolve, 1500); })]);
-      timers.clearTimeout(wait);
+      stopPromise = (async () => {
+        try {
+          // Let a captured incoming-only poll finish before checking the local
+          // mark. It never acknowledged the pending playhead's upload.
+          if (captured && !(await withinBudget(captured))) return;
+          if (step() !== 'ready') return;
+          let mark = null;
+          try { mark = local.mark?.() ?? null; } catch {}
+          if (mark !== null && mark !== comparedMark)
+            await withinBudget(syncOnce({ full: false, compareLocal: true }).catch(() => null));
+        } finally {
+          // A response arriving after the deadline cannot apply locally or
+          // acknowledge a publication; its journal remains for the next start.
+          stopped = true;
+          accountEpoch++;
+          timers.clearTimeout(timer);
+          if (running === captured) { running = null; runningOptions = null; }
+        }
+      })().finally(() => { stopPromise = null; });
+      return stopPromise;
     },
   };
 }

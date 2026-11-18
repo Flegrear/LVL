@@ -148,7 +148,14 @@ export async function speechActivityWindow(req, res, session, fileIndex, url) {
       json(res, 422, { error: "This video has no audio track" });
       return;
     }
-    const order = audioOrder < audioTracks.length ? audioOrder : 0;
+    if (audioOrder >= audioTracks.length) {
+      // An explicit track index belongs to the exact accepted source.
+      // A stale/reordered track list must not decode a different language by
+      // silently borrowing track zero.
+      json(res, 422, { error: "The selected audio track is unavailable for this source" });
+      return;
+    }
+    const order = audioOrder;
     const total = Number(media?.durationSeconds) || 0;
     const startSeconds = Math.round((total ? Math.min(start, Math.max(0, total - 10)) : start) * 100) / 100;
     const seconds = Math.round((total ? Math.min(duration, Math.max(10, total - startSeconds)) : duration) * 100) / 100;
@@ -163,6 +170,12 @@ export async function speechActivityWindow(req, res, session, fileIndex, url) {
     }
     let flights = speechWindowInflight.get(session);
     let flight = flights?.get(key);
+    if (flight?.controller.signal.aborted) {
+      // Its FFmpeg still owns the slot and source reader. Do not join a
+      // cancelled producer or admit another one until actual teardown.
+      json(res, 409, { error: "Previous audio analysis is stopping; retry shortly" });
+      return;
+    }
     if (!flight) {
       if (activeSpeechJobs + speechUnclosedChildren.size >= MAX_SPEECH_JOBS) {
         json(res, 429, { error: "Audio analysis is busy; try again shortly" });
@@ -231,7 +244,8 @@ export async function speechActivityWindow(req, res, session, fileIndex, url) {
         if (!pending.subscribers.delete(subscriber)) return;
         resolve(null);
         if (!pending.subscribers.size && !pending.done) {
-          if (flights.get(key) === pending) flights.delete(key);
+          // Keep this flight in the map until its child has closed or its
+          // bounded unclosed-child reservation has been installed.
           pending.controller.abort();
         }
       };
@@ -274,9 +288,16 @@ function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order, s
   ];
   const maxBytes = Math.ceil(seconds * SPEECH_SAMPLE_RATE * 2) + 64 * 1024;
   return new Promise((resolve, reject) => {
-    const ffmpeg = spawn(ffmpegPath, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-    ffmpeg.once("close", () => tagged?.release());
-    ffmpeg.once("error", () => tagged?.release());
+    let ffmpeg;
+    try { ffmpeg = spawn(ffmpegPath, args, { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }); }
+    catch (error) { tagged?.release(); reject(error); return; }
+    let readerReleased = false;
+    const releaseReader = () => {
+      if (readerReleased) return;
+      readerReleased = true;
+      tagged?.release();
+    };
+    ffmpeg.once("close", releaseReader);
     const chunks = [];
     let size = 0;
     let stderr = "";
@@ -298,6 +319,12 @@ function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order, s
       if (settled || stopReason) return;
       stopReason = reason;
       clearTimeout(timer);
+      if (!Number.isSafeInteger(ffmpeg.pid) || ffmpeg.pid <= 0) {
+        // Failed spawn: no OS process exists to retain this source or slot.
+        releaseReader();
+        finish(reason);
+        return;
+      }
       try { ffmpeg.kill(); } catch { /* still wait for confirmed process close */ }
       // A kill request is not evidence the child exited. Retry once with a
       // stronger signal, then bound the HTTP failure without freeing its slot.
@@ -316,11 +343,14 @@ function decodeSpeechAudio(session, fileIndex, { startSeconds, seconds, order, s
     const timer = setTimeout(() => requestStop(Object.assign(new Error("Timed out reading audio for subtitle sync"), { statusCode: 504 })), 45_000);
     timer.unref?.();
     ffmpeg.stdout.on("data", (chunk) => {
+      if (settled || stopReason) return;
       if (size + chunk.length > maxBytes) chunk = chunk.subarray(0, Math.max(0, maxBytes - size));
+      if (!chunk.length) return;
       size += chunk.length;
       chunks.push(chunk);
     });
     ffmpeg.stderr.on("data", (chunk) => {
+      if (settled) return;
       if (stderr.length < 8 * 1024) stderr += chunk.toString("utf8");
     });
     ffmpeg.once("error", (error) => requestStop(error));

@@ -12,7 +12,7 @@ import { $ } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
 import { viewActive } from "../app/navigation.js";
 import { libraryArtCached } from "../watch/episode-navigation.js";
-import { buildLibrarySeries, libraryEntryById, librarySeriesKey } from "../library/library-data.js";
+import { buildLibrarySeries, libraryEntryById, librarySeriesForEntry } from "../library/library-data.js";
 import { openHomeTitle, openLibrarySeries, openTitlePage, titleRoute, titleSubject } from "../title/title-page.js";
 import { resolveAnimeBrowserCatalog } from "./anime-browser.js";
 
@@ -75,7 +75,7 @@ function randomActiveCategory() {
   }
   if (viewActive("watch")) {
     const active = state.currentSource?.libraryId ? libraryEntryById(state.currentSource.libraryId) : null;
-    const series = active && buildLibrarySeries().find((item) => item.key === (active.seriesKey || librarySeriesKey(active.title)));
+    const series = active && librarySeriesForEntry(active);
     if (series) {
       const category = libraryCategory(series, { animeIds: new Set((state.homeCatalog.anime || []).map((meta) => meta.id)) });
       return category === "series" ? "tv" : category;

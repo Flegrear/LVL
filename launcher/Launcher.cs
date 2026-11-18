@@ -11,6 +11,7 @@ using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -63,18 +64,33 @@ namespace LanguageVideoLearner
         [STAThread]
         private static int Main(string[] args)
         {
+            // Native process identity is a no-UI, no-server, no-recovery CLI.
+            // It must run before any installed-app dependency or mutation.
+            if (args.Length > 0 && args[0] == "--inspect-process")
+                return WindowsProcessIdentityProof.Run(args);
+            // Installer/uninstaller uses the same shipped binary's native,
+            // read-only OS image boundary to await exact owned process exit.
+            // Never open a tray or start the server in this CLI.
+            if (args.Length > 0 && args[0] == "--await-stopped")
+                return WindowsProcessIdentityProof.AwaitStopped(args);
             Options options = Options.Parse(args);
             int recoveryResult;
             if (TryStartInterruptedFullRecovery(options, out recoveryResult))
                 return recoveryResult;
-            // LVL's own signal identity: never send a Quit or Open signal to
-            // another program's launcher, even one using port 4273.
-            // Keep this identity stable across LVL updates.
-            string prefix = "Local\\LVL-Public-" + options.Port;
             string root = FindRoot();
             if (root == null)
             {
                 MessageBox.Show("Couldn't find LVL next to this launcher (server.js missing). Reinstall LVL Setup.", Title, MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return 1;
+            }
+            // Signals belong to the physical installation and selected port.
+            // A separate installation trying the same port gets an explicit
+            // occupied-port failure; it cannot quit or restart this one.
+            string prefix;
+            try { prefix = Signals.Prefix(options.Port, PackagedUpdater.CanonicalInstallTarget(root)); }
+            catch (Exception error)
+            {
+                ReportRecoveryError(options, "LVL couldn't verify its installation folder: " + error.Message);
                 return 1;
             }
             bool installed = File.Exists(Path.Combine(root, "installed-app.json"));
@@ -165,6 +181,11 @@ namespace LanguageVideoLearner
             // hard exit; the helper distinguishes old/new executable hashes.
             if (state == "awaiting-restart" ||
                 state == "acknowledged" || state == "rolled-back") return false;
+            // During an active Inno full setup, the old installed launcher is
+            // asked only to QUIT after the new attempt has written its
+            // 'preparing' journal. A quit request may never impersonate a
+            // crashed-startup recovery and retire the live setup's journal.
+            if (options.Quit && state == "preparing") return false;
             if (state != "preparing" && state != "bootstrap-ready" && state != "backing-up" &&
                 state != "installing" && state != "restoring" &&
                 state != "rollback-ready")
@@ -186,6 +207,7 @@ namespace LanguageVideoLearner
                         + " --app-root " + QuoteRecovery(root)
                         + " --launcher-pid " + self.Id
                         + " --launcher-start-ticks " + self.StartTime.ToUniversalTime().Ticks
+                        + " --launcher-port " + options.Port
                         + " --ready-file " + QuoteRecovery(ready)
                         + " --relaunch " + (options.Quit || options.Restart || options.WhichBrowser ? "no" : "yes");
                     using (Process child = Process.Start(new ProcessStartInfo(node, arguments) {
@@ -327,6 +349,398 @@ namespace LanguageVideoLearner
         }
     }
 
+    /// <summary>
+    /// One bounded read-only process query for the installed Node transaction
+    /// helper. QueryFullProcessImageName and GetProcessTimes use the SAME
+    /// kernel handle: a reused numeric PID cannot splice another birth/path
+    /// into the result. This CLI never opens a tray, browser, child or socket.
+    /// </summary>
+    internal static class WindowsProcessIdentityProof
+    {
+        private const uint ProcessQueryLimitedInformation = 0x1000;
+        private const uint Synchronize = 0x00100000;
+        private const uint WaitObjectZero = 0;
+        private const uint WaitTimeout = 258;
+        private const int MaxImageCharacters = 2048;
+        private const string Format = "lvl-windows-process-proof-v1";
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileTime
+        {
+            public uint Low;
+            public uint High;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr OpenProcess(uint access, bool inherit, int pid);
+
+        [DllImport("kernel32.dll", EntryPoint = "GetProcessTimes", SetLastError = true)]
+        private static extern bool GetProcessTimes(IntPtr handle, out FileTime created,
+            out FileTime exited, out FileTime kernel, out FileTime user);
+
+        [DllImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW",
+            CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern bool QueryProcessImage(IntPtr handle, uint flags,
+            StringBuilder image, ref uint characters);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+        private static bool Write(object value)
+        {
+            // WinForms SUBSYSTEM:WINDOWS does not promise Console.Out, but
+            // redirected standard handles still work for this explicit CLI.
+            string line = new JavaScriptSerializer().Serialize(value) + "\n";
+            byte[] data = new UTF8Encoding(false).GetBytes(line);
+            if (data.Length > 4096) return false;
+            using (Stream output = Console.OpenStandardOutput())
+            {
+                output.Write(data, 0, data.Length);
+                output.Flush();
+            }
+            return true;
+        }
+
+        // The installer extracts the reviewed shipped LVL.exe before {app}
+        // exists. Its own SHA-256 cannot assert a publisher signature: this
+        // checks the live executing image against Inno's embedded-byte digest.
+        // Setup provenance must separately be established by the signed payload.
+        private static bool CheckBootstrap(string expected, string executing,
+            string image, string digest)
+        {
+            if (string.IsNullOrWhiteSpace(image) || !Path.IsPathRooted(image)
+                || string.IsNullOrWhiteSpace(digest)
+                || !Regex.IsMatch(digest, @"\A[a-f0-9]{64}\z", RegexOptions.CultureInvariant)
+                || !string.Equals(executing, PackagedUpdater.CanonicalInstallTarget(image),
+                    StringComparison.OrdinalIgnoreCase)
+                || !string.Equals(Path.GetFileName(executing), "lvl.exe",
+                    StringComparison.OrdinalIgnoreCase)
+                || string.Equals(executing, expected, StringComparison.OrdinalIgnoreCase)
+                || (File.GetAttributes(image) & FileAttributes.ReparsePoint) != 0)
+                return false;
+            byte[] bytes;
+            using (FileStream input = new FileStream(image, FileMode.Open,
+                FileAccess.Read, FileShare.Read))
+            using (SHA256 hash = SHA256.Create())
+                bytes = hash.ComputeHash(input);
+            return string.Equals(BitConverter.ToString(bytes).Replace("-", "").ToLowerInvariant(),
+                digest, StringComparison.Ordinal);
+        }
+
+        // A process name is NEVER authority to prove a running owner or to
+        // terminate anything. It is only a conservative risk filter if Windows
+        // denies the handle/image query: a potentially owned inaccessible
+        // process blocks replacement, while unrelated protected OS processes
+        // do not make every installer permanently unusable.
+        private static bool PlausibleOwnedImageName(string name, HashSet<string> riskNames)
+        {
+            return string.IsNullOrWhiteSpace(name) || riskNames.Contains(name);
+        }
+
+        private static bool MayOwnInaccessibleImage(Process candidate, HashSet<string> riskNames)
+        {
+            try { return PlausibleOwnedImageName(candidate.ProcessName, riskNames); }
+            catch (Exception) { return true; } // Unknown name is not proof of unrelatedness.
+        }
+
+        private static HashSet<string> OwnedImageNames(string expected, bool underDirectory)
+        {
+            HashSet<string> names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            if (!underDirectory)
+            {
+                names.Add(Path.GetFileNameWithoutExtension(expected));
+                return names;
+            }
+            if (!Directory.Exists(expected)) return names;
+            Stack<string> directories = new Stack<string>();
+            directories.Push(expected);
+            int examined = 0;
+            while (directories.Count > 0)
+            {
+                string directory = directories.Pop();
+                if (++examined > 512 ||
+                    (File.GetAttributes(directory) & FileAttributes.ReparsePoint) != 0)
+                    throw new InvalidDataException("Unbounded or redirected runner image directory");
+                foreach (string file in Directory.EnumerateFiles(directory, "*.exe"))
+                {
+                    if (++examined > 512 ||
+                        (File.GetAttributes(file) & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidDataException("Unbounded or redirected runner image");
+                    names.Add(Path.GetFileNameWithoutExtension(file));
+                }
+                foreach (string child in Directory.EnumerateDirectories(directory))
+                    directories.Push(child);
+            }
+            return names;
+        }
+
+        // All positive ownership matches still require a synchronized native
+        // OS handle for image and birth queries. A denied, plausibly matching
+        // owner fails closed, with no basename-based permission or kill.
+        private static bool HasMatchingLiveImage(string expected, bool underDirectory,
+            HashSet<string> riskNames)
+        {
+            int ownPid = Process.GetCurrentProcess().Id;
+            Process[] candidates = Process.GetProcesses();
+            if (candidates.Length > 4096)
+                throw new InvalidDataException("Process ownership observation exceeds bounds");
+            foreach (Process candidate in candidates)
+            {
+                using (candidate)
+                {
+                    int pid;
+                    try { pid = candidate.Id; }
+                    catch (InvalidOperationException) { continue; }
+                    if (pid == ownPid) continue; // The read-only installed CLI itself.
+                    IntPtr handle = OpenProcess(ProcessQueryLimitedInformation | Synchronize,
+                        false, pid);
+                    if (handle == IntPtr.Zero)
+                    {
+                        int error = Marshal.GetLastWin32Error();
+                        // Only a definitely missing PID can be ignored without
+                        // considering whether this was the protected app owner.
+                        if (error != 87 && error != 1168 &&
+                            MayOwnInaccessibleImage(candidate, riskNames))
+                            throw new InvalidDataException("Inaccessible possible LVL owner PID " + pid);
+                        continue;
+                    }
+                    try
+                    {
+                        uint state = WaitForSingleObject(handle, 0);
+                        if (state == WaitObjectZero) continue;
+                        if (state != WaitTimeout)
+                        {
+                            if (MayOwnInaccessibleImage(candidate, riskNames))
+                                throw new InvalidDataException("Uncertain owner wait PID " + pid);
+                            continue;
+                        }
+                        FileTime created, exited, kernel, user;
+                        if (!GetProcessTimes(handle, out created, out exited,
+                            out kernel, out user))
+                        {
+                            if (MayOwnInaccessibleImage(candidate, riskNames))
+                                throw new InvalidDataException("Uncertain owner birth PID " + pid);
+                            continue;
+                        }
+                        ulong fileTime = ((ulong)created.High << 32) | created.Low;
+                        if (fileTime == 0 || fileTime > long.MaxValue)
+                        {
+                            if (MayOwnInaccessibleImage(candidate, riskNames))
+                                throw new InvalidDataException("Invalid owner birth PID " + pid);
+                            continue;
+                        }
+                        StringBuilder image = new StringBuilder(MaxImageCharacters);
+                        uint size = (uint)image.Capacity;
+                        if (!QueryProcessImage(handle, 0, image, ref size)
+                            || size == 0 || size >= MaxImageCharacters)
+                        {
+                            if (MayOwnInaccessibleImage(candidate, riskNames))
+                                throw new InvalidDataException("Uncertain owner image PID " + pid);
+                            continue;
+                        }
+                        string physical;
+                        try { physical = PackagedUpdater.CanonicalInstallTarget(image.ToString()); }
+                        catch (Exception)
+                        {
+                            // An unrelated process may reside under an unreadable
+                            // redirected directory. Unknown physical ownership of
+                            // a plausible LVL image is fatal; unrelated images
+                            // must not blanket-deny an upgrade.
+                            if (MayOwnInaccessibleImage(candidate, riskNames))
+                                throw new InvalidDataException("Uncertain physical owner PID " + pid);
+                            continue;
+                        }
+                        bool matches = underDirectory
+                            ? physical.StartsWith(expected + Path.DirectorySeparatorChar,
+                                StringComparison.OrdinalIgnoreCase)
+                            : string.Equals(physical, expected, StringComparison.OrdinalIgnoreCase);
+                        if (matches)
+                        {
+                            state = WaitForSingleObject(handle, 0);
+                            if (state == WaitTimeout) return true;
+                            if (state != WaitObjectZero)
+                                throw new InvalidDataException("Uncertain matching owner exit PID " + pid);
+                        }
+                    }
+                    finally { CloseHandle(handle); }
+                }
+            }
+            return false;
+        }
+
+        private static bool ExactLauncherMutexHeld(string physicalRoot)
+        {
+            Mutex mutex;
+            if (!Mutex.TryOpenExisting(Signals.Prefix(4273, physicalRoot), out mutex))
+                return false;
+            using (mutex)
+            {
+                try
+                {
+                    if (!mutex.WaitOne(0)) return true;
+                    mutex.ReleaseMutex();
+                    return false;
+                }
+                catch (AbandonedMutexException)
+                {
+                    // The previous owner died; this caller now owns the
+                    // abandoned mutex. Release it without claiming a PID.
+                    mutex.ReleaseMutex();
+                    return false;
+                }
+            }
+        }
+
+        // Native source-only replacement for installer PowerShell process scans.
+        // Inno first requests its installed launcher's own normal --quit, then
+        // this exact-image observer waits. No global-name kills or force stops:
+        // a runner that will not exit causes an explicit setup failure instead.
+        public static int AwaitStopped(string[] args)
+        {
+            bool bootstrap = args.Length == 7;
+            if ((!bootstrap && args.Length != 3) || args[0] != "--await-stopped"
+                || args[1] != "--app-root"
+                || (bootstrap && (args[3] != "--bootstrap-image"
+                    || args[5] != "--bootstrap-sha256")))
+                return 3;
+            try
+            {
+                if (!Path.IsPathRooted(args[2])) return 3;
+                string root = PackagedUpdater.CanonicalInstallTarget(args[2]);
+                string expected = PackagedUpdater.CanonicalInstallTarget(Path.Combine(root, "LVL.exe"));
+                string executing = PackagedUpdater.CanonicalInstallTarget(
+                    Assembly.GetExecutingAssembly().Location);
+                if (bootstrap)
+                {
+                    if (!CheckBootstrap(expected, executing, args[4], args[6])) return 3;
+                }
+                else if (!string.Equals(executing, expected,
+                    StringComparison.OrdinalIgnoreCase)) return 3;
+                string runner = PackagedUpdater.CanonicalInstallTarget(
+                    Path.Combine(root, "ext-runner"));
+                HashSet<string> launcherNames = OwnedImageNames(expected, false);
+                HashSet<string> runnerNames = OwnedImageNames(runner, true);
+                DateTime endLauncher = DateTime.UtcNow.AddSeconds(20);
+                DateTime launcherQuietSince = DateTime.MinValue;
+                while (DateTime.UtcNow < endLauncher)
+                {
+                    if (HasMatchingLiveImage(expected, false, launcherNames) || ExactLauncherMutexHeld(root))
+                        launcherQuietSince = DateTime.MinValue;
+                    else if (launcherQuietSince == DateTime.MinValue)
+                        launcherQuietSince = DateTime.UtcNow;
+                    else if ((DateTime.UtcNow - launcherQuietSince).TotalMilliseconds >= 1500)
+                        break; // Detect a concurrently starting --quit child.
+                    Thread.Sleep(100);
+                }
+                if (launcherQuietSince == DateTime.MinValue
+                    || (DateTime.UtcNow - launcherQuietSince).TotalMilliseconds < 1500) return 3;
+                DateTime endRunner = DateTime.UtcNow.AddSeconds(10);
+                DateTime runnerQuietSince = DateTime.MinValue;
+                while (DateTime.UtcNow < endRunner)
+                {
+                    if (HasMatchingLiveImage(runner, true, runnerNames))
+                        runnerQuietSince = DateTime.MinValue;
+                    else if (runnerQuietSince == DateTime.MinValue)
+                        runnerQuietSince = DateTime.UtcNow;
+                    else if ((DateTime.UtcNow - runnerQuietSince).TotalMilliseconds >= 500)
+                        break;
+                    Thread.Sleep(100);
+                }
+                if (runnerQuietSince == DateTime.MinValue
+                    || (DateTime.UtcNow - runnerQuietSince).TotalMilliseconds < 500) return 3;
+                // Recheck after the runner exit; never approve a restarted
+                // launcher at the same path while setup is swapping files.
+                return HasMatchingLiveImage(expected, false, launcherNames)
+                    || ExactLauncherMutexHeld(root) ||
+                    HasMatchingLiveImage(runner, true, runnerNames) ? 3 : 0;
+            }
+            catch (Exception)
+            {
+                // No full image path, token or unbounded exception text in diagnostics.
+                try { Console.Error.WriteLine("LVL native stop: possible owner could not be verified."); }
+                catch (Exception) { }
+                return 3;
+            }
+        }
+
+        public static int Run(string[] args)
+        {
+            // Normal proof: the exact installed root/LVL.exe. A setup bootstrap
+            // may instead invoke the same C# launcher extracted by Inno beside
+            // its private bundled Node/helper, but MUST provide its independently
+            // issued SHA-256. A copied candidate is never trusted by path alone.
+            bool bootstrap = args.Length == 9;
+            if ((!bootstrap && args.Length != 5) || args[0] != "--inspect-process"
+                || args[1] != "--pid" || args[3] != "--app-root"
+                || (bootstrap && (args[5] != "--bootstrap-image"
+                    || args[7] != "--bootstrap-sha256"))) return 3;
+            int pid;
+            if (!int.TryParse(args[2], out pid) || pid <= 0
+                || string.IsNullOrWhiteSpace(args[4]) || !Path.IsPathRooted(args[4]))
+                return 3;
+            try
+            {
+                string root = PackagedUpdater.CanonicalInstallTarget(args[4]);
+                string expected = PackagedUpdater.CanonicalInstallTarget(Path.Combine(root, "LVL.exe"));
+                string executing = PackagedUpdater.CanonicalInstallTarget(Assembly.GetExecutingAssembly().Location);
+                if (bootstrap)
+                {
+                    if (!CheckBootstrap(expected, executing, args[6], args[8])) return 3;
+                }
+                else if (!string.Equals(executing, expected, StringComparison.OrdinalIgnoreCase))
+                    return 3;
+                IntPtr handle = OpenProcess(ProcessQueryLimitedInformation | Synchronize, false, pid);
+                if (handle == IntPtr.Zero)
+                {
+                    int error = Marshal.GetLastWin32Error();
+                    // Only the OS's unambiguous invalid/missing PID is stale.
+                    // Access denied, unavailable image or transient failures
+                    // stay UNKNOWN to Node and cannot authorize lease cleanup.
+                    if (error != 87 && error != 1168) return 3;
+                    return Write(new { format = Format, pid, alive = false }) ? 0 : 3;
+                }
+                try
+                {
+                    uint state = WaitForSingleObject(handle, 0);
+                    if (state == WaitObjectZero)
+                        return Write(new { format = Format, pid, alive = false }) ? 0 : 3;
+                    if (state != WaitTimeout) return 3;
+                    FileTime created, exited, kernel, user;
+                    if (!GetProcessTimes(handle, out created, out exited, out kernel, out user))
+                        return 3;
+                    ulong fileTime = ((ulong)created.High << 32) | created.Low;
+                    if (fileTime == 0 || fileTime > long.MaxValue) return 3;
+                    long birthTicks = DateTime.FromFileTimeUtc((long)fileTime).Ticks;
+                    StringBuilder image = new StringBuilder(MaxImageCharacters);
+                    uint size = (uint)image.Capacity;
+                    if (!QueryProcessImage(handle, 0, image, ref size)
+                        || size == 0 || size >= MaxImageCharacters) return 3;
+                    string physicalImage = PackagedUpdater.CanonicalInstallTarget(image.ToString());
+                    if (physicalImage.Length > MaxImageCharacters
+                        || birthTicks < 100000000000000L) return 3;
+                    // Do not report a process that exited during image/birth
+                    // retrieval as an active lease owner.
+                    state = WaitForSingleObject(handle, 0);
+                    if (state == WaitObjectZero)
+                        return Write(new { format = Format, pid, alive = false }) ? 0 : 3;
+                    if (state != WaitTimeout) return 3;
+                    return Write(new { format = Format, pid, alive = true,
+                        startTicks = birthTicks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                        executablePath = physicalImage }) ? 0 : 3;
+                }
+                finally { CloseHandle(handle); }
+            }
+            catch (Exception)
+            {
+                // No guessed birth, basename, process-name kill or shell fallback.
+                return 3;
+            }
+        }
+    }
+
     /** A plain text log in the data folder (data\logs\launcher.log), the app's own output included. */
     internal sealed class Log
     {
@@ -377,6 +791,17 @@ namespace LanguageVideoLearner
     internal static class Signals
     {
         public static readonly string[] Names = { "open", "quit", "restart" };
+
+        public static string Prefix(int port, string physicalRoot)
+        {
+            if (port <= 1024 || port > 65535 || string.IsNullOrEmpty(physicalRoot))
+                throw new ArgumentException("Invalid launcher signal owner");
+            byte[] digest;
+            using (SHA256 hash = SHA256.Create())
+                digest = hash.ComputeHash(Encoding.UTF8.GetBytes(physicalRoot.ToLowerInvariant()));
+            return "Local\\LVL-Public-" + port + "-" +
+                BitConverter.ToString(digest).Replace("-", "").Substring(0, 32).ToLowerInvariant();
+        }
 
         public static bool Send(string prefix, string name)
         {
@@ -532,15 +957,14 @@ namespace LanguageVideoLearner
             menu.Items.AddRange(new ToolStripItem[] { statusItem, new ToolStripSeparator(), openItem, tabItem, new ToolStripSeparator(), restartItem, dataItem, logItem });
             if (PackagedUpdater.IsInstalled(root))
             {
-                updater = new PackagedUpdater(root, log, invoker, Notify);
+                // Restart acknowledgement must check the actual server port
+                // selected for this same installation, including --port.
+                updater = new PackagedUpdater(root, log, invoker, Notify, options.Port);
                 updater.AddTo(menu);
-                MethodInfo bridgeMethod = updater.GetType().GetMethod("BeginBridge",
-                    BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
-                if (bridgeMethod != null)
-                {
-                    try { updateBridge = (string)bridgeMethod.Invoke(updater, null); }
-                    catch (Exception error) { log.Write("updater", "Couldn't start update bridge: " + error.Message); }
-                }
+                // Native updater bridge is a compile-time contract; reflection
+                // could silently hide a missing or renamed method at startup.
+                try { updateBridge = updater.BeginBridge(); }
+                catch (Exception error) { log.Write("updater", "Couldn't start update bridge: " + error.Message); }
             }
             menu.Items.AddRange(new ToolStripItem[] { new ToolStripSeparator(), startupItem, new ToolStripSeparator(), quitItem });
             menu.Opening += delegate
@@ -969,21 +1393,51 @@ namespace LanguageVideoLearner
 
         private bool IsAppRunning()
         {
-            // Nothing listening: answer at once (Windows takes about 2 s to refuse a connection).
+            // Never adopt a same-port server launched by another installation.
+            // The only eligible child is the exact process object we spawned.
+            Process expected = server;
+            if (expected == null || expected.HasExited || !ownServer) return false;
             if (!IsListening(400)) return false;
             try
             {
                 string response = Get(url + "api/health", 1500);
-                // Never adopt another LVL build's server sharing port 4273.
-                // The installed app has an explicit identity, stable across
-                // all its versions.
+                Dictionary<string, object> health =
+                    new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(response);
+                object pid, launched;
                 bool publicInstall = File.Exists(Path.Combine(root, "installed-app.json"));
-                return response.Contains("\"app\":\"language-video-learner\"") &&
-                    (publicInstall ? response.Contains("\"appId\":\"lvl-public\"")
-                        : response.Contains("\"version\":"));
+                string version;
+                if (health == null || !health.TryGetValue("pid", out pid)
+                    || !health.TryGetValue("launcher", out launched) || !(launched is bool) || !(bool)launched
+                    || !string.Equals(GetValue(health, "app"), "language-video-learner", StringComparison.Ordinal)
+                    || (publicInstall && !string.Equals(GetValue(health, "appId"), "lvl-public", StringComparison.Ordinal))
+                    || (!publicInstall && GetValue(health, "appId") != null)
+                    || !Regex.IsMatch(version = GetValue(health, "version") ?? "", @"\A\d+\.\d+\.\d+\z"))
+                    return false;
+                int runningPid;
+                if (!int.TryParse(Convert.ToString(pid), out runningPid) || runningPid != expected.Id) return false;
+                if (publicInstall)
+                {
+                    if (string.IsNullOrEmpty(updateBridge)) return false;
+                    string challenge = WindowsHealthProof.NewChallenge();
+                    string signed = Get(url + "api/app-updates/status", 1500, challenge, updateBridge);
+                    Dictionary<string, object> status =
+                        new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(signed);
+                    object installed;
+                    if (status == null || !status.TryGetValue("installed", out installed)
+                        || !(installed is bool) || !(bool)installed
+                        || GetValue(status, "installedVersion") != version) return false;
+                }
+                return ReferenceEquals(expected, server) && !expected.HasExited;
             }
             catch (Exception) { }
             return false;
+        }
+
+        private static string GetValue(Dictionary<string, object> source, string key)
+        {
+            object value;
+            return source != null && source.TryGetValue(key, out value) && value is string
+                ? (string)value : null;
         }
 
         private bool IsPortTaken()
@@ -1006,17 +1460,29 @@ namespace LanguageVideoLearner
             catch (Exception) { return false; }
         }
 
-        private static string Get(string address, int timeoutMs)
+        private static string Get(string address, int timeoutMs, string challenge = null, string bridge = null)
         {
             HttpWebRequest request = (HttpWebRequest)WebRequest.Create(address);
             request.Proxy = null;
             request.Timeout = timeoutMs;
             request.ReadWriteTimeout = timeoutMs;
             request.KeepAlive = false;
+            if (challenge != null) request.Headers["X-LVL-Windows-Challenge"] = challenge;
             using (HttpWebResponse response = (HttpWebResponse)request.GetResponse())
             using (StreamReader reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
             {
-                return reader.ReadToEnd();
+                if (challenge != null &&
+                    !WindowsHealthProof.Verify(challenge, response.Headers["X-LVL-Windows-Proof"], bridge))
+                    throw new InvalidDataException("The local server did not prove its launcher owner");
+                StringBuilder bounded = new StringBuilder();
+                char[] buffer = new char[2048];
+                int read;
+                while ((read = reader.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    if (bounded.Length + read > 16384) throw new InvalidDataException("Local status is too large");
+                    bounded.Append(buffer, 0, read);
+                }
+                return bounded.ToString();
             }
         }
 

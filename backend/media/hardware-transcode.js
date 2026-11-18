@@ -8,8 +8,12 @@ export const ANDROID_H264_ENCODERS = Object.freeze(["h264_mediacodec"]);
 // Raw YUV avoids lavfi/testsrc2, which is deliberately omitted from the
 // minimal Android FFmpeg. The same frame reaches the device encoder that
 // would be used for playback; an encoder listing alone is insufficient.
-const PROBE_FRAME = Buffer.alloc(64 * 64 * 3 / 2, 128);
-PROBE_FRAME.fill(16, 0, 64 * 64);
+// Several Android MediaCodec implementations reject 64x64 despite supporting
+// ordinary video resolutions. Probe a small but widely supported 128x128
+// frame using the actual playback MP4 muxer.
+const PROBE_WIDTH = 128;
+const PROBE_FRAME = Buffer.alloc(PROBE_WIDTH * PROBE_WIDTH * 3 / 2, 128);
+PROBE_FRAME.fill(16, 0, PROBE_WIDTH * PROBE_WIDTH);
 
 export function hardwareVideoEncodingArgs(encoder, height = 1080) {
   const targetBitrate = Number(height) >= 2160 ? "18000k" : Number(height) > 1080 ? "10000k" : "6000k";
@@ -30,7 +34,7 @@ function verifyEncoder(binary, encoder, timeoutMs, spawnFn = spawn) {
       // video into MP4. Probe playback's container and reject empty output.
       ...(android ? ["-abort_on", "empty_output"] : []),
       "-nostdin", "-f", "rawvideo", "-pix_fmt", "yuv420p",
-      "-s:v", "64x64", "-r", android ? "4" : "1", "-i", "pipe:0",
+      "-s:v", `${PROBE_WIDTH}x${PROBE_WIDTH}`, "-r", android ? "4" : "1", "-i", "pipe:0",
       "-frames:v", android ? "8" : "1", "-pix_fmt", "yuv420p",
       ...hardwareVideoEncodingArgs(encoder),
       ...(android ? ["-movflags", "frag_keyframe+empty_moov", "-f", "mp4", "pipe:1"] : ["-f", "null", "-"]),
@@ -40,6 +44,9 @@ function verifyEncoder(binary, encoder, timeoutMs, spawnFn = spawn) {
     let timer;
     let terminationTimer;
     let timedOut = false;
+    let failed = false;
+    let stdoutEnded = false;
+    let stderrEnded = false;
     const done = (ok) => {
       if (settled) return;
       settled = true;
@@ -47,22 +54,45 @@ function verifyEncoder(binary, encoder, timeoutMs, spawnFn = spawn) {
       clearTimeout(terminationTimer);
       resolve(ok);
     };
+    // A successful kill() call only means the signal was submitted. A probe
+    // must retain ownership (and block later candidates) until its exact child
+    // emits close, after both redirected output streams have drained.
+    const running = () => job && job.exitCode == null && job.signalCode == null;
+    const terminate = () => {
+      if (running()) try { job.kill("SIGTERM"); } catch {}
+      if (!terminationTimer) terminationTimer = setTimeout(() => {
+        if (running()) try { job.kill("SIGKILL"); } catch {}
+      }, 1000);
+    };
     try {
-      job = spawnFn(binary, args, { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] });
+      job = spawnFn(binary, args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
     } catch {
       return done(false);
     }
     timer = setTimeout(() => {
       timedOut = true;
-      try { job.kill("SIGKILL"); } catch { /* close/error may already be arriving */ }
-      // A failed or stuck kill must not keep the server's capability check
-      // pending indefinitely. The child is explicitly killed before timeout.
-      terminationTimer = setTimeout(() => done(false), 1000);
-    }, Math.max(1, timeoutMs));
-    job.once("error", () => done(false));
-    job.once("close", (code) => done(!timedOut && code === 0));
+      terminate();
+    }, Number.isFinite(timeoutMs) ? Math.max(1, timeoutMs) : 3000);
+    job.stdout?.on("end", () => { stdoutEnded = true; });
+    job.stderr?.on("end", () => { stderrEnded = true; });
+    job.stdout?.on("error", () => { failed = true; terminate(); });
+    job.stderr?.on("error", () => { failed = true; terminate(); });
+    job.stdout?.resume?.(); // Drain bounded diagnostic output without buffering.
+    job.stderr?.resume?.();
+    job.once("error", () => {
+      failed = true;
+      // A spawn failure with no real child has no physical process to retain.
+      if (!Number.isSafeInteger(job.pid) || job.pid <= 0) done(false);
+      else terminate();
+    });
+    job.once("close", (code) => done(!failed && !timedOut && code === 0
+      && stdoutEnded && stderrEnded));
     job.stdin?.on("error", () => {}); // FFmpeg may close stdin before reading it.
-    try { job.stdin?.end(android ? Buffer.concat(Array(8).fill(PROBE_FRAME)) : PROBE_FRAME); } catch { done(false); }
+    try { job.stdin?.end(android ? Buffer.concat(Array(8).fill(PROBE_FRAME)) : PROBE_FRAME); }
+    catch {
+      failed = true;
+      terminate();
+    }
   });
 }
 

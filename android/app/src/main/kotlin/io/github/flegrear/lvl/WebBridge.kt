@@ -4,6 +4,10 @@ import android.app.Activity
 import android.util.Log
 import android.widget.Toast
 import org.json.JSONArray
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
 /** Native operations reached only through TrustedWebBridge's checked top-frame listener. */
 class WebBridge(
@@ -13,6 +17,16 @@ class WebBridge(
     private val onFullscreen: (Boolean) -> Unit = {},
     private val onReaderImmersive: (Boolean) -> Unit = {},
 ) {
+    companion object {
+        // A page can request multiple exports. Bound outstanding decoded-file
+        // work across Activity recreation; each accepted save still gets its
+        // own MediaStore URI and failure deletes only that pending row.
+        private val downloads = ThreadPoolExecutor(2, 2, 0L, TimeUnit.MILLISECONDS,
+            ArrayBlockingQueue<Runnable>(4)) { task ->
+            Thread(task, "lvl-save-download").apply { isDaemon = true }
+        }
+    }
+
     fun dispatch(action: String, args: JSONArray) {
         when (action) {
             "playbackState" -> if (args.length() == 1 && args.opt(0) is String) {
@@ -27,7 +41,11 @@ class WebBridge(
                 val mime = args.getString(1).take(128)
                 val base64 = args.getString(2)
                 if (base64.length <= Downloads.MAX_BASE64_CHARS) {
-                    kotlin.concurrent.thread(name = "lvl-save-download") { saveDownload(name, mime, base64) }
+                    try {
+                        downloads.execute { saveDownload(name, mime, base64) }
+                    } catch (_: RejectedExecutionException) {
+                        downloadFailed(name, "Too many downloads are already in progress")
+                    }
                 } else downloadFailed(name, "The file is too large to save")
             }
             "downloadFailed" -> if (args.length() == 2 && args.opt(0) is String && args.opt(1) is String)

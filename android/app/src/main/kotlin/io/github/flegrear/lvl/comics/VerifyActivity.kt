@@ -49,6 +49,15 @@ class VerifyActivity : Activity() {
         val passed: Boolean get() = sessions.snapshot().passed
         val finishedAt: Long get() = sessions.snapshot().finishedAt
         internal val state: VerifySessionState.Snapshot get() = sessions.snapshot()
+        // A completed visible session still invalidates work started before it.
+        // Unlike snapshot.open/generation, this revision is never reset on close.
+        internal fun isIdleRevision(revision: Long): Boolean =
+            sessions.isIdleRevision(revision)
+        // The same native session monitor serializes visible verification
+        // transitions with the cookies RPC's synchronous mutation producer.
+        // This is not an attestation of asynchronous WebView persistence.
+        internal fun <T> withIdleRevision(revision: Long, write: () -> T): T? =
+            sessions.withIdleRevision(revision, write)
 
         fun start(context: Context, url: String): Boolean {
             val address = Uri.parse(url)
@@ -147,7 +156,7 @@ class VerifyActivity : Activity() {
             addView(bar, LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT))
             addView(web, LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f))
         })
-        main.postDelayed(::watch, 1000)
+        scheduleWatch(generation)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -157,6 +166,9 @@ class VerifyActivity : Activity() {
         if (!isSitePage(url) || !sessions.attach(generation, url, this, false)) return
         setIntent(intent)
         verificationGeneration = generation
+        // An old poll must never execute against a newer intent's mutable web
+        // state and accidentally complete the new generation.
+        main.removeCallbacksAndMessages(null)
         clearSince = 0L
         sawChallenge = false
         initialClearance = clearance(url)
@@ -165,13 +177,19 @@ class VerifyActivity : Activity() {
             web.stopLoading()
             web.loadUrl(url)
         }
+        scheduleWatch(generation)
+    }
+
+    private fun scheduleWatch(generation: Long) {
+        main.postDelayed({ watch(generation) }, 1000)
     }
 
     // A normal-looking title alone can belong to a challenge or an error page. Wait for
     // a stable page and a clearance cookie usable by OkHttp. Sites may redirect to a
     // different canonical domain before solving the challenge.
-    private fun watch() {
-        if (isFinishing || isDestroyed || !sessions.isCurrent(verificationGeneration, this)) return
+    private fun watch(generation: Long) {
+        if (isFinishing || isDestroyed || generation != verificationGeneration ||
+            !sessions.isCurrent(generation, this)) return
         val pageTitle = web.title.orEmpty()
         val currentUrl = web.url.orEmpty()
         val challengeTitle = CHECK_TITLE.containsMatchIn(pageTitle)
@@ -186,13 +204,13 @@ class VerifyActivity : Activity() {
         } else if (clearSince == 0L) {
             clearSince = SystemClock.uptimeMillis()
         } else if (SystemClock.uptimeMillis() - clearSince >= 2000) {
-            if (sessions.complete(verificationGeneration, this)) {
+            if (sessions.complete(generation, this)) {
                 CookieManager.getInstance().flush()
                 finish()
             }
             return
         }
-        main.postDelayed(::watch, 1000)
+        scheduleWatch(generation)
     }
 
     override fun onDestroy() {
@@ -207,117 +225,3 @@ class VerifyActivity : Activity() {
     }
 }
 
-/** Owns accepted launches, delivered Activities and their exact URL/generation. */
-internal class VerifySessionState(
-    private val clockMs: () -> Long,
-    private val pendingTimeoutMs: Long = 15_000L,
-) {
-    data class Snapshot(
-        val open: Boolean,
-        val url: String?,
-        val pending: Boolean,
-        val generation: Long?,
-        val passed: Boolean,
-        val finishedAt: Long,
-    )
-    private class Session(
-        val generation: Long,
-        val url: String,
-        val pendingSince: Long,
-        var owner: WeakReference<Any>? = null,
-        var previous: Session? = null,
-    )
-    private var nextGeneration = 0L
-    private var current: Session? = null
-    private var wasPassed = false
-    private var lastFinishedAt = 0L
-
-    private fun rollbackPending(session: Session) {
-        current = session.previous?.takeIf { it.owner?.get() != null }
-    }
-
-    private fun expirePending(now: Long) {
-        val session = current ?: return
-        if (session.owner?.get() == null && now - session.pendingSince >= pendingTimeoutMs) rollbackPending(session)
-    }
-
-    @Synchronized
-    fun expire(generation: Long) {
-        if (current?.generation == generation) expirePending(clockMs())
-    }
-
-    /** Null means the same URL is already active or has an unexpired launch. */
-    @Synchronized
-    fun begin(url: String): Long? {
-        expirePending(clockMs())
-        if (current?.url == url) return null
-        val previous = current?.let { pending ->
-            pending.takeIf { it.owner?.get() != null }
-                ?: pending.previous?.takeIf { it.owner?.get() != null }
-        }
-        val generation = ++nextGeneration
-        current = Session(generation, url, clockMs(), previous = previous)
-        wasPassed = false
-        lastFinishedAt = 0L
-        return generation
-    }
-
-    @Synchronized
-    fun launchFailed(generation: Long) {
-        current?.takeIf { it.generation == generation && it.owner?.get() == null }?.let(::rollbackPending)
-    }
-
-    /** Accept only the requested URL and generation; allow restoration after process death. */
-    @Synchronized
-    fun attach(generation: Long, url: String, owner: Any, recreation: Boolean): Boolean {
-        if (generation <= 0L) return false
-        expirePending(clockMs())
-        if (current == null && (nextGeneration == 0L || recreation)) {
-            nextGeneration = maxOf(nextGeneration, generation)
-            current = Session(generation, url, clockMs())
-            wasPassed = false
-            lastFinishedAt = 0L
-        }
-        val session = current ?: return false
-        if (session.generation != generation || session.url != url) return false
-        session.owner = WeakReference(owner)
-        session.previous = null
-        return true
-    }
-
-    @Synchronized
-    fun isCurrent(generation: Long, owner: Any): Boolean =
-        current?.let { it.generation == generation && it.owner?.get() === owner } == true
-
-    @Synchronized
-    fun complete(generation: Long, owner: Any): Boolean {
-        if (!isCurrent(generation, owner)) return false
-        wasPassed = true
-        return true
-    }
-
-    @Synchronized
-    fun destroyed(generation: Long, owner: Any, finishedAt: Long) {
-        val session = current ?: return
-        if (session.generation == generation && session.owner?.get() === owner) {
-            current = null
-            lastFinishedAt = finishedAt
-        } else if (session.previous?.generation == generation && session.previous?.owner?.get() === owner) {
-            session.previous = null
-        }
-    }
-
-    @Synchronized
-    fun snapshot(): Snapshot {
-        expirePending(clockMs())
-        val session = current
-        return Snapshot(
-            open = session != null,
-            url = session?.url,
-            pending = session != null && session.owner?.get() == null,
-            generation = session?.generation,
-            passed = wasPassed,
-            finishedAt = lastFinishedAt,
-        )
-    }
-}

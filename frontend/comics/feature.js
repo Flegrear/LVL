@@ -7,11 +7,12 @@ import { toast } from "../ui/ui.js";
 import { t } from "../ui/ui-i18n.js";
 import { comicsApi, pageUrl } from "./comics-api.js";
 import { COMICS_ES } from "./comics-i18n.js";
-import { STATUS_LABELS, cachedEntries, comicCardMarkup, comicKey, libraryGroup, readerNames, rememberEntry, renderComicsHome, renderComicsLibrary } from "./comics-render.js";
+import { STATUS_LABELS, cachedEntries, comicCardMarkup, comicKey, libraryGroup, readerNameKey, readerNames, rememberEntry, renderComicsHome, renderComicsLibrary } from "./comics-render.js";
 import { renderComicsSettings } from "./comics-settings.js";
 import { checkComicsEnabled, comicsEnabled, leaveComicsTab } from "./comics-enabled.js";
 import { openReader } from "../reader/reader.js";
-import { readerChapterPosition } from "../reader/reader-core.js";
+import { createReaderProgressQueue, orderedReaderSourceChoices, readerChapterPosition } from "../reader/reader-core.js";
+import { canReplayReaderProgress, createReaderProgressJournal, matchesReaderProgressReceipt, readerProgressChainProof, reconcileReaderProgressGeneration } from "../reader/progress-journal.js";
 import { COMIC_SETTINGS_SECTIONS, COMIC_HOME_SECTIONS, COMIC_HOOKS, TITLE_SECTIONS } from "./comics-extensions.js";
 import { sourceLanguages } from "./comics-sources.js";
 import { flattenIndex, mergeSourceChapters } from "./comics-chapters.js";
@@ -34,6 +35,109 @@ let readerGeneration = 0;
 let navigationGeneration = 0;
 let pendingReaderKey = "";
 const resumeRecords = new Map();
+// Across consecutive mounted instances of the SAME work/chapter, progress
+// requests must retain their causal order. Authorize each snapshot while the
+// reader still owns the route; later asynchronous transport may only send that
+// already-admitted snapshot, never infer a work from a title or new reader.
+const progressWriters = new Map();
+const progressGenerations = new Map();
+const progressErrorAt = new Map();
+const journalErrorAt = new Map();
+const journal = () => createReaderProgressJournal({ storage: window.localStorage });
+const warnJournal = (key, error) => {
+  if (Date.now() - (journalErrorAt.get(key) || 0) <= 15_000) return;
+  journalErrorAt.set(key, Date.now());
+  toast(t("Reading progress couldn't be saved locally. Keep this page open until it syncs."));
+  void error;
+};
+function noteProgressGeneration(workId, fileId, sourceId, contentWitness, generation,
+  { receipt = null, sent = null, duplicate = false } = {}) {
+  const key = `${workId}\n${fileId}`;
+  const prior = progressGenerations.get(key);
+  const next = reconcileReaderProgressGeneration(prior, { sourceId, contentWitness,
+    generation, receipt, sent, duplicate });
+  if (next) progressGenerations.set(key, next);
+}
+function progressQueueFor(workId, payload) {
+  const key = `${workId}\n${payload.fileId}`;
+  let queue = progressWriters.get(key);
+  if (!queue) {
+    queue = createReaderProgressQueue(async ({ workId: owner, payload: saved, keepalive: final,
+      operationId: op, recovered = false }) => {
+      const token = progressGenerations.get(key);
+      if (!token || token.sourceId !== saved.sourceId || token.contentWitness !== saved.contentWitness)
+        throw Error("Reader source or content generation is unknown; reopen before saving.");
+      if (!recovered && journal().hasUncertainPredecessor(owner, saved.fileId, op))
+        throw Error("An earlier reader operation has no verified acknowledgment; preserving both pending saves.");
+      if (token.generation !== saved.expectedGeneration && !recovered) {
+        // A new snapshot can inherit ONLY the immediately preceding accepted
+        // operation for this exact source/content and original generation.
+        // SQLite independently checks that predecessor and rejects any
+        // intervening sync/import/local write; uncertain ops never rebase.
+        const proof = readerProgressChainProof(saved, token);
+        if (!proof)
+          throw Error("Reader progress changed before dispatch; reopen to reconcile the pending save.");
+        const updated = journal().rebaseUnsent(owner, saved.fileId, op, proof);
+        if (!updated) throw Error("Reader operation is already sent or superseded; preserving its original receipt identity.");
+        Object.assign(saved, updated);
+      }
+      // Persist 'dispatched' synchronously BEFORE network activity. A crash or
+      // response loss can no longer cause the original digest to be rewritten.
+      const dispatched = journal().markDispatched(owner, saved.fileId, op);
+      if (!dispatched) throw Error("Reader operation was superseded; refusing unjournaled dispatch.");
+      Object.assign(saved, dispatched);
+      return comicsApi.saveProgress({ ...saved, progressVersion: saved.version, operationId: op,
+        workId: owner, expectedGeneration: saved.expectedGeneration,
+        ...(saved.sourceId === "local" ? { revision: saved.contentWitness } : { pageWitness: saved.contentWitness }),
+      }, owner, { keepalive: final });
+    }, {
+      onAccepted: (receipt, sent) => {
+        if (!matchesReaderProgressReceipt(receipt, sent)) return;
+        noteProgressGeneration(sent.workId, sent.payload.fileId, sent.payload.sourceId,
+          sent.payload.contentWitness, receipt.progressReceipt.generation,
+          { receipt: receipt.progressReceipt, sent, duplicate: receipt.progressDuplicate === true });
+        try { journal().acknowledge(sent.workId, sent.payload.fileId, sent.operationId); }
+        catch (error) { warnJournal(key, error); }
+      },
+      onError: (error) => {
+        const recent = progressErrorAt.get(key) || 0;
+        if (Date.now() - recent > 8000 && readerRoute?.id === workId && readerRoute?.read === payload.fileId) {
+          progressErrorAt.set(key, Date.now());
+          toast(t("Reading progress couldn't be saved. Try again."));
+        }
+        void error;
+      },
+      onIdle: () => {
+        if (progressWriters.get(key) === queue) progressWriters.delete(key);
+      },
+    });
+    progressWriters.set(key, queue);
+  }
+  return queue;
+}
+function submitOwnedProgress(workId, payload, { keepalive = false, sourceId = "", revision = "" } = {}) {
+  const key = `${workId}\n${payload.fileId}`;
+  const contentWitness = sourceId === "local" ? revision : payload.pageWitness;
+  const prior = progressGenerations.get(key);
+  if (!prior || prior.sourceId !== sourceId || prior.contentWitness !== contentWitness) {
+    const error = Error("Reader generation or source proof unavailable; reopen before saving");
+    warnJournal(key, error);
+    return Promise.reject(error);
+  }
+  let saved;
+  try {
+    saved = journal().record({ workId, fileId: payload.fileId, sourceId,
+      revision, pageWitness: payload.pageWitness, page: payload.page, pages: payload.pages,
+      finished: Boolean(payload.finished), chapter: payload.chapter ?? null,
+      volume: payload.volume ?? null, expectedGeneration: prior.generation });
+  } catch (error) {
+    warnJournal(key, error);
+    return Promise.reject(error);
+  }
+  return progressQueueFor(workId, payload).enqueue({ workId,
+    payload: { ...payload, ...saved, contentWitness, sourceId },
+    keepalive, operationId: saved.operationId });
+}
 function rememberMountedReader(route) {
   // Two rapid source changes may finish HTTP requests out of order. Serialize
   // only the small per-work session pointer; chapter pages still save normally.
@@ -205,12 +309,15 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
   const data = readerData(route.id, ctx);
   await data.loaded;
   if (!isAllowed()) return null;
-  const known = targetName || readerNames.get(route.read) || {};
+  const known = targetName || readerNames.get(readerNameKey(route.id, route.read)) || {};
   const info = await comicsApi.readerFile(route.read, {
     workId: route.id, name: known.label || "", describe: route.read.startsWith("ex-"),
   });
   if (!isAllowed()) return null;
   verifyReaderInfo(route, info, target);
+  const verifiedSourceId = route.read.startsWith("ex-") ? info.sourceId : "local";
+  const contentWitness = route.read.startsWith("ex-") ? info.pageWitness : info.file?.revision;
+  noteProgressGeneration(route.id, route.read, verifiedSourceId, contentWitness, info.progressGeneration);
   const currentChapter = known.chapter ?? info.chapter ?? info.file?.chapter ?? null;
   // `null` provided by a selected row means unvolumed. Only an absent volume
   // may fall back to reader metadata; never erase a known exact row identity.
@@ -223,6 +330,36 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
   let mounted = false;
   let instance = null;
   let born = -1;
+  // A crash may leave a newer unacknowledged page than the server returned
+  // on this mount. Until the user explicitly navigates, do not let the
+  // reader's automatic initial snapshot supersede that durable pending entry.
+  let recoveredPending = null;
+  let navigatedAfterMount = false;
+  try { recoveredPending = journal().pending(route.id, route.read); }
+  catch (error) { warnJournal(key, error); }
+  const verifiedRecovery = canReplayReaderProgress(recoveredPending, {
+    workId: route.id, fileId: route.read, sourceId: verifiedSourceId,
+    contentWitness, pages: info.pages, generation: info.progressGeneration,
+  });
+  const replayPending = async () => {
+    if (!verifiedRecovery || !owns()) return false;
+    // Preserve/replay older uncertain operations before their newer, never
+    // dispatched successors. Each pass rereads the durable journal and proves
+    // the same mounted work/unit/source/content/page count anew.
+    for (let attempt = 0; attempt < 128 && owns(); attempt++) {
+      const latest = journal().pending(route.id, route.read);
+      if (!latest) { recoveredPending = null; return true; }
+      if (!canReplayReaderProgress(latest, { workId: route.id, fileId: route.read,
+        sourceId: verifiedSourceId, contentWitness, pages: info.pages,
+        generation: info.progressGeneration })) return false;
+      await progressQueueFor(route.id, latest).enqueue({ workId: route.id,
+        payload: { ...latest, contentWitness }, keepalive: false,
+        operationId: latest.operationId, recovered: latest.dispatched !== false });
+      if (journal().pending(route.id, route.read)?.operationId === latest.operationId) return false;
+    }
+    return false;
+  };
+  const initialPage = Number.isSafeInteger(route.page) ? route.page : Number(info.file?.progress?.page) || 0;
   const owns = () => mounted && reader === instance && readerGeneration === born
     && readerKey === key && routeIsCurrent(route) && ctx.viewActive?.("comic") !== false;
   // Warm the next chapters only after the new reader's route is committed.
@@ -291,14 +428,18 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
   };
   try {
     instance = await openReader(stage, {
-      fileId: route.read, page: route.page, comic: data.comic,
+      fileId: route.read,
+      // A saved/linked ordinal is stale when the provider reorders its pages.
+      // The server remaps the actual saved image or conservatively starts at 0.
+      page: info.pageRebased ? info.file?.progress?.page ?? 0 : route.page,
+      comic: data.comic,
       chapter: currentChapter, volume: currentVolume, cascadeNotice,
       chapters: chaptersReady,
       sourceUnits: data.availabilityReady,
       source: known.source || info.source || (route.read.startsWith("f") ? t("Your file") : ""),
       sources: currentChapter !== null || route.read.startsWith("ex-") ? async () => {
         if (!owns()) return [];
-        const now = readerNames.get(route.read) || known;
+        const now = readerNames.get(readerNameKey(route.id, route.read)) || known;
         const chapter = now.chapter ?? currentChapter;
         if (chapter === null || chapter === undefined || chapter === "") return [];
         const list = await chaptersReady;
@@ -315,7 +456,7 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
         const serial = ++navigationGeneration;
         const valid = () => owns() && navigationGeneration === serial;
         try {
-          const identity = readerNames.get(route.read) || known;
+          const identity = readerNames.get(readerNameKey(route.id, route.read)) || known;
           const list = await chaptersReady;
           if (!valid()) return false;
           const chapter = identity.chapter ?? currentChapter;
@@ -336,8 +477,7 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
         if (!valid()) return false;
         if (!Array.isArray(response?.candidates)) throw Error("Chapter sources could not be loaded.");
         const kind = route.read.startsWith("ex-") ? "ext" : "local";
-        const currentIdentity = readerNames.get(route.read) || known;
-        const currentSource = currentIdentity.source || info.source || "";
+        const currentIdentity = readerNames.get(readerNameKey(route.id, route.read)) || known;
         // Automatic chapter continuation requires the currently opened unit's
         // authoritative source ID. A remembered/displayed name is not proof.
         const verifiedSourceId = kind === "ext" ? (info.sourceId || "") : "local";
@@ -345,18 +485,14 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
           ? (info.sourceId || currentIdentity.sourceId || "") : "local";
         const others = response.candidates.filter((entry) => readerIdValid(entry.readerId) && entry.readerId !== route.read
           && entry.kind === (entry.readerId.startsWith("ex-") ? "ext" : "local"));
-        const sameSource = others.filter((entry) => entry.kind === kind && (strictSource
-          ? verifiedSourceId && entry.sourceId === verifiedSourceId
-          : currentSourceId ? entry.sourceId === currentSourceId : currentSource && entry.name === currentSource));
         // A scroll-driven automatic chapter transition must never silently
         // switch to another provider. Manual Next keeps its fallback choices.
-        const choices = strictSource ? (verifiedSourceId ? sameSource : []) : [
-          ...sameSource,
-          ...others.filter((entry) => entry.kind === kind), ...others,
-        ];
+        const choices = orderedReaderSourceChoices(others, {
+          kind, sourceId: strictSource ? verifiedSourceId : currentSourceId, strict: strictSource,
+        });
         if (!choices.length) throw Error(t("No chosen source has this chapter yet."));
         let lastError = null;
-        for (const choice of new Map(choices.map((entry) => [entry.readerId, entry])).values()) {
+        for (const choice of choices) {
           if (!valid()) return false;
           if (choice.kind === "ext" && !choice.sourceId) continue;
           const label = { label: `${data.comic?.title || ""} · ${t("Chapter {number}", { number: unit.chapter })}`, chapter: unit.chapter, volume: unit.volume, source: choice.name || "", sourceId: choice.sourceId || "" };
@@ -400,15 +536,22 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
         // Only a current mounted reader saves normally. A superseded mounted
         // reader may save its exact final page *only during its own close()*.
         // Staging, failed routes, and late callbacks cannot write progress.
-        saveProgress: (progress) => mounted && progress?.fileId === route.read
+        saveProgress: (progress, { close = false } = {}) => mounted && progress?.fileId === route.read
           && (owns() || finalProgressReaders.has(instance))
-          ? comicsApi.saveProgress({ ...progress, chapter: readerNames.get(progress.fileId)?.chapter ?? currentChapter,
-            volume: readerNames.get(progress.fileId)?.volume !== undefined ? readerNames.get(progress.fileId).volume : currentVolume ?? null }, route.id)
+          ? recoveredPending && !navigatedAfterMount
+            ? Promise.resolve() // no blind overwrite of an unacknowledged crash snapshot
+            : submitOwnedProgress(route.id, { ...progress, ...(route.read.startsWith("ex-") ? { pageWitness: info.pageWitness } : {}),
+            chapter: readerNames.get(readerNameKey(route.id, progress.fileId))?.chapter ?? currentChapter,
+            volume: readerNames.get(readerNameKey(route.id, progress.fileId))?.volume !== undefined
+              ? readerNames.get(readerNameKey(route.id, progress.fileId)).volume : currentVolume ?? null },
+            { keepalive: close, sourceId: route.read.startsWith("ex-") ? info.sourceId : "local",
+              revision: info.file?.revision || "" })
           : Promise.resolve(),
         pageUrl,
       },
-      onPage: (fileId, at) => {
+      onPage: (fileId, at, intent = {}) => {
         if (!owns() || fileId !== route.read) return;
+        if (intent.explicitPageTurn === true && at !== initialPage) navigatedAfterMount = true;
         readerRoute.page = at;
         history.replaceState(history.state, "", `/comic${comicUrl(route.id, fileId, at)}`);
       },
@@ -436,7 +579,10 @@ async function prepareReader(section, ctx, route, isAllowed, target = null, targ
     }
     const root = stage.querySelector(".reader");
     if (!root) throw Error("The selected reader did not open.");
-    return { instance, root, key, route, mounted: (generation) => { born = generation; mounted = true; } };
+    return { instance, root, key, route, replayPending, verifiedRecovery,
+      recoveredPending: recoveredPending
+      ? { page: recoveredPending.page, sourceId: recoveredPending.sourceId } : null,
+      mounted: (generation) => { born = generation; mounted = true; } };
   } catch (error) {
     instance?.close({ keepUrl: true });
     // openReader owns teardown when initialization fails before returning an instance.
@@ -501,12 +647,21 @@ async function handoverReader(section, ctx, route, valid, unit = null, targetNam
     // its initial render already called onPage/saveSoon while unmounted.
     prepared.mounted(newGeneration);
     committed = true;
+    if (prepared.recoveredPending)
+      toast(t(prepared.verifiedRecovery
+        ? `Page ${prepared.recoveredPending.page + 1} has a pending save; verifying the original operation.`
+        : `Page ${prepared.recoveredPending.page + 1} is preserved but source, manifest or generation proof changed; reconcile before saving.`));
+    if (prepared.verifiedRecovery)
+      void prepared.replayPending().catch((error) => {
+        if (reader === prepared.instance)
+          toast(t(error?.message || "Pending page needs reconciliation; no newer server progress was overwritten."));
+      });
     closeMountedReader(previous);
     if (cascadeNotice || reverseBridge) prepared.instance.activateCascadeChrome?.();
     rememberMountedReader(route);
-    if (targetName) readerNames.set(route.read, targetName);
-    else if (!readerNames.get(route.read)?.chapter && unit?.chapter)
-      readerNames.set(route.read, { chapter: String(unit.chapter), volume: unit.volume ?? null, source: "" });
+    if (targetName) readerNames.set(readerNameKey(route.id, route.read), targetName);
+    else if (!readerNames.get(readerNameKey(route.id, route.read))?.chapter && unit?.chapter)
+      readerNames.set(readerNameKey(route.id, route.read), { chapter: String(unit.chapter), volume: unit.volume ?? null, source: "" });
     const pageNumber = Number(prepared.root.querySelector(".reader__slider")?.value);
     if (Number.isInteger(pageNumber) && pageNumber > 0) {
       readerRoute.page = pageNumber - 1;
@@ -559,12 +714,12 @@ async function syncReader(section, ctx, route) {
     // Explicit first-open links retain their historic source fallback. Failed
     // Next/Previous and other handovers NEVER call leaveReader or go Home.
     failedReaders.add(route.read);
-    const opened = readerNames.get(route.read) || {};
+    const opened = readerNames.get(readerNameKey(route.id, route.read)) || {};
     const other = opened.chapter ? await otherReader(route, opened, ctx).catch(() => null) : null;
     if (!valid()) return false;
     if (other && readerIdValid(other.readerId)) {
       toast(t("{source} couldn't open this chapter. Opening it from {other}.", { source: opened.source || t("This source"), other: other.name }));
-      readerNames.set(other.readerId, { ...opened, source: other.name });
+      readerNames.set(readerNameKey(route.id, other.readerId), { ...opened, source: other.name });
       ctx.switchView("comic", { query: comicUrl(route.id, other.readerId, other.page ?? null), historyMode: "replace" });
       return false;
     }

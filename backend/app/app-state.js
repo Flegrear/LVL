@@ -10,40 +10,33 @@ const APP_STATE_LEGACY_MERGE_SECTIONS = new Set(["testResults", "coachSessions",
 
 const MAX_APP_STATE_BODY_BYTES = 48 * 1024 * 1024;
 
-function mergeLegacyAppRecords(section, previous, incoming) {
-  const byId = new Map();
-  for (const item of [...(Array.isArray(previous) ? previous : []), ...(Array.isArray(incoming) ? incoming : [])]) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) continue;
-    const key = section === "testResults" ? String(item.id || "").slice(0, 200)
-      : `${String(item.chatId || "").slice(0, 64)}:${item.nativeVoice ? "native-voice" : "text-live"}`;
-    if (!key || (section === "coachSessions" && !/^[0-9a-f-]{20,64}:(?:native-voice|text-live)$/i.test(key))) continue;
-    const at = Number(item[section === "testResults" ? "completedAt" : "updatedAt"]
-      ?? (section === "testResults" ? item.startedAt : 0)) || 0;
-    const prior = byId.get(key);
-    if (!prior || at >= prior.at) byId.set(key, { item, at });
-  }
-  return [...byId.values()].sort((a, b) => a.at - b.at).slice(section === "testResults" ? -500 : -24).map(({ item }) => item);
-}
-
 function mergeLegacyAppSection(section, value) {
-  if (section === "coachTranscripts" || section === "coachUsage")
-    return { ok: true, updatedAt: appDatabase.mergeSection(section, value) };
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const revision = appDatabase.sectionUpdatedAt(section);
-    const merged = mergeLegacyAppRecords(section, appDatabase.readSection(section), value);
-    const result = appDatabase.compareAndSwapSection(section, merged, revision);
-    if (result.ok) return result;
-  }
-  return { ok: false, currentUpdatedAt: appDatabase.sectionUpdatedAt(section) };
+  // The database owns both the merger and its write lock. Coach sessions and
+  // transcripts consequently use the same ordering and sanitation for CAS,
+  // explicit legacy imports and unversioned app requests.
+  return { ok: true, updatedAt: appDatabase.mergeSection(section, value) };
 }
 
 function appStatePayload() {
+  const recovery = appDatabase.legacyBootstrapRecovery();
+  const unresolved = new Set(recovery?.resolvedIds || []);
+  const legacyBootstrapClaimed = appDatabase.getMeta("legacy_bootstrap_claimed") === "1";
   return {
     schemaVersion: appDatabase.schemaVersion(),
     initialized: appDatabase.isCoreInitialized(),
+    legacyBootstrapClaimed,
+    legacyBootstrap: { version: 1, claimed: legacyBootstrapClaimed },
     databasePath: appDatabase.path,
     state: appDatabase.readAll(),
     revisions: Object.fromEntries(APP_STATE_SECTIONS.map((section) => [section, appDatabase.sectionUpdatedAt(section)])),
+    legacyBootstrapRecovery: recovery ? {
+      pending: [...recovery.candidates, ...(recovery.overlaps || [])]
+        .filter(entry => !unresolved.has(String(entry.id))).length,
+      candidates: recovery.candidates.filter(entry => !unresolved.has(String(entry.id))).length,
+      overlaps: (recovery.overlaps || []).filter(entry => !unresolved.has(String(entry.id))).length,
+      acceptedRevision: recovery.acceptedRevision,
+      url: "/api/app-state/bootstrap-recovery",
+    } : null,
   };
 }
 
@@ -55,12 +48,58 @@ export async function appStateBootstrapEndpoint(req, res) {
     : null;
   // Check and claim initial migration inside the database's write transaction.
   // An earlier preflight in this handler could race another server process.
-  if (legacyState) appDatabase.bootstrapLegacyState(legacyState);
+  try {
+    if (legacyState) appDatabase.bootstrapLegacyState(legacyState);
+  } catch (error) {
+    if ([400, 413, 503].includes(error?.statusCode)) {
+      json(res, error.statusCode, { error: error.message });
+      return true;
+    }
+    throw error;
+  }
   json(res, 200, appStatePayload());
   return true;
 }
 
 export async function appStateEndpoint(req, res, url) {
+  if (url.pathname === "/api/app-state/bootstrap-recovery/restore") {
+    if (req.method !== "POST") return methodNotAllowed(res, ["POST"]);
+    const body = await readJsonBody(req, MAX_APP_STATE_BODY_BYTES);
+    try {
+      const result = appDatabase.restoreLegacyBootstrapLibrary(body?.ids, body?.expectedUpdatedAt,
+        { keepAccepted: body?.decision === "keep" });
+      if (!result.ok) {
+        json(res, 409, { error: "app_state_conflict", section: "library",
+          message: result.reason === "entry_present" ? "A selected entry now exists in Library; review its accepted version." : "Library changed since recovery review.",
+          currentUpdatedAt: result.currentUpdatedAt });
+        return true;
+      }
+      json(res, 200, { ...result, legacyBootstrapRecovery: appStatePayload().legacyBootstrapRecovery });
+    } catch (error) {
+      if ([400, 413, 503].includes(error?.statusCode)) {
+        json(res, error.statusCode, { error: error.message, section: "library" });
+        return true;
+      }
+      throw error;
+    }
+    return true;
+  }
+  if (url.pathname === "/api/app-state/bootstrap-recovery") {
+    if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed(res, ["GET", "HEAD"]);
+    if (url.searchParams.get("summary") === "1") {
+      const receipt = appDatabase.legacyBootstrapRecovery();
+      const resolved = new Set(receipt?.resolvedIds || []);
+      const pending = [...(receipt?.candidates || []), ...(receipt?.overlaps || [])]
+        .filter(entry => !resolved.has(String(entry.id)));
+      json(res, 200, { pending: pending.length, acceptedRevision: appDatabase.sectionUpdatedAt("library") });
+      return true;
+    }
+    json(res, 200, {
+      recovery: appDatabase.legacyBootstrapRecovery(),
+      policy: "Review candidate and overlapping legacy entries against the accepted Library and sync deletions before using the Library revision-checked update API.",
+    });
+    return true;
+  }
   if (url.pathname === "/api/app-state") {
     if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed(res, ["GET", "HEAD"]);
     json(res, 200, appStatePayload());
@@ -83,11 +122,16 @@ export async function appStateEndpoint(req, res, url) {
   }
   if (req.method !== "PUT" && req.method !== "POST") return methodNotAllowed(res, ["GET", "PUT", "POST"]);
   const body = await readJsonBody(req, MAX_APP_STATE_BODY_BYTES);
-  if (!("value" in body)) {
+  if (!body || typeof body !== "object" || Array.isArray(body) || !("value" in body)) {
     json(res, 400, { error: "App-state update requires a value" });
     return true;
   }
+  try {
   const merge = body.merge === true;
+  if (merge && !APP_STATE_LEGACY_MERGE_SECTIONS.has(section) && section !== "preferences") {
+    json(res, 400, { error: `Section ${section} does not support merge writes`, section });
+    return true;
+  }
   if (!merge && (APP_STATE_CAS_SECTIONS.has(section) || body.expectedUpdatedAt != null)) {
     if (body.expectedUpdatedAt == null) {
       json(res, 428, {
@@ -99,11 +143,11 @@ export async function appStateEndpoint(req, res, url) {
       return true;
     }
     const rawExpectedUpdatedAt = Number(body.expectedUpdatedAt);
-    if (!Number.isFinite(rawExpectedUpdatedAt) || rawExpectedUpdatedAt < 0) {
+    if (!Number.isSafeInteger(rawExpectedUpdatedAt) || rawExpectedUpdatedAt < 0) {
       json(res, 400, { error: "Invalid app-state section revision", section });
       return true;
     }
-    const expectedUpdatedAt = Math.floor(rawExpectedUpdatedAt);
+    const expectedUpdatedAt = rawExpectedUpdatedAt;
     const result = appDatabase.compareAndSwapSection(section, body.value, expectedUpdatedAt);
     if (!result.ok) {
       json(res, 409, {
@@ -128,10 +172,19 @@ export async function appStateEndpoint(req, res, url) {
     json(res, 200, { ok: true, section, updatedAt: result.updatedAt, policy: "merge" });
     return true;
   }
-  const updatedAt = merge && typeof appDatabase.mergeSection === "function"
+  const updatedAt = merge
     ? appDatabase.mergeSection(section, body.value)
     : appDatabase.writeSection(section, body.value);
   // Parked learningExposure retains its old unversioned replacement contract.
-  json(res, 200, { ok: true, section, updatedAt, ...(section === "learningExposure" && !merge ? { policy: "legacy-replace" } : {}) });
+  json(res, 200, { ok: true, section, updatedAt,
+    ...(merge && section === "preferences" ? { policy: "defaults-only" } : {}),
+    ...(section === "learningExposure" && !merge ? { policy: "legacy-replace" } : {}) });
   return true;
+  } catch (error) {
+    if ([400, 413, 503].includes(error?.statusCode)) {
+      json(res, error.statusCode, { error: error.message, section });
+      return true;
+    }
+    throw error;
+  }
 }

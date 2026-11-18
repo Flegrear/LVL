@@ -3,8 +3,9 @@
 // Builders return HTML strings with every dynamic value escaped, so the same code renders the
 // app and runs under Node tests. Behaviors (bind*, toast) only touch
 // the DOM when they are called, never at import time.
-import { t, UI_TRANSLATIONS } from "./ui-i18n.js";
+import { t, knownTranslationKey } from "./ui-i18n.js";
 import { escapeHtml } from "../../shared/html.js";
+import { dismissTopOverlay, floatingOverlayHost, getTopOverlayOwner, registerOverlayOwner } from "./overlay-host.js";
 
 export { escapeHtml };
 
@@ -22,16 +23,41 @@ export function markupSignature(value) {
   return `${input.length}:${first >>> 0}:${second >>> 0}`;
 }
 
-// A markup signature alone cannot prove a renderer still owns a container:
-// another category or extension can replace it with different DOM. Track the
-// first actual mounted node to preserve work only while that node survives.
+// A markup signature cannot prove a renderer still owns its DOM. Another
+// feature can replace a later shelf or nested action without touching the
+// first child. Record the complete mounted node graph; text is included so a
+// changed label is also restored on the next render.
+function mountedDescendants(container) {
+  if (!container?.childNodes) return null; // Legacy minimal DOM fixtures.
+  const nodes = [];
+  const stack = Array.from(container.childNodes).reverse();
+  while (stack.length) {
+    const node = stack.pop();
+    nodes.push(node);
+    for (let index = (node.childNodes?.length || 0) - 1; index >= 0; index--)
+      stack.push(node.childNodes[index]);
+  }
+  return nodes;
+}
+
 export function captureMountedMarkup(container, signature) {
-  return { container, signature, first: container?.firstChild || null };
+  return {
+    container, signature, first: container?.firstChild || null,
+    descendants: mountedDescendants(container)?.map((node) => ({
+      node, text: node.nodeType === 3 ? node.nodeValue : null,
+    })) ?? null,
+  };
 }
 export function mountedMarkupMatches(snapshot, container, signature, { allowEmpty = false } = {}) {
-  return Boolean(snapshot && snapshot.container === container && snapshot.signature === signature
-    && (snapshot.first ? snapshot.first === container?.firstChild
-      : allowEmpty && !container?.firstChild));
+  if (!snapshot || snapshot.container !== container || snapshot.signature !== signature) return false;
+  if (!snapshot.first && !allowEmpty) return false;
+  if (snapshot.descendants) {
+    const mounted = mountedDescendants(container);
+    return Boolean(mounted && mounted.length === snapshot.descendants.length
+      && mounted.every((node, index) => node === snapshot.descendants[index].node
+        && (node.nodeType !== 3 || node.nodeValue === snapshot.descendants[index].text)));
+  }
+  return snapshot.first ? snapshot.first === container?.firstChild : allowEmpty && !container?.firstChild;
 }
 
 function attrs(map = {}) {
@@ -47,7 +73,7 @@ function uiField(value, i18n = true, field = "label") {
   const option = i18n && typeof i18n === "object" ? i18n[field] ?? true : i18n;
   const key = typeof option === "string" ? option : String(value ?? "");
   const params = i18n && typeof i18n === "object" ? i18n.params || {} : {};
-  if (option === false || !Object.hasOwn(UI_TRANSLATIONS.en, key)) return { text: value, annotation: {} };
+  if (option === false || !knownTranslationKey(key)) return { text: value, annotation: {} };
   return {
     text: t(key, params),
     annotation: { "data-i18n": key, ...(Object.keys(params).length ? { "data-i18n-params": JSON.stringify(params) } : {}) },
@@ -704,22 +730,24 @@ let tipTrigger = null;
 let tipPinned = false;
 let tipHideTimer = 0;
 let tipShowTimer = 0;
+let tipDisposeOwner = null;
 
-function tipHost() {
-  return [...document.querySelectorAll("dialog[open]")].pop() || document.body;
+function tipHost(trigger) {
+  return floatingOverlayHost(trigger);
 }
 
 function placeTip(trigger) {
   const rect = trigger.getBoundingClientRect();
+  const viewport = trigger.ownerDocument?.defaultView || window;
   const panel = tipPanel;
   panel.style.left = "0px";
   panel.style.top = "0px";
   const width = panel.offsetWidth;
   const height = panel.offsetHeight;
   const margin = 12;
-  const left = Math.max(margin, Math.min(rect.left + rect.width / 2 - width / 2, window.innerWidth - width - margin));
+  const left = Math.max(margin, Math.min(rect.left + rect.width / 2 - width / 2, viewport.innerWidth - width - margin));
   const below = rect.bottom + 10;
-  const fitsBelow = below + height <= window.innerHeight - margin;
+  const fitsBelow = below + height <= viewport.innerHeight - margin;
   const top = fitsBelow || rect.top - height - 10 < margin ? below : rect.top - height - 10;
   panel.dataset.side = fitsBelow || rect.top - height - 10 < margin ? "below" : "above";
   const wantLeft = Math.round(left);
@@ -737,23 +765,30 @@ function placeTip(trigger) {
 }
 
 function showTip(trigger) {
-  const content = document.getElementById(trigger.dataset.uiTip || "");
+  const doc = trigger.ownerDocument || document;
+  const content = doc.getElementById(trigger.dataset.uiTip || "");
   if (!content) return;
   window.clearTimeout(tipHideTimer);
   if (!tipPanel) {
-    tipPanel = document.createElement("div");
+    tipPanel = doc.createElement("div");
     tipPanel.className = "ui-tip";
     tipPanel.setAttribute("role", "tooltip");
     tipPanel.id = "ui-tip-panel";
     tipPanel.addEventListener("pointerenter", () => window.clearTimeout(tipHideTimer));
     tipPanel.addEventListener("pointerleave", () => { if (!tipPinned) scheduleTipHide(); });
   }
-  const host = tipHost();
+  const host = tipHost(trigger);
+  if (!host) { hideTip(); return; }
   if (tipPanel.parentElement !== host) host.append(tipPanel);
   tipPanel.innerHTML = content.innerHTML;
   tipPanel.hidden = false;
   tipTrigger?.removeAttribute("aria-expanded");
   tipTrigger = trigger;
+  tipDisposeOwner?.();
+  tipDisposeOwner = registerOverlayOwner(tipPanel, {
+    kind: "tooltip",
+    dismiss: () => { hideTip(); return true; },
+  });
   if (trigger.classList.contains("ui-help")) trigger.setAttribute("aria-expanded", "true");
   placeTip(trigger);
 }
@@ -762,6 +797,8 @@ function hideTip() {
   window.clearTimeout(tipShowTimer);
   window.clearTimeout(tipHideTimer);
   tipPinned = false;
+  tipDisposeOwner?.();
+  tipDisposeOwner = null;
   if (tipPanel) tipPanel.hidden = true;
   tipTrigger?.removeAttribute("aria-expanded");
   tipTrigger = null;
@@ -772,11 +809,11 @@ function scheduleTipHide(delay = 140) {
   tipHideTimer = window.setTimeout(hideTip, delay);
 }
 
-let tipsInstalled = false;
+const tipsInstalled = new WeakSet();
 
 export function installTips(doc = globalThis.document) {
-  if (tipsInstalled || !doc?.addEventListener) return;
-  tipsInstalled = true;
+  if (!doc?.addEventListener || tipsInstalled.has(doc)) return;
+  tipsInstalled.add(doc);
   const triggerOf = (target) => target?.closest?.("[data-ui-tip]") || null;
   doc.addEventListener("pointerover", (event) => {
     const trigger = triggerOf(event.target);
@@ -812,29 +849,33 @@ export function installTips(doc = globalThis.document) {
     if (tipPinned && !tipPanel?.contains(event.target)) hideTip();
   });
   doc.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && tipTrigger) {
+    if (event.key === "Escape" && tipTrigger?.ownerDocument === doc
+      && getTopOverlayOwner(doc)?.element === tipPanel) {
       // Close the tip first; a second Escape reaches the dialog.
-      event.stopPropagation();
-      event.preventDefault();
-      hideTip();
+      if (dismissTopOverlay(doc, { reason: "escape" })) {
+        event.stopPropagation();
+        event.preventDefault();
+      }
     }
   }, true);
-  window.addEventListener("scroll", () => { if (tipTrigger && !tipPinned) hideTip(); else if (tipTrigger) placeTip(tipTrigger); }, { passive: true, capture: true });
-  window.addEventListener("resize", () => { if (tipTrigger) placeTip(tipTrigger); });
+  const viewport = doc.defaultView || window;
+  viewport.addEventListener("scroll", () => { if (tipTrigger?.ownerDocument !== doc) return; if (!tipPinned) hideTip(); else placeTip(tipTrigger); }, { passive: true, capture: true });
+  viewport.addEventListener("resize", () => { if (tipTrigger?.ownerDocument === doc) placeTip(tipTrigger); });
 }
 
-export function toast(message, { tone = "default", timeout = 3600 } = {}) {
-  if (typeof document === "undefined") return { dismiss() {} };
+export function toast(message, { tone = "default", timeout = 3600, doc = globalThis.document } = {}) {
+  if (!doc) return { dismiss() {} };
   if (!toastRegion) {
-    toastRegion = document.createElement("div");
+    toastRegion = doc.createElement("div");
     toastRegion.className = "ui-toast-region";
     toastRegion.setAttribute("role", "status");
     toastRegion.setAttribute("aria-live", "polite");
   }
   // A modal dialog makes the rest of the page inert, so show the toast inside the top-most one.
-  const host = [...document.querySelectorAll("dialog[open]")].pop() || document.body;
+  const host = floatingOverlayHost(null, doc);
+  if (!host) return { dismiss() {} };
   if (toastRegion.parentElement !== host) host.append(toastRegion);
-  const node = document.createElement("div");
+  const node = doc.createElement("div");
   node.className = `ui-toast${tone === "error" ? " ui-toast--error" : ""}`;
   node.innerHTML = `${icon(tone === "error" ? "alert" : "check")}<span class="ui-toast__text"></span>`;
   node.querySelector(".ui-toast__text").textContent = String(message ?? "");
@@ -874,9 +915,13 @@ export function confirmDialog({ title = "", text = "", confirmLabel = "Continue"
       const choice = event.target.closest("[data-confirm]")?.dataset.confirm;
       if (choice) { confirmed = choice === "yes"; box.close(); } else if (event.target === box) box.close();
     });
-    box.addEventListener("close", () => { box.remove(); resolve(confirmed); });
+    let disposeOwner = null;
+    box.addEventListener("close", () => { disposeOwner?.(); box.remove(); resolve(confirmed); });
     document.body.append(box);
     box.showModal();
+    disposeOwner = registerOverlayOwner(box, {
+      kind: "modal", dismiss: () => { box.close(); return true; },
+    });
     box.querySelector('[data-confirm="yes"]')?.focus();
   });
 }
@@ -905,9 +950,13 @@ export function promptDialog({ title = "", label = "", value = "", confirmLabel 
       result = input.value.trim();
       box.close();
     });
-    box.addEventListener("close", () => { box.remove(); resolve(result); });
+    let disposeOwner = null;
+    box.addEventListener("close", () => { disposeOwner?.(); box.remove(); resolve(result); });
     document.body.append(box);
     box.showModal();
+    disposeOwner = registerOverlayOwner(box, {
+      kind: "modal", dismiss: () => { box.close(); return true; },
+    });
     input.focus();
     input.select();
   });

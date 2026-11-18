@@ -8,7 +8,7 @@ class SourceOwnership<S : Any> {
 
     /** Validate the entire candidate before replacing any handler. Concurrent loads serialize here. */
     @Synchronized
-    fun replace(pkg: String, candidates: List<S>, idOf: (S) -> Long) {
+    fun replace(pkg: String, candidates: List<S>, idOf: (S) -> Long): Map<Long, S> {
         require(pkg.isNotBlank()) { "Extension package is missing" }
         val proposed = LinkedHashMap<Long, S>()
         for (source in candidates) {
@@ -21,6 +21,9 @@ class SourceOwnership<S : Any> {
         val retired = byId.filter { (_, entry) -> entry.pkg == pkg }.keys - proposed.keys
         for (id in retired) byId.remove(id)
         for ((id, source) in proposed) byId[id] = Entry(pkg, source)
+        // Callers publish generations using the validated IDs; do not invoke
+        // extension-controlled id getters again after this commit.
+        return proposed.toMap()
     }
 
     @Synchronized

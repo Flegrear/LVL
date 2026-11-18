@@ -13,10 +13,12 @@ const adultArg = (adult) => (adult ? "" : "isAdult: false, ");
 const PAGE = (alias, args, extra = "", perPage = "$perPage", adult = false) => `${alias}: Page(perPage: ${perPage}) { media(type: MANGA, format_in: ${COMIC_FORMATS}, ${adultArg(adult)}${args}) { ${CARD_FIELDS} ${extra} } }`;
 const NOT_ANIMATED_EXTRA = "relations { edges { relationType node { type } } }";
 
-const YEAR_NOW = new Date().getFullYear();
+// Re-evaluate calendar-year filters when queried. The app can remain open
+// across New Year; a module-load snapshot would leave browsing/home stale.
+const currentYear = () => new Date().getFullYear();
 export const HOME_SECTIONS = Object.freeze([
   Object.freeze({ id: "trending", title: "Trending now", args: "sort: TRENDING_DESC" }),
-  Object.freeze({ id: "new", title: "New series", args: `status: RELEASING, startDate_greater: ${(YEAR_NOW - 1) * 10000}, sort: POPULARITY_DESC` }),
+  Object.freeze({ id: "new", title: "New series", get args() { return `status: RELEASING, startDate_greater: ${(currentYear() - 1) * 10000}, sort: POPULARITY_DESC`; } }),
   Object.freeze({ id: "manga", title: "Popular manga", args: "countryOfOrigin: \"JP\", sort: POPULARITY_DESC" }),
   Object.freeze({ id: "manhwa", title: "Popular manhwa", args: "countryOfOrigin: \"KR\", sort: POPULARITY_DESC" }),
   Object.freeze({ id: "manhua", title: "Popular manhua", args: "countryOfOrigin: \"CN\", sort: POPULARITY_DESC" }),
@@ -35,8 +37,9 @@ export const searchQuery = ({ adult = false } = {}) => `query ($q: String, $genr
     media(type: MANGA, format_in: ${COMIC_FORMATS}, ${adultArg(adult)}search: $q, genre: $genre, sort: $sort) { ${CARD_FIELDS} } } }`;
 export const SEARCH_QUERY = searchQuery();
 
-// The Mihon import (mihon-import.js): works by AniList or MyAnimeList id, 50 a request, and
-// several exact-title searches in one request. Adult titles come back too; the import decides.
+// Mihon import uses only verified AniList / MyAnimeList tracking IDs, 50 per
+// request. Title search is separately available for user-directed discovery,
+// but is never automatic identity evidence for import.
 const MATCH_FIELDS = `id idMal title { romaji english native userPreferred } synonyms coverImage { large extraLarge color }
   format status chapters volumes averageScore popularity genres countryOfOrigin startDate { year } isAdult siteUrl`;
 export const IDS_QUERY = `query ($ids: [Int]) { Page(perPage: 50) { media(type: MANGA, id_in: $ids) { ${MATCH_FIELDS} } } }`;
@@ -67,7 +70,7 @@ export const BROWSE_GENRES = Object.freeze(["Action", "Adventure", "Comedy", "Dr
   "Mystery", "Psychological", "Romance", "Sci-Fi", "Slice of Life", "Sports", "Supernatural", "Thriller"]);
 
 // Query-string filters -> AniList variables, or an error message for a bad value.
-export function browseVariables(input = {}, { year: yearNow = YEAR_NOW } = {}) {
+export function browseVariables(input = {}, { year: yearNow = currentYear() } = {}) {
   const get = (name) => String(input[name] ?? "").trim();
   const q = get("q").slice(0, 100);
   const type = get("type");

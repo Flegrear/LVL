@@ -1,7 +1,7 @@
 // Subtitles on screen: cues, romanized text, word marks and the track list.
 import { emptyMarkup, escapeHtml, icon } from "../ui/ui.js";
 import { frame, playbackMetrics, state, video } from "../../app.js";
-import { $ } from "../app/dom.js";
+import { $ as app$ } from "../app/dom.js";
 import { postJson } from "../app/http.js";
 import {
   absolutePlaybackSeconds, presentedSubtitleSeconds, refreshSubtitleClockForInteraction,
@@ -16,8 +16,15 @@ import {
 } from "./subtitle-timing.js";
 import { renderSubtitleStyleControls } from "./subtitle-style.js";
 import { noteSubtitleVisibilityIntent } from "./embedded-subtitles.js";
+import { playbackLoadRequestId } from "./torrent-playback.js";
+
+// Caption overlay travels with the live frame into Document PiP; track list
+// and subtitle manager stay in the opener Document.
+const $ = selector => frame?.querySelector?.(selector) || app$(selector);
 
 export let subtitleRenderMemo = { key: "" };
+let lastCueSource = null;
+let lastCueTrack = null;
 
 export function isRomanizableLanguage(language) {
   return ["JA", "KO", "ZH", "RU"].includes(String(language || "").toUpperCase());
@@ -95,10 +102,9 @@ export function currentCueIndex() {
 
 export function seekTo(ms) {
   state.currentMs = Math.max(0, ms);
-  if (frame.classList.contains("has-video")) {
-    if (video.dataset.mode === "transcode") seekPlayerTo(state.currentMs / 1000);
-    else if (Number.isFinite(video.duration)) seekPlayerTo(state.currentMs / 1000);
-  }
+  // A short converted segment does not define the total movie duration.
+  // The shared player seek path owns the absolute clock and source mode.
+  if (frame.classList.contains("has-video")) seekPlayerTo(state.currentMs / 1000);
   renderSubtitles();
 }
 
@@ -123,8 +129,17 @@ export function renderSubtitles() {
   const primaryCue = primaryTrack ? activeCues.get(primaryTrack.id) || getActiveCue(primaryTrack) : null;
   const rendered = orderedTracks.map((track) => ({ track, cue: comparisonCueForTrack(track, primaryTrack, primaryCue) }));
   const selectedCue = selectedTrack ? activeCues.get(selectedTrack.id) || getActiveCue(selectedTrack) : null;
-  if (state.pauseAfterCue && state.lastCueId && selectedCue && selectedCue.id !== state.lastCueId && !video.paused) video.pause();
-  state.lastCueId = selectedCue?.id || state.lastCueId;
+  if (lastCueSource !== state.currentSource || lastCueTrack !== selectedTrack?.id) {
+    lastCueSource = state.currentSource;
+    lastCueTrack = selectedTrack?.id || null;
+    state.lastCueId = null;
+  }
+  // Pause at the accepted cue's *end* (including a silent gap) exactly once.
+  // Keeping its ID across a gap previously paused unexpectedly at the start
+  // of the next unrelated line.
+  if (state.pauseAfterCue && state.lastCueId && selectedCue?.id !== state.lastCueId
+    && !video.paused) video.pause();
+  state.lastCueId = selectedCue?.id || null;
   const renderKey = `${state.subtitlesVisible}|${state.targetLanguage}|${state.subtitleStyle.romanization}|${rendered.map(({ track, cue }) => `${track.id}:${cue?.id || "-"}:${cue?.romanizedText || ""}`).join("|")}`;
   if (subtitleRenderMemo.key === renderKey) return;
   if (typeof playbackMetrics !== "undefined" && playbackMetrics) playbackMetrics.record("subtitle-cue-change", {
@@ -170,6 +185,8 @@ export function trackLanguageName(code) {
 export function renderTracks() {
   const list = $("#track-list");
   const scopedTracks = preferredSourceTracks();
+  const renderedSource = state.currentSource;
+  const renderedLoadId = playbackLoadRequestId;
   $("#track-count").textContent = scopedTracks.length;
   if (!scopedTracks.length) {
     list.innerHTML = emptyMarkup({
@@ -208,8 +225,19 @@ export function renderTracks() {
   }).join("");
 
   list.querySelectorAll(".track-card").forEach((card) => {
-    const track = state.tracks.find((item) => item.id === card.dataset.trackId);
+    const matches = scopedTracks.filter((item) => item.id === card.dataset.trackId);
+    if (matches.length !== 1) return;
+    const track = matches[0];
+    // The card retains the actual verified cue it offered; neither a later
+    // episode with the same title nor a same-file new load may reuse its click.
+    const cueReference = track.origin === "embedded"
+      ? track.cues.find((cue) => cue?.verifiedCueReference)?.verifiedCueReference ?? null : null;
+    const stillOwned = () => state.currentSource === renderedSource
+      && playbackLoadRequestId === renderedLoadId
+      && currentSourceTracks().filter((item) => item.id === track.id).length === 1
+      && currentSourceTracks().includes(track);
     card.querySelector(".track-visible").addEventListener("change", (event) => {
+      if (!stillOwned()) return;
       noteSubtitleVisibilityIntent();
       refreshSubtitleClockForInteraction();
       track.visible = event.target.checked;
@@ -224,10 +252,15 @@ export function renderTracks() {
       renderSubtitles();
     });
     card.querySelector(".track-role").addEventListener("click", () => {
-      selectSubtitleTrackForCards(track);
+      if (!stillOwned()) return;
+      selectSubtitleTrackForCards(track, cueReference);
     });
-    card.querySelector(".offset-minus")?.addEventListener("click", () => nudgeSubtitleTracks(-500, [track]));
-    card.querySelector(".offset-plus")?.addEventListener("click", () => nudgeSubtitleTracks(500, [track]));
+    card.querySelector(".offset-minus")?.addEventListener("click", () => {
+      if (stillOwned()) nudgeSubtitleTracks(-500, [track]);
+    });
+    card.querySelector(".offset-plus")?.addEventListener("click", () => {
+      if (stillOwned()) nudgeSubtitleTracks(500, [track]);
+    });
   });
 }
 

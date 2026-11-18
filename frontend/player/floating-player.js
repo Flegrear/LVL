@@ -3,7 +3,7 @@ import { formatTime } from "../../shared/subtitles/subtitle-text.js";
 import { toast } from "../ui/ui.js";
 import { floatingPrefs, frame, POPUP_HANDOFF, popupPlayer, state, video } from "../../app.js";
 import { APP_DB_MIGRATION_KEY } from "../app/saved-state.js";
-import { $ } from "../app/dom.js";
+import { $ as app$ } from "../app/dom.js";
 import { fetchJson, postJson } from "../app/http.js";
 import { switchView, viewActive } from "../app/navigation.js";
 import {
@@ -13,9 +13,14 @@ import {
   updateCompatControls,
 } from "./player-core.js";
 import { closePlayerPopovers } from "./player-menus.js";
+import { createOverlayEscapeCoordinator } from "./overlay-escape.js";
 import { seekTo } from "./subtitle-display.js";
-import { playLibraryEpisode } from "./torrent-playback.js";
+import { playbackLoadRequestId, playLibraryEpisode } from "./torrent-playback.js";
 import { recordWatchProgress } from "../watch/watched-status.js";
+
+// The existing frame is reparented into Document PiP. All floating controls
+// and attached caption menus retain listeners but leave the opener Document.
+const $ = selector => frame?.querySelector?.(selector) || app$(selector);
 
 // A single live video/subtitle DOM is shared by the normal, site-floating and
 // browser-managed always-on-top Document PiP surfaces. No playback recreation.
@@ -28,9 +33,53 @@ export let floatingDesktopPending = false;
 let floatingSeekScrubbing = false;
 let floatingFrameAnchor = null;
 let floatingDesiredDesktop = false;
+// Every deferred desktop handoff and status read owns one source and serial.
+// A new file selection can retire a pending open before it returns.
+let popupOperationSerial = 0;
+let popupSourceOwner = null;
+let popupSourceLoadId = null;
+let popupHandoffRate = null;
 let floatingControlsIdleTimer = null;
 let floatingControlHeld = false;
 let floatingControlsLastActivityAt = 0;
+let documentPipListeners = null;
+let documentPipOverlay = null;
+
+// The adopted video frame and its menus receive events in PiP's Document, not
+// in the opener's document. Keep one abortable listener group for that exact
+// window and use the existing player-menu owner; never create a second menu.
+function routeDocumentPipControls(pip) {
+  documentPipListeners?.abort();
+  documentPipOverlay?.dispose();
+  const controller = new AbortController();
+  documentPipListeners = controller;
+  const contained = (target) => target?.closest?.(
+    ".player-popover, .player-speed, #player-source-switcher, #player-audio-switcher, #player-toggle-subs, #floating-player-captions");
+  pip.document.addEventListener("click", (event) => {
+    if (!contained(event.target)) closePlayerPopovers();
+  }, { signal: controller.signal });
+  // PiP's window is a separate ownerDocument. Share the exact same typed
+  // overlay registry/keyboard consumer rather than installing a second,
+  // competing keydown handler on the adopted document.
+  documentPipOverlay = createOverlayEscapeCoordinator({
+    window: pip, document: pip.document,
+    candidates: () => ["#player-speed-menu", "#player-source-menu",
+      "#player-audio-menu", "#player-subtitle-menu"].map((selector) => {
+      const node = $(selector);
+      return {
+        node, active: node?.ownerDocument === pip.document && !node.hidden,
+        dismiss: () => {
+          closePlayerPopovers();
+          const invoker = node?.id === "player-speed-menu" ? $("#speed-select")
+            : node?.id === "player-audio-menu" ? $("#player-audio-switcher")
+              : node?.id === "player-source-menu" ? $("#player-source-switcher")
+                : $("#floating-player-captions") || $("#player-toggle-subs");
+          invoker?.focus?.({ preventScroll: true });
+        },
+      };
+    }),
+  });
+}
 
 function scheduleFloatingControlsIdle(delayMs) {
   floatingControlsIdleTimer = window.setTimeout(() => {
@@ -164,6 +213,13 @@ function showSiteFloating(show) {
 
 function restoreDocumentFloating({ closeWindow = false } = {}) {
   const pip = floatingDesktopWindow;
+  documentPipListeners?.abort();
+  documentPipListeners = null;
+  documentPipOverlay?.dispose();
+  documentPipOverlay = null;
+  closePlayerPopovers();
+  const restoreFocus = Boolean(pip?.document?.activeElement
+    && frame.contains?.(pip.document.activeElement));
   floatingDesktopWindow = null;
   frame.classList.remove("is-document-pip");
   if (floatingFrameAnchor?.parentNode) {
@@ -171,6 +227,7 @@ function restoreDocumentFloating({ closeWindow = false } = {}) {
     floatingFrameAnchor.remove();
   }
   floatingFrameAnchor = null;
+  if (restoreFocus) ($("#floating-player-desktop") || $("#floating-player-return"))?.focus?.({ preventScroll: true });
   const placeholder = $("#floating-player-placeholder");
   if (placeholder) placeholder.hidden = true;
   if (closeWindow && pip && !pip.closed) pip.close();
@@ -179,6 +236,10 @@ function restoreDocumentFloating({ closeWindow = false } = {}) {
 
 function closeDesktopFloating() {
   floatingDesiredDesktop = false;
+  if (floatingDesktopPending && !popupPlayer.open) {
+    ++popupOperationSerial;
+    floatingDesktopPending = false;
+  }
   if (typeof popupPlayer !== "undefined" && popupPlayer.open) void takeBackPopupPlayer();
   if (floatingDesktopWindow) restoreDocumentFloating({ closeWindow: true });
   if (document.pictureInPictureElement === video) {
@@ -225,8 +286,19 @@ function popupStorageSnapshot() {
   return out;
 }
 
+const popupClientId = globalThis.crypto?.randomUUID?.()
+  || "00000000-0000-4000-8000-" + Math.floor(Math.random() * 0xffffffffffff).toString(16).padStart(12, "0");
+
+async function closeExactPopup(id) {
+  if (!id) return null;
+  try { return await postJson("/api/popup/close", { expectedId: id }); }
+  catch { return null; }
+}
+
 async function openPopupPlayer() {
   const source = state.currentSource;
+  const sourceLoadId = playbackLoadRequestId;
+  const serial = ++popupOperationSerial;
   const playback = {
     libraryId: source.libraryId, fileIndex: Number(source.fileIndex), title: source.title || "",
     positionSeconds: Math.max(0, absolutePlaybackSeconds()), paused: !playerIsPlaying(),
@@ -235,13 +307,21 @@ async function openPopupPlayer() {
   floatingDesiredDesktop = true;
   floatingDesktopPending = true;
   try {
-    const opened = await postJson("/api/popup/open", { playback, storage: popupStorageSnapshot() });
-    if (!floatingDesiredDesktop) {
-      void postJson("/api/popup/close", {}).catch(() => {});
+    const opened = await postJson("/api/popup/open", {
+      playback, storage: popupStorageSnapshot(), clientId: popupClientId, clientSequence: serial,
+    });
+    if (!floatingDesiredDesktop || serial !== popupOperationSerial
+      || state.currentSource !== source || playbackLoadRequestId !== sourceLoadId) {
+      // The backend compares this exact returned ID at the mutation point.
+      // An A response arriving after B opened cannot close or hide B.
+      void closeExactPopup(opened?.id);
       return false;
     }
     popupPlayer.open = true;
     popupPlayer.id = opened.id;
+    popupSourceOwner = source;
+    popupSourceLoadId = sourceLoadId;
+    popupHandoffRate = playback.rate;
     suspendPlayerForPopup();
     frame.classList.add("is-popped-out");
     const placeholder = $("#floating-player-placeholder");
@@ -251,11 +331,13 @@ async function openPopupPlayer() {
     schedulePopupPoll();
     return true;
   } catch (error) {
+    if (serial !== popupOperationSerial || state.currentSource !== source
+      || playbackLoadRequestId !== sourceLoadId) return false;
     console.warn("Pop-up player unavailable:", error);
     popupPlayer.available = false;
     return null;
   } finally {
-    floatingDesktopPending = false;
+    if (serial === popupOperationSerial) floatingDesktopPending = false;
   }
 }
 
@@ -277,11 +359,20 @@ function clearPlayerPanelForPopupReturn() {
 
 async function pollPopupPlayer() {
   if (!popupPlayer.open) return;
+  const expectedId = popupPlayer.id;
+  const serial = popupOperationSerial;
+  const source = popupSourceOwner;
+  const sourceLoadId = popupSourceLoadId;
   let status = null;
   try { status = await fetchJson("/api/popup/status"); } catch {}
-  if (!popupPlayer.open) return;
-  if (status && status.id !== popupPlayer.id) {
-    finishPopupPlayer({ action: "close" });
+  if (!popupPlayer.open || popupPlayer.id !== expectedId || serial !== popupOperationSerial
+    || state.currentSource !== source || playbackLoadRequestId !== sourceLoadId) return;
+  if (status && (status.id !== expectedId
+    || status.result && status.result.id !== expectedId)) {
+    // A response for another backend handoff (including a deferred poll of
+    // A) cannot close, seek, or resume the still-owned B. Re-read the exact
+    // current handoff rather than treating mismatched status as B's close.
+    schedulePopupPoll();
     return;
   }
   if (status?.result) {
@@ -297,14 +388,34 @@ async function pollPopupPlayer() {
 // from where it was. Return continues playing on Watch; ✕ leaves it paused, as before.
 function finishPopupPlayer(result = {}) {
   if (!popupPlayer.open) return;
+  // Polls and explicit take-back are both asynchronous. Never seek the current
+  // video using a returned position from another episode or replaced load.
+  if (state.currentSource !== popupSourceOwner || playbackLoadRequestId !== popupSourceLoadId) {
+    dismissPopupPlayer();
+    return;
+  }
+  const handedOffRate = popupHandoffRate;
+  ++popupOperationSerial;
   popupPlayer.open = false;
   popupPlayer.id = null;
+  popupSourceOwner = null;
+  popupSourceLoadId = null;
+  popupHandoffRate = null;
   window.clearTimeout(popupPlayer.pollTimer);
   floatingDesiredDesktop = false;
   frame.classList.remove("is-popped-out");
   const placeholder = $("#floating-player-placeholder");
   if (placeholder) placeholder.hidden = true;
   clearPlayerPanelForPopupReturn();
+  // Older pop-up hosts do not report rate; retain the exact rate sent on
+  // handoff. Newer reports may supply it; keep default/current rate in sync.
+  const reportedRate = Number(result.rate);
+  const rate = Number.isFinite(reportedRate) && reportedRate >= 0.25 && reportedRate <= 4
+    ? reportedRate : handedOffRate;
+  if (Number.isFinite(rate) && rate >= 0.25 && rate <= 4) {
+    video.defaultPlaybackRate = rate;
+    video.playbackRate = rate;
+  }
   const seconds = Number(result.positionSeconds);
   if (Number.isFinite(seconds) && seconds > 0) {
     recordWatchProgress({ force: true, positionSeconds: seconds, playing: false });
@@ -320,21 +431,43 @@ function finishPopupPlayer(result = {}) {
 
 async function takeBackPopupPlayer() {
   if (!popupPlayer.open) return;
-  let result = null;
-  try { result = (await postJson("/api/popup/close", {})).result; } catch {}
-  finishPopupPlayer({ ...(result || {}), action: "return" });
+  const expectedId = popupPlayer.id;
+  const serial = popupOperationSerial;
+  const source = popupSourceOwner;
+  const sourceLoadId = popupSourceLoadId;
+  const reply = await closeExactPopup(expectedId);
+  if (!popupPlayer.open || popupPlayer.id !== expectedId || serial !== popupOperationSerial
+    || state.currentSource !== source || playbackLoadRequestId !== sourceLoadId) return;
+  // A newer B may already own the backend handoff. Its close comparison
+  // rejects our stale A ID; never resume A as if the native popup returned.
+  if (reply?.matched === false) {
+    finishPopupPlayer({ action: "close" });
+    return;
+  }
+  if (reply?.matched !== true || reply.result?.id !== expectedId) {
+    schedulePopupPoll();
+    return;
+  }
+  finishPopupPlayer({ ...reply.result, action: "return" });
 }
 
 // Another video started in LVL's window: the pop-up closes without moving this one.
 export function dismissPopupPlayer() {
+  ++popupOperationSerial;
+  floatingDesiredDesktop = false;
+  floatingDesktopPending = false;
+  popupHandoffRate = null;
+  popupSourceLoadId = null;
   if (!popupPlayer.open) return;
+  const expectedId = popupPlayer.id;
   popupPlayer.open = false;
   popupPlayer.id = null;
+  popupSourceOwner = null;
   window.clearTimeout(popupPlayer.pollTimer);
   frame.classList.remove("is-popped-out");
   const placeholder = $("#floating-player-placeholder");
   if (placeholder) placeholder.hidden = true;
-  void postJson("/api/popup/close", {}).catch(() => {});
+  void closeExactPopup(expectedId);
 }
 
 // In the pop-up window.
@@ -346,7 +479,8 @@ export function popupHost(message) {
 
 function popupReport(action = "") {
   if (!POPUP_HANDOFF) return;
-  const body = { token: POPUP_HANDOFF.token, positionSeconds: Math.max(0, absolutePlaybackSeconds()), paused: !playerIsPlaying(), ...(action ? { action } : {}) };
+  const body = { token: POPUP_HANDOFF.token, positionSeconds: Math.max(0, absolutePlaybackSeconds()),
+    paused: !playerIsPlaying(), rate: video.playbackRate || 1, ...(action ? { action } : {}) };
   void fetch("/api/popup/report", { method: "POST", keepalive: true, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) }).catch(() => {});
 }
 
@@ -371,6 +505,7 @@ export async function startPopupPlayback() {
     return;
   }
   video.playbackRate = playback.rate;
+  video.defaultPlaybackRate = playback.rate;
   if (playback.paused) video.pause();
   popupReportTimer = window.setInterval(() => { if (frame.classList.contains("has-video")) popupReport(); }, 1000);
   window.addEventListener("pagehide", () => popupReport("close"), { once: true });
@@ -416,6 +551,7 @@ async function openDesktopFloating() {
       }
       frame.classList.add("is-document-pip");
       pip.document.body.append(frame);
+      routeDocumentPipControls(pip);
       const placeholder = $("#floating-player-placeholder");
       if (placeholder) placeholder.hidden = false;
       pip.addEventListener("pagehide", () => {

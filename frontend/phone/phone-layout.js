@@ -13,6 +13,8 @@ export const PHONE_QUERY = "(max-width: 680px) and (hover: none) and (pointer: c
 export const SHOW_NEAR_TOP_PX = 72;
 // Smaller movements (a finger resting on the screen, momentum jitter) change nothing.
 export const MIN_SCROLL_DELTA_PX = 8;
+const activePhoneLayouts = new WeakMap();
+const activeTouchPlayers = new WeakMap();
 
 const TEXT_FIELD = 'input:not([type="checkbox"]):not([type="radio"]):not([type="range"]):not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="file"]):not([type="color"]), textarea, [contenteditable=""], [contenteditable="true"]';
 
@@ -137,41 +139,70 @@ export function startPullToRefresh(win = globalThis.window) {
 export function startPhoneLayout(win = globalThis.window) {
   const doc = win?.document;
   if (!doc?.documentElement || typeof win.matchMedia !== "function") return null;
+  if (activePhoneLayouts.has(win)) return activePhoneLayouts.get(win);
   const root = doc.documentElement;
   if (/\bLVL-Android\//.test(win.navigator?.userAgent || "")) root.classList.add("lvl-android");
   const query = win.matchMedia(PHONE_QUERY);
   let state = { hidden: false, lastY: win.scrollY || 0 };
   let typing = false;
-  let pending = false;
+  let pending = false, disposed = false, scrollFrame = null;
   // While a text field has focus the on-screen keyboard shrinks the page, and the bar
   // would sit on top of it, so it steps aside until typing ends.
   const apply = () => root.classList.toggle("phone-nav-hidden", query.matches && (state.hidden || typing));
   const show = () => { state = { hidden: false, lastY: win.scrollY || 0 }; apply(); };
-  win.addEventListener("scroll", () => {
-    if (pending || !query.matches) return;
+  const onScroll = () => {
+    if (pending || disposed || !query.matches) return;
     pending = true;
-    win.requestAnimationFrame(() => {
+    scrollFrame = win.requestAnimationFrame(() => {
+      scrollFrame = null;
+      if (disposed) return;
       pending = false;
       state = navAfterScroll(state, win.scrollY || 0);
       apply();
     });
-  }, { passive: true });
-  doc.addEventListener("focusin", (event) => { typing = isTextField(event.target); apply(); });
-  doc.addEventListener("focusout", () => { typing = false; apply(); });
+  };
+  const onFocusIn = (event) => { typing = isTextField(event.target); apply(); };
+  const onFocusOut = () => { typing = false; apply(); };
   // A tap on the bar or Back opens another page; it starts with the bar showing.
-  doc.addEventListener("click", (event) => { if (event.target?.closest?.(".side-nav")) show(); });
+  const onClick = (event) => { if (event.target?.closest?.(".side-nav")) show(); };
+  win.addEventListener("scroll", onScroll, { passive: true });
+  doc.addEventListener("focusin", onFocusIn);
+  doc.addEventListener("focusout", onFocusOut);
+  doc.addEventListener("click", onClick);
   win.addEventListener("popstate", show);
   query.addEventListener?.("change", show);
   apply();
-  return { show, state: () => ({ ...state, typing }) };
+  const owner = { show, state: () => ({ ...state, typing }),
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      if (scrollFrame !== null) win.cancelAnimationFrame?.(scrollFrame);
+      scrollFrame = null;
+      pending = false;
+      win.removeEventListener("scroll", onScroll);
+      doc.removeEventListener("focusin", onFocusIn);
+      doc.removeEventListener("focusout", onFocusOut);
+      doc.removeEventListener("click", onClick);
+      win.removeEventListener("popstate", show);
+      query.removeEventListener?.("change", show);
+      root.classList.remove("phone-nav-hidden");
+      if (activePhoneLayouts.get(win) === owner) activePhoneLayouts.delete(win);
+    },
+  };
+  activePhoneLayouts.set(win, owner);
+  return owner;
 }
 
+const activePhoneFeatures = new WeakMap();
 export const phoneLayoutFeature = Object.freeze({
   id: "phone",
   styles: ["/frontend/phone/phone.css"],
   start: () => {
-    startPhoneLayout();
-    startPullToRefresh();
+    const win = globalThis.window;
+    if (!win) return null;
+    if (activePhoneFeatures.has(win)) return activePhoneFeatures.get(win);
+    const layout = startPhoneLayout(win);
+    const pull = startPullToRefresh(win);
     // Phone stylesheet order is intentional: base phone -> shell/player ->
     // catalog presentation. The discovery controls reuse production forms and
     // the topbar's existing search; they do not register another search input.
@@ -183,10 +214,23 @@ export const phoneLayoutFeature = Object.freeze({
         document.head?.append(sheet);
       }
     }
-    startPhoneShell();
-    startPhoneCatalogUI();
-    startTouchPlayer();
-    if (globalThis.window?.LvlAndroid) startAndroidBridge();
+    const shell = startPhoneShell(win);
+    const catalog = startPhoneCatalogUI(win);
+    const touch = startTouchPlayer(win);
+    if (win?.LvlAndroid) startAndroidBridge(win);
+    let disposed = false;
+    const owner = { dispose() {
+      if (disposed) return;
+      disposed = true;
+      touch?.dispose?.();
+      catalog?.destroy?.();
+      shell?.destroy?.();
+      pull?.dispose?.();
+      layout?.dispose?.();
+      if (activePhoneFeatures.get(win) === owner) activePhoneFeatures.delete(win);
+    } };
+    activePhoneFeatures.set(win, owner);
+    return owner;
   },
 });
 
@@ -203,6 +247,7 @@ export function startTouchPlayer(win = globalThis.window) {
   const frame = doc?.getElementById?.("video-frame");
   const video = doc?.getElementById?.("video");
   if (!frame || !video || typeof win.matchMedia !== "function") return null;
+  if (activeTouchPlayers.has(win)) return activeTouchPlayers.get(win);
   const touch = win.matchMedia(TOUCH_QUERY);
   const byFinger = (event) => touch.matches && (event.pointerType === "touch" || event.pointerType === "pen");
   let hiddenAtDown = true;
@@ -210,23 +255,44 @@ export function startTouchPlayer(win = globalThis.window) {
   // As a mouse would: moving shows the controls (and starts their 3 s timer), leaving hides them.
   const show = () => frame.dispatchEvent(new Pointer("pointermove", { bubbles: true, pointerType: "mouse" }));
   const hide = () => frame.dispatchEvent(new Pointer("pointerleave", { pointerType: "mouse" }));
-  for (const type of ["pointerenter", "pointerleave"]) {
-    frame.addEventListener(type, (event) => { if (byFinger(event)) event.stopImmediatePropagation(); }, true);
-  }
-  frame.addEventListener("pointerdown", (event) => { if (byFinger(event)) hiddenAtDown = frame.classList.contains("controls-hidden"); }, true);
+  const suppressTouchHover = (event) => { if (byFinger(event)) event.stopImmediatePropagation(); };
+  const onDown = (event) => { if (byFinger(event)) hiddenAtDown = frame.classList.contains("controls-hidden"); };
+  for (const type of ["pointerenter", "pointerleave"]) frame.addEventListener(type, suppressTouchHover, true);
+  frame.addEventListener("pointerdown", onDown, true);
   const onSingleTap = () => { if (hiddenAtDown) show(); else hide(); };
   const seekBack = doc.getElementById?.("player-seek-back");
   const seekForward = doc.getElementById?.("player-seek-forward");
   const doubleTap = touch.matches && seekBack && seekForward
     ? createDoubleTapSeekController({ surface: video, frame: win, backButton: seekBack,
       forwardButton: seekForward, onSingleTap }) : null;
-  if (!doubleTap) frame.addEventListener("click", (event) => {
+  const onClick = (event) => {
     if (event.target !== video || !byFinger(event)) return;
     event.stopImmediatePropagation();
     onSingleTap();
-  }, true);
-  startSubtitleLift(win, frame);
-  return { show, hide, doubleTap, dispose: () => doubleTap?.dispose() };
+  };
+  // A pending 280ms single-tap timer belongs to the video surface, not to a
+  // later route or title. Cancel it when navigation replaces the active view.
+  const onNavigation = (event) => {
+    if (event.target?.closest?.(".nav-btn, .side-nav a, [data-view], [data-watch-chapter], [data-watch-source]"))
+      doubleTap?.cancel();
+  };
+  if (!doubleTap) frame.addEventListener("click", onClick, true);
+  doc.addEventListener("click", onNavigation, true);
+  const lift = startSubtitleLift(win, frame);
+  let disposed = false;
+  const owner = { show, hide, doubleTap, dispose() {
+    if (disposed) return;
+    disposed = true;
+    doubleTap?.dispose();
+    for (const type of ["pointerenter", "pointerleave"]) frame.removeEventListener(type, suppressTouchHover, true);
+    frame.removeEventListener("pointerdown", onDown, true);
+    if (!doubleTap) frame.removeEventListener("click", onClick, true);
+    doc.removeEventListener("click", onNavigation, true);
+    lift?.dispose?.();
+    if (activeTouchPlayers.get(win) === owner) activeTouchPlayers.delete(win);
+  } };
+  activeTouchPlayers.set(win, owner);
+  return owner;
 }
 
 // On a phone the controls cover a large part of the video (a third in landscape fullscreen,
@@ -244,14 +310,16 @@ export function controlsLift(frame, controls, row) {
 function startSubtitleLift(win, frame) {
   const doc = win.document;
   const controls = doc.getElementById?.("compat-controls");
-  if (!controls || typeof win.ResizeObserver !== "function") return;
+  if (!controls || typeof win.ResizeObserver !== "function") return null;
   const update = () => {
     const row = controls.querySelector?.(".player-timeline-row") || null;
     frame.style.setProperty("--touch-controls-lift", `${controlsLift(frame, controls, row)}px`);
   };
-  new win.ResizeObserver(update).observe(controls);
-  new win.ResizeObserver(update).observe(frame);
+  const observer = new win.ResizeObserver(update);
+  observer.observe(controls);
+  observer.observe(frame);
   update();
+  return { dispose() { observer.disconnect(); frame.style.removeProperty("--touch-controls-lift"); } };
 }
 
 const SEARCH_ICON = '<span class="nav-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg></span><span class="nav-label">SEARCH</span>';

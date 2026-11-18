@@ -21,6 +21,19 @@ const LEFTOVER_IDLE_MS = 30 * 60 * 1000;
 // than claiming bytes another in-flight writer may already be committing.
 const PLAYER_CACHE_INFLIGHT_MARGIN_BYTES = 32 * 1024 ** 2;
 
+// Pure admission arithmetic, independently testable without knowing the
+// machine's actual free drive space. usedBytes belongs to the player quota;
+// driveFreeBytes already excludes physically committed original/cache bytes.
+export function availablePlayerCacheBytes({
+  playerBytes, usedBytes, driveFreeBytes, reservedSourceBytes,
+} = {}) {
+  if (![playerBytes, usedBytes, driveFreeBytes, reservedSourceBytes]
+    .every(value => Number.isSafeInteger(value) && value >= 0)) return 0;
+  const budgetFree = Math.max(0, playerBytes - usedBytes - reservedSourceBytes - PLAYER_CACHE_INFLIGHT_MARGIN_BYTES);
+  const diskFree = Math.max(0, driveFreeBytes - reservedSourceBytes - 256 * 1024 ** 2);
+  return Math.max(0, Math.min(budgetFree, diskFree));
+}
+
 /** Bytes and newest modification time of everything under a folder (missing folder: zero). */
 // Space a file takes on disk. A torrent writes a piece wherever it falls, so a file it has only
 // partly downloaded (or a deselected file that shares a piece with a wanted one) can be sparse:
@@ -112,8 +125,13 @@ export function recommendedLimits({ playerFreeBytes = null, playerUsedBytes = 0,
 // keeps the seek cache off whatever was saved (its conversions need an H.264 encoder).
 // keepsSessionFiles: a session's torrent files stay when it ends (LVL's Android app keeps
 // downloads between launches), so evicting a live download also deletes its folder.
+// The server injects its own directory retirement authority. Storage must
+// remain independent of server and torrent modules even during cleanup:
+// resolving one lazily here starts a listener in standalone storage consumers.
+// Without that authority orphan deletion fails closed.
 export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, dataRoot = "", sessions, removeSession, clipStore, ankiStore, legacyMediaUsage,
-  defaults: defaultChanges = {}, remuxCacheAvailable = true, keepsSessionFiles = false }) {
+  defaults: defaultChanges = {}, remuxCacheAvailable = true, keepsSessionFiles = false,
+  retireOrphanDirectoryIfIdle = null }) {
   const defaults = Object.freeze({ ...STORAGE_DEFAULTS, ...defaultChanges });
   function limits() {
     let saved = {};
@@ -170,9 +188,13 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     if (!Number.isSafeInteger(requested) || requested < 0 || !Number.isSafeInteger(reserved) || reserved < 0)
       return { allowed: false, availableBytes: 0, usedBytes: 0, limitBytes: max.playerBytes };
     const [usage, drive] = await Promise.all([playerUsage(), diskSpace(sharedRoot)]);
-    const budgetFree = Math.max(0, max.playerBytes - usage.usedBytes - reserved - PLAYER_CACHE_INFLIGHT_MARGIN_BYTES);
-    const diskFree = drive ? Math.max(0, drive.freeBytes - 256 * 1024 ** 2) : 0;
-    const availableBytes = max.remuxCacheEnabled ? Math.max(0, Math.min(budgetFree, diskFree)) : 0;
+    // Fresh scans from playerUsage() + diskSpace() remain mandatory. The
+    // shared accounting protects both configured quota and actual free disk
+    // without charging already-physical source bytes twice.
+    const availableBytes = max.remuxCacheEnabled ? availablePlayerCacheBytes({
+      playerBytes: max.playerBytes, usedBytes: usage.usedBytes,
+      driveFreeBytes: drive?.freeBytes ?? 0, reservedSourceBytes: reserved,
+    }) : 0;
     return {
       allowed: max.remuxCacheEnabled && requested <= availableBytes && availableBytes > 0,
       availableBytes,
@@ -218,20 +240,31 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     return { removed, freedBytes: freed };
   }
 
+  // Torrent POST allocation and orphan removal must reserve the same directory
+  // slot. The backend checks the live session *inside* that reservation, after
+  // any pending allocation completes. A sessions() snapshot alone cannot
+  // authorize deletion after awaited filesystem reads.
+  async function retireOrphanDirectory(id) {
+    if (typeof retireOrphanDirectoryIfIdle !== "function") return false;
+    try {
+      return await retireOrphanDirectoryIfIdle(id, () => fs.rm(
+        path.join(sessionsRoot, id), { recursive: true, force: true, maxRetries: 2 },
+      ));
+    } catch {
+      return false;
+    }
+  }
+
   // This server's own folders with no live session: left by a crash or a forced stop.
   async function clearOrphans() {
     // Persistent download folders are deliberately not tied to active sessions.
     if (keepsSessionFiles) return 0;
-    const live = new Set(sessions().map((session) => session.id));
     let names = [];
     try { names = await fs.readdir(sessionsRoot); } catch {}
     let removed = 0;
     for (const name of names) {
-      if (live.has(name) || sessions().some((session) => session.id === name)) continue;
-      try {
-        await fs.rm(path.join(sessionsRoot, name), { recursive: true, force: true, maxRetries: 2 });
-        removed += 1;
-      } catch {}
+      if (sessions().some((session) => session.id === name)) continue;
+      if (await retireOrphanDirectory(name)) removed += 1;
     }
     return removed;
   }
@@ -258,11 +291,11 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
         || (row.live && (current?.incarnation || null) !== row.incarnation)
         || (current && now - Number(current.lastUsedAt || 0) <= 60_000)) continue;
       if (row.live && !current) continue; // Gone or being replaced; never delete its new folder.
+      // The server's removeSession delegates to evictTorrentSessionIfIdle,
+      // which calls canRetireTorrentBorrower on the actual current incarnation
+      // before any await. An absent session instead needs the directory fence.
       if (row.live && await removeSession(row.id, row.incarnation) === false) continue;
-      // For persistent Android sessions, the backend removes files inside
-      // its disposal fence, before a new session may use the same directory.
-      if (!row.live && !sessions().some((session) => session.id === row.id))
-        await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      if (!row.live) await retireOrphanDirectory(row.id);
       // An abandoned store or locked file may survive the attempted deletion.
       // Count only disk bytes actually gone; otherwise a failed eviction
       // falsely reports the cache as within its configured limit.
@@ -273,18 +306,17 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     return { evicted, usedBytes: (await playerUsage()).usedBytes, limitBytes: limit };
   }
 
-  async function clearPlayer() {
+  async function clearPlayer({ now = Date.now() } = {}) {
     const usage = await playerUsage();
     for (const row of usage.sessions) {
-      if (row.busy || (row.live && Date.now() - Number(row.lastUsedAt || 0) < 60_000)) continue;
+      if (row.busy || (row.live && now - Number(row.lastUsedAt || 0) <= 60_000)) continue;
       const current = sessions().find((session) => session.id === row.id);
       if (current?.busy || (!row.live && current)
         || (row.live && (current?.incarnation || null) !== row.incarnation)
-        || (current && Date.now() - Number(current.lastUsedAt || 0) < 60_000)) continue;
+        || (current && now - Number(current.lastUsedAt || 0) <= 60_000)) continue;
       if (row.live && !current) continue;
       if (row.live && await removeSession(row.id, row.incarnation) === false) continue;
-      if (!row.live && !sessions().some((session) => session.id === row.id))
-        await fs.rm(path.join(sessionsRoot, row.id), { recursive: true, force: true, maxRetries: 2 }).catch(() => {});
+      if (!row.live) await retireOrphanDirectory(row.id);
     }
     // Report bytes actually gone, not an assumed sum when deletion fails.
     return { freedBytes: Math.max(0, usage.usedBytes - (await playerUsage()).usedBytes) };
@@ -294,6 +326,7 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
     return clipStore?.collectGarbage(referencedIds, { maxBytes: limits().clipBytes })
       ?? { demoted: 0, removed: 0 };
   }
+  const clipEvictionSupported = typeof clipStore?.collectGarbage === "function";
 
   async function report() {
     const [player, leftover, playerDisk, dataDisk] = await Promise.all([playerUsage(), leftovers(), diskSpace(sharedRoot), dataRoot ? diskSpace(dataRoot) : null]);
@@ -323,6 +356,8 @@ export function createStorageManager({ appDatabase, sessionsRoot, sharedRoot, da
         leftoverFolders: leftover.folders.length,
       },
       clips: {
+        evictionSupported: clipEvictionSupported,
+        retentionPolicy: clipEvictionSupported ? "managed" : "unmanaged",
         cardCount: clips.card?.count || 0,
         cardBytes: clips.card?.bytes || 0,
         dictationCount: clips.dictation?.count || 0,

@@ -111,7 +111,7 @@ export function calendarMatchLibrary(events = [], library = []) {
   const byTitleYear = new Map();
   const assign = (map, key, series) => {
     if (!key) return;
-    if (map.has(key) && map.get(key)?.key !== series.key) map.set(key, null);
+    if (map.has(key) && (map.get(key)?.routeKey || map.get(key)?.key) !== (series.routeKey || series.key)) map.set(key, null);
     else if (!map.has(key)) map.set(key, series);
   };
   for (const series of library) {
@@ -140,22 +140,31 @@ export function calendarMatchLibrary(events = [], library = []) {
   return events.map((event) => {
     const family = [...new Set((event.source === "AniList" && Array.isArray(event.linkedAniListIds)
       ? event.linkedAniListIds : []).map((id) => byAnime.get(String(id))).filter(Boolean))];
-    const verifiedMatch = (event.catalogId && byCatalog.get(event.catalogId))
-      || (event.source === "AniList" && byAnime.get(String(event.providerId)))
-      || (family.length === 1 && family[0])
-      || (event.source === "TMDb" && byTmdb.get(String(event.providerId)));
-    const match = verifiedMatch
-      || byTitleYear.get(`${event.type === "movie" ? "movie" : "series"}:${event.premiereYear || event.date.slice(0, 4)}:${comparableTitle(event.title)}`);
-    const compatible = match && (event.type === "movie" ? match.type === "movie"
+    const verifiedCandidates = [event.catalogId && byCatalog.get(event.catalogId),
+      event.source === "AniList" && byAnime.get(String(event.providerId)),
+      family.length === 1 && family[0],
+      event.source === "TMDb" && byTmdb.get(String(event.providerId))].filter(Boolean);
+    // Conflicting verified identifiers must not silently select whichever
+    // provider happened to rank first in this fallback chain.
+    const candidatesAgree = new Set(verifiedCandidates.map((item) => item.routeKey || item.key)).size <= 1;
+    const verifiedMatch = candidatesAgree ? verifiedCandidates[0] : null;
+    const possibleDisplayMatch = byTitleYear.get(`${event.type === "movie" ? "movie" : "series"}:${event.premiereYear || event.date.slice(0, 4)}:${comparableTitle(event.title)}`);
+    const match = verifiedMatch;
+    const compatible = match && (!event.catalogId || !match.catalogId || event.catalogId === match.catalogId)
+      && (event.type === "movie" ? match.type === "movie"
       : match.type !== "movie" && (event.type !== "anime" || match.mediaKind === "anime"));
-    if (!compatible) return { ...event, inMyList: false };
+    // Title and release year are display hints, never work ownership. Preserve
+    // the provider event for the public calendar without a saved badge or
+    // Library navigation/torrent authority.
+    if (!compatible) return { ...event, inMyList: false, matchedByVerifiedId: false,
+      ...(possibleDisplayMatch ? { possibleSavedTitle: possibleDisplayMatch.title } : {}) };
     const matchedByVerifiedId = Boolean(verifiedMatch && verifiedMatch === match);
     const code = String(event.code || "");
     return { ...event, inMyList: true, title: event.source === "AniList" ? event.title || match.title : match.title || event.title,
       type: match.type === "movie" ? "movie" : match.mediaKind === "anime" ? "anime" : "series",
       artwork: event.source === "AniList" ? event.artwork || match.coverUrl : match.coverUrl || event.artwork,
       fallbackArtwork: event.source === "AniList" ? match.coverUrl || "" : event.artwork || "",
-      seriesKey: match.key,
+      seriesKey: match.routeKey || match.key,
       matchedByVerifiedId,
       catalogId: matchedByVerifiedId ? match.catalogId || event.catalogId || "" : event.catalogId || "",
       watched: matchedByVerifiedId && /^S\d{2}E\d{2,3}$/.test(code) ? episodeWatched(match, code) : false };
@@ -165,6 +174,9 @@ export function calendarMatchLibrary(events = [], library = []) {
 // Only exact IMDb title/chapter identities can be used for a torrent lookup.
 // AniList's EP N numbering can differ from a catalog season, so it remains unknown.
 export function calendarTorrentLookup(event) {
+  // A public event that failed saved-work identity verification cannot inherit
+  // a torrent lookup just because a different saved work shares its title.
+  if (event?.matchedByVerifiedId === false) return null;
   const catalogId = String(event?.catalogId || "");
   if (!/^tt\d{5,12}$/.test(catalogId)) return null;
   if (event.type === "movie") return { type: "movie", id: catalogId };
@@ -275,7 +287,13 @@ export function createCalendarView({
   const lists = new Map();
   const rebuildMerged = () => {
     const matchedLocal = new Set();
-    const mapped = calendarMatchLibrary(publicEvents, librarySeries)
+    const matchedPublic = calendarMatchLibrary(publicEvents, librarySeries);
+    // Keep the Calendar scoped to saved titles, including a possible match
+    // that remains display-only. Unrelated public premieres stay out of this
+    // Library calendar; a possible title match never gains saved authority.
+    const unlinked = matchedPublic.filter((event) => !event.inMyList && event.possibleSavedTitle)
+      .map((event) => event.timestamp ? { ...event, date: calendarDateKey(new Date(event.timestamp)) } : event);
+    const mapped = matchedPublic
       .filter((event) => event.inMyList)
       .map((event) => {
         const dated = event.timestamp ? { ...event, date: calendarDateKey(new Date(event.timestamp)) } : event;
@@ -331,7 +349,9 @@ export function createCalendarView({
       if (verifiedUnits.has(`${event.catalogId}:${event.code.toUpperCase()}`)) return false;
       return true;
     }).map((event) => ({ ...event, inMyList: true }));
-    mergedEvents = [...sourced, ...local]
+    // Keep unmatched provider airings visible with their own identity and no
+    // saved title badge, watched state or source authorization.
+    mergedEvents = [...sourced, ...unlinked, ...local]
       .sort((a, b) => a.date.localeCompare(b.date) || (a.timestamp || 0) - (b.timestamp || 0));
   };
   const updateLocalEvents = (paint = true) => {
@@ -742,7 +762,7 @@ export function createCalendarView({
   }, true);
   return {
     activate() { active = true; refresh(); },
-    deactivate() { active = false; },
+    deactivate() { active = false; ++requestSerial; hideTorrentTooltip(); },
     refresh,
     scanRecent() { if (!active) refreshReal({ limit: 12 }); },
     getState: () => ({ mode, sourceMode: scope, type, selected, selectedDay, panelWidth, count: realEvents.length, publicCount: publicEvents.length, releaseState }),

@@ -2,6 +2,7 @@
 import { catalogTitleDetails } from "./catalog-details.js";
 import { appDatabase, CINEMETA_ORIGIN, IMDB_SUGGEST_ORIGIN } from "../../server.js";
 import { fetchUpstreamJson, json, methodNotAllowed, pruneTimedCache } from "../app/http-helpers.js";
+import { catalogProviderAdmission } from "./cold-provider-admission.js";
 
 const MAX_CATALOG_QUERY_LENGTH = 180;
 const MAX_CATALOG_RESULTS = 24;
@@ -25,6 +26,10 @@ const catalogSearchCache = new Map();
 const homeCatalogCache = new Map();
 const HOME_CATALOG_META_KEY = "home_catalog_v1";
 let homeCatalogRestoredFromDisk = false;
+// A forced refresh and ordinary cold GET have different admission keys. Only
+// the most recently started producer may publish Home's shared cache/disk
+// snapshot, even when an older provider round trip finishes afterward.
+let homeCatalogGeneration = 0;
 
 export function validateCatalogType(value) {
   return value === "movie" || value === "series" ? value : null;
@@ -112,12 +117,30 @@ function savedHomeCatalog() {
 
 export async function homeCatalog(req, res, url) {
   if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
+  // Warm answers do not consume scarce cold-provider admission slots.
+  const warm = homeCatalogCache.get("home");
+  const refresh = url.searchParams.get("refresh") === "1";
+  if (!refresh && warm?.expiresAt > Date.now()) {
+    if (!res.destroyed && !res.writableEnded) json(res, 200, { ...warm.value, cached: true });
+    return true;
+  }
+  // Cached and forced refreshes are distinct request identities. Only
+  // identical concurrent cold calls share the same provider fan-out. This
+  // admission owner is shared with search and streams, not per endpoint.
+  const key = refresh ? "refresh" : "home";
+  const result = await catalogProviderAdmission.run(`home:${key}`, () => loadHomeCatalog(refresh));
+  // One disconnected HTTP waiter may not cancel a shared in-flight producer
+  // or attempt to write an already-destroyed response.
+  if (!res.destroyed && !res.writableEnded) json(res, result.status, result.payload);
+  return true;
+}
+
+async function loadHomeCatalog(refresh) {
+  const generation = ++homeCatalogGeneration;
   pruneTimedCache(homeCatalogCache, 4);
   const cached = homeCatalogCache.get("home");
-  const refresh = url.searchParams.get("refresh") === "1";
   if (!refresh && cached?.expiresAt > Date.now()) {
-    json(res, 200, { ...cached.value, cached: true });
-    return true;
+    return { status: 200, payload: { ...cached.value, cached: true } };
   }
   const previous = cached?.value || savedHomeCatalog();
   const restoreOnStartup = !refresh && !cached && previous && !homeCatalogRestoredFromDisk;
@@ -126,9 +149,9 @@ export async function homeCatalog(req, res, url) {
   // Cinemeta is currently slow or unreachable. A later refresh can update this copy.
   if (restoreOnStartup) {
     const restored = { ...previous, stale: true };
-    homeCatalogCache.set("home", { value: restored, expiresAt: Date.now() + 60_000 });
-    json(res, 200, { ...restored, cached: true });
-    return true;
+    if (generation === homeCatalogGeneration)
+      homeCatalogCache.set("home", { value: restored, expiresAt: Date.now() + 60_000 });
+    return { status: 200, payload: { ...restored, cached: true } };
   }
 
   const requests = [
@@ -165,9 +188,9 @@ export async function homeCatalog(req, res, url) {
   if (failed.length) console.warn("Home catalog provider errors:", failed.join("; "));
   if (!successfulRequests && previous) {
     const restored = { ...previous, stale: true, partial: true };
-    homeCatalogCache.set("home", { value: restored, expiresAt: Date.now() + 60_000 });
-    json(res, 200, { ...restored, cached: true });
-    return true;
+    if (generation === homeCatalogGeneration)
+      homeCatalogCache.set("home", { value: restored, expiresAt: Date.now() + 60_000 });
+    return { status: 200, payload: { ...restored, cached: true } };
   }
   const dedupe = (items, limit) => [...new Map(items.map((item) => [item.id, item])).values()].slice(0, limit);
   const allMovies = groups.movie.length ? dedupe(groups.movie, 96) : (previous?.movies || []);
@@ -182,8 +205,7 @@ export async function homeCatalog(req, res, url) {
   );
   const animeTitles = dedupe([...animeSeries, ...animeMovies], 100);
   if (!allMovies.length && !allSeries.length && !animeTitles.length) {
-    json(res, 503, { error: "The catalog provider is unavailable. Try again shortly." });
-    return true;
+    return { status: 503, payload: { error: "The catalog provider is unavailable. Try again shortly." } };
   }
   const animeIds = new Set(animeTitles.map((item) => item.id));
   const movies = allMovies.filter((item) => !animeIds.has(item.id));
@@ -200,13 +222,14 @@ export async function homeCatalog(req, res, url) {
   const partial = failed.length > 0;
   value.partial = partial;
   if (reusedSavedTitles) value.stale = true;
-  homeCatalogCache.set("home", { value, expiresAt: Date.now() + (partial ? 60_000 : 10 * 60 * 1000) });
-  if (successfulRequests) {
-    try { appDatabase.setMeta(HOME_CATALOG_META_KEY, JSON.stringify(value)); }
-    catch (error) { console.warn("Could not save Home catalog:", error.message); }
+  if (generation === homeCatalogGeneration) {
+    homeCatalogCache.set("home", { value, expiresAt: Date.now() + (partial ? 60_000 : 10 * 60 * 1000) });
+    if (successfulRequests) {
+      try { appDatabase.setMeta(HOME_CATALOG_META_KEY, JSON.stringify(value)); }
+      catch (error) { console.warn("Could not save Home catalog:", error.message); }
+    }
   }
-  json(res, 200, { ...value, cached: false, partial });
-  return true;
+  return { status: 200, payload: { ...value, cached: false, partial } };
 }
 
 export async function searchCatalog(req, res, url) {
@@ -217,7 +240,7 @@ export async function searchCatalog(req, res, url) {
     return true;
   }
   const { results, cached } = await catalogSearchResults(query, { withCacheFlag: true });
-  json(res, 200, { query, results, cached });
+  if (!res.destroyed && !res.writableEnded) json(res, 200, { query, results, cached });
   return true;
 }
 
@@ -252,7 +275,17 @@ export async function catalogSearchResults(query, { withCacheFlag = false } = {}
   const cacheKey = value.toLowerCase();
   const cached = catalogSearchCache.get(cacheKey);
   if (cached?.expiresAt > Date.now()) return withCacheFlag ? { results: cached.results, cached: true } : cached.results;
+  const outcome = await catalogProviderAdmission.run(`search:${cacheKey}`,
+    () => loadCatalogSearchResults(value, cacheKey));
+  if (outcome.unavailable && withCacheFlag) {
+    const error = new Error("Title search is temporarily unavailable. Try again shortly.");
+    error.statusCode = 503;
+    throw error;
+  }
+  return withCacheFlag ? { results: outcome.results, cached: false } : outcome.results;
+}
 
+async function loadCatalogSearchResults(value, cacheKey) {
   const searches = ["movie", "series"].map(async (type) => {
     const endpoint = `${CINEMETA_ORIGIN}/catalog/${type}/top/search=${encodeURIComponent(value)}.json`;
     try {
@@ -281,12 +314,9 @@ export async function catalogSearchResults(query, { withCacheFlag = false } = {}
     }
   }
   if (!responses.some((response) => response.available) && !imdbAvailable) {
-    if (withCacheFlag) {
-      const error = new Error("Title search is temporarily unavailable. Try again shortly.");
-      error.statusCode = 503;
-      throw error;
-    }
-    return [];
+    // Never cache an all-provider failure. Each consumer receives its original
+    // shape: the API throws 503, whereas internal suggestions receive [].
+    return { results: [], unavailable: true };
   }
   const combined = [...responses.flatMap((response) => response.results), ...imdbResults];
   const seen = new Set();
@@ -300,7 +330,7 @@ export async function catalogSearchResults(query, { withCacheFlag = false } = {}
   }
   // Retry Cinemeta sooner after partial outages, even if the IMDb fallback succeeded.
   catalogSearchCache.set(cacheKey, { results, expiresAt: Date.now() + (providerFailures ? 60_000 : CATALOG_CACHE_TTL_MS) });
-  return withCacheFlag ? { results, cached: false } : results;
+  return { results, unavailable: false };
 }
 
 async function getCatalogMeta(type, imdbId) {

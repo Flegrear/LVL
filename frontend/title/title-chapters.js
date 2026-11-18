@@ -20,7 +20,8 @@ import {
 import { playbackIntentOwner, playbackSessionReservationOwner } from "../player/playback-intent.js";
 import { explicitlyUnwatchedChapter, manuallyWatchedChapter } from "../watch/watched-status.js";
 import {
-  buildLibrarySeries, catalogMediaKind, groupLibraryChapters, libraryEntryById, librarySourceDetails,
+  buildLibrarySeries, catalogMediaKind, findLibrarySeriesByKey, groupLibraryChapters,
+  libraryEntryById, librarySeriesForCatalog, librarySourceDetails,
   normalizeLibrarySourceMeta, upsertLibrarySession,
 } from "../library/library-data.js";
 import {
@@ -57,20 +58,21 @@ export function chapterUpcoming(episode) {
   return /^\d{4}-\d{2}-\d{2}$/.test(String(episode?.released || "")) && Date.parse(`${episode.released}T00:00:00Z`) > Date.now();
 }
 
-// Library key for a catalog series: the saved series with this catalog id, then the Library title
-// the page is about, then a key from the title.
+// Catalog work identity is typed and stable, even before a playable source is
+// saved. Never fall through to an unrelated same-name title's Library key.
 function librarySeriesKeyForCatalog(meta) {
-  const groups = buildLibrarySeries();
-  return groups.find((item) => meta?.id && item.catalogId === meta.id)?.key
-    || (titleView.key && meta?.id === titleView.id && groups.some((item) => item.key === titleView.key) ? titleView.key : "")
-    || catalogSeriesKey(meta);
+  const saved = librarySeriesForCatalog(meta);
+  if (saved) return saved.routeKey || saved.key;
+  const id = String(meta?.id || "");
+  if (/^tt\d{5,12}$/i.test(id)) return `catalog:${meta.type === "movie" ? "movie" : "series"}:${id.toLowerCase()}`;
+  return catalogSeriesKey(meta);
 }
 
 // Saved chapters of a catalog series: chapter code (S01E05) → its sources (best first), the one
 // last watched and its progress.
 function savedCatalogChapterGroups(meta) {
   const key = librarySeriesKeyForCatalog(meta);
-  const series = buildLibrarySeries().find((item) => item.key === key);
+  const series = findLibrarySeriesByKey(key);
   const groups = new Map();
   if (!series || series.type === "movie") return groups;
   [...series.seasons.values()].forEach((refs) => groupLibraryChapters(refs).forEach((chapter) => {
@@ -106,7 +108,7 @@ export function renderTitleChapters({ focusSelector = "" } = {}) {
   const current = seasons.find((item) => item.season === view.season) || seasons[0];
   const groups = savedCatalogChapterGroups(meta);
   const codeOf = (episode) => chapterCode(current.season, episode.episode);
-  const seriesForMarks = { key: librarySeriesKeyForCatalog(meta) };
+  const seriesForMarks = librarySeriesForCatalog(meta) || { key: librarySeriesKeyForCatalog(meta) };
   const savedHere = current.episodes.filter((episode) => groups.has(codeOf(episode))).length;
   const watchedHere = current.episodes.filter((episode) => groups.get(codeOf(episode))?.progress?.finished
     || manuallyWatchedChapter(seriesForMarks, codeOf(episode))).length;
@@ -198,7 +200,7 @@ function catalogChapterMarkup(view, season, episode, saved) {
   const upcoming = chapterUpcoming(episode);
   const seriesName = view.meta.name;
   const progress = group?.progress || null;
-  const markSeries = { key: librarySeriesKeyForCatalog(view.meta) };
+  const markSeries = librarySeriesForCatalog(view.meta) || { key: librarySeriesKeyForCatalog(view.meta) };
   const watched = !explicitlyUnwatchedChapter(markSeries, code)
     && (Boolean(progress?.finished) || manuallyWatchedChapter(markSeries, code));
   const inLibrary = Boolean(titleSubject().series);
@@ -340,7 +342,7 @@ function catalogSeasonPacksMarkup(state) {
   const rows = state.rows || [];
   const visible = state.showAll ? rows : rows.slice(0, SEASON_PACKS_SHOWN);
   return `<section class="catalog-source-group" aria-label="Packs">
-    ${visible.length ? `<div class="catalog-stream-list">${visible.map((stream, index) => catalogChapterSourceRowMarkup(stream, index)).join("")}</div>` : emptyMarkup({ compact: true, title: "No packs found", text: "Try a different season or an individual chapter." })}
+    ${visible.length ? `<div class="catalog-stream-list">${visible.map((stream, index) => catalogChapterSourceRowMarkup(stream, index, index, state.requestSerial)).join("")}</div>` : emptyMarkup({ compact: true, title: "No packs found", text: "Try a different season or an individual chapter." })}
     ${rows.length > visible.length ? buttonMarkup({ label: `Show all ${rows.length} packs`, variant: "ghost", size: "sm", className: "catalog-season-pack-more" }) : ""}
   </section>`;
 }
@@ -433,10 +435,13 @@ async function loadCatalogChapterSources(view, chapter, { force = false } = {}) 
 // episode lookup, but display its packs in a mutually exclusive season-source tab.
 async function loadCatalogSeasonPacks(view, seasonNumber, { force = false } = {}) {
   const mayPaint = () => typeof viewActive !== "function" || viewActive("title");
+  // Per-view generation survives repeated season requests. Keeping the
+  // counter on its owning view also allows isolated source-extracted tests.
+  const nextGeneration = () => (view.packRequestSerial = (Number(view.packRequestSerial) || 0) + 1);
   const season = view.seasons.find((item) => item.season === seasonNumber);
   const first = season?.episodes.find((episode) => !chapterUpcoming(episode));
   if (!first) {
-    const empty = { status: "ready", rows: [], showAll: false, chapter: null };
+    const empty = { status: "ready", rows: [], showAll: false, chapter: null, requestSerial: nextGeneration() };
     view.seasonPacks.set(seasonNumber, empty);
     if (catalogSeriesView === view && mayPaint() && view.season === seasonNumber && view.packsActive) renderTitleChapters();
     return empty;
@@ -444,7 +449,8 @@ async function loadCatalogSeasonPacks(view, seasonNumber, { force = false } = {}
   const current = view.seasonPacks.get(seasonNumber);
   if (current?.status === "ready" && !force) return current;
   if (current?.promise && !force) return current.promise;
-  const state = { status: "loading", rows: [], showAll: Boolean(current?.showAll), chapter: { ...first, season: seasonNumber } };
+  const state = { status: "loading", rows: [], showAll: Boolean(current?.showAll), chapter: { ...first, season: seasonNumber },
+    requestSerial: nextGeneration() };
   view.seasonPacks.set(seasonNumber, state);
   if (catalogSeriesView === view && mayPaint() && view.season === seasonNumber) renderTitleChapters();
   state.promise = (async () => {
@@ -513,7 +519,15 @@ export async function addCatalogChapterSource(view, chapter, stream, {
     || (!play ? playbackSessionReservationOwner.begin(null, stream.magnet) : null);
   const manualIntent = play && parentIntent === null && !stillCurrent ? ++manualCatalogPlaybackId : 0;
   const originView = manualIntent ? (viewActive("watch") ? "watch" : viewActive("title") ? "title" : "") : "";
-  const canContinue = () => (!play || playbackIntentOwner.canContinue(claimed.intent))
+  const routeAtStart = titleSourceRouteToken();
+  const canPaint = () => catalogSeriesView === view
+    && titleSourceRouteToken() === routeAtStart && viewActive("title");
+  // A live player intent is not proof that the Title route still owns this
+  // asynchronous source lookup. Both Add and Play must keep their originating
+  // catalog view and route generation until metadata is accepted.
+  const canContinue = () => catalogSeriesView === view
+    && titleSourceRouteToken() === routeAtStart
+    && (play ? playbackIntentOwner.canContinue(claimed.intent) : viewActive("title"))
     && (!manualIntent || (manualIntent === manualCatalogPlaybackId
     && (!originView || viewActive(originView)))) && (!stillCurrent || stillCurrent());
   const { meta } = view;
@@ -526,7 +540,7 @@ export async function addCatalogChapterSource(view, chapter, stream, {
     oldText = buttonText(button);
     if (button) { button.disabled = true; setButtonText(button, "Opening…"); }
     session = await resolveTorrentMagnet(stream.magnet, (current, elapsed) => {
-      if (!quiet) setToolStatus(TITLE_STATUS, `Opening ${libraryChapterName({ code }) || code}… ${elapsed} s${current.numPeers ? `, ${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}` : ""}`);
+      if (!quiet && canPaint()) setToolStatus(TITLE_STATUS, `Opening ${libraryChapterName({ code }) || code}… ${elapsed} s${current.numPeers ? `, ${current.numPeers} peer${current.numPeers === 1 ? "" : "s"}` : ""}`);
     }, {
       timeoutMs: 25_000, preferredFileIndex: providerIndex, releaseOnFailure: false,
       onSession: (created) => observePlaybackMetadataSession(metadataReservation, created),
@@ -548,7 +562,9 @@ export async function addCatalogChapterSource(view, chapter, stream, {
       }
     }
     const entry = upsertLibrarySession(session, stream.magnet, {
-      seriesKeyOverride: librarySeriesKeyForCatalog(meta),
+      // The first saved source has no Library route yet. Pass the legacy
+      // display alias only as a hint; upsert rejects a conflicting known ID.
+      seriesKeyOverride: librarySeriesForCatalog(meta)?.routeKey || catalogSeriesKey(meta),
       displayTitleOverride: meta.name,
       coverUrlOverride: meta.poster || "",
       catalogId: meta.id,
@@ -576,12 +592,12 @@ export async function addCatalogChapterSource(view, chapter, stream, {
     }
     if (button) { setButtonText(button, "Added"); button.dataset.done = "1"; }
     const packChapters = fileIndexes.length;
-    if (!quiet) setToolStatus(TITLE_STATUS, packChapters > 1
+    if (!quiet && canPaint()) setToolStatus(TITLE_STATUS, packChapters > 1
       ? `${packChapters} chapters from this pack added to your Library`
       : `${libraryChapterName({ code }) || code} added to your Library`);
     if ($("#view-library")?.classList.contains("is-active")) renderLibrary();
     else updateLibrarySummary();
-    if (catalogSeriesView === view) {
+    if (canPaint()) {
       renderTitlePage();
       catalogChapterItem(chapter.id)?.querySelector(".catalog-chapter-toggle")?.focus({ preventScroll: true });
     }
@@ -619,6 +635,8 @@ function catalogFetchAllLabel(view, shownCount) {
 async function fetchAllCatalogChapterSources(view) {
   const season = view.seasons.find((item) => item.season === view.season);
   if (!season || view.fetchAll?.running) return;
+  const routeToken = titleSourceRouteToken();
+  const stillOnTitle = () => catalogSeriesView === view && titleSourceRouteToken() === routeToken && viewActive("title");
   const chapters = season.episodes.slice(0, view.shown).filter((episode) => !chapterUpcoming(episode)).map((episode) => ({ ...episode, season: season.season }));
   if (!chapters.length) return;
   const force = view.fetchAll?.season === season.season && view.fetchAll.done > 0;
@@ -636,18 +654,18 @@ async function fetchAllCatalogChapterSources(view) {
   };
   let next = 0;
   const worker = async () => {
-    while (next < chapters.length && catalogSeriesView === view && view.season === season.season) {
+    while (next < chapters.length && stillOnTitle() && view.season === season.season) {
       const chapter = chapters[next];
       next += 1;
       await loadCatalogChapterSources(view, chapter, { force });
-      if (catalogSeriesView !== view || !viewActive("title") || view.season !== season.season) return;
+      if (!stillOnTitle() || view.season !== season.season) return;
       view.fetchAll.done += 1;
       label();
     }
   };
   await Promise.all([worker(), worker(), worker()]);
   view.fetchAll.running = false;
-  if (catalogSeriesView !== view) return;
+  if (!stillOnTitle() || view.season !== season.season) return;
   const found = chapters.reduce((sum, chapter) => sum + (view.sources.get(chapter.id)?.groups?.episodeFiles || []).filter((stream) => meetsSourceFloor(stream)).length, 0);
   setToolStatus(TITLE_STATUS, `${found} episode magnet${found === 1 ? "" : "s"} at 720p or better with 2+ peers, across ${chapters.length} chapter${chapters.length === 1 ? "" : "s"}`);
   const button = $("#title-chapters .catalog-fetch-all");
@@ -668,15 +686,21 @@ export async function playCatalogChapter(view, chapter, button) {
       chapterResumeMs(ref.episode.progress, { key: librarySeriesKeyForCatalog(view.meta) }, code) / 1000 });
     return;
   }
-  if (view.busy) return;
+  // A second chapter selection must claim the newer playback intent while
+  // the first episode is resolving its torrent. Only duplicate presses of
+  // the same chapter are coalesced.
+  const pendingPlays = view.pendingChapterPlays ||= new Set();
+  if (pendingPlays.has(chapter.id)) return;
+  pendingPlays.add(chapter.id);
   const claimed = claimPlaybackIntent("catalog");
   const manualIntent = ++manualCatalogPlaybackId;
+  const routeToken = titleSourceRouteToken();
   let candidateStarted = false;
   const canContinue = () => playbackIntentOwner.canContinue(claimed.intent)
     && manualIntent === manualCatalogPlaybackId && catalogSeriesView === view
+    && titleSourceRouteToken() === routeToken
     && (viewActive("title") || (candidateStarted && viewActive("watch")));
   let accepted = false;
-  view.busy = true;
   let oldText = "Play";
   try {
     oldText = buttonText(button) || "Play";
@@ -700,7 +724,8 @@ export async function playCatalogChapter(view, chapter, button) {
           play: true, quiet: true, parentIntent: claimed.intent, stillCurrent: canContinue,
         });
         accepted = true;
-        setToolStatus(TITLE_STATUS, "");
+        if (catalogSeriesView === view && titleSourceRouteToken() === routeToken && viewActive("title"))
+          setToolStatus(TITLE_STATUS, "");
         return;
       } catch (error) {
         if (error?.name === "AbortError") return;
@@ -713,7 +738,7 @@ export async function playCatalogChapter(view, chapter, button) {
   } finally {
     playbackIntentOwner.settle(claimed.intent, accepted ? "accepted" : "failed");
     await retirePlaybackMetadataReservation(claimed.metadataReservation);
-    view.busy = false;
+    pendingPlays.delete(chapter.id);
     if (button?.isConnected) { button.disabled = false; setButtonText(button, oldText); }
   }
 }
@@ -776,12 +801,24 @@ export function handleCatalogChapterClick(event) {
       return;
     }
     const row = target.closest("[data-row-index]");
-    const stream = row && state.rows?.[Number(row.dataset.rowIndex)];
-    if (!stream || !target.matches(".catalog-source-play, .catalog-source-add") || view.busy) return;
-    view.busy = true;
+    // Repainted pack tabs reuse ordinals; older rows cannot launch newer sources.
+    const stream = row && state.status === "ready"
+      // All production pack states have a generation. Legacy/isolated fixture
+      // states without one retain their historical untagged-row behavior.
+      && (state.requestSerial === undefined || row.dataset.sourceRequest === String(state.requestSerial))
+      ? state.rows?.[Number(row.dataset.rowIndex)] : null;
+    if (!stream || !target.matches(".catalog-source-play, .catalog-source-add")) return;
+    const rowKey = `pack:${view.season}:${state.requestSerial}:${row.dataset.rowIndex}`;
+    const pendingRows = view.pendingSourceRows ||= new Set();
+    if (pendingRows.has(rowKey)) return;
+    pendingRows.add(rowKey);
+    const routeToken = titleSourceRouteToken();
     void addCatalogChapterSource(view, state.chapter, stream, { play: target.matches(".catalog-source-play"), button: target })
-      .catch((error) => setToolStatus(TITLE_STATUS, error.message || "Could not use this pack", true))
-      .finally(() => { view.busy = false; });
+      .catch((error) => {
+        if (catalogSeriesView === view && titleSourceRouteToken() === routeToken && viewActive("title"))
+          setToolStatus(TITLE_STATUS, error.message || "Could not use this pack", true);
+      })
+      .finally(() => { pendingRows.delete(rowKey); });
     return;
   }
   if (target.matches(".catalog-chapters-more")) {
@@ -829,9 +866,15 @@ export function handleCatalogChapterClick(event) {
   if (!row || row.dataset.sourceRequest !== String(sources?.requestSerial)) return;
   const stream = sources?.rows?.[Number(row?.dataset.rowIndex)];
   if (!stream || !target.matches(".catalog-source-play, .catalog-source-add")) return;
-  if (view.busy) return;
-  view.busy = true;
+  const rowKey = `${chapter.id}:${row.dataset.rowIndex}`;
+  const pendingRows = view.pendingSourceRows ||= new Set();
+  if (pendingRows.has(rowKey)) return;
+  pendingRows.add(rowKey);
+  const routeToken = titleSourceRouteToken();
   void addCatalogChapterSource(view, chapter, stream, { play: target.matches(".catalog-source-play"), button: target })
-    .catch((error) => setToolStatus(TITLE_STATUS, error.message || "Could not use this source", true))
-    .finally(() => { view.busy = false; });
+    .catch((error) => {
+      if (catalogSeriesView === view && titleSourceRouteToken() === routeToken && viewActive("title"))
+        setToolStatus(TITLE_STATUS, error.message || "Could not use this source", true);
+    })
+    .finally(() => { pendingRows.delete(rowKey); });
 }

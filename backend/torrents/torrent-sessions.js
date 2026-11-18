@@ -14,7 +14,9 @@ import { json, readJsonBody } from "../app/http-helpers.js";
 import { closeProgressiveReadyListeners } from "../streaming/torrent-stream.js";
 import { getCachedMediaProbe } from "../media/torrent-probe.js";
 import { invalidateSpeechWindowSession } from "../media/speech-activity.js";
+import { mediaAdmissionsClosed } from "../media/media-shutdown.js";
 import { attachTorrentRequestScheduler } from "./request-scheduler.js";
+import { canRetireTorrentBorrower, createTorrentDirectoryAdmission } from "./directory-admission.js";
 
 const MAX_MAGNET_LENGTH = 16 * 1024;
 const MAX_TORRENT_SESSIONS = 4;
@@ -26,6 +28,23 @@ const MAX_SESSION_LEASES = 256;
 // acquisition has reached its abandonment deadline.
 const ACTIVE_STREAM_GAP_MS = 5 * 60_000;
 const pendingTorrentDisposals = new Map();
+// Storage orphan cleanup and POST allocation share a synchronous reservation.
+// The slot exists before either starts asynchronous filesystem/WebTorrent work.
+// Hash slots also serialize distinct desktop UUID sessions for one infohash.
+const { withFence: withTorrentDirectoryFence } = createTorrentDirectoryAdmission();
+
+// Storage owns disk paths and the deletion policy. It MUST use this API
+// instead of deleting an absent-session folder from a stale async scan.
+// The supplied callback performs only the already-selected, own-root removal.
+export function retireOrphanTorrentDirectoryIfIdle(id, removeDirectory) {
+  if (typeof id !== "string" || !/^[a-zA-Z0-9-]{1,64}$/.test(id)
+    || typeof removeDirectory !== "function") return Promise.resolve(false);
+  return withTorrentDirectoryFence(`dir:${id}`, async () => {
+    if (torrentSessions.has(id)) return false;
+    await removeDirectory();
+    return true;
+  });
+}
 
 // Optional newer-client acquisition identities: legacy token-based leases
 // remain supported. One ID represents exactly one source/index and its one
@@ -56,6 +75,7 @@ function pruneTorrentAcquisitions(now = Date.now()) {
 }
 
 function beginTorrentAcquisition(rawId, resource, preferredFileIndex) {
+  if (mediaAdmissionsClosed()) return { mode: "error", status: 503, error: "media_shutdown" };
   if (rawId === undefined) return { mode: "legacy" };
   if (!validTorrentAcquisitionId(rawId)) return { mode: "error", status: 400, error: "invalid_torrent_acquisition_id" };
   const id = rawId.toLowerCase();
@@ -382,10 +402,9 @@ function pruneExpiredTorrentLeases(session, now = Date.now()) {
 }
 
 export function torrentSessionHasActiveBorrower(session, now = Date.now()) {
-  if (!session || session.closing) return false;
-  const streamAge = now - Number(session.lastStreamAt || 0);
-  return (Number(session.openStreams) || 0) > 0 || pruneExpiredTorrentLeases(session, now) > 0
-    || (Number(session.lastStreamAt) > 0 && streamAge >= 0 && streamAge < ACTIVE_STREAM_GAP_MS);
+  return Boolean(session && !session.closing && !canRetireTorrentBorrower(session, {
+    now, streamGapMs: ACTIVE_STREAM_GAP_MS,
+  }));
 }
 
 // Called by storage as the final, synchronous authority check. It fences the
@@ -393,8 +412,8 @@ export function torrentSessionHasActiveBorrower(session, now = Date.now()) {
 // storage snapshot or remove the files for a replacement Android session.
 export async function evictTorrentSessionIfIdle(id, expectedIncarnation = null) {
   const session = torrentSessions.get(id);
-  if (!session || session.closing || (expectedIncarnation && session.incarnation !== expectedIncarnation)
-    || torrentSessionHasActiveBorrower(session)) return false;
+  if (!canRetireTorrentBorrower(session, { expectedIncarnation,
+    streamGapMs: ACTIVE_STREAM_GAP_MS })) return false;
   await removeTorrentSession(id, { deleteFiles: KEEP_DOWNLOADS });
   return true;
 }
@@ -413,6 +432,12 @@ export async function releaseTorrentSessionLease(id, leaseToken, incarnation) {
     return { status: 409, error: "torrent_session_in_use" };
   session.leases.delete(leaseToken);
   if (session.leases.size > 0) return { status: 204 };
+  // An HTTP Range reader may have just ended, while the player is decoding
+  // buffered data. Keep the exact incarnation until its finite grace expires.
+  if (torrentSessionHasActiveBorrower(session)) {
+    scheduleSessionExpiry(session);
+    return { status: 204 };
+  }
   await removeTorrentSession(id);
   return { status: 204 };
 }
@@ -436,7 +461,7 @@ function rollbackUnreportedTorrentLease(lease) {
 }
 
 function acquireTorrentSessionLease(session) {
-  if (session.closing) return null;
+  if (session.closing || mediaAdmissionsClosed()) return null;
   session.incarnation ||= crypto.randomUUID();
   session.leases ||= new Map();
   pruneExpiredTorrentLeases(session);
@@ -609,6 +634,7 @@ export async function createTorrentSession(req, res) {
     if (status === 200 || status === 202) responseCommitted = true;
   };
   try {
+  await withTorrentDirectoryFence(`hash:${infoHash}`, async () => {
   // A concurrent last-lease release may already have removed the old Map
   // entry but still be destroying its underlying WebTorrent instance.
   const pendingDisposal = pendingTorrentDisposals.get(infoHash);
@@ -628,7 +654,10 @@ export async function createTorrentSession(req, res) {
   if (existingSession) {
     const acquired = rememberLease(existingSession, acquireTorrentSessionLease(existingSession));
     if (!acquired) {
-      send(429, { error: "This torrent has too many active acquisitions; close old views or retry later" });
+      // Admission may close while waiting for a prior disposal. A shutdown
+      // refusal is 503, not a misleading exhausted-lease 429.
+      if (mediaAdmissionsClosed()) send(503, { error: "media_shutdown" });
+      else send(429, { error: "This torrent has too many active acquisitions; close old views or retry later" });
       return;
     }
     if (preferredFileIndex !== null) existingSession.preferredFileIndex = preferredFileIndex;
@@ -655,6 +684,33 @@ export async function createTorrentSession(req, res) {
   if (canceled()) { send(410, { error: "torrent_acquisition_cancelled" }); return; }
 
   const id = KEEP_DOWNLOADS && /^[0-9a-f]{40}$/.test(infoHash) ? downloadSessionId(infoHash) : crypto.randomUUID();
+  await withTorrentDirectoryFence(`dir:${id}`, async () => {
+  // If storage was retiring an orphan, allocation resumed after its deletion.
+  // Recheck the exact session object before reusing this directory.
+  const afterDirectoryWait = torrentSessions.get(id);
+  if (afterDirectoryWait && !afterDirectoryWait.closing) {
+    if (afterDirectoryWait.infoHash !== infoHash) {
+      send(409, { error: "torrent_session_directory_conflict" });
+      return;
+    }
+    const acquired = rememberLease(afterDirectoryWait, acquireTorrentSessionLease(afterDirectoryWait));
+    if (!acquired) {
+      if (mediaAdmissionsClosed()) send(503, { error: "media_shutdown" });
+      else send(429, { error: "This torrent has too many active acquisitions; close old views or retry later" });
+      return;
+    }
+    scheduleSessionExpiry(afterDirectoryWait);
+    send(200, { ...sessionPayload(afterDirectoryWait), ...acquired, reused: true });
+    return;
+  }
+  if (canceled()) {
+    send(410, { error: "torrent_acquisition_cancelled" });
+    return;
+  }
+  if (mediaAdmissionsClosed()) {
+    send(503, { error: "media_shutdown" });
+    return;
+  }
   fs.mkdirSync(torrentRoot, { recursive: true });
   const resume = KEEP_DOWNLOADS ? readDownloadResume(id) : null;
 
@@ -670,9 +726,36 @@ export async function createTorrentSession(req, res) {
     });
   } catch (error) {
     if (resume) forgetDownloadResume(id);
+    // A synchronous error inside add() can leave a half-created torrent in
+    // the client before add() returns an object on which to install listeners.
+    const partial = torrentClient.torrents?.find(candidate => candidate.infoHash?.toLowerCase() === infoHash);
+    if (partial) await partial.destroy({ destroyStore: !KEEP_DOWNLOADS }).catch(() => {});
     send(500, { error: error.message || "Unable to create torrent session" });
     return;
   }
+  // Install the torrent's terminal owner immediately after add returns,
+  // before scheduler/peer attachment (which may synchronously emit errors).
+  const displayName = (() => {
+    try { return new URL(magnet).searchParams.get("dn") || ""; } catch { return ""; }
+  })();
+  const session = {
+    id, torrent, requestScheduler: null, peerManager: null,
+    infoHash, displayName, state: "resolving", error: null,
+    incarnation: crypto.randomUUID(), leases: new Map(), preferredFileIndex,
+    expiryTimer: null, slowTimer: null,
+  };
+  const handleTorrentError = (error) => {
+    if (session.state === "error" || session.closing) return;
+    clearTimeout(session.slowTimer);
+    session.slowTimer = null;
+    clearInterval(session.resumeTimer);
+    session.resumeTimer = null;
+    session.state = "error";
+    session.error = error?.message || "Torrent error";
+    session.requestScheduler?.dispose();
+    session.peerManager?.stop();
+  };
+  torrent.on("error", handleTorrentError);
   if (resume && torrent.infoHash && String(torrent.infoHash).toLowerCase() !== infoHash) {
     // A stale or damaged metadata file must never seed another torrent's
     // pieces into this infohash-derived directory.
@@ -687,34 +770,31 @@ export async function createTorrentSession(req, res) {
     return;
   }
 
-  // Browser/Windows torrents retain the original WebTorrent scheduling. The
-  // typeof fallback keeps older isolated source-extraction fixtures runnable.
-  const requestScheduler = KEEP_DOWNLOADS && typeof attachTorrentRequestScheduler === "function"
-    ? attachTorrentRequestScheduler(torrent, { enabled: true }) : null;
-  if (requestScheduler && !requestScheduler.supported)
-    console.warn(`Android torrent request scheduling unavailable: ${requestScheduler.reason}`);
-
-  const displayName = (() => {
-    try { return new URL(magnet).searchParams.get("dn") || ""; } catch { return ""; }
-  })();
-  const session = {
-    id,
-    torrent,
-    requestScheduler,
-    infoHash,
-    displayName,
-    state: "resolving",
-    error: null,
-    incarnation: crypto.randomUUID(),
-    leases: new Map(),
-    preferredFileIndex,
-    expiryTimer: null,
-    slowTimer: null,
-    // Slow-peer turnover, playhead backup requests and bad-data blocking.
-    peerManager: attachPeerManager(torrent, { maxConns: () => torrentClient.maxConns }),
-  };
+  try {
+    // Browser/Windows torrents retain the original scheduling. Guard the
+    // lifecycle for synchronous events emitted during either attachment.
+    if (session.state !== "error" && KEEP_DOWNLOADS && typeof attachTorrentRequestScheduler === "function") {
+      session.requestScheduler = attachTorrentRequestScheduler(torrent, { enabled: true });
+      if (session.state === "error") session.requestScheduler?.dispose();
+      if (!session.requestScheduler.supported)
+        console.warn(`Android torrent request scheduling unavailable: ${session.requestScheduler.reason}`);
+    }
+    if (session.state !== "error") {
+      Object.assign(session, {
+        peerManager: attachPeerManager(torrent, { maxConns: () => torrentClient.maxConns }),
+      });
+      if (session.state === "error") session.peerManager?.stop();
+    }
+  } catch (error) { handleTorrentError(error); }
   torrentSessions.set(id, session);
   const acquired = rememberLease(session, acquireTorrentSessionLease(session));
+  if (!acquired) {
+    // A shutdown fence can close after WebTorrent.add but before a new session
+    // receives its first borrower. Never report an unowned 202 source.
+    await removeTorrentSession(id);
+    send(503, { error: "media_shutdown" });
+    return;
+  }
   scheduleSessionExpiry(session);
 
   const markReady = () => {
@@ -725,9 +805,7 @@ export async function createTorrentSession(req, res) {
     const safety = validateTorrentManifest(torrent, { preferredFileIndex: session.preferredFileIndex });
     session.safety = safety;
     if (!safety.ok) {
-      session.state = "error";
-      session.error = `Torrent rejected: ${safety.reason}`;
-      session.requestScheduler?.dispose();
+      handleTorrentError(new Error(`Torrent rejected: ${safety.reason}`));
       return;
     }
     session.state = "ready";
@@ -752,22 +830,20 @@ export async function createTorrentSession(req, res) {
   });
   torrent.once("metadata", markReady);
   torrent.once("ready", markReady);
-  torrent.once("error", (error) => {
-    clearTimeout(session.slowTimer);
-    session.slowTimer = null;
-    session.state = "error";
-    session.error = error.message || "Torrent error";
-  });
-  session.slowTimer = setTimeout(() => {
-    if (session.state === "resolving") session.state = "resolving-slow";
-  }, TORRENT_SLOW_METADATA_MS);
-  session.slowTimer.unref?.();
+  if (session.state !== "error") {
+    session.slowTimer = setTimeout(() => {
+      if (session.state === "resolving") session.state = "resolving-slow";
+    }, TORRENT_SLOW_METADATA_MS);
+    session.slowTimer.unref?.();
+  }
 
   // Metadata may already be available for a cached/very fast torrent before
   // the listeners above are attached.
   if ((torrent.files || []).length) markReady();
 
   send(202, { ...sessionPayload(session), ...acquired, reused: false });
+  });
+  });
   } finally {
     // Drop the exact token synchronously before settling duplicate waiters.
     // Physical disposal may await caches; never mask the original POST error.
@@ -806,6 +882,7 @@ export async function cancelTorrentAcquisition(rawId) {
     return { status: 204 };
   }
   if (record.state === "cancelled" || record.state === "failed") return { status: 204 };
+  if (record.state === "cancelling") return record.cancelPromise;
   if (record.state === "pending") {
     record.state = "cancelled";
     record.expiresAt = Date.now() + TORRENT_ACQUISITION_RETENTION_MS;
@@ -817,13 +894,24 @@ export async function cancelTorrentAcquisition(rawId) {
   // this record, and an overlapping DELETE remains bound to the exact token.
   record.state = "cancelling";
   record.expiresAt = Date.now() + TORRENT_ACQUISITION_RETENTION_MS;
-  const outcome = await releaseTorrentSessionLease(
-    record.sessionId, record.leaseToken, record.incarnation);
-  if (outcome.status === 204) {
-    record.state = "cancelled";
-    record.leaseToken = null;
-  }
-  return outcome;
+  const operation = (async () => {
+    try {
+      const outcome = await releaseTorrentSessionLease(
+        record.sessionId, record.leaseToken, record.incarnation);
+      if (outcome.status === 204) {
+        record.state = "cancelled";
+        record.leaseToken = null;
+      }
+      return outcome;
+    } finally {
+      // A live stream legitimately rejects final-lease release with 409.
+      // Restore this exact authority so GET and a later DELETE can retry.
+      if (record.state === "cancelling") record.state = "active";
+      record.cancelPromise = null;
+    }
+  })();
+  record.cancelPromise = operation;
+  return operation;
 }
 
 export function getTorrentSession(id) {

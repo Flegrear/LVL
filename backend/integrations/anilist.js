@@ -9,6 +9,104 @@ export const ANILIST_ENDPOINT = "https://graphql.anilist.co";
 export const DETAILS_BATCH = 25;
 const LINKS_PER_ANIME = 25;
 
+// Authenticated imports are verified at LVL's backend, not by trusting a
+// browser-posted Viewer or MediaListCollection. Both requests go to the one
+// static AniList HTTPS origin. The bearer is transient: never put it in a
+// GraphQL variable, URL, error or persisted account record.
+const AUTH_VIEWER_QUERY = "query { Viewer { id name } }";
+const AUTH_LIST_QUERY = `query ($id: Int!) {
+  MediaListCollection(userId: $id, type: ANIME) {
+    user { id name }
+    lists { entries {
+      status progress score(format: POINT_10_DECIMAL) updatedAt
+      media { id idMal format seasonYear episodes isAdult genres averageScore popularity title { romaji english } coverImage { extraLarge large } }
+    } }
+  }
+}`;
+const AUTH_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+const authFailure = (message, statusCode = 502) => Object.assign(new Error(message), { statusCode });
+
+async function readBoundedAuthResponse(response) {
+  const declared = Number(response.headers?.get?.("content-length"));
+  if (Number.isFinite(declared) && declared > AUTH_MAX_RESPONSE_BYTES)
+    throw authFailure("AniList returned an oversized authenticated list. Existing ratings were preserved.", 502);
+  if (!response.body?.getReader) throw authFailure("AniList returned an incomplete response. Existing ratings were preserved.");
+  const reader = response.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > AUTH_MAX_RESPONSE_BYTES)
+        throw authFailure("AniList returned an oversized authenticated list. Existing ratings were preserved.");
+      chunks.push(value);
+    }
+  } finally {
+    if (bytes > AUTH_MAX_RESPONSE_BYTES) await reader.cancel().catch(() => {});
+    reader.releaseLock();
+  }
+  try {
+    return JSON.parse(Buffer.concat(chunks.map((value) => Buffer.from(value))).toString("utf8"));
+  } catch {
+    throw authFailure("AniList returned an invalid authenticated response. Existing ratings were preserved.");
+  }
+}
+
+export async function verifyAuthenticatedAniListSession({
+  token, expectedUserId, fetchImpl = globalThis.fetch, signal, timeoutMs = 20_000,
+} = {}) {
+  if (typeof token !== "string" || !/^[A-Za-z0-9_.-]{40,4096}$/.test(token))
+    throw authFailure("Connect AniList with a valid access token before importing ratings.", 401);
+  if (!Number.isSafeInteger(expectedUserId) || expectedUserId <= 0)
+    throw authFailure("The connected AniList account is invalid. Reconnect before importing.", 400);
+  const deadline = Math.min(20_000, Math.max(1000, Number(timeoutMs) || 20_000));
+  const requestSignal = signal ? AbortSignal.any([signal, AbortSignal.timeout(deadline)]) : AbortSignal.timeout(deadline);
+  const send = async (query, variables = {}) => {
+    let response;
+    try {
+      response = await fetchImpl(ANILIST_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Accept: "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query, variables }),
+        credentials: "omit",
+        redirect: "error",
+        referrerPolicy: "no-referrer",
+        signal: requestSignal,
+      });
+    } catch {
+      throw authFailure("AniList verification could not reach the provider. Existing ratings were preserved.", 502);
+    }
+    if (response.status === 401)
+      throw authFailure("AniList authorization expired or was revoked. Reconnect your account.", 401);
+    if (response.status === 403 || response.status === 429)
+      throw authFailure("AniList verification is temporarily unavailable. Retry later; existing ratings were preserved.", 503);
+    if (!response.ok)
+      throw authFailure("AniList verification failed. Existing ratings were preserved.", 502);
+    const payload = await readBoundedAuthResponse(response);
+    if (payload?.errors?.length || !payload?.data || typeof payload.data !== "object")
+      throw authFailure("AniList returned an incomplete authenticated response. Existing ratings were preserved.");
+    return payload.data;
+  };
+  const { Viewer } = await send(AUTH_VIEWER_QUERY);
+  if (!Number.isSafeInteger(Viewer?.id) || Viewer.id <= 0
+      || !/^[A-Za-z0-9_-]{2,40}$/.test(String(Viewer?.name || "")))
+    throw authFailure("AniList did not verify the signed-in account. Existing ratings were preserved.", 401);
+  if (Viewer.id !== expectedUserId)
+    throw authFailure("The connected AniList account changed. Reconnect before importing ratings.", 409);
+  const { MediaListCollection } = await send(AUTH_LIST_QUERY, { id: Viewer.id });
+  if (!MediaListCollection || !Array.isArray(MediaListCollection.lists)
+      || MediaListCollection.user?.id !== Viewer.id
+      || MediaListCollection.user?.name !== Viewer.name)
+    throw authFailure("AniList returned an incomplete account list. Existing ratings were preserved.", 502);
+  return { Viewer, MediaListCollection };
+}
+
 const LIST_QUERY = `query ($name: String) {
   MediaListCollection(userName: $name, type: ANIME) {
     user { id name }

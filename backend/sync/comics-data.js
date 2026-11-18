@@ -14,9 +14,9 @@
 // change this LVL can't place (an unknown status, a bad id) waits instead of being guessed.
 import { joinId, splitId } from "../../shared/sync/records.js";
 import { compareStamps, parseStamp } from "../../shared/sync/clock.js";
-import { SOURCE_ID, WORK_ID } from "../../shared/reading/ids.js";
+import { SOURCE_ID, WORK_ID, isSyncableSourceTitleKey, isLegacyComicSourceTitleKey, isSyncableComicLink, isSyncableComicRead } from "../../shared/reading/ids.js";
 import { cleanSiteSettings, extChapterId, validSitePath } from "../comics/ext-sources.js";
-import { NOT_IN_LIBRARY, SOURCE_TITLE_KEY } from "../comics/video-comics.js";
+import { NOT_IN_LIBRARY } from "../comics/video-comics.js";
 import { COMIC_STATUSES } from "../comics/comics-store.js";
 import { safeHttpUrl } from "../comics/sources-store.js";
 import { localIdFor } from "../reader/local-library.js";
@@ -41,16 +41,92 @@ const MARKS = Object.freeze([
   ["comic_ext_sources", "COUNT(*), MAX(added_at)"], ["comic_ext_settings", "COUNT(*), MAX(updated_at)"], ["comic_sources", "COUNT(*), MAX(added_at), SUM(enabled), SUM(removed)"],
 ]);
 
-export function createComicsData({ db, now = Date.now, random = () => Math.random().toString(36).slice(2, 6) }) {
+export function createComicsData({ db, now = Date.now, random = () => Math.random().toString(36).slice(2, 6), acceptedRead = null }) {
   ensureChapterChoices(db);
   const has = (table) => Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(table));
   const all = (sql, ...args) => db.prepare(sql).all(...args);
   const get = (sql, ...args) => db.prepare(sql).get(...args);
   const run = (sql, ...args) => db.prepare(sql).run(...args);
-  const newerHere = (row, column, change) => Boolean(row) && Number(row[column] || 0) > stampMs(change);
+  // Comics records emitted by an older peer can name a source or chapter
+  // before a verified local repository migration. Only the Comics owner's
+  // durable proof rows may translate those identities. Missing/broken proofs
+  // remain pending; title and path similarity never establish an alias.
+  function verifiedAlias(table, column, key) {
+    if (!has(table)) return null;
+    const row = get(`SELECT ${column} AS next FROM ${table} WHERE ${table === "comic_ext_manga_aliases"
+      ? "work_id = ? AND source_id = ? AND old_path = ?" : "old_id = ?"}${table === "comic_ext_source_aliases"
+      ? " AND verified_at > 0" : " AND verified_at > 0 AND LENGTH(proof) > 0"}`,
+    ...(Array.isArray(key) ? key : [key]));
+    return row?.next || null;
+  }
+  function followVerified(start, lookup, valid) {
+    let current = start;
+    const seen = new Set();
+    for (let step = 0; step < 32; step += 1) {
+      if (seen.has(current) || !valid(current)) return null;
+      seen.add(current);
+      const next = lookup(current);
+      if (!next) return current;
+      current = next;
+    }
+    return null;
+  }
+  const sourceAlias = (source) => followVerified(source,
+    (id) => verifiedAlias("comic_ext_source_aliases", "new_id", id), (id) => SOURCE_ID.test(id));
+  function chapterIdentity(source, chapterPath) {
+    const canonicalSource = sourceAlias(source);
+    if (!canonicalSource || !validSitePath(chapterPath)) return null;
+    const oldId = extChapterId(source, chapterPath);
+    const aliasChapter = (id) => verifiedAlias("comic_ext_chapter_aliases", "new_id", id);
+    const oldResolved = followVerified(oldId, aliasChapter, (id) => /^ex-[0-9a-f]{20}$/.test(id));
+    const canonicalBase = extChapterId(canonicalSource, chapterPath);
+    const canonical = followVerified(canonicalBase, aliasChapter,
+      (id) => /^ex-[0-9a-f]{20}$/.test(id));
+    if (!oldResolved || !canonical) return null;
+    // A verified source rekey also changes the chapter hash. Prefer the
+    // explicit chapter redirect proof if one exists for the old identity.
+    const id = oldResolved !== oldId ? oldResolved : canonical;
+    if (oldResolved !== oldId || canonical !== canonicalBase) {
+      const row = has("comic_ext_chapters")
+        ? get("SELECT source_id, path FROM comic_ext_chapters WHERE id = ?", id) : null;
+      // A dangling migration record cannot be used to create new history.
+      if (!row || row.source_id !== canonicalSource || !validSitePath(row.path)) return null;
+      return { id, source: canonicalSource, path: row.path };
+    }
+    // A verified source rekey alone is sufficient to derive this new source's
+    // chapter hash, even if that chapter has not been opened locally yet.
+    // A path redirect, in contrast, always needs its explicit chapter row.
+    const existing = has("comic_ext_chapters")
+      ? get("SELECT source_id, path FROM comic_ext_chapters WHERE id = ?", id) : null;
+    if (existing && (existing.source_id !== canonicalSource || existing.path !== chapterPath)) return null;
+    return { id, source: canonicalSource, path: chapterPath };
+  }
+  function linkedIdentity(work, source, manga) {
+    const currentSource = sourceAlias(source);
+    if (!currentSource) return null;
+    const currentPath = followVerified(manga,
+      (value) => verifiedAlias("comic_ext_manga_aliases", "new_path", [work, currentSource, value]),
+      validSitePath);
+    return currentPath && isSyncableComicLink(work, currentSource, currentPath)
+      ? { source: currentSource, manga: currentPath } : null;
+  }
+  function invalidatePageWitness(workId, fileId) {
+    // A peer's page ordinal has no verified manifest/image ordering on this
+    // device. Never leave a local witnessed image attached to that new ordinal.
+    if (has("comic_remote_page_witness"))
+      run("DELETE FROM comic_remote_page_witness WHERE work_id = ? AND file_id = ?", workId, fileId);
+  }
+  let acceptedBySync = false;
+  // The sync service compares full HLC stamps and pending local projections
+  // before delivering changes. A local SQLite wall clock is not a competing
+  // causal version. Preserve legacy guards for independent direct appliers.
+  const newerHere = (row, column, change) => !acceptedBySync && Boolean(row) && Number(row[column] || 0) > stampMs(change);
   let remoteReady = false;
   function ensureRemoteProgress() {
-    if (remoteReady || !has("comic_progress")) return;
+    // A first backfill can run under a sync journal SAVEPOINT/BEGIN and later
+    // roll back. The in-memory flag is not proof that the shadow table exists.
+    if (remoteReady && has("comic_remote_progress")) return;
+    if (!has("comic_progress")) return;
     // Sync can initialize before the Comics reader. One-time backfill preserves
     // only each legacy row's actual owner, even if a second work used its path.
     db.exec(`CREATE TABLE IF NOT EXISTS comic_remote_progress (
@@ -66,18 +142,38 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
   db.exec("CREATE TABLE IF NOT EXISTS comic_sync_metadata_revision (id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL DEFAULT 0)");
   db.exec("INSERT OR IGNORE INTO comic_sync_metadata_revision (id, revision) VALUES (1, 0)");
   const metadataTriggers = new Map([
+    // The cheap COUNT/MAX(updated_at) mark misses two writes in the same
+    // millisecond to an existing row. These are exported fields, not merely
+    // display cache metadata. Keep short-sync invalidation monotonic even for
+    // older direct SQLite writers that do not allocate an HLC themselves.
+    ["comic_library", ["status", "work_json"]],
+    ["comic_local_titles", ["title", "series_key", "status"]],
+    ["comic_ratings", ["score"]],
+    ["comic_progress", ["work_id", "page", "pages", "finished"]],
+    ["comic_remote_progress", ["page", "pages", "finished"]],
+    ["comic_read_units", ["volume", "chapter"]],
+    ["comic_chapter_choices", ["read", "source_id", "path", "chapter", "volume", "sync_stamp"]],
+    ["comic_ext_chapters", ["source_id", "path"]],
     ["comic_work_sources", ["name", "title", "lang"]],
     ["comic_source_titles", ["video_id", "cover_url", "cover_source"]],
     // A source comic's exported origin is taken from this table. Title/type
     // updates leave the existing row count and added_at unchanged.
     ["comic_video_links", ["work_id", "video_id", "video_type", "video_title", "origin"]],
     ["comic_ext_sources", ["pkg", "repo", "ext_name", "name", "lang", "base_url", "version", "nsfw"]],
+    ["comic_ext_settings", ["settings_json"]],
     ["comic_sources", ["name", "enabled", "removed", "config_json"]],
   ]);
-  const installedTriggers = new Set();
   function ensureMetadataTriggers() {
+    // A short mark can install DDL inside a journal's writer transaction. If
+    // that transaction rolls back, previously remembered JS flags survive but
+    // the SQLite triggers do not. Recheck SQLite's committed schema every time
+    // before trusting a semantic revision (including after a same-ms edit).
+    const actualTriggers = new Set(all("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'implicit_comics_meta_%'")
+      .map((row) => row.name));
     for (const [table, columns] of metadataTriggers) {
-      if (installedTriggers.has(table) || !has(table)) continue;
+      if (!has(table)) continue;
+      const stem = `implicit_comics_meta_${table}`;
+      if ([stem, `${stem}_insert`, `${stem}_delete`].every((name) => actualTriggers.has(name))) continue;
       const available = new Set(all(`PRAGMA table_info(${table})`).map((column) => column.name));
       const changed = columns.filter((column) => available.has(column))
         .map((column) => `OLD.${column} IS NOT NEW.${column}`).join(" OR ");
@@ -92,7 +188,6 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
         CREATE TRIGGER IF NOT EXISTS implicit_comics_meta_${table}_delete AFTER DELETE ON ${table} BEGIN
           UPDATE comic_sync_metadata_revision SET revision = revision + 1 WHERE id = 1;
         END`);
-      installedTriggers.add(table);
     }
   }
 
@@ -108,9 +203,17 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     const seen = new Set();
     for (const row of all(`SELECT t.id, t.title, t.series_key, t.status, s.cover_url, s.cover_source${links ? ", v.video_id, v.video_type, v.video_title" : ""}
         FROM comic_local_titles t JOIN comic_source_titles s ON s.work_id = t.id${links ? " LEFT JOIN comic_video_links v ON v.work_id = t.id AND v.origin = 1" : ""}`)) {
-      if (seen.has(row.id) || row.status === NOT_IN_LIBRARY || !SOURCE_TITLE_KEY.test(row.series_key) || localIdFor(row.series_key) !== row.id) continue;
+      if (seen.has(row.id) || row.status === NOT_IN_LIBRARY || !isSyncableSourceTitleKey(row.series_key) || localIdFor(row.series_key) !== row.id) continue;
       seen.add(row.id);
+      // Existing v1 record IDs remain unchanged. An older peer keeps this
+      // record in its sync log but cannot materialize a path beyond 280 chars.
+      // Versioned optional metadata is forwarded by old registries, and lets
+      // newer clients explicitly identify the pending/update-required case.
+      const needsFullPath = row.series_key.startsWith("mihon:") && !isLegacyComicSourceTitleKey(row.series_key);
       out.push({ type: "comic.library", id: row.id, value: compact({ status: row.status, title: row.title, seriesKey: row.series_key,
+        ...(needsFullPath ? { wireCompatibility: {
+          providerKeyVersion: 2, requiresPeerUpgrade: true, oldPeerAction: "retain-unapplied",
+        } } : {}),
         cover: row.cover_url ? compact({ url: row.cover_url, source: row.cover_source }) : null,
         video: row.video_id ? compact({ id: row.video_id, type: row.video_type, title: row.video_title }) : null }) });
     }
@@ -133,7 +236,7 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
       return;
     }
     if (!has("comic_local_titles") || !has("comic_source_titles")) return;
-    const existing = get("SELECT updated_at FROM comic_local_titles WHERE id = ?", change.id);
+    const existing = get("SELECT updated_at, series_key FROM comic_local_titles WHERE id = ?", change.id);
     if (newerHere(existing, "updated_at", change)) return;
     if (change.value === null) {
       // Out of the Library, as on the device that removed it; the comic and its sources stay.
@@ -142,7 +245,10 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
       return;
     }
     const { status, title = "", seriesKey = "", cover, video } = change.value;
-    if (!COMIC_STATUSES.includes(status) || !SOURCE_TITLE_KEY.test(seriesKey) || localIdFor(seriesKey) !== change.id) return;
+    if (!COMIC_STATUSES.includes(status) || !isSyncableSourceTitleKey(seriesKey) || localIdFor(seriesKey) !== change.id) return;
+    // A legacy or colliding local ID is owned by its original provenance.
+    // Never acknowledge a different full path while retaining the older key.
+    if (existing && existing.series_key !== seriesKey) return;
     run(`INSERT INTO comic_local_titles (id, title, series_key, status, added_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET title = excluded.title, status = excluded.status, updated_at = excluded.updated_at`,
     change.id, String(title).slice(0, 200) || "Untitled", seriesKey, status, at, at);
@@ -163,18 +269,21 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
   function exportSources(out) {
     if (!has("comic_work_sources")) return;
     for (const row of all("SELECT work_id, source_id, manga_id, name, title, lang FROM comic_work_sources WHERE kind = 'ext'")) {
+      if (!isSyncableComicLink(row.work_id, row.source_id, row.manga_id)) continue;
       out.push({ type: "comic.source", id: joinId(row.work_id, "ext", row.source_id, row.manga_id), value: compact({ name: row.name, title: row.title, lang: row.lang }) });
     }
   }
   function applySource(change, done) {
     if (!has("comic_work_sources")) return;
     const [work = "", kind, source = "", manga = ""] = parts(change.id);
-    if (!WORK_ID.test(work) || kind !== "ext" || !SOURCE_ID.test(source) || !validSitePath(manga)) return;
-    if (change.value === null) run("DELETE FROM comic_work_sources WHERE work_id = ? AND kind = 'ext' AND source_id = ? AND manga_id = ?", work, source, manga);
+    if (kind !== "ext" || !isSyncableComicLink(work, source, manga)) return;
+    const resolved = linkedIdentity(work, source, manga);
+    if (!resolved) return;
+    if (change.value === null) run("DELETE FROM comic_work_sources WHERE work_id = ? AND kind = 'ext' AND source_id = ? AND manga_id = ?", work, resolved.source, resolved.manga);
     else {
       run(`INSERT INTO comic_work_sources (work_id, kind, source_id, manga_id, name, title, lang, added_at) VALUES (?, 'ext', ?, ?, ?, ?, ?, ?)
         ON CONFLICT(work_id, kind, source_id, manga_id) DO UPDATE SET name = excluded.name, title = excluded.title, lang = excluded.lang`,
-      work, source, manga, String(change.value.name).slice(0, 80), String(change.value.title || "").slice(0, 200), String(change.value.lang || "").slice(0, 10), stampMs(change));
+      work, resolved.source, resolved.manga, String(change.value.name).slice(0, 80), String(change.value.title || "").slice(0, 200), String(change.value.lang || "").slice(0, 10), stampMs(change));
     }
     done.add(change);
   }
@@ -183,18 +292,57 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     if (!has("comic_progress") || !has("comic_ext_chapters")) return;
     ensureRemoteProgress();
     const units = has("comic_read_units");
-    const progressTable = has("comic_remote_progress") ? "comic_remote_progress" : "comic_progress";
-    const current = (field) => progressTable === "comic_remote_progress"
-      ? `CASE WHEN legacy.updated_at > p.updated_at THEN legacy.${field} ELSE p.${field} END AS ${field}`
-      : `p.${field}`;
-    for (const row of all(`SELECT p.work_id, ${current("page")}, ${current("pages")}, ${current("finished")}, c.source_id, c.path${units ? ", u.volume, u.chapter" : ""}
+    const scoped = has("comic_remote_progress");
+    const progressTable = scoped ? "comic_remote_progress" : "comic_progress";
+    const columns = scoped
+      ? `p.work_id, p.page AS scoped_page, p.pages AS scoped_pages, p.finished AS scoped_finished,
+        p.updated_at AS scoped_at, legacy.page AS legacy_page, legacy.pages AS legacy_pages,
+        legacy.finished AS legacy_finished, legacy.updated_at AS legacy_at`
+      : "p.work_id, p.page, p.pages, p.finished";
+    const primary = `SELECT ${columns}, c.source_id, c.path${units ? ", u.volume, u.chapter" : ""}
         FROM ${progressTable} p JOIN comic_ext_chapters c ON c.id = p.file_id
-          ${progressTable === "comic_remote_progress" ? "LEFT JOIN comic_progress legacy ON legacy.file_id = p.file_id AND legacy.work_id = p.work_id" : ""}
+          ${scoped ? "LEFT JOIN comic_progress legacy ON legacy.file_id = p.file_id AND legacy.work_id = p.work_id" : ""}
           ${units ? " LEFT JOIN comic_read_units u ON u.unit_id = p.file_id AND u.work_id = p.work_id" : ""}
-        WHERE p.work_id IS NOT NULL`)) {
+        WHERE p.work_id IS NOT NULL`;
+    const legacyOnly = scoped ? ` UNION ALL
+      SELECT legacy.work_id, NULL AS scoped_page, NULL AS scoped_pages,
+        NULL AS scoped_finished, NULL AS scoped_at, legacy.page AS legacy_page,
+        legacy.pages AS legacy_pages, legacy.finished AS legacy_finished,
+        legacy.updated_at AS legacy_at, c.source_id, c.path${units ? ", u.volume, u.chapter" : ""}
+        FROM comic_progress legacy JOIN comic_ext_chapters c ON c.id = legacy.file_id
+        LEFT JOIN comic_remote_progress p ON p.work_id = legacy.work_id AND p.file_id = legacy.file_id
+        ${units ? " LEFT JOIN comic_read_units u ON u.work_id = legacy.work_id AND u.unit_id = legacy.file_id" : ""}
+        WHERE legacy.work_id IS NOT NULL AND p.file_id IS NULL` : "";
+    // A direct legacy writer may insert a new, verified chapter *after* the
+    // one-time scoped backfill. It has no scoped row yet. Export it as the same
+    // owner-scoped v1 record without forging a migration/receipt or mutating
+    // either SQLite table; missing canonical chapters remain excluded below.
+    for (const row of all(primary + legacyOnly)) {
       const id = joinId(row.work_id, row.source_id, row.path);
-      if (!WORK_ID.test(row.work_id) || id.length > 600) continue;
-      out.push({ type: "comic.read", id, value: compact({ workId: row.work_id, page: row.page, pages: row.pages, finished: Boolean(row.finished), chapter: row.chapter, volume: row.volume }) });
+      if (!isSyncableComicRead(row.work_id, row.source_id, row.path)) continue;
+      const projection = (prefix) => compact({ workId: row.work_id,
+        page: row[`${prefix}page`], pages: row[`${prefix}pages`], finished: Boolean(row[`${prefix}finished`]),
+        chapter: row.chapter, volume: row.volume });
+      let value = scoped ? projection(row.scoped_at === null ? "legacy_" : "scoped_") : projection("");
+      if (scoped && row.legacy_at !== null && row.scoped_at !== null) {
+        const legacy = projection("legacy_");
+        if (Number(row.legacy_at) > Number(row.scoped_at)) value = legacy;
+        else if (Number(row.legacy_at) === Number(row.scoped_at)
+          && JSON.stringify(legacy) !== JSON.stringify(value)) {
+          // Two same-ms rows can have different owners of the most recent edit.
+          // Use the account-scoped accepted HLC/content proof: the row that
+          // diverged from the last accepted projection is the unsent local edit.
+          // Never rewrite the legacy/shadow rows or invent a tie-breaking clock.
+          const legacyWasAccepted = acceptedRead?.(id, legacy);
+          const scopedWasAccepted = acceptedRead?.(id, value);
+          if (scopedWasAccepted === true && legacyWasAccepted === false) value = legacy;
+          else if (legacyWasAccepted === true && scopedWasAccepted === false) { /* scoped is the local edit */ }
+          else if (acceptedRead) throw Object.assign(
+            new Error("Comic progress has an unresolved equal-time local ownership conflict; retain both rows"),
+            { code: "sync_progress_conflict" });
+        }
+      }
+      out.push({ type: "comic.read", id, value });
     }
   }
   function applyRead(change, done) {
@@ -203,16 +351,23 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     const key = parts(change.id);
     const scoped = key.length === 3;
     if (key.length !== 2 && !scoped) return;
-    const [source = "", path = ""] = scoped ? key.slice(1) : key;
-    if (!SOURCE_ID.test(source) || !validSitePath(path)) return;
-    const id = extChapterId(source, path);
+    const [incomingSource = "", incomingPath = ""] = scoped ? key.slice(1) : key;
+    if (!SOURCE_ID.test(incomingSource) || !validSitePath(incomingPath)
+      || (scoped && !isSyncableComicRead(key[0], incomingSource, incomingPath))) return;
+    const resolved = chapterIdentity(incomingSource, incomingPath);
+    if (!resolved) return;
+    const { id, source, path } = resolved;
     const at = stampMs(change);
     const units = has("comic_read_units");
     const perWork = has("comic_remote_progress");
     if (change.value === null) {
       // Legacy deletions have no work key; restrict them to the sole known legacy owner.
       const owner = scoped ? key[0] : get("SELECT work_id FROM comic_progress WHERE file_id = ?", id)?.work_id;
-      if (!WORK_ID.test(String(owner))) { done.add(change); return; }
+      // An unscoped v1 tombstone has no work owner on the wire. Without a
+      // locally verified chapter owner it cannot safely delete any progress.
+      // Retain it as unapplied: a later legacy owner may make it resolvable.
+      // Claiming it as applied would erase the only durable retry signal.
+      if (!WORK_ID.test(String(owner))) return;
       const previous = perWork
         ? get("SELECT updated_at FROM comic_remote_progress WHERE work_id = ? AND file_id = ?", owner, id)
         : get("SELECT updated_at FROM comic_progress WHERE work_id = ? AND file_id = ?", owner, id);
@@ -221,6 +376,7 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
       run("DELETE FROM comic_progress WHERE file_id = ? AND work_id = ?", id, owner);
       if (units) run("DELETE FROM comic_read_units WHERE work_id = ? AND unit_id = ?", owner, id);
       run("DELETE FROM comic_chapter_choices WHERE work_id = ? AND unit_id = ? AND read = 2", owner, id);
+      invalidatePageWitness(owner, id);
       done.add(change);
       return;
     }
@@ -265,6 +421,7 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
         + "chapter = excluded.chapter, volume = excluded.volume, sync_stamp = excluded.sync_stamp",
       workId, id, at, source, path, unitNumber(chapter), unitNumber(volume), change.at);
     }
+    invalidatePageWitness(workId, id);
     done.add(change);
   }
 
@@ -277,10 +434,9 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
       + (withChapter ? " LEFT JOIN comic_ext_chapters c ON c.id = k.unit_id" : "");
     for (const row of all(sql)) {
       if (row.read < 0 || row.read > 1) continue;
-      if (!WORK_ID.test(row.work_id) || !SOURCE_ID.test(String(row.source_id)) || !validSitePath(row.path) ||
+      if (!isSyncableComicRead(row.work_id, String(row.source_id), row.path) ||
           extChapterId(row.source_id, row.path) !== row.unit_id || (present(row.chapter) && !unitNumber(row.chapter))) continue;
       const key = joinId(row.work_id, row.source_id, row.path);
-      if (key.length > 600) continue;
       out.push({ type: "comic.choice", id: key,
         value: compact({ read: Boolean(row.read), chapter: row.chapter, volume: row.volume, updatedAt: row.changed_at }) });
     }
@@ -289,9 +445,11 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
   function applyChoice(change, done) {
     if (!has("comic_chapter_choices") || !has("comic_read_units")) return;
     ensureRemoteProgress();
-    const [work = "", source = "", path = ""] = parts(change.id);
-    if (!WORK_ID.test(work) || !SOURCE_ID.test(source) || !validSitePath(path)) return;
-    const id = extChapterId(source, path);
+    const [work = "", incomingSource = "", incomingPath = ""] = parts(change.id);
+    if (!isSyncableComicRead(work, incomingSource, incomingPath)) return;
+    const resolved = chapterIdentity(incomingSource, incomingPath);
+    if (!resolved) return;
+    const { id, source, path } = resolved;
     const at = stampMs(change);
     const prior = get("SELECT read, changed_at, sync_stamp, chapter, volume FROM comic_chapter_choices WHERE work_id = ? AND unit_id = ?", work, id);
     // A locally authored choice has no sync_stamp until another device applies
@@ -300,7 +458,7 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     const sentStamp = !prior?.sync_stamp && has("sync_items")
       ? parse(get("SELECT change_json FROM sync_items WHERE item_key = ?", `comic.choice ${change.id}`)?.change_json).at : null;
     const previousStamp = prior?.sync_stamp || sentStamp;
-    if (prior && (previousStamp ? compareStamps(previousStamp, change.at) >= 0 : Number(prior.changed_at) > at)) return;
+    if (prior && (previousStamp ? compareStamps(previousStamp, change.at) >= 0 : !acceptedBySync && Number(prior.changed_at) > at)) return;
     // The legacy row is still authoritative for its original owner if an older
     // local client updated it directly. Other works use their separate rows.
     const legacyProgress = has("comic_progress")
@@ -308,7 +466,8 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
     const scopedProgress = has("comic_remote_progress")
       ? get("SELECT finished, updated_at FROM comic_remote_progress WHERE work_id = ? AND file_id = ?", work, id) : null;
     const sentRead = has("sync_items")
-      ? [joinId(work, source, path), joinId(source, path)]
+      ? [joinId(work, incomingSource, incomingPath), joinId(incomingSource, incomingPath),
+        joinId(work, source, path), joinId(source, path)]
         .map((id) => parse(get("SELECT change_json FROM sync_items WHERE item_key = ?", `comic.read ${id}`)?.change_json).at)
         .filter(Boolean).sort(compareStamps).at(-1) : null;
     // A legacy owner's progress can have been acknowledged under the old read
@@ -396,7 +555,19 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
   }
   function applyFavorite(change, done) {
     if (!has("comic_ext_sources")) return;
+    const migrated = sourceAlias(change.id);
+    if (!migrated) return;
+    if (migrated !== change.id) {
+      // An older peer may keep publishing the former source ID after a local
+      // verified rekey. Never recreate that historical favorite or overwrite
+      // the repository-verified destination with a stale address/settings.
+      done.add(change);
+      return;
+    }
     if (change.value === null) {
+      // Source-local permissions cannot survive removal and silently attach
+      // to another incarnation that later reuses the same source id.
+      if (has("comic_ext_settings")) run("DELETE FROM comic_ext_settings WHERE source_id = ?", change.id);
       run("DELETE FROM comic_ext_sources WHERE source_id = ?", change.id);
       done.add(change);
       return;
@@ -446,7 +617,15 @@ export function createComicsData({ db, now = Date.now, random = () => Math.rando
   return {
     types: COMIC_TYPES,
     export(out) { exportRepositories(out); exportFavorites(out); exportLibrary(out); exportSources(out); exportRead(out); exportChoices(out); exportRatings(out); },
-    apply(change, done) { appliers[change.type]?.(change, done); },
+    apply(change, done, { acceptedBySync: causal = false } = {}) {
+      const previous = acceptedBySync;
+      try {
+        acceptedBySync = causal;
+        appliers[change.type]?.(change, done);
+      } finally {
+        acceptedBySync = previous;
+      }
+    },
     mark: () => {
       ensureRemoteProgress();
       ensureMetadataTriggers();

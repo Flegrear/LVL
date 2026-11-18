@@ -1,11 +1,49 @@
 // Routes for comic sources. Mounted by server-feature.js.
 // Reading sources are extensions from Mihon repositories (ext-routes.js);
 // torrent indexers find packs to download.
+import crypto from "node:crypto";
 import { searchPirateBay, searchTorznab } from "./torrent-search.js";
 import { extChapterList, extPages, fetchPageImage, handleExtRoutes, titleVariants } from "./ext-routes.js";
-import { sourceChapters } from "./linked-sources.js";
+import { sourceChapters, availabilityByUnit } from "./linked-sources.js";
 import { EXT_CHAPTER_ID, WORK_ID } from "../../shared/reading/ids.js";
 import { normalizeUnitNumber } from "../../shared/reading/units.js";
+
+// Index/ordinal by itself identifies a slot, not an image. A provider may
+// reorder pages without changing the count or the chapter ID. Include the
+// ordered page manifest in the disk-cache identity so the next fetched page
+// cannot reuse bytes from an earlier ordering.
+const pageDescriptor = (page) => [
+  page?.url || "", page?.referer || "", page?.origin || "", page?.alt || "",
+  page?.source || "", page?.trim || "", page?.runner
+    ? [page.runner.index, page.runner.url || "", page.runner.imageUrl || ""] : null,
+];
+const pageHash = (value) => crypto.createHash("sha256").update(JSON.stringify(value)).digest("hex").slice(0, 24);
+// Provider image URLs may rotate a short-lived query signature without
+// changing the underlying page. Only remove recognized authentication fields
+// for the *resume* witness; the byte-cache key still uses the strict full URL.
+// Never discard arbitrary page/variant queries, because those can select
+// different images at the same path.
+const stableImageAddress = (raw) => {
+  try {
+    const url = new URL(String(raw || ""));
+    if (!["http:", "https:"].includes(url.protocol)) return String(raw || "");
+    for (const key of [...url.searchParams.keys()])
+      if (/^(?:token|access_token|expires?|expiry|expire_at|signature|sig|auth|authorization|x-amz-.+|x-goog-.+|policy|key-pair-id)$/i.test(key))
+        url.searchParams.delete(key);
+    url.hash = "";
+    return url.toString();
+  } catch { return String(raw || ""); }
+};
+export const remotePageIdentity = (page) => pageHash([
+  stableImageAddress(page?.url),
+  stableImageAddress(page?.runner?.imageUrl),
+  stableImageAddress(page?.runner?.url),
+  page?.source || "",
+]);
+export const remotePageManifestWitness = (pages) => pageHash(pages.map(pageDescriptor));
+export function remotePageCacheKey(chapterId, index, pages) {
+  return `remote-page-v2:${chapterId}:${index}:${remotePageManifestWitness(pages)}`;
+}
 
 // Resolve a chapter through the currently chosen source and its chapter index.
 // A bare chapter id or client-provided chapter number proves no work membership.
@@ -132,7 +170,8 @@ export async function handleSourceRoutes(req, res, url, deps) {
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
     if (linkedRoute[2] === "availability") {
       const lists = await chapterLists();
-      return send(200, { counts: deps.availability(lists), chapters: sourceChapters(lists), units: selectableUnits(lists),
+      return send(200, { counts: deps.availability(lists), countsByUnit: availabilityByUnit(lists),
+        chapters: sourceChapters(lists), units: selectableUnits(lists),
         sources: lists.map((item) => ({ ...item.link, chapters: item.chapters.length, error: item.error || null })) });
     }
     const chapter = String(url.searchParams.get("chapter") || "");
@@ -171,34 +210,75 @@ export async function handleSourceRoutes(req, res, url, deps) {
   if (remote) {
     if (req.method !== "GET") return ctx.methodNotAllowed(res, ["GET"]), true;
     if (!EXT_CHAPTER_ID.test(remote[1])) return bad("Unknown chapter", 404);
+    const chapterId = deps.ext?.resolveChapterId?.(remote[1]) || remote[1];
     let pages;
     try {
-      pages = (await cached(`pages:${remote[1]}`, 10 * 60_000, () => (deps.chapterPages || extPages)(remote[1], deps))).value;
+      pages = (await cached(`pages:${chapterId}`, 10 * 60_000, () => (deps.chapterPages || extPages)(chapterId, deps))).value;
     } catch (error) { return bad(error.message, Number(error.status) === 404 ? 404 : 502); }
     if (!pages.length) return bad("This chapter has no page images (it may be a text chapter)", 502);
     if (remote[2] === undefined) {
       const workId = WORK_ID.test(url.searchParams.get("work") || "") ? url.searchParams.get("work") : null;
-      const progress = local.remoteProgress(remote[1], workId);
-      const unread = workId && deps.marks?.isExplicitUnread(workId, remote[1]);
+      const proved = workId ? await currentRemoteChapter(workId, chapterId, deps).catch(() => null) : null;
+      if (workId && !proved) return bad("The source chapter is no longer linked to this work", 409);
+      const progress = local.remoteProgress(chapterId, workId);
+      const unread = workId && deps.marks?.isExplicitUnread(workId, chapterId);
+      const pageWitness = remotePageManifestWitness(pages);
+      const previous = workId ? local.remotePageWitness?.(workId, chapterId) : null;
+      let resumed = progress ? { page: progress.page, pages: progress.pages, finished: Boolean(progress.finished) && !unread } : null;
+      const pageRebased = Boolean(resumed && previous && previous.manifest_witness !== pageWitness);
+      if (pageRebased) {
+        // A saved number alone cannot identify the page after insertion or
+        // reordering. Locate the saved image uniquely, otherwise reopen at 0.
+        // The previous proof must belong to this exact saved progress write:
+        // bulk unread or incoming peer updates can invalidate it.
+        const matches = Number(previous.updated_at) === Number(progress.updated_at)
+          ? pages.flatMap((page, index) => remotePageIdentity(page) === previous.image_witness ? [index] : [])
+          : [];
+        resumed = matches.length === 1
+          ? { page: matches[0], pages: pages.length,
+              finished: resumed.finished && matches[0] === pages.length - 1 }
+          : { page: 0, pages: pages.length, finished: false };
+      }
       // Opened from its address alone (a reload, a shared link): which chapter of the work this is.
-      const about = workId && url.searchParams.get("describe") === "1" ? await describeRemoteChapter(workId, remote[1], deps).catch(() => null) : null;
-      return send(200, { file: { id: remote[1], name: url.searchParams.get("name")?.slice(0, 120) || "", progress: progress ? { page: progress.page, pages: progress.pages, finished: Boolean(progress.finished) && !unread } : null }, workId, pages: pages.length, prev: null, next: null,
+      const about = workId && url.searchParams.get("describe") === "1" ? await describeRemoteChapter(workId, chapterId, deps).catch(() => null) : null;
+      return send(200, { file: { id: chapterId, name: url.searchParams.get("name")?.slice(0, 120) || "", progress: resumed }, workId, pages: pages.length,
+        pageWitness, pageRebased, progressGeneration: proved
+          ? local.progressGeneration?.(workId, chapterId) ?? null : null,
+        ...(proved ? { sourceId: proved.sourceId } : {}),
+        prev: null, next: null,
         ...(about || {}), ...(pages[0]?.trim === "credit-strip" ? { trim: "credit-strip" } : {}) });
     }
     const target = pages[Number(remote[2])];
     if (!target) return bad("No such page", 404);
+    const repairIncarnation = url.searchParams.get("cache-recover");
+    if (repairIncarnation !== null && !/^[0-9a-f]{24}$/.test(repairIncarnation))
+      return bad("Unverified image cache incarnation", 409);
     let image;
     try {
-      image = await images.get(`${remote[1]}:${remote[2]}`, async () => {
-        try { return await fetchPageImage(deps.remote, target, deps); } catch (error) {
-          if (!target.expires) throw error;
-          // The chapter's access token ran out: ask the site for the pages again.
-          const fresh = (await cached(`pages:${remote[1]}`, 0, () => extPages(remote[1], deps))).value;
-          return fetchPageImage(deps.remote, fresh[Number(remote[2])] || target, deps);
-        }
-      });
-    } catch (error) { return bad(error.message, 502); }
-    res.writeHead(200, { "Content-Type": image.type, "Content-Length": image.buffer.length, "Cache-Control": "private, max-age=86400", "X-Content-Type-Options": "nosniff" });
+      const index = Number(remote[2]);
+      const cacheKey = remotePageCacheKey(chapterId, index, pages);
+      const loader = () => fetchPageImage(deps.remote, target, deps);
+      image = repairIncarnation === null ? await images.get(cacheKey, loader)
+        : await images.recover(cacheKey, repairIncarnation, loader);
+    } catch (error) {
+      if (error.status === 409) return bad(error.message, 409);
+      if (!target.expires) return bad(error.message, 502);
+      try {
+        // The old signed URL expired. A refreshed URL belongs to its *new*
+        // manifest cache generation, even when the page count is unchanged.
+        const fresh = (await cached(`pages:${chapterId}`, 0,
+          () => (deps.chapterPages || extPages)(chapterId, deps))).value;
+        const index = Number(remote[2]);
+        if (!fresh?.[index]) return bad("The chapter pages changed. Reload the reader.", 409);
+        image = await images.get(remotePageCacheKey(chapterId, index, fresh),
+          () => fetchPageImage(deps.remote, fresh[index], deps));
+      } catch (freshError) { return bad(freshError.message, 502); }
+    }
+    // The public page URL contains only an ordinal. Do not let a browser
+    // retain that URL after the page manifest has been reordered upstream.
+    res.writeHead(200, { "Content-Type": image.type, "Content-Length": image.buffer.length,
+      "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff",
+      ...(image.incarnation ? { "X-LVL-Image-Incarnation": image.incarnation } : {}) });
     res.end(image.buffer);
     return true;
   }
@@ -207,7 +287,8 @@ export async function handleSourceRoutes(req, res, url, deps) {
     const input = await body() || {};
     if (!EXT_CHAPTER_ID.test(String(input.id)) || !WORK_ID.test(String(input.workId)))
       return bad("Invalid chapter");
-    const known = await currentRemoteChapter(input.workId, input.id, deps).catch(() => null);
+    const chapterId = deps.ext?.resolveChapterId?.(input.id) || String(input.id);
+    const known = await currentRemoteChapter(input.workId, chapterId, deps).catch(() => null);
     if (!known) return bad("The chapter is no longer linked to this comic. Refresh its sources.", 409);
     const requestedChapter = normalizeUnitNumber(input.chapter) || null;
     const requestedVolume = normalizeUnitNumber(input.volume) || null;
@@ -216,23 +297,48 @@ export async function handleSourceRoutes(req, res, url, deps) {
       return bad("The chapter numbers changed. Refresh its sources.", 409);
     let actualPages;
     try {
-      actualPages = (await cached(`pages:${input.id}`, 10 * 60_000,
-        () => (deps.chapterPages || extPages)(input.id, deps))).value.length;
+      actualPages = (await cached(`pages:${chapterId}`, 10 * 60_000,
+        () => (deps.chapterPages || extPages)(chapterId, deps))).value;
     } catch { return bad("The chapter pages are unavailable. Try again.", 502); }
-    if (!actualPages || !Number.isSafeInteger(input.page) || input.page < 0 || input.page >= actualPages ||
-        Number(input.pages) !== actualPages)
+    if (!actualPages?.length || !Number.isSafeInteger(input.page) || input.page < 0 || input.page >= actualPages.length ||
+        Number(input.pages) !== actualPages.length)
       return bad("The chapter page count changed. Reload the reader.", 409);
+    const pageWitness = remotePageManifestWitness(actualPages);
+    if (input.pageWitness != null && input.pageWitness !== pageWitness)
+      return bad("The chapter pages changed. Reload the reader before saving progress.", 409);
     // The source may have been removed while page metadata was being fetched.
     if ((deps.linked.revision?.(input.workId) ?? null) !== known.revision ||
         !deps.linked.list(input.workId).some((link) => link.kind === "ext" &&
         link.sourceId === known.sourceId && link.mangaId === known.mangaId) ||
-        deps.ext.chapter(input.id)?.path !== known.path)
+        deps.ext.chapter(chapterId)?.path !== known.path)
       return bad("The chapter is no longer linked to this comic. Refresh its sources.", 409);
-    const saved = local.saveRemoteProgress({ id: input.id, workId: input.workId, page: input.page,
-      pages: actualPages, chapter: known.chapter, volume: known.volume });
-    if (saved?.finished) deps.marks?.finish(input.workId, input.id, true);
+    const journaled = input.progressVersion !== undefined || input.expectedGeneration !== undefined
+      || input.operationId !== undefined;
+    if (journaled && (input.sourceId !== known.sourceId || input.pageWitness !== pageWitness
+      || !local.saveRemoteProgressCAS))
+      return bad("The chapter source or page manifest changed. Reopen before saving.", 409);
+    let accepted;
+    try {
+      accepted = journaled ? local.saveRemoteProgressCAS({
+        version: input.progressVersion, workId: input.workId, fileId: chapterId,
+        sourceId: input.sourceId, contentWitness: pageWitness, operationId: input.operationId,
+        expectedGeneration: input.expectedGeneration, page: input.page, pages: actualPages.length,
+        finished: input.finished, chapter: known.chapter, volume: known.volume,
+        predecessorOperationId: input.predecessorOperationId,
+        predecessorGeneration: input.predecessorGeneration,
+        chapterPath: known.path, mangaId: known.mangaId,
+        imageWitness: remotePageIdentity(actualPages[input.page]),
+        markFinished: (workId, fileId) => deps.marks?.finish(workId, fileId, true),
+      }) : { saved: local.saveRemoteProgress({ id: chapterId, workId: input.workId, page: input.page,
+        pages: actualPages.length, chapter: known.chapter, volume: known.volume,
+        manifestWitness: pageWitness, imageWitness: remotePageIdentity(actualPages[input.page]) }) };
+    } catch (error) { return bad(error.message || "Reader progress conflict", error.status || 409); }
+    const saved = accepted.saved;
+    if (!journaled && saved?.finished) deps.marks?.finish(input.workId, chapterId, true);
     if (saved) await deps.onProgress?.(input.workId);
-    return saved ? send(200, { progress: saved }) : bad("Invalid chapter");
+    return saved ? send(200, { progress: saved,
+      ...(accepted.progressReceipt ? { progressReceipt: accepted.progressReceipt,
+        progressDuplicate: accepted.duplicate === true } : {}) }) : bad("Invalid chapter");
   }
   if (p === "/api/comics/cache") {
     if (req.method === "GET") return send(200, await images.usage());

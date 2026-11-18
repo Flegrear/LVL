@@ -117,6 +117,13 @@ export function createSiteCookieJar({ now = Date.now, maxHosts = 300, maxPerHost
       // Keep the browser-like maximum lifetime from the previous jar.
       if (typeof parsed.maxAge === 'number' && parsed.maxAge > 400 * 86400)
         parsed.maxAge = 400 * 86400;
+      // Expires-only cookies must obey the same retention cap. Max-Age wins
+      // when both attributes are present, including deletion (Max-Age=0).
+      if (parsed.maxAge === null || parsed.maxAge === undefined) {
+        const cap = stamp + 400 * 86400_000;
+        if (parsed.expires instanceof Date && parsed.expires.getTime() > cap)
+          parsed.expires = new Date(cap);
+      }
       // The library performs actual Domain/public-suffix/prefix admission.
       const requestedDomain = canonicalDomain(parsed.domain || host);
       const requestedPath = parsed.path?.startsWith('/') ? parsed.path : defaultPath(url.pathname || '/');

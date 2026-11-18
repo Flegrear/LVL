@@ -7,6 +7,9 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { spawn as systemSpawn } from 'node:child_process';
 import { isTorrentFileFullyVerified } from './verified-torrent-file.js';
+import { waitForChildStdioDrain } from './transcode-slot-lifecycle.js';
+import { mediaAdmissionsClosed } from './media-shutdown.js';
+import { createSharedCacheReservation } from './shared-cache-admission.js';
 
 const MAX_INDEXED_BYTES = 8 * 1024 ** 3;
 const MIN_FREE_BYTES = 64 * 1024 ** 2;
@@ -15,8 +18,60 @@ const CHECK_MS = 4000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const HASH = /^[0-9a-f]{40}$/i;
 const CANCELLED = Symbol('indexed-cache-cancelled');
+const INDEXED_SCHEMA = 'indexed-seek-v3-binary-and-content-sha256';
 
 const inBounds = (n, max) => Number.isSafeInteger(n) && n >= 0 && n <= max;
+const indexedOutputBudget = sourceLength => Math.min(6 * 1024 ** 3,
+  Math.max(128 * 1024 ** 2, Math.ceil(sourceLength * 1.25)));
+
+// Read the actual accepted binary/output through one pinned file handle, not
+// a filename, package version, or metadata-only mtime fingerprint. Hashing is
+// performed by normal app code on demand; it never executes the binary.
+async function sha256File(filename, maxBytes) {
+  if (!path.isAbsolute(filename || '')) return null;
+  let handle;
+  try {
+    handle = await fsp.open(filename, 'r');
+    const before = await handle.stat();
+    if (!before.isFile() || !inBounds(before.size, maxBytes) || before.size < 1) return null;
+    const digest = crypto.createHash('sha256');
+    const block = Buffer.allocUnsafe(256 * 1024);
+    for (let offset = 0; offset < before.size;) {
+      const { bytesRead } = await handle.read(block, 0, Math.min(block.length, before.size - offset), offset);
+      if (!bytesRead) return null;
+      digest.update(block.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    const after = await handle.stat();
+    if (before.size !== after.size || before.mtimeMs !== after.mtimeMs
+      || before.ctimeMs !== after.ctimeMs || before.ino !== after.ino
+      || before.dev !== after.dev) return null;
+    return digest.digest('hex');
+  } catch { return null; }
+  finally { await handle?.close().catch(() => {}); }
+}
+
+function indexedArgs(identity, input, output) {
+  const videoArgs = identity.videoStrategy === 'copy'
+    ? ['-c:v','copy','-avoid_negative_ts','make_zero']
+    : ['-c:v','libx264','-preset','veryfast','-crf','23',
+      '-vf','setpts=PTS-STARTPTS,format=yuv420p','-pix_fmt','yuv420p',
+      '-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709'];
+  return ['-hide_banner','-loglevel','error','-nostdin','-y',
+    '-i',input,'-map','0:v:0','-map',`0:${identity.audioStreamIndex}`,
+    ...videoArgs,'-c:a','aac','-ac',String(identity.channels),'-b:a',identity.bitrate,
+    '-af','asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0',
+    // Encoder output cannot exceed the bytes admitted for this job. A
+    // truncated result will fail the complete FFprobe duration check.
+    '-fs',String(indexedOutputBudget(identity.sourceLength)),
+    '-movflags','+faststart','-f','mp4',output];
+}
+
+function indexedArgsHash(identity) {
+  return crypto.createHash('sha256')
+    .update(JSON.stringify(indexedArgs(identity, '<accepted-source>', '<private-output>')))
+    .digest('hex');
+}
 
 // canEncode: false (LVL's Android app, whose FFmpeg has no H.264 encoder) leaves only the copied
 // H.264 renditions; sources that would need encoding are unsupported there.
@@ -58,23 +113,29 @@ export function indexedCacheEligibility({ session, fileIndex, media, audioIndex,
   const track = media?.audioTracks?.[audioIndex];
   if (!track || !inBounds(Number(track.channels), 8) || Number(track.channels) < 1)
     return { eligible: false, reason: 'unsupported-audio' };
+  if (!inBounds(track.streamIndex, 9999) || typeof file.path !== 'string'
+    || !file.path || file.path.length > 4096)
+    return { eligible: false, reason: 'ambiguous-source-or-stream' };
   const channels = audioMode === 'stereo' ? Math.min(2, track.channels)
     : audioMode === 'surround' ? Math.min(6, track.channels) : Math.min(6, track.channels);
   const bitrate = channels <= 2 ? '160k' : channels <= 5 ? '256k' : '384k';
   const identity = {
     sessionId: session.id, infoHash: session.infoHash.toLowerCase(), fileIndex,
-    sourceLength: file.length, sourceName: file.name, audioIndex, audioMode,
+    sourceLength: file.length, sourceName: file.name, sourcePath: file.path,
+    audioIndex, audioStreamIndex: track.streamIndex, audioMode,
     channels, bitrate, duration: Number(media.durationSeconds.toFixed(3)),
     videoCodec: codec, videoDepth: depth, videoWidth: video.width, videoHeight: video.height,
     videoTransfer: transfer, videoPrimaries: primaries, videoSpace: space,
     videoStrategy: copyH264 ? 'copy' : 'encode',
-    cacheVersion: 'indexed-seek-v2-h264-aac-faststart',
+    cacheVersion: INDEXED_SCHEMA,
   };
   return { eligible: true, identity, key: crypto.createHash('sha256')
     .update(JSON.stringify(identity)).digest('hex'),
     // Recheck the selected file's real piece bitfield while this background
     // job is alive; file.done/downloaded can lag a lost or invalidated piece.
-    sourceVerified: () => isTorrentFileFullyVerified(session.torrent, fileIndex) };
+    sourceVerified: () => session.torrent?.files?.[fileIndex] === file
+      && session.torrent?.destroyed !== true
+      && isTorrentFileFullyVerified(session.torrent, fileIndex) };
 }
 
 export function createIndexedVideoCache({
@@ -92,23 +153,40 @@ export function createIndexedVideoCache({
   let purgeRetryTimer = null;
   let retryRunning = false;
   const pendingPurges = new Set();
-  const MAX_START_ESTIMATE = 6 * 1024 ** 3;
-  const reserve = (sourceLength) => Math.min(MAX_START_ESTIMATE,
-    Math.max(128 * 1024 ** 2, Math.ceil(sourceLength * 1.25)));
   function paths(info) {
     const dir = path.join(sessionsRoot, info.identity.sessionId, 'indexed-seek');
     return { dir, output: path.join(dir, info.key + '.mp4'),
       partial: path.join(dir, info.key + '.part.mp4'), manifest: path.join(dir, info.key + '.json') };
   }
+  async function scopedDir(info, p) {
+    try {
+      const root = await fsp.realpath(sessionsRoot);
+      const home = await fsp.realpath(path.join(sessionsRoot, info.identity.sessionId));
+      const dir = await fsp.realpath(p.dir);
+      // Session UUID and rendition hex key are not enough if a local
+      // symlink or junction redirects the directory outside the quota tree.
+      return path.relative(root, home).toLowerCase() === info.identity.sessionId.toLowerCase()
+        && path.relative(home, dir).toLowerCase() === 'indexed-seek';
+    } catch { return false; }
+  }
   async function finished(info) {
     const p = paths(info);
-    if (!valid(info)) return null;
+    if (!valid(info) || !await scopedDir(info,p)) return null;
     try {
-      const [data, stat] = await Promise.all([fsp.readFile(p.manifest, 'utf8'), fsp.stat(p.output)]);
+      const [data, stat] = await Promise.all([fsp.readFile(p.manifest, 'utf8'), fsp.lstat(p.output)]);
       const saved = JSON.parse(data);
-      if (!stat.isFile() || JSON.stringify(saved.identity) !== JSON.stringify(info.identity)
+      if (!stat.isFile() || stat.isSymbolicLink()
+        || JSON.stringify(saved.identity) !== JSON.stringify(info.identity)
         || !inBounds(saved.bytes, MAX_INDEXED_BYTES) || saved.bytes < 4096
+        || saved.schema !== INDEXED_SCHEMA
+        || !/^[a-f0-9]{64}$/.test(String(saved.outputSha256 || ''))
+        || saved.encoderSha256 !== info.identity.ffmpegSha256
+        || saved.encoderArgsSha256 !== info.identity.encoderArgsSha256
         || stat.size !== saved.bytes || !valid(info)) return null;
+      const outputRealPath = await fsp.realpath(p.output);
+      if (path.relative(p.dir,outputRealPath).toLowerCase() !== (info.key+'.mp4').toLowerCase()
+        || await sha256File(p.output, MAX_INDEXED_BYTES) !== saved.outputSha256
+        || !valid(info)) return null;
       return { file: p.output, bytes: stat.size, duration: saved.duration };
     } catch { return null; }
   }
@@ -119,13 +197,18 @@ export function createIndexedVideoCache({
     if (job.cancelled) return;
     job.cancelled = true;
     job.resolveCancellation(CANCELLED);
+    const signalable = child => child && !job.closedChildren.has(child)
+      && child.exitCode == null && child.signalCode == null
+      && Number.isSafeInteger(child.pid) && child.pid > 0;
     for (const child of [job.child, job.probe]) {
-      if (child && !job.closedChildren.has(child)) try { child.kill('SIGTERM'); } catch {}
+      if (signalable(child)) try { child.kill('SIGTERM'); } catch {}
     }
-    if ([job.child, job.probe].some(child => child && !job.closedChildren.has(child))) {
+    if ([job.child, job.probe].some(signalable)) {
       job.escalation = setTimeout(() => {
         for (const child of [job.child, job.probe]) {
-          if (child && !job.closedChildren.has(child)) try { child.kill('SIGKILL'); } catch {}
+          // Exit without close is still draining, but cannot be signalled
+          // using a PID which may have been recycled by the OS.
+          if (signalable(child)) try { child.kill('SIGKILL'); } catch {}
         }
       }, 2000);
       job.escalation.unref?.();
@@ -184,59 +267,69 @@ export function createIndexedVideoCache({
   }
   async function build(info) {
     const p = paths(info);
+    if (!/^[a-f0-9]{64}$/.test(String(info?.identity?.ffmpegSha256 || ''))
+      || info.identity.encoderArgsSha256 !== indexedArgsHash(info.identity)
+      || info.identity.cacheVersion !== INDEXED_SCHEMA) return;
     // Claim the background slot BEFORE the first await. Foreground stopAll()
     // must also see a job waiting on an arbitrarily slow quota or disk check.
-    if (jobs.has(info.key) || jobs.size || foregroundBusy() || !valid(info)) return;
+    if (jobs.has(info.key) || jobs.size || foregroundBusy() || mediaAdmissionsClosed() || !valid(info)) return;
     const job = { info, cancelled: false, child: null, probe: null,
-      escalation: null, closedChildren: new Set(), outputCommitted: false, published: false };
+      escalation: null, closedChildren: new Set(), outputCommitted: false, published: false,
+      quota: createSharedCacheReservation({ sessionsRoot, allowance }) };
     job.cancellation = new Promise(resolve => { job.resolveCancellation = resolve; });
     job.finished = new Promise(resolve => { job.resolveFinished = resolve; });
     jobs.set(info.key, job);
     try {
       if (await Promise.race([finished(info), job.cancellation])) return;
-      if (job.cancelled || !valid(info) || foregroundBusy()) return;
+      if (job.cancelled || !valid(info) || foregroundBusy() || mediaAdmissionsClosed()) return;
       await fsp.mkdir(p.dir, { recursive: true });
-      if (job.cancelled || !valid(info)) return;
+      if (job.cancelled || !valid(info) || !await scopedDir(info,p)) return;
       // An interrupted previous process can leave an MP4 without its final
       // manifest (or an uncommitted .tmp); both are private, unusable caches.
+      // Never replace an output that could have an active native Range
+      // borrower. Unusable/legacy outputs require an explicit retired purge.
+      try { await fsp.stat(p.output); return; }
+      catch (error) { if (error?.code !== 'ENOENT') return; }
       await Promise.all([
-        fsp.rm(p.partial, { force: true }), fsp.rm(p.output, { force: true }),
+        fsp.rm(p.partial, { force: true }),
         fsp.rm(p.manifest, { force: true }),
         fsp.rm(p.manifest + '.tmp', { force: true }),
       ]);
-      if (job.cancelled || !valid(info) || foregroundBusy()) return;
-      const initial = await Promise.race([allowance(reserve(info.identity.sourceLength)), job.cancellation]);
-      if (initial === CANCELLED || !initial?.allowed || job.cancelled || !valid(info) || foregroundBusy()) return;
+      if (job.cancelled || !valid(info) || foregroundBusy() || mediaAdmissionsClosed()) return;
+      if (await Promise.race([
+        job.quota.reserve(indexedOutputBudget(info.identity.sourceLength)), job.cancellation,
+      ]) !== true
+        || job.cancelled || !valid(info) || foregroundBusy() || mediaAdmissionsClosed()) return;
       const input = sourceUrl(info.identity);
       if (!input?.url) return;
       try {
         const i = info.identity;
-        const videoArgs = i.videoStrategy === 'copy'
-          ? ['-c:v','copy','-avoid_negative_ts','make_zero']
-          : ['-c:v','libx264','-preset','veryfast','-crf','23',
-            '-vf','setpts=PTS-STARTPTS,format=yuv420p','-pix_fmt','yuv420p',
-            '-color_primaries','bt709','-color_trc','bt709','-colorspace','bt709'];
-        const args = ['-hide_banner','-loglevel','error','-nostdin','-y',
-          '-i',input.url,'-map','0:v:0','-map',`0:a:${i.audioIndex}`,
-          ...videoArgs,
-          '-c:a','aac','-ac',String(i.channels),'-b:a',i.bitrate,
-          '-af','asetpts=PTS-STARTPTS,aresample=async=1:first_pts=0',
-          '-movflags','+faststart','-f','mp4',p.partial];
+        const args = indexedArgs(i, input.url, p.partial);
         if (job.cancelled || !valid(info) || foregroundBusy()) return;
+        // Recheck the actual binary immediately before admission: a replaced
+        // FFmpeg path must never inherit the previous generation's identity.
+        if (await sha256File(ffmpegPath, 1024 ** 3) !== i.ffmpegSha256
+          || job.cancelled || !valid(info)) return;
         job.child = spawn(ffmpegPath, args, { stdio: ['ignore','ignore','pipe'], windowsHide: true });
-        // Register exit handling before callbacks can throw or cancellation
-        // races a just-spawned child. A slot is released only on actual close.
-        // Drain stderr to prevent FFmpeg's own log pipe from pinning 'close'.
+        // Register termination handling before callbacks can throw or
+        // cancellation races a just-spawned child. 'exit' alone is NOT a
+        // completed MP4: stderr may still be draining after the OS process
+        // has exited, and a slot must stay reserved until the close/EOF
+        // boundary. An exited child with stuck pipes fails after a bounded
+        // drain window; no partial output may be published.
         let stderr = '';
         job.child.stderr?.on('data', chunk => { if (stderr.length < 2048) stderr += String(chunk).slice(0,2048); });
-        const completion = new Promise(resolve => {
-          job.child.once('error', () => { void cancelJob(job); });
-          job.child.once('close', code => {
-            job.closedChildren.add(job.child);
-            clearTimeout(job.escalation);
-            try { onClose(job.child, info.identity); } catch {}
-            resolve(code);
-          });
+        const child = job.child;
+        const completion = waitForChildStdioDrain(child, {
+          afterExitMs: 2000,
+          onError: () => { void cancelJob(job); },
+        }).then(code => {
+          // Actual close, all pipe EOF after confirmed exit, or a failed
+          // no-PID spawn are the only retirement boundaries.
+          job.closedChildren.add(child);
+          clearTimeout(job.escalation);
+          try { onClose(child, info.identity); } catch {}
+          return code;
         });
         try { onSpawn(job.child, info.identity); }
         catch { await cancelJob(job); }
@@ -245,6 +338,7 @@ export function createIndexedVideoCache({
           return;
         }
         let monitorBusy = false;
+        let accountedBytes = 0;
         const timer = setInterval(async () => {
           if (monitorBusy || job.cancelled) return;
           monitorBusy = true;
@@ -259,6 +353,11 @@ export function createIndexedVideoCache({
               return;
             }
             if (size > MAX_INDEXED_BYTES) { await cancelJob(job); return; }
+            if (size > indexedOutputBudget(info.identity.sourceLength)
+              || (size > accountedBytes && !job.quota.consume(size - accountedBytes))) {
+              await cancelJob(job); return;
+            }
+            accountedBytes = size;
             // Existing partial bytes are already included in playerUsage().
             if (!(await allowance(MIN_FREE_BYTES))?.allowed) await cancelJob(job);
           } catch { await cancelJob(job); }
@@ -270,25 +369,29 @@ export function createIndexedVideoCache({
         if (code !== 0 || job.cancelled || !valid(info)) return;
         const stat = await fsp.stat(p.partial);
         if (stat.size < 4096 || stat.size > MAX_INDEXED_BYTES) return;
-        const probe = await new Promise(resolve => {
+        if (stat.size > indexedOutputBudget(info.identity.sourceLength)
+          || (stat.size > accountedBytes && !job.quota.consume(stat.size - accountedBytes))) return;
+        accountedBytes = stat.size;
+        const probe = await (async () => {
           const child = spawn(ffprobePath, ['-v','error','-show_entries',
             'format=duration:stream=codec_name,codec_type,channels,pix_fmt,width,height','-of','json',p.partial],
             { stdio: ['ignore','pipe','pipe'], windowsHide: true });
           job.probe = child;
           let out = '';
-          let completed = false;
-          const finish = value => { if (!completed) { completed = true; clearTimeout(timeout); resolve(value); } };
-          const timeout = setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 20_000);
-          timeout.unref?.();
+          let timedOut = false;
           child.stdout?.on('data', c => { if (out.length < 16384) out += c.toString().slice(0, 16384-out.length); });
-          child.once('error', () => { void cancelJob(job); });
-          child.once('close', code => {
-            job.closedChildren.add(child);
-            if (code || job.cancelled) return finish(null);
-            try { finish(JSON.parse(out)); } catch { finish(null); }
+          child.stderr?.resume?.();
+          const completion = waitForChildStdioDrain(child, {
+            timeoutMs: 20_000,
+            onTimeout: () => { timedOut = true; try { child.kill('SIGKILL'); } catch {} },
+            onError: () => { void cancelJob(job); },
           });
           if (job.cancelled) try { child.kill('SIGTERM'); } catch {}
-        });
+          const code = await completion;
+          job.closedChildren.add(child);
+          if (code !== 0 || timedOut || job.cancelled) return null;
+          try { return JSON.parse(out); } catch { return null; }
+        })();
         const duration = Number(probe?.format?.duration);
         const videos = probe?.streams?.filter(stream => stream.codec_type === 'video') || [];
         const audios = probe?.streams?.filter(stream => stream.codec_type === 'audio') || [];
@@ -309,13 +412,20 @@ export function createIndexedVideoCache({
         const outputHandle = await fsp.open(p.partial, 'r+');
         try { await outputHandle.sync(); } finally { await outputHandle.close(); }
         if (job.cancelled || !valid(info)) return;
+        const outputSha256 = await sha256File(p.partial, MAX_INDEXED_BYTES);
+        if (!outputSha256
+          || await sha256File(ffmpegPath, 1024 ** 3) !== i.ffmpegSha256
+          || job.cancelled || !valid(info)) return;
         await fsp.rename(p.partial, p.output);
         job.outputCommitted = true;
         if (job.cancelled || !valid(info)) return;
         const manifestFile = await fsp.open(p.manifest + '.tmp', 'wx');
         try {
           await manifestFile.writeFile(JSON.stringify({
-            identity: info.identity, duration, bytes: stat.size,
+            schema: INDEXED_SCHEMA, identity: info.identity,
+            encoderSha256: i.ffmpegSha256,
+            encoderArgsSha256: i.encoderArgsSha256,
+            outputSha256, duration, bytes: stat.size,
           }));
           await manifestFile.sync();
         } finally { await manifestFile.close(); }
@@ -331,13 +441,20 @@ export function createIndexedVideoCache({
       if (job.outputCommitted && !job.published) {
         try { await fsp.rm(p.output, { force: true }); } catch {}
       }
+      job.quota.release();
       if (jobs.get(info.key) === job) jobs.delete(info.key);
       job.resolveFinished();
     }
   }
   async function status(params, { start = true } = {}) {
+    if (mediaAdmissionsClosed()) return { status: 'shutdown' };
     const info = indexedCacheEligibility({ ...params, enabled: enabled(), canEncode: canEncode() });
     if (!info.eligible) return { status: info.reason };
+    const binarySha256 = await sha256File(ffmpegPath, 1024 ** 3);
+    if (!binarySha256) return { status: 'encoder-unavailable' };
+    info.identity = { ...info.identity, ffmpegSha256: binarySha256,
+      encoderArgsSha256: indexedArgsHash(info.identity) };
+    info.key = crypto.createHash('sha256').update(JSON.stringify(info.identity)).digest('hex');
     const complete = await finished(info);
     if (complete) return { status: 'ready', bytes: complete.bytes,
       duration: complete.duration, info };

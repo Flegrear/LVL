@@ -28,10 +28,55 @@ export async function handleRecsApi(req, res, url) {
   if (pathname === "/api/recs/anilist/link") return post((body) => recs.linkAniList(body.username));
   if (pathname === "/api/recs/anilist/authenticated") {
     if (req.method !== "POST") return methodNotAllowed(res, ["POST"]);
-    json(res, 200, recs.linkAuthenticatedAniList(await readJsonBody(req, 8 * 1024 * 1024)));
+    // Accept ephemeral credentials only from LVL's own localhost page. The
+    // browser's Viewer/list JSON is not authenticated and is never imported.
+    const origin = req.headers.origin;
+    let sameLocalOrigin = !origin;
+    if (origin) {
+      try {
+        const parsed = new URL(origin);
+        sameLocalOrigin = parsed.protocol === "http:"
+          && ["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)
+          && parsed.host === req.headers.host;
+      } catch { sameLocalOrigin = false; }
+    }
+    if (!sameLocalOrigin) throw Object.assign(new Error("AniList import requires LVL's local application origin."), { statusCode: 403 });
+    const bearer = /^Bearer ([A-Za-z0-9_.-]{40,4096})$/.exec(String(req.headers.authorization || ""));
+    if (!bearer) throw Object.assign(new Error("Reconnect AniList before importing authenticated ratings."), { statusCode: 401 });
+    const body = await readJsonBody(req, 2048);
+    const abort = new AbortController();
+    const onClose = () => abort.abort();
+    res.once("close", onClose);
+    try {
+      const result = await recs.linkAuthenticatedAniList({
+        token: bearer[1], userId: body.userId, scoreSyncEnabled: body.scoreSyncEnabled,
+      }, { signal: abort.signal });
+      if (!res.destroyed) json(res, 200, result);
+    } finally {
+      res.off("close", onClose);
+    }
     return true;
   }
   if (pathname === "/api/recs/anilist/sync") return post(() => recs.syncAniList());
+  if (pathname === "/api/recs/anilist/score-sync/disable") {
+    if (req.method !== "POST") return methodNotAllowed(res, ["POST"]);
+    // This local-only opt-out never grants authenticated authority; enabling
+    // still requires the independently verified bearer import.
+    const origin = req.headers.origin;
+    if (origin) {
+      let valid = false;
+      try {
+        const parsed = new URL(origin);
+        valid = parsed.protocol === "http:"
+          && ["127.0.0.1", "localhost", "[::1]"].includes(parsed.hostname)
+          && parsed.host === req.headers.host;
+      } catch {}
+      if (!valid) throw Object.assign(new Error("AniList score settings require the local application origin."), { statusCode: 403 });
+    }
+    const body = await readJsonBody(req, 512);
+    json(res, 200, recs.disableAuthenticatedAniListScores(body.userId));
+    return true;
+  }
   if (pathname === "/api/recs/anilist/unlink") return post(() => recs.unlinkAniList());
   if (pathname === "/api/recs/anilist/library") {
     if (req.method !== "GET") return methodNotAllowed(res, ["GET"]);
@@ -74,8 +119,11 @@ export async function handleRecsApi(req, res, url) {
       json(res, 200, recs.titleRatings({
         catalogId: String(url.searchParams.get("catalogId") || "").slice(0, 20),
         seriesKey: String(url.searchParams.get("key") || "").slice(0, 300),
+        kind: String(url.searchParams.get("kind") || "").slice(0, 20),
         title: String(url.searchParams.get("title") || "").slice(0, 300),
         year: Number(url.searchParams.get("year")) || null,
+        anilistIds: String(url.searchParams.get("anilistIds") || "").slice(0, 500).split(",")
+          .filter((id) => /^[1-9]\d{0,14}$/.test(id)).map(Number).filter(Number.isSafeInteger).slice(0, 30),
       }));
       return true;
     }
