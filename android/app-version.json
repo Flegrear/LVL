@@ -1,12 +1,11 @@
 {
-  "version": "0.2.5",
-  "versionCode": 213,
+  "version": "0.2.6",
+  "versionCode": 214,
   "desktopSourceVersion": "0.3.4",
   "runtimeGeneration": "android-v1",
   "releaseNotes": [
-    "Show a concise Updating state during Android app updates while keeping download progress and installation confirmation.",
-    "Restore reliable Resume taps on title pages without activating content underneath.",
-    "Make Comics page counts transparent and readable without a dark background.",
-    "Navigate Comics using outer screen quarters and toggle controls from the center, respecting reading direction."
+    "Restore startup when signed APK manifests include reviewed build provenance fields.",
+    "Preserve existing app data and settings when installing the signed Android hotfix.",
+    "Keep the existing APK update checks and installation confirmation behavior."
   ]
 }

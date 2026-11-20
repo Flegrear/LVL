@@ -207,10 +207,24 @@ object AppFiles {
         check(manifest.length in 2..8192) { "Invalid staged manifest length" }
         val json = JSONObject(manifest)
         val allowed = setOf("version", "versionCode", "runtimeGeneration", "sha256",
-            "stagedAt", "testVersionOverride")
+            "stagedAt", "testVersionOverride", "reviewedCommit", "releaseProvenanceSha256")
         val actualKeys = json.keys().asSequence().toSet()
         check(actualKeys.all { it in allowed } && actualKeys.containsAll(
             setOf("version", "runtimeGeneration", "sha256"))) { "Unexpected staged manifest fields" }
+        // Signed release staging adds these two provenance values after the ZIP
+        // manifest is created. Earlier APKs and development stages omit them.
+        if (json.has("reviewedCommit")) {
+            val commit = json.opt("reviewedCommit")
+            check(commit is String && Regex("^(?:[0-9a-f]{40}|[0-9a-f]{64})$").matches(commit)) {
+                "Invalid staged reviewed commit"
+            }
+        }
+        if (json.has("releaseProvenanceSha256")) {
+            val provenanceSha = json.opt("releaseProvenanceSha256")
+            check(provenanceSha is String && Regex("^[0-9a-f]{64}$").matches(provenanceSha)) {
+                "Invalid staged release provenance SHA-256"
+            }
+        }
         check(json.opt("sha256") is String && json.opt("version") is String &&
             json.opt("runtimeGeneration") is String) { "Incomplete staged manifest" }
         val sha = json.getString("sha256")
